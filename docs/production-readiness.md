@@ -16,7 +16,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
 | Process lifecycle | Bounded shell capture, Unix groups/Windows Job Objects and typed stop gates | Complete signal routing/cancellation and native containment; earlier shell issue remains unresolved |
-| Distribution | Pinned toolchain and source/release/image workflows | New GitHub credentials, branch protection, fresh hosted evidence and licensing/distribution decisions |
+| Distribution | Authenticated new repository, initial snapshot pushed, pinned toolchain and source/release/image workflows | Branch protection, fresh hosted evidence and licensing/distribution decisions |
 
 The roadmap in [craftsman-harness-plan.md](craftsman-harness-plan.md) includes
 future events, recovery, editing, context and containment work. Its historical
@@ -96,9 +96,11 @@ These are new repository rules; old macOS 14 check labels describe past evidence
 | --- | --- |
 | Locked feature-off source check | Passed with Rust 1.99.1 |
 | New private budget tests, feature off | 30 passed / 0 failed / 1 marked helper ignored; no compiler warnings |
-| Full core/default/gadget verification | Pending current-source run |
-| Gadget authoring end-to-end test | Pending current-source full gadget run |
-| New GitHub first push and hosted CI | Pending GitHub authentication |
+| Full core/default/gadget verification | Passed on `d9d87aa`: core 1878/0/10 and gadgets 2033/0/12 (passed/failed/ignored); exit 0; no compiler warnings |
+| Gadget authoring end-to-end test | Passed: actual scaffold/edit/build/catalog/call in one synthetic-provider session |
+| Release-mode coding/gadget source build | Passed with gadgets and without voice; optimized CLI help/version passed without configuration effects; no release/tag published |
+| New GitHub first push | Passed: private repository main is the parentless snapshot `d20e622`, verified against the remote SHA |
+| New hosted CI | Pending implementation-branch verification on Linux/macOS/Windows |
 
 The first complete run at `96c3a4d` retained **1877 passed / 1 failed / 10 ignored**
 in core mode and **2032 passed / 1 failed / 12 ignored** with gadgets, with no
@@ -109,6 +111,15 @@ agent-builds-and-calls-a-gadget case passed. These failed full-run rows are reta
 separately from the corrected-source verification below. The provenance checker
 also required four precise interpreter-version exceptions, each with a reason;
 no general source or attribution exclusion was added.
+
+The corrected source at `d9d87aa` passed every `scripts/verify.sh` step: formatting,
+locked core/default builds, exec contract (141 records/streams, 33 rules, 22 wire
+cases), nine benchmark-driver contracts, provenance, both complete native modes
+and unchanged goldens. Full logs and named/ignored/doctest inventories are retained
+locally under `target/verification/`; the first failed log is kept separately.
+This is macOS source evidence, not fresh Linux/Windows hosted execution or live
+model-quality evidence. The ignored inventory preserves diagnostic helpers,
+benchmarks and the existing macro documentation example.
 
 The previous engineer's deferred macOS shell investigation is **not fixed** by
 these changes. Its retained feature-off failures and perturbed userspace stack
