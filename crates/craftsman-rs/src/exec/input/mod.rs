@@ -359,3 +359,8 @@ pub(crate) type ControlFileInvocation = frontend::FileInvocation;
 pub(in crate::exec) mod scopes;
 pub(crate) type ScopedInvocation = scopes::Invocation;
 pub(crate) type ScopedFileInvocation = scopes::FileInvocation;
+
+// Explicit private request-budget selection; old argv routes still reject it.
+pub(in crate::exec) mod request_budget;
+pub(crate) type RequestBudgetInvocation = request_budget::Invocation;
+pub(crate) type RequestBudgetFileInvocation = request_budget::FileInvocation;

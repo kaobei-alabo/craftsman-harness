@@ -35,6 +35,23 @@ impl Invocation {
     pub(crate) async fn run(self) -> super::FileRun {
         self.invocation.run().await
     }
+    pub(crate) async fn prepare_with_request_limit(
+        options: Options,
+        sources: Sources<'_>,
+        destination: Destination,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, StdinOutputPreparationError> {
+        let prepared = PreparedStdinOutputInput::prepare(options, sources, destination).await?;
+        let (prepared, target) = prepared.into_parts();
+        let (prepared, input) = prepared.into_parts();
+        let runtime = Runtime::build_with_request_limit(prepared, requests)
+            .await
+            .map_err(|_| StdinOutputPreparationError::Stdin(StdinPreparationError::Runtime))?;
+        let invocation = super::Invocation::from_runtime_input(runtime, input);
+        Ok(Self {
+            invocation: super::FileInvocation { invocation, target },
+        })
+    }
     #[cfg(test)]
     pub(in crate::exec) async fn prepare_for_tests(
         options: Options,

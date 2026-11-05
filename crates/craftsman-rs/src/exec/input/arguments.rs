@@ -202,6 +202,35 @@ impl Invocation {
             MemoryRoute::Stdin(invocation) => invocation.run().await,
         }
     }
+    pub(crate) async fn prepare_with_request_limit(
+        options: Options,
+        arguments: &[OsString],
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, Error> {
+        let selected = Selected::select(arguments).map_err(Error::Arguments)?;
+        let route = if selected.is_stdin() {
+            MemoryRoute::Stdin(
+                super::StdinInvocation::prepare_with_request_limit(
+                    options,
+                    selected.sources(),
+                    requests,
+                )
+                .await
+                .map_err(Error::Stdin)?,
+            )
+        } else {
+            MemoryRoute::Input(
+                super::Invocation::prepare_with_request_limit(
+                    options,
+                    selected.sources(),
+                    requests,
+                )
+                .await
+                .map_err(Error::Input)?,
+            )
+        };
+        Ok(Self { route })
+    }
 }
 
 /// Guarded Destination is selected BEFORE preparation/run, never parsed from
@@ -240,5 +269,37 @@ impl FileInvocation {
             FileRoute::Input(invocation) => invocation.run().await,
             FileRoute::Stdin(invocation) => invocation.run().await,
         }
+    }
+    pub(crate) async fn prepare_with_request_limit(
+        options: Options,
+        arguments: &[OsString],
+        destination: Destination,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, Error> {
+        let selected = Selected::select(arguments).map_err(Error::Arguments)?;
+        let route = if selected.is_stdin() {
+            FileRoute::Stdin(
+                super::StdinFileInvocation::prepare_with_request_limit(
+                    options,
+                    selected.sources(),
+                    destination,
+                    requests,
+                )
+                .await
+                .map_err(Error::StdinOutput)?,
+            )
+        } else {
+            FileRoute::Input(
+                super::FileInvocation::prepare_with_request_limit(
+                    options,
+                    selected.sources(),
+                    destination,
+                    requests,
+                )
+                .await
+                .map_err(Error::Output)?,
+            )
+        };
+        Ok(Self { route })
     }
 }

@@ -35,6 +35,21 @@ impl FileInvocation {
             target: self.target,
         }
     }
+    pub(crate) async fn prepare_with_request_limit(
+        options: Options,
+        sources: Sources<'_>,
+        destination: Destination,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, OutputPreparationError> {
+        let prepared = PreparedOutputInput::prepare(options, sources, destination).await?;
+        let (prepared, target) = prepared.into_parts();
+        let (prepared, input) = prepared.into_parts();
+        let runtime = Runtime::build_with_request_limit(prepared, requests)
+            .await
+            .map_err(|_| super::super::construction::InputPreparationError::Runtime)?;
+        let invocation = Invocation::from_runtime_input(runtime, input);
+        Ok(Self { invocation, target })
+    }
 }
 impl FileRun {
     pub(crate) fn terminal(self) -> FileTerminal {

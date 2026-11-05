@@ -20,6 +20,19 @@ impl Invocation {
             .map_err(|_| InputPreparationError::Runtime)?;
         Ok(Self { runtime, input })
     }
+    /// Select a pure request cap before the SAME input-first preparation.
+    pub(crate) async fn prepare_with_request_limit(
+        options: Options,
+        sources: Sources<'_>,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, InputPreparationError> {
+        let prepared = PreparedInput::prepare(options, sources).await?;
+        let (prepared, input) = prepared.into_parts();
+        let runtime = Runtime::build_with_request_limit(prepared, requests)
+            .await
+            .map_err(|_| InputPreparationError::Runtime)?;
+        Ok(Self { runtime, input })
+    }
     /// Pure explicit limits are chosen before SAME input-first preparation.
     /// This private opt-in retains cumulative allocations, not settled usage.
     pub(crate) async fn prepare_with_token_limit(

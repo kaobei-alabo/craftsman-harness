@@ -3,8 +3,8 @@ name = "craftsman-rs"
 version = "0.4.0"
 default-run = "craftsman"
 edition = "2024"
-rust-version = "1.85"
-description = "Terminal chat client and workspace-agent runtime for the Craftsman platform"
+rust-version = "1.99"
+description = "Terminal coding agent and workspace runtime with reusable WASM gadgets"
 
 [[bin]]
 name = "craftsman"

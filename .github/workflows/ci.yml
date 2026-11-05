@@ -1,8 +1,8 @@
 name: ci
 # Pull request checks: formatting, the workspace tests and untouched goldens.
 #
-# The repository ruleset is meant to require fmt, test (ubuntu-24.04) and
-# test (macos-14) by job name, so renaming a job silently drops its check.
+# The new repository uses the actual runner names for all three required test
+# jobs. Require fmt and every test job in its main-branch protection rules.
 #
 # First-party actions only: the org allowlist blocks third-party ones and their
 # transitive action references (see release.yml). The toolchain comes from
@@ -46,28 +46,19 @@ jobs:
         run: cargo fmt --all -- --check
   test:
     name: test (${{ matrix.os }})
-    # matrix.os is the stable required-check context; runner is the actual image.
-    # Keep test (macos-14) until a separately reviewed ruleset/context migration.
+    # All supported platforms are required; a Windows failure fails this run.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    continue-on-error: ${{ matrix.informational }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             runner: ubuntu-24.04
-            informational: false
-          # macOS14 retired November2, 2026 (runner-images#13518); explicit15,
-          # not a moving latest alias. The os key above remains a legacy check id.
-          - os: macos-14
+          - os: macos-15
             runner: macos-15
-            informational: false
-          # Informational until phase P2d (docs/craftsman-harness-plan.md), which
-          # makes Windows required: a failure here does not fail the run.
           - os: windows-2025
             runner: windows-2025
-            informational: true
     env:
       RUST_BACKTRACE: 1
     steps:
@@ -80,18 +71,23 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Install Linux voice build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config cmake clang
+      - name: Check the default build, including voice and gadgets
+        run: GGML_NATIVE=OFF cargo check --locked --workspace
       - name: Test benchmark driver contracts (no network or model calls)
         run: python -B scripts/test-benchmark-gadgets.py
       - name: Test accepted headless contract (no CLI or model execution)
         run: python -I docs/schemas/check_exec.py --self-test
       - name: Test
         # --no-fail-fast: cargo otherwise stops at the first failing test binary
-        # and never runs the rest, which hides failures (on windows-2025 the
-        # integration tests would not run at all after one unit-test failure).
+        # and never runs the rest, which hides integration-test failures.
         run: cargo test --locked --no-default-features --workspace --no-fail-fast -- --test-threads=4
       - name: Test gadget host
-        # A baseline failure must not hide new gadget regressions (especially
-        # on the informational Windows job). Skip only cancelled runs.
+        # A baseline failure must not hide gadget regressions. Skip cancelled runs.
         if: ${{ !cancelled() }}
         # Default-feature-free source builds deliberately omit Wasmtime. Test
         # the opt-in host too: escape suites build WASM fixtures from source.

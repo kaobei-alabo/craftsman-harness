@@ -1,11 +1,11 @@
 # craftsman-harness
 
-A Rust workspace containing the **`craftsman-harness`** agent framework and
-**`craftsman-rs`**, the terminal client and workspace-agent runtime for
-**craftsman-platform**. Platform access is headless and token-configured (see
-`docs/platform-token-refactor.md`): an OpenAI-compatible LLM route, a plain
-MCP entry for the platform server, and a small token-authed REST client for
-skills.
+A Rust terminal coding agent that edits files, runs tools, delegates work and
+can build reusable **WASM gadgets** for itself. The workspace contains the
+**`craftsman-harness`** agent framework, **`craftsman-rs`** application and the
+gadget SDK/macros. Model routes are OpenAI-compatible; platform skills and MCP
+are optional integrations. See `docs/platform-token-refactor.md` for token
+configuration.
 
 The canonical repository is **[yumingchangsabodota/craftsman-harness](https://github.com/yumingchangsabodota/craftsman-harness)**.
 On November 5, 2026 the project moved to its new owner with a fresh source-only
@@ -15,6 +15,20 @@ are historical evidence. The `craftsman` CLI, `craftsman-*` Cargo packages,
 `.craftsman` configuration and `CRAFTSMAN_*` environment names are retained.
 See [the identity migration notes](docs/repository-name.md) for existing-data
 handling and the earlier namespace change.
+
+Start with [production readiness](docs/production-readiness.md) for the current
+overview, build/setup steps, self-built gadget workflow, validation record and
+remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented
+capability/approval boundaries. Run `./scripts/verify.sh` for both complete test
+modes and the default build; it selects an installed Python 3.11+ interpreter.
+
+**New implementation:** the private
+[request-budget adapter](docs/request-budget-arguments.md) accepts `--max-rounds`
+(default 50, range 1..10000) and passes the selected limit to the existing shared
+main/delegate/compaction meter. It preserves the original input and file-output
+owners. Public `craftsman exec` remains unavailable. The new CI uses actual
+macOS 15 labels, requires Windows tests and checks the default voice/gadget build.
+The application declares Rust 1.99; the compiler remains pinned to 1.99.1.
 
 This repository is the maintained Craftsman CLI implementation. Streaming, HITL
 approval, planning, subagents, durable sessions and memory, MCP, skills,
@@ -748,7 +762,7 @@ the terminal.
 Clone the canonical repository (GitHub access is required):
 
 ```bash
-git clone https://github.com/trend-mgai/craftsman-harness.git
+git clone https://github.com/yumingchangsabodota/craftsman-harness.git
 cd craftsman-harness
 ```
 

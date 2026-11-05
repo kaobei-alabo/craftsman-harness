@@ -422,3 +422,50 @@ impl FileInvocation {
         self.invocation.run().await
     }
 }
+
+// The separate budget adapter preflights WHOLE native argv before projection.
+// Reuse exactly the old bounds; only its own two entries/overhead are additive.
+pub(in crate::exec::input) fn request_argument_bounds() -> (usize, usize, usize) {
+    bounds()
+}
+
+impl Invocation {
+    pub(crate) async fn prepare_with_request_limit(
+        defaults: Defaults,
+        arguments: &[OsString],
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, Error> {
+        let selected = Selected::select(defaults, arguments, None).map_err(Error::Selection)?;
+        let invocation = super::ControlInvocation::prepare_with_request_limit(
+            selected.defaults,
+            &selected.arguments,
+            requests,
+        )
+        .await
+        .map_err(Error::Preparation)?;
+        Ok(Self { invocation })
+    }
+}
+impl FileInvocation {
+    pub(crate) async fn prepare_with_request_limit(
+        defaults: Defaults,
+        arguments: &[OsString],
+        options: FileOptions,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, Error> {
+        let selected =
+            Selected::select(defaults, arguments, Some(options)).map_err(Error::Selection)?;
+        let destination = selected
+            .destination
+            .ok_or(Error::Selection(SelectionError::MissingDestination))?;
+        let invocation = super::ControlFileInvocation::prepare_with_request_limit(
+            selected.defaults,
+            &selected.arguments,
+            destination,
+            requests,
+        )
+        .await
+        .map_err(Error::Preparation)?;
+        Ok(Self { invocation })
+    }
+}

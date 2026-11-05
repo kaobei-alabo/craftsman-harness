@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 4, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 5, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -14,6 +14,16 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **New ownership and implementation:** `yumingchangsabodota/craftsman-harness`
+> starts with a fresh source-only Git history. The new private
+> [request-budget arguments](request-budget-arguments.md) select `--max-rounds`
+> before preparation and use the shared main/delegate/compaction meter. Default
+> 50, range 1..10000; existing routes and public exec availability are unchanged.
+> The app declares Rust 1.99 with the existing 1.99.1 pin. The new CI requires all
+> three platforms, uses actual macOS 15 labels and checks the default build.
+> [Production readiness](production-readiness.md) records current validation and
+> the working self-built gadget path; older check/issue records below are historical.
+
 > **Current shell maintenance:** the November2 post-merge main run `41398538418`
 > failed one feature-off Windows partial-output test, despite an informational
 > overall success and a later green gadget-host step. A narrow Windows fixture
@@ -24,7 +34,7 @@
 
 ## Complete identity migration — November 4, 2026
 
-The canonical repository is `trend-mgai/craftsman-harness`. The source rebrand
+The November 4 canonical repository was `trend-mgai/craftsman-harness`. The source rebrand
 also changes CLI/crate/config/environment/ACP/WIT/schema/image and file names
 to Craftsman. This is a breaking identity migration, not merely a repository
 folder change. Existing user data, Git history, grants, releases and sealed
