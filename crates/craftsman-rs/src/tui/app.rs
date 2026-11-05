@@ -12,7 +12,8 @@ use super::render::{
     startup_splash_data, subagent_activity,
 };
 use super::session_bridge::{
-    AgentSlot, UiBridge, UiEvent, drain_notifications, handle_ui_event_batch, hydrate_transcript,
+    AgentSlot, UiBridge, UiEvent, apply_turn_cancellation, drain_notifications,
+    handle_ui_event_batch, hydrate_transcript,
 };
 use super::terminal::{SafeBackend, TerminalGuard, copy_to_clipboard};
 use crate::agent::{self, Session};
@@ -387,6 +388,12 @@ impl App {
     }
 
     pub(super) fn enqueue_modal(&mut self, modal: Modal) {
+        // A prompt may already be in the event channel when Ctrl-C arrives.
+        // Keep releasing waiters until this turn finishes, including after the
+        // one-shot cancel_requested flag has been consumed by the main loop.
+        if self.discard_stream_deltas && modal.cancel_prompt() {
+            return;
+        }
         self.clear_screen_selection();
         if self.modal.is_none() {
             self.modal = Some(modal);
@@ -400,6 +407,23 @@ impl App {
         if self.modal.is_none() {
             self.modal = self.modal_queue.pop_front();
         }
+    }
+
+    pub(super) fn request_turn_cancellation(&mut self) {
+        self.cancel_requested = true;
+        if !self.discard_stream_deltas {
+            self.discard_stream_deltas = true;
+            self.push_kind(TranscriptKind::Activity, "Stopping the active turn…");
+        }
+    }
+
+    pub(super) fn cancel_pending_prompts(&mut self) {
+        if self.modal.as_ref().is_some_and(Modal::cancel_prompt) {
+            self.modal = None;
+        }
+        self.modal_queue.retain(|modal| !modal.cancel_prompt());
+        self.promote_queued_modal();
+        self.dirty = true;
     }
 
     pub(super) fn push_collapsible_block(
@@ -1275,19 +1299,7 @@ pub async fn run(
             }
         }
 
-        if std::mem::take(&mut app.cancel_requested) {
-            if slot
-                .peek()
-                .is_some_and(|session| session.agent.request_cancel())
-            {
-                app.push_kind(
-                    TranscriptKind::Activity,
-                    "Cancellation requested; stopping at the next safe boundary.",
-                );
-            } else if app.running {
-                app.push_error("Could not cancel the active turn.");
-            }
-        }
+        apply_turn_cancellation(&mut app, slot.peek().map(|session| &session.agent));
 
         if std::mem::take(&mut app.mode_cycle_requested) {
             let current = approval.lock().unwrap().mode;

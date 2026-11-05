@@ -101,13 +101,37 @@ pub(super) enum Modal {
     Editor(EditorModal),
 }
 
+impl Modal {
+    /// Release a synchronous agent waiter with a refusal, never a grant.
+    /// Other dialogs retain their drafts and position in the queue.
+    pub(super) fn cancel_prompt(&self) -> bool {
+        match self {
+            Self::Approval(modal) => {
+                let _ = modal.response.send(ApprovalChoice::Deny(String::new()));
+                true
+            }
+            Self::Ask(modal) => {
+                let _ = modal.response.send(None);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
     match modal {
         Modal::Approval(approval) if approval.feedback_mode => match key.code {
-            KeyCode::Char(character) => approval.feedback.push(character),
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                approval.feedback.push(character)
+            }
             KeyCode::Backspace => {
                 approval.feedback.pop();
             }
@@ -142,7 +166,13 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         Modal::Ask(ask) => match key.code {
-            KeyCode::Char(character) => ask.answer.push(character),
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                ask.answer.push(character)
+            }
             KeyCode::Backspace => {
                 ask.answer.pop();
             }

@@ -24,6 +24,14 @@
 > [Production readiness](production-readiness.md) records current validation and
 > the working self-built gadget path; older check/issue records below are historical.
 
+> **Terminal prompt cancellation (November 6):** Ctrl-C now requests a stop from
+> approval/question dialogs and other modals. The actual agent receives the
+> cooperative stop before synchronous waiters receive denial/absence; queued and
+> late prompts cannot keep that stopping turn waiting for input. Unrelated drafts
+> survive and next-turn prompts work normally. This does not abort a streaming
+> provider, running native tool or foreground child, or complete signal shutdown.
+> See [terminal cancellation](terminal-cancellation.md) for implementation and tests.
+
 > **Current shell maintenance:** the November2 post-merge main run `41398538418`
 > failed one feature-off Windows partial-output test, despite an informational
 > overall success and a later green gadget-host step. A narrow Windows fixture
@@ -61,7 +69,7 @@ occurrences. The migration note records the completed validation checkpoint.
 
 | Surface | Current behavior | Important limit |
 |---|---|---|
-| `craftsman` TUI | Streaming conversation, steering/queue, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host filesystem and native shell are not a Craftsman OS sandbox |
+| `craftsman` TUI | Streaming conversation, steering/queue, cooperative cancellation from dialogs, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host filesystem and native shell are not a Craftsman OS sandbox; in-flight work is not immediately interrupted |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
 | `serve`, `desktop-serve`, `acp-serve`, `acp-bridge` | Existing transports/adapters remain supported | Desktop v4 is frozen; ACP stays standard with declared Craftsman extensions; no new headless/gadget opt-in is inferred |

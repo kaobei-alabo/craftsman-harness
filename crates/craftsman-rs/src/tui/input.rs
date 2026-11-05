@@ -283,6 +283,24 @@ pub(super) fn request_voice_cancel(app: &mut App) {
 
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if app.modal.is_some() {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::SUPER)
+            && matches!(key.code, KeyCode::Char('c' | 'C'))
+        {
+            if app.voice.active() {
+                request_voice_cancel(app);
+            }
+            if app.running {
+                // The main loop must stop the real agent BEFORE a prompt
+                // reply wakes its blocked tool. Do not release it here.
+                app.request_turn_cancellation();
+            } else {
+                app.cancel_pending_prompts();
+            }
+            return false;
+        }
         handle_modal_key(app, key);
         return false;
     }
@@ -343,11 +361,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
     {
         if app.running {
-            if !app.cancel_requested {
-                app.cancel_requested = true;
-                app.discard_stream_deltas = true;
-                app.push_kind(TranscriptKind::Activity, "Stopping the active turn…");
-            }
+            app.request_turn_cancellation();
             return false;
         }
         if app.selection_anchor.is_some() {

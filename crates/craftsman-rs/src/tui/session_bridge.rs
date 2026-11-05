@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use tokio::sync::mpsc;
 use unicode_segmentation::UnicodeSegmentation;
 
+#[cfg(test)]
+mod cancellation_tests;
+
 #[derive(Debug)]
 pub(super) enum ApprovalChoice {
     Approve,
@@ -302,6 +305,24 @@ fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
                 app.push_error(message);
             }
         },
+    }
+}
+
+/// Mark the real turn as stopping before waking any synchronous prompt waiter.
+/// Cancellation remains cooperative; this does not abort native work or streams.
+pub(super) fn apply_turn_cancellation(app: &mut App, agent: Option<&craftsman_harness::Agent>) {
+    if !std::mem::take(&mut app.cancel_requested) {
+        return;
+    }
+    let accepted = agent.is_some_and(|agent| agent.request_cancel());
+    app.cancel_pending_prompts();
+    if accepted {
+        app.push_kind(
+            TranscriptKind::Activity,
+            "Cancellation requested; stopping at the next safe boundary.",
+        );
+    } else if app.running {
+        app.push_error("Could not cancel the active turn.");
     }
 }
 

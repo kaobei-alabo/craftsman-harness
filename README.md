@@ -481,6 +481,11 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   steers the active turn at the next model-round boundary; Tab queues a FIFO
   follow-up that starts automatically when the current turn completes. The
   composer soft-wraps by terminal display width; Ctrl+J inserts a newline.
+- Ctrl-C requests cooperative turn cancellation from approval, question and
+  other dialogs. Pending approval/question waiters are refused after the real
+  agent receives the stop; late prompts are refused while the turn is stopping.
+  Composer/editor drafts survive. See [terminal cancellation](docs/terminal-cancellation.md)
+  for the remaining stream, native-process and signal limits.
 - Tool-calling agent loop on the `craftsman-harness` middleware framework, with
   the host tools `execute`, `read_file`, `write_file`, `edit_file`, `ls`,
   `glob` and `grep` (`tools.rs`, adapted to the framework's `Backend` trait by
