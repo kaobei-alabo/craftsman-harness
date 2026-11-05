@@ -78,7 +78,7 @@ use config::{Config, PermissionMode};
 #[command(
     name = "craftsman",
     version,
-    about = "Terminal coding agent with reusable WASM gadgets"
+    about = "Craftsman platform chat client (Rust)"
 )]
 struct Cli {
     /// One-shot: send a single message and exit.

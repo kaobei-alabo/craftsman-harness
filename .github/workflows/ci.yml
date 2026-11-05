@@ -82,6 +82,8 @@ jobs:
         run: python -B scripts/test-benchmark-gadgets.py
       - name: Test accepted headless contract (no CLI or model execution)
         run: python -I docs/schemas/check_exec.py --self-test
+      - name: Check documented source provenance
+        run: bash scripts/check-lineage.sh
       - name: Test
         # --no-fail-fast: cargo otherwise stops at the first failing test binary
         # and never runs the rest, which hides integration-test failures.

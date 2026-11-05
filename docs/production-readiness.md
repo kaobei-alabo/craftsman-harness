@@ -76,7 +76,8 @@ See [gadgets.md](gadgets.md) for the host contracts and project scopes.
 
 The script selects an installed Python 3.11+ interpreter, checks formatting,
 locked core/default builds, accepted exec conformance, benchmark-driver
-contracts, both full workspace feature modes and unchanged goldens. A failed
+contracts, documented source provenance, both full workspace feature modes and
+unchanged goldens. A failed
 core suite does not hide the gadget suite, and any failure makes the final
 script exit nonzero. CMake is required for the default voice build; Linux also
 needs ALSA headers, pkg-config and clang. Source validation does not run a real
@@ -98,6 +99,16 @@ These are new repository rules; old macOS 14 check labels describe past evidence
 | Full core/default/gadget verification | Pending current-source run |
 | Gadget authoring end-to-end test | Pending current-source full gadget run |
 | New GitHub first push and hosted CI | Pending GitHub authentication |
+
+The first complete run at `96c3a4d` retained **1877 passed / 1 failed / 10 ignored**
+in core mode and **2032 passed / 1 failed / 12 ignored** with gadgets, with no
+compiler warnings. Both failures were the existing CLI help contract after an
+unnecessary description edit; the original help wording is restored without
+changing its assertions. All agent/shell/budget unit cases and the full synthetic
+agent-builds-and-calls-a-gadget case passed. These failed full-run rows are retained
+separately from the corrected-source verification below. The provenance checker
+also required four precise interpreter-version exceptions, each with a reason;
+no general source or attribution exclusion was added.
 
 The previous engineer's deferred macOS shell investigation is **not fixed** by
 these changes. Its retained feature-off failures and perturbed userspace stack
