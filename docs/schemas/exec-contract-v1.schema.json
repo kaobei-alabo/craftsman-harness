@@ -1,0 +1,2262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:craftsman-harness:exec-contract:1",
+  "title": "Accepted Craftsman headless contract v1",
+  "description": "Accepted October 20, 2026, not a shipped CLI. Structural schemas require the semantic and transport checks in check_exec.py. Unknown fields/events remain additive; exact known outcomes use standard ACP stop reasons/statuses. Trace v1 is a separate unchanged measurement contract.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/result"
+    },
+    {
+      "$ref": "#/$defs/event"
+    }
+  ],
+  "$defs": {
+    "message": {
+      "type": "object",
+      "required": [
+        "role",
+        "content"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "system",
+            "user",
+            "assistant",
+            "tool"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "tool_call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "arguments"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9._-]+$"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "arguments": {}
+            }
+          },
+          "maxItems": 256
+        }
+      }
+    },
+    "role_usage": {
+      "type": "object",
+      "required": [
+        "requests",
+        "input_tokens",
+        "output_tokens",
+        "reported_calls",
+        "estimated_calls",
+        "unknown_attempts"
+      ],
+      "properties": {
+        "requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "reported_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "estimated_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "unknown_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": [
+        "input_tokens",
+        "output_tokens",
+        "source",
+        "billing_complete",
+        "roles"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "source": {
+          "enum": [
+            "none",
+            "reported",
+            "estimated",
+            "mixed"
+          ]
+        },
+        "billing_complete": {
+          "type": "boolean"
+        },
+        "roles": {
+          "type": "object",
+          "required": [
+            "main",
+            "subagent",
+            "compaction"
+          ],
+          "properties": {
+            "main": {
+              "$ref": "#/$defs/role_usage"
+            },
+            "subagent": {
+              "$ref": "#/$defs/role_usage"
+            },
+            "compaction": {
+              "$ref": "#/$defs/role_usage"
+            }
+          }
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "required": [
+        "cwd_sha256",
+        "trust_workspace",
+        "confinement"
+      ],
+      "properties": {
+        "cwd_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "trust_workspace": {
+          "type": "boolean"
+        },
+        "confinement": {
+          "enum": [
+            "unix_handle_relative",
+            "windows_best_effort"
+          ]
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "required": [
+        "gadgets",
+        "project_instructions",
+        "skills",
+        "subagents",
+        "mcp",
+        "lsp",
+        "durable_memory",
+        "background_tasks"
+      ],
+      "properties": {
+        "gadgets": {
+          "type": "boolean"
+        },
+        "project_instructions": {
+          "type": "boolean"
+        },
+        "skills": {
+          "type": "boolean"
+        },
+        "subagents": {
+          "type": "boolean"
+        },
+        "mcp": {
+          "const": false
+        },
+        "lsp": {
+          "const": false
+        },
+        "durable_memory": {
+          "const": false
+        },
+        "background_tasks": {
+          "const": false
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "required": [
+        "mode",
+        "on_unapproved",
+        "allow",
+        "deny",
+        "env_pass",
+        "ignored_ambient_settings",
+        "denied_calls"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "manual",
+            "plan"
+          ]
+        },
+        "on_unapproved": {
+          "enum": [
+            "deny",
+            "fail"
+          ]
+        },
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 256
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 256
+        },
+        "env_pass": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "maxItems": 64
+        },
+        "ignored_ambient_settings": {
+          "type": "boolean"
+        },
+        "denied_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "max_requests",
+        "token_budget",
+        "timeout_ms"
+      ],
+      "properties": {
+        "max_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "token_budget": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "fresh",
+            "resume",
+            "continue",
+            "ephemeral"
+          ]
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "required": [
+        "shell",
+        "mechanism",
+        "filesystem",
+        "process_tree"
+      ],
+      "properties": {
+        "shell": {
+          "const": "unavailable"
+        },
+        "mechanism": {
+          "const": null
+        },
+        "filesystem": {
+          "enum": [
+            "unix_handle_relative",
+            "windows_best_effort"
+          ]
+        },
+        "process_tree": {
+          "enum": [
+            "direct_child",
+            "unix_group",
+            "windows_job_object"
+          ]
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "status",
+        "receipts"
+      ],
+      "properties": {
+        "status": {
+          "const": "not_supported"
+        },
+        "receipts": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "required": [
+        "schema",
+        "path",
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "schema": {
+          "const": "craftsman-harness/trace@1"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 4096
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "written",
+            "disabled"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "unsafe_path",
+                "outside_workspace_unavailable",
+                "open_failed",
+                "write_failed",
+                "unsupported_filesystem"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "kind",
+        "message",
+        "retryable"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "refusal",
+            "limit",
+            "approval_required",
+            "provider",
+            "internal",
+            "interrupted"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 16384
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "limit": {
+      "type": "object",
+      "required": [
+        "kind",
+        "maximum",
+        "observed",
+        "unit"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "model_requests",
+            "tokens",
+            "wall_time"
+          ]
+        },
+        "maximum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "observed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unit": {
+          "enum": [
+            "requests",
+            "tokens",
+            "milliseconds"
+          ]
+        },
+        "admission": {
+          "$ref": "#/$defs/token_admission"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "model_requests"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "unit": {
+                "const": "requests"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tokens"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "unit": {
+                "const": "tokens"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "wall_time"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "unit": {
+                "const": "milliseconds"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "admission"
+            ]
+          },
+          "then": {
+            "properties": {
+              "kind": {
+                "const": "tokens"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "craftsman_meta": {
+      "type": "object",
+      "required": [
+        "reason",
+        "retryable",
+        "limit",
+        "signal"
+      ],
+      "properties": {
+        "reason": {
+          "enum": [
+            "end_turn",
+            "refusal",
+            "max_turn_requests",
+            "max_tokens",
+            "wall_timeout",
+            "approval_required",
+            "provider_failure",
+            "internal_error",
+            "interrupted"
+          ]
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/limit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "enum": [
+                "SIGHUP",
+                "SIGINT",
+                "SIGPIPE",
+                "SIGTERM",
+                "CTRL_C_EVENT",
+                "CTRL_BREAK_EVENT"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "schema",
+        "run_id",
+        "thread_id",
+        "status",
+        "exit_code",
+        "stop_reason",
+        "_meta",
+        "output",
+        "messages",
+        "message_scope",
+        "usage",
+        "rounds",
+        "wall_ms",
+        "workspace",
+        "features",
+        "permissions",
+        "limits",
+        "session",
+        "sandbox",
+        "verification",
+        "trace",
+        "error",
+        "output_truncated",
+        "messages_omitted"
+      ],
+      "properties": {
+        "schema": {
+          "const": "craftsman-harness/exec-result@1"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "task_failed",
+            "limit",
+            "approval_required",
+            "provider_failure",
+            "internal_error",
+            "interrupted"
+          ]
+        },
+        "exit_code": {
+          "enum": [
+            0,
+            1,
+            3,
+            4,
+            5,
+            6,
+            7,
+            129,
+            130,
+            141,
+            143
+          ]
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "end_turn",
+                "max_tokens",
+                "max_turn_requests",
+                "refusal",
+                "cancelled"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "_meta": {
+          "type": "object",
+          "required": [
+            "craftsman"
+          ],
+          "properties": {
+            "craftsman": {
+              "$ref": "#/$defs/craftsman_meta"
+            }
+          }
+        },
+        "output": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          },
+          "maxItems": 10000
+        },
+        "message_scope": {
+          "const": "retained_state"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "workspace": {
+          "$ref": "#/$defs/workspace"
+        },
+        "features": {
+          "$ref": "#/$defs/features"
+        },
+        "permissions": {
+          "$ref": "#/$defs/permissions"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "session": {
+          "$ref": "#/$defs/session"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/sandbox"
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "trace": {
+          "$ref": "#/$defs/trace"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_truncated": {
+          "type": "boolean"
+        },
+        "messages_omitted": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 0
+              },
+              "stop_reason": {
+                "const": "end_turn"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "end_turn"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "const": null
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "task_failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 1
+              },
+              "stop_reason": {
+                "const": "refusal"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "refusal"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "const": null
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "retryable"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "refusal"
+                  },
+                  "retryable": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "approval_required"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 4
+              },
+              "stop_reason": {
+                "const": "cancelled"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "approval_required"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "const": null
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "retryable"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "approval_required"
+                  },
+                  "retryable": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "internal_error"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 7
+              },
+              "stop_reason": {
+                "const": null
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "internal_error"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "const": null
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "retryable"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "internal"
+                  },
+                  "retryable": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "provider_failure"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "enum": [
+                  5,
+                  6
+                ]
+              },
+              "stop_reason": {
+                "const": null
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "provider_failure"
+                      },
+                      "limit": {
+                        "const": null
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "retryable"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "provider"
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "const": 5
+              }
+            },
+            "required": [
+              "exit_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "retryable"
+                    ],
+                    "properties": {
+                      "retryable": {
+                        "const": true
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "retryable"
+                ],
+                "properties": {
+                  "retryable": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "const": 6
+              }
+            },
+            "required": [
+              "exit_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "retryable"
+                    ],
+                    "properties": {
+                      "retryable": {
+                        "const": false
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "retryable"
+                ],
+                "properties": {
+                  "retryable": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "limit"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 3
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "retryable"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "limit"
+                  },
+                  "retryable": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "limit"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "limit"
+                    ],
+                    "properties": {
+                      "limit": {
+                        "type": "object",
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "model_requests"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "status",
+              "_meta"
+            ]
+          },
+          "then": {
+            "properties": {
+              "stop_reason": {
+                "const": "max_turn_requests"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "max_turn_requests"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "$ref": "#/$defs/limit"
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "limit"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "limit"
+                    ],
+                    "properties": {
+                      "limit": {
+                        "type": "object",
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "tokens"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "status",
+              "_meta"
+            ]
+          },
+          "then": {
+            "properties": {
+              "stop_reason": {
+                "const": "max_tokens"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "max_tokens"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "$ref": "#/$defs/limit"
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "limit"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "limit"
+                    ],
+                    "properties": {
+                      "limit": {
+                        "type": "object",
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "wall_time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "status",
+              "_meta"
+            ]
+          },
+          "then": {
+            "properties": {
+              "stop_reason": {
+                "const": "cancelled"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "wall_timeout"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "$ref": "#/$defs/limit"
+                      },
+                      "signal": {
+                        "const": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "limit"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "limit"
+                    ],
+                    "properties": {
+                      "limit": {
+                        "$ref": "#/$defs/limit"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "interrupted"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "enum": [
+                  129,
+                  130,
+                  141,
+                  143
+                ]
+              },
+              "stop_reason": {
+                "const": "cancelled"
+              },
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "reason",
+                      "retryable",
+                      "limit",
+                      "signal"
+                    ],
+                    "properties": {
+                      "reason": {
+                        "const": "interrupted"
+                      },
+                      "retryable": {
+                        "const": null
+                      },
+                      "limit": {
+                        "const": null
+                      },
+                      "signal": {
+                        "enum": [
+                          "SIGHUP",
+                          "SIGINT",
+                          "SIGPIPE",
+                          "SIGTERM",
+                          "CTRL_C_EVENT",
+                          "CTRL_BREAK_EVENT"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "error": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "retryable"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "interrupted"
+                  },
+                  "retryable": {
+                    "const": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "const": 129
+              }
+            },
+            "required": [
+              "exit_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "signal"
+                    ],
+                    "properties": {
+                      "signal": {
+                        "enum": [
+                          "SIGHUP"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "const": 130
+              }
+            },
+            "required": [
+              "exit_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "signal"
+                    ],
+                    "properties": {
+                      "signal": {
+                        "enum": [
+                          "SIGINT",
+                          "CTRL_C_EVENT",
+                          "CTRL_BREAK_EVENT"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "const": 141
+              }
+            },
+            "required": [
+              "exit_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "signal"
+                    ],
+                    "properties": {
+                      "signal": {
+                        "enum": [
+                          "SIGPIPE"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exit_code": {
+                "const": 143
+              }
+            },
+            "required": [
+              "exit_code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "signal"
+                    ],
+                    "properties": {
+                      "signal": {
+                        "enum": [
+                          "SIGTERM"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tool_meta": {
+      "type": "object",
+      "required": [
+        "craftsman"
+      ],
+      "properties": {
+        "craftsman": {
+          "type": "object",
+          "required": [
+            "tool_status"
+          ],
+          "properties": {
+            "tool_status": {
+              "enum": [
+                "ok",
+                "error",
+                "denied",
+                "cancelled"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "required": [
+        "tool_call_id",
+        "title",
+        "kind",
+        "status",
+        "raw_input"
+      ],
+      "properties": {
+        "tool_call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": [
+            "read",
+            "edit",
+            "delete",
+            "move",
+            "search",
+            "execute",
+            "think",
+            "fetch",
+            "switch_mode",
+            "other"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress"
+          ]
+        },
+        "raw_input": {}
+      }
+    },
+    "tool_update": {
+      "type": "object",
+      "required": [
+        "tool_call_id",
+        "status",
+        "content",
+        "_meta"
+      ],
+      "properties": {
+        "tool_call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "status": {
+          "enum": [
+            "in_progress",
+            "completed",
+            "failed"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "_meta": {
+          "$ref": "#/$defs/tool_meta"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "tool_status"
+                    ],
+                    "properties": {
+                      "tool_status": {
+                        "const": "ok"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "_meta": {
+                "type": "object",
+                "required": [
+                  "craftsman"
+                ],
+                "properties": {
+                  "craftsman": {
+                    "type": "object",
+                    "required": [
+                      "tool_status"
+                    ],
+                    "properties": {
+                      "tool_status": {
+                        "enum": [
+                          "error",
+                          "denied",
+                          "cancelled"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "model_usage": {
+      "type": "object",
+      "required": [
+        "role",
+        "source",
+        "input_tokens",
+        "output_tokens",
+        "unknown_attempts"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "main",
+            "subagent",
+            "compaction"
+          ]
+        },
+        "source": {
+          "enum": [
+            "reported",
+            "estimated"
+          ]
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "unknown_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      }
+    },
+    "run_started": {
+      "type": "object",
+      "required": [
+        "entry",
+        "model",
+        "harness_profile",
+        "workspace",
+        "features",
+        "permissions",
+        "limits",
+        "session"
+      ],
+      "properties": {
+        "entry": {
+          "const": "exec"
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "harness_profile": {
+          "enum": [
+            "general",
+            "openai",
+            "claude",
+            "nemotron"
+          ]
+        },
+        "workspace": {
+          "$ref": "#/$defs/workspace"
+        },
+        "features": {
+          "$ref": "#/$defs/features"
+        },
+        "permissions": {
+          "$ref": "#/$defs/permissions"
+        },
+        "limits": {
+          "$ref": "#/$defs/limits"
+        },
+        "session": {
+          "$ref": "#/$defs/session"
+        }
+      }
+    },
+    "message_delta": {
+      "type": "object",
+      "required": [
+        "role",
+        "content"
+      ],
+      "properties": {
+        "role": {
+          "const": "assistant"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 1048576
+        }
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "schema",
+        "seq",
+        "ts",
+        "run_id",
+        "thread_id",
+        "agent_path",
+        "kind",
+        "payload"
+      ],
+      "properties": {
+        "schema": {
+          "const": "craftsman-harness/exec-event@1"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "ts": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._-]+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agent_path": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "prefixItems": [
+            {
+              "const": "main"
+            }
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          }
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "run_started"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/run_started"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "message_delta"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/message_delta"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tool_call"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/tool_call"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "model_usage"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/model_usage"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tool_call_update"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/tool_update"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "result"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "agent_path": {
+                "const": [
+                  "main"
+                ]
+              },
+              "payload": {
+                "$ref": "#/$defs/result"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "token_admission": {
+      "description": "Proposed October 31, 2026 clarification for #97; not runtime admission or billing. Describes a rejected request reservation before observed usage exhausts the token budget. Counters are integer literals; semantic relations are checked independently.",
+      "type": "object",
+      "required": [
+        "estimated_input_tokens",
+        "requested_output_tokens",
+        "remaining_tokens"
+      ],
+      "properties": {
+        "estimated_input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "requested_output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "remaining_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    }
+  }
+}

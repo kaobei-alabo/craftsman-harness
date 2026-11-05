@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "name": "review-flow",
+  "prompt": "When reviewing code, report concrete defects with file and line references before any style nits.",
+  "commands": [
+    {
+      "name": "review",
+      "description": "Review the current diff",
+      "prompt": "Review the current git diff for correctness bugs, missing tests, and risky changes. Use the `reviewer` agent for the read-only pass. {$ARGS}"
+    },
+    {
+      "name": "ship",
+      "description": "Run the checks and summarize readiness",
+      "prompt": "Run the project's test and lint commands, then summarize whether the change is ready to merge."
+    }
+  ],
+  "agents": [
+    {
+      "name": "reviewer",
+      "description": "Read-only code reviewer. Use it for a focused review pass over a diff or a set of files.",
+      "system_prompt": "You are a meticulous code reviewer. Read the code, trace the failure paths, and report concrete defects with file and line references. Do not modify files.",
+      "tools": ["read_file", "grep", "glob", "ls"]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "base_url": "REPLACE_WITH_NVIDIA_OPENAI_COMPATIBLE_BASE_URL",
+  "api_key": "REPLACE_WITH_NVIDIA_API_KEY",
+  "model": "nvidia/nemotron-3-ultra-550b-a55b",
+  "harness_profile": "nemotron",
+  "provider_profile": "nvidia",
+  "model_profiles": {
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      "temperature": 0.2,
+      "max_tokens": 8192
+    }
+  }
+}

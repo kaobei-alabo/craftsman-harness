@@ -1,0 +1,274 @@
+{
+  "description": "ACP over stdio (`craftsman acp-serve --permission-mode manual`, newline-delimited JSON-RPC 2.0). initialize; session/new from a stock client (the agent mints the session id); session/prompt whose model turn calls write_file, which raises session/request_permission; the client allows once; tool_call and tool_call_update notifications and message chunks stream; the turn ends with stopReason end_turn.",
+  "scenario": "acp_stdio_permission_turn",
+  "steps": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            }
+          },
+          "clientInfo": {
+            "name": "golden-client",
+            "version": "1.0.0"
+          },
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "a2uiMimeType": "application/vnd.craftsman.a2ui+json",
+              "extensions": [
+                "_craftsman/session/request_input",
+                "_craftsman/session/set_model",
+                "_craftsman/session/list"
+              ],
+              "harness": "craftsman-harness",
+              "profile": "v1"
+            }
+          },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": {
+              "audio": false,
+              "embeddedContext": true,
+              "image": false
+            }
+          },
+          "agentInfo": {
+            "name": "craftsman-harness",
+            "version": "<crate-version>"
+          },
+          "authMethods": [],
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "session/new",
+        "params": {
+          "cwd": "<WORKSPACE>",
+          "mcpServers": []
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "threadId": "<thread-id-1>"
+            }
+          },
+          "sessionId": "<thread-id-1>"
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "session/prompt",
+        "params": {
+          "prompt": [
+            {
+              "text": "create golden.txt",
+              "type": "text"
+            }
+          ],
+          "sessionId": "<thread-id-1>"
+        }
+      }
+    },
+    {
+      "recv": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "<thread-id-1>",
+          "update": {
+            "content": {
+              "text": "Creating the file. ",
+              "type": "text"
+            },
+            "messageId": "msg-1",
+            "sessionUpdate": "agent_message_chunk"
+          }
+        }
+      }
+    },
+    {
+      "recv": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "<thread-id-1>",
+          "update": {
+            "_meta": {
+              "craftsman": {
+                "tool": "write_file"
+              }
+            },
+            "kind": "edit",
+            "rawInput": {
+              "details": "Path: golden.txt\nSize: 13 bytes · 1 line(s)\n\nPreview:\nhello golden\n"
+            },
+            "sessionUpdate": "tool_call",
+            "status": "in_progress",
+            "title": "✏️  write_file › golden.txt",
+            "toolCallId": "call_1"
+          }
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": "perm-1",
+        "jsonrpc": "2.0",
+        "method": "session/request_permission",
+        "params": {
+          "_meta": {
+            "craftsman": {
+              "tool": "write_file"
+            }
+          },
+          "options": [
+            {
+              "kind": "allow_once",
+              "name": "Allow once",
+              "optionId": "allow-once"
+            },
+            {
+              "kind": "allow_always",
+              "name": "Allow always",
+              "optionId": "allow-always"
+            },
+            {
+              "kind": "reject_once",
+              "name": "Reject",
+              "optionId": "reject-once"
+            }
+          ],
+          "sessionId": "<thread-id-1>",
+          "toolCall": {
+            "kind": "edit",
+            "rawInput": {
+              "details": "Path: golden.txt\nSize: 13 bytes · 1 line(s)\n\nPreview:\nhello golden\n"
+            },
+            "status": "pending",
+            "title": "✏️  write_file › golden.txt",
+            "toolCallId": "perm-1"
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "perm-1",
+        "jsonrpc": "2.0",
+        "result": {
+          "outcome": {
+            "optionId": "allow-once",
+            "outcome": "selected"
+          }
+        }
+      }
+    },
+    {
+      "recv": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "<thread-id-1>",
+          "update": {
+            "_meta": {
+              "craftsman": {
+                "tool": "write_file"
+              }
+            },
+            "content": [
+              {
+                "content": {
+                  "text": "Updated file golden.txt",
+                  "type": "text"
+                },
+                "type": "content"
+              }
+            ],
+            "sessionUpdate": "tool_call_update",
+            "status": "completed",
+            "toolCallId": "call_1"
+          }
+        }
+      }
+    },
+    {
+      "recv": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "<thread-id-1>",
+          "update": {
+            "content": {
+              "text": "Created ",
+              "type": "text"
+            },
+            "messageId": "msg-1",
+            "sessionUpdate": "agent_message_chunk"
+          }
+        }
+      }
+    },
+    {
+      "recv": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "<thread-id-1>",
+          "update": {
+            "content": {
+              "text": "golden.txt.",
+              "type": "text"
+            },
+            "messageId": "msg-1",
+            "sessionUpdate": "agent_message_chunk"
+          }
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "usage": {
+                "inputTokens": 31,
+                "outputTokens": 9
+              }
+            }
+          },
+          "stopReason": "end_turn"
+        }
+      }
+    }
+  ]
+}

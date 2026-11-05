@@ -1,0 +1,151 @@
+name: publish workspace runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace_tag:
+        description: "Workspace runtime tag (`craftsman-workspace-runtime`)"
+        required: true
+        type: string
+      platform_repository:
+        description: "Platform source repository name under this repository owner"
+        required: true
+        type: string
+      sdk_repository:
+        description: "SDK source repository name under this repository owner"
+        required: true
+        type: string
+      platform_ref:
+        description: "Source commit/tag containing the current-identity Dockerfiles"
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+# Runs for the same tag queue, so the index pairs the manifests this run
+# smoke-tested.
+concurrency:
+  group: publish-workspace-runtime-${{ inputs.workspace_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            suffix: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - id: repo-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CRAFTSMAN_CI_APP_ID }}
+          private-key: ${{ secrets.CRAFTSMAN_CI_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            craftsman-harness
+            ${{ inputs.sdk_repository }}
+            ${{ inputs.platform_repository }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.platform_repository }}
+          ref: ${{ inputs.platform_ref }}
+          token: ${{ steps.repo-token.outputs.token }}
+          path: platform
+          # Nothing runs git in this checkout afterwards: keep the token out of
+          # platform/.git/config.
+          persist-credentials: false
+
+      # The smoke script sits next to the Dockerfile, so it always matches the
+      # image being built. the platform source added it in 5c37e09.
+      - name: Require the workspace image smoke script
+        env:
+          PLATFORM_REF: ${{ inputs.platform_ref }}
+        run: |
+          if [ ! -s platform/scripts/smoke-workspace-image.sh ]; then
+            echo "::error::Platform source ${PLATFORM_REF} has no scripts/smoke-workspace-image.sh (added in 5c37e09); publish from a commit that has it."
+            exit 1
+          fi
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build workspace runtime
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: platform
+          file: platform/Dockerfile.workspace
+          platforms: ${{ matrix.platform }}
+          secrets: gh_token=${{ steps.repo-token.outputs.token }}
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository_owner }}/craftsman-workspace-runtime:${{ inputs.workspace_tag }}-${{ matrix.suffix }}
+          cache-from: type=gha,scope=craftsman-workspace-runtime-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=craftsman-workspace-runtime-${{ matrix.suffix }}
+
+      # Smoke-test the manifest just pushed, natively on this architecture. The
+      # manifest job needs both legs, so a failure here publishes no index and
+      # leaves only this run's -<arch> tag behind.
+      # The script comes from platform_ref, and this runner holds the GHCR
+      # login and build-push-action's temp copy of the gh_token secret, so the
+      # script's code must not run here. The step therefore starts the
+      # container itself and passes the script as its command, exactly as the
+      # script does in its --in-image mode. The checks then run only inside the
+      # image, as its user, like the Dockerfile's steps run only in BuildKit.
+      - name: Smoke-test the pushed image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/craftsman-workspace-runtime
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          script=$(cat platform/scripts/smoke-workspace-image.sh)
+          docker run --rm --entrypoint /bin/sh "${IMAGE}@${DIGEST:?the build reported no image digest}" \
+            -c "${script:?the smoke script is empty}" smoke-workspace-image --in-image
+
+  manifest:
+    name: publish multi-architecture index
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish indexes
+        env:
+          OWNER: ${{ github.repository_owner }}
+          WORKSPACE_TAG: ${{ inputs.workspace_tag }}
+          PLATFORM_REF: ${{ inputs.platform_ref }}
+        run: |
+          set -euo pipefail
+          workspace="ghcr.io/${OWNER}/craftsman-workspace-runtime"
+          docker buildx imagetools create --tag "${workspace}:${WORKSPACE_TAG}" \
+            "${workspace}:${WORKSPACE_TAG}-amd64" "${workspace}:${WORKSPACE_TAG}-arm64"
+          workspace_digest=$(docker buildx imagetools inspect "${workspace}:${WORKSPACE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          {
+            echo "## Workspace runtime published"
+            echo
+            echo "| Image | Platforms | Digest |"
+            echo "|---|---|---|"
+            echo "| \`${workspace}:${WORKSPACE_TAG}\` | amd64, arm64 | \`${workspace_digest}\` |"
+            echo
+            echo "Both images passed \`scripts/smoke-workspace-image.sh\` from the selected platform source \`${PLATFORM_REF}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

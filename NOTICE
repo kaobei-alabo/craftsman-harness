@@ -1,0 +1,97 @@
+NOTICE
+
+This file records attribution for text in this repository that comes from, or
+follows, two open-source projects: deepagents and LangChain. It is an interim
+notice. Other third-party material (for example the vendored A2UI schema, which
+names its source and its Apache-2.0 license in its own "_source" key, and the
+Rust dependencies) is not covered here. docs/oss-review.md explains how this
+notice was prepared, what is still unverified and which questions are open.
+This file does not say what license applies to the rest of the repository.
+
+-------------------------------------------------------------------------------
+1. deepagents  https://github.com/langchain-ai/deepagents
+-------------------------------------------------------------------------------
+
+deepagents is an open-source Python project published under the MIT License.
+The crate crates/deepagents-rs describes itself in its manifest as a Rust port
+of deepagents. Some model-facing text in this repository is identical to, or
+adapted from, deepagents, and many comments describe the code as following it.
+docs/oss-review.md lists the places found.
+
+The copyright line of deepagents' LICENSE file changed on 2026-02-04, so both
+published versions are reproduced below, each exactly as published:
+
+  - the file on the main branch of deepagents (commit
+    c5313d7005534c8f8514004890c6f6d5174c6e2f, dated 2026-10-16), and
+  - the file at release 0.3.8 (commit
+    7db4736d717ab5412daa3c594b57b1f4e3bb3eca), the release named in comments in
+    this repository.
+
+-------------------------------------------------------------------------------
+2. LangChain  https://github.com/langchain-ai/langchain
+-------------------------------------------------------------------------------
+
+The TODO_SYSTEM_PROMPT text in
+crates/deepagents-rs/src/builtin/todos.rs follows the WRITE_TODOS_SYSTEM_PROMPT
+text of LangChain's TodoListMiddleware
+(libs/langchain_v1/langchain/agents/middleware/todo.py in that repository).
+That text is the same in the LangChain releases 1.0.0, 1.1.0, 1.2.0, 1.2.3 and
+1.2.4, which were compared; the word-for-word comparison was made at 1.2.4.
+The opening of the write_todos tool description in the same Rust file also
+uses words similar to LangChain's WRITE_TODOS_TOOL_DESCRIPTION. LangChain is
+published under the MIT License. Its LICENSE file is identical to the first
+copy reproduced below (checked at release 1.2.4 and on its master branch).
+
+===============================================================================
+deepagents LICENSE on the main branch (commit c5313d7005534c8f8514004890c6f6d5174c6e2f)
+https://raw.githubusercontent.com/langchain-ai/deepagents/c5313d7005534c8f8514004890c6f6d5174c6e2f/LICENSE
+===============================================================================
+
+MIT License
+
+Copyright (c) LangChain, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+===============================================================================
+deepagents LICENSE at release 0.3.8 (commit 7db4736d717ab5412daa3c594b57b1f4e3bb3eca)
+https://raw.githubusercontent.com/langchain-ai/deepagents/7db4736d717ab5412daa3c594b57b1f4e3bb3eca/LICENSE
+===============================================================================
+
+MIT License
+
+Copyright (c) 2025 Harrison Chase
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

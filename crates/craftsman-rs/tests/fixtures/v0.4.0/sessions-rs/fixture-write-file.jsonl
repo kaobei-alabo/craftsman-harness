@@ -1,0 +1,5 @@
+{"data":{"content":"Create notes.txt and mention it in README.md.","role":"user"},"kind":"user","ts":1760003601}
+{"data":{"content":"","role":"assistant","tool_calls":[{"args":{"content":"hello from the fixture\n","file_path":"notes.txt"},"id":"call_1","name":"write_file"},{"args":{"file_path":"README.md","new_string":"A tiny project. See notes.txt.","old_string":"A tiny project."},"id":"call_2","name":"edit_file"}]},"kind":"assistant","ts":1760003602}
+{"data":{"content":"Updated file notes.txt","is_error":false,"role":"tool","tool_call_id":"call_1"},"kind":"tool","ts":1760003603}
+{"data":{"content":"Updated file README.md","is_error":false,"role":"tool","tool_call_id":"call_2"},"kind":"tool","ts":1760003604}
+{"data":{"content":"Created notes.txt and mentioned it in README.md.","role":"assistant"},"kind":"assistant","ts":1760003605}

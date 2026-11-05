@@ -1,0 +1,78 @@
+// The gadget contract (docs/craftsman-harness-plan.md, 5.11).
+//
+// A gadget is a WebAssembly component built against the `gadget` world. It
+// exports `guest`; Craftsman's host provides `host`. WASI 0.2 is linked with no
+// preopened directories, no sockets and no environment, so `host` is the only
+// way a gadget reaches files or the network, and every call is checked
+// against the capabilities the user approved.
+//
+// A changed contract is a new package version; the host keeps loading the old
+// one.
+
+package craftsman:gadget@0.1.0;
+
+interface host {
+    enum level {
+        trace,
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    // Writes one line to the gadget log (always allowed).
+    log: func(level: level, message: string);
+
+    record dir-entry {
+        name: string,
+        is-dir: bool,
+        size: u64,
+    }
+
+    // Paths are relative to the workspace (an absolute path must lie inside
+    // it). Needs the `read` capability.
+    read-file: func(path: string) -> result<list<u8>, string>;
+    list-dir: func(path: string) -> result<list<dir-entry>, string>;
+
+    // Needs the `write` capability; the user's approval gate applies to every
+    // write, as for the `write_file` tool.
+    write-file: func(path: string, contents: list<u8>) -> result<_, string>;
+
+    record request {
+        method: string,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: option<list<u8>>,
+    }
+
+    record response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    // HTTPS only, to a host listed in the `http` capability.
+    http-request: func(req: request) -> result<response, string>;
+}
+
+interface guest {
+    variant call-error {
+        // No function of that name.
+        unknown-function(string),
+        // The arguments did not match the function's input schema.
+        invalid-args(string),
+        // The function ran and returned an error.
+        failed(string),
+    }
+
+    // JSON: {"functions": [{"name", "description", "input_schema"}]}.
+    describe: func() -> string;
+
+    // `args` and the result are JSON texts.
+    call: func(function: string, args: string) -> result<string, call-error>;
+}
+
+world gadget {
+    import host;
+    export guest;
+}

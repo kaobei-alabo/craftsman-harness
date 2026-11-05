@@ -1,0 +1,221 @@
+{
+  "description": "Protocol v4 (`craftsman desktop-serve` with CRAFTSMAN_DESKTOP_TOKEN set, JSON text frames over WebSocket /chat). /healthz before and after the turn; the WebSocket upgrade refused without the token and accepted with ?token=; the hello and state_snapshot handshake; a user message; turn_started, token, tool_started and the permission_request for write_file; the client's approve_once; tool_finished, the remaining tokens and done.",
+  "scenario": "desktop_v4_permission_turn",
+  "steps": [
+    {
+      "http": {
+        "body": {
+          "agent_ready": false,
+          "bridge_ready": true,
+          "protocol": 4,
+          "status": "ok"
+        },
+        "content_type": "application/json",
+        "request": "GET /healthz",
+        "status": 200
+      }
+    },
+    {
+      "http": {
+        "request": "GET /chat (WebSocket upgrade)",
+        "status": 403
+      }
+    },
+    {
+      "http": {
+        "request": "GET /chat?token=golden-desktop-token (WebSocket upgrade)",
+        "status": 101
+      }
+    },
+    {
+      "recv": {
+        "a2ui": true,
+        "capabilities": [
+          "a2ui",
+          "activity",
+          "structured_tools",
+          "permissions",
+          "ask_user",
+          "threads",
+          "conversation_catalog",
+          "conversation_management",
+          "project_contexts",
+          "models",
+          "steering",
+          "cancellation",
+          "setup",
+          "workspace_switch",
+          "workspace_diff",
+          "checkpoints",
+          "tasks",
+          "tokens",
+          "diagnostics",
+          "voice"
+        ],
+        "model": "mock-model",
+        "protocol": 4,
+        "thread_id": "<thread-id-1>",
+        "type": "hello"
+      }
+    },
+    {
+      "recv": {
+        "operation_id": null,
+        "state": {
+          "active_turn": null,
+          "agent_ready": false,
+          "base_url": "http://127.0.0.1:<PORT>",
+          "capabilities": [
+            "a2ui",
+            "structured_tools",
+            "permissions",
+            "ask_user",
+            "threads",
+            "conversation_catalog",
+            "conversation_management",
+            "project_contexts",
+            "models",
+            "steering",
+            "cancellation",
+            "setup",
+            "workspace_switch",
+            "workspace_diff",
+            "checkpoints",
+            "tasks",
+            "tokens",
+            "diagnostics",
+            "voice"
+          ],
+          "configured": true,
+          "harness_profile": "auto",
+          "initializing": false,
+          "model": "mock-model",
+          "pending_interactions": [],
+          "permission_mode": "manual",
+          "platform_configured": false,
+          "platform_url": "",
+          "project_contexts": [],
+          "provider": "direct",
+          "provider_configured": true,
+          "thread_id": "<thread-id-1>",
+          "voice": {
+            "auto_submit": "<bool>",
+            "available": "<bool>",
+            "enabled": "<bool>",
+            "engine": "<string>",
+            "idle_timeout_ms": "<uint>",
+            "language": "<null>",
+            "max_session_minutes": "<uint>",
+            "min_words_to_submit": "<uint>",
+            "model": "<string>",
+            "models": "<array>",
+            "partial_transcripts": "<bool>",
+            "segment_silence_ms": "<uint>",
+            "state": "<string>",
+            "vad_threshold": "<float>"
+          },
+          "workspace": "<WORKSPACE>"
+        },
+        "type": "state_snapshot"
+      }
+    },
+    {
+      "send": {
+        "content": "create golden.txt",
+        "type": "message"
+      }
+    },
+    {
+      "recv": {
+        "thread_id": "<thread-id-1>",
+        "turn_id": "turn-1",
+        "type": "turn_started"
+      }
+    },
+    {
+      "recv": {
+        "text": "Creating the file. ",
+        "thread_id": "<thread-id-1>",
+        "turn_id": "turn-1",
+        "type": "token"
+      }
+    },
+    {
+      "recv": {
+        "call_id": "call_1",
+        "details": "Path: golden.txt\nSize: 13 bytes · 1 line(s)\n\nPreview:\nhello golden\n",
+        "summary": "✏️  write_file › golden.txt",
+        "thread_id": "<thread-id-1>",
+        "tool": "write_file",
+        "turn_id": "turn-1",
+        "type": "tool_started"
+      }
+    },
+    {
+      "recv": {
+        "approve_always_scope": "desktop_session",
+        "details": "Path: golden.txt\nSize: 13 bytes · 1 line(s)\n\nPreview:\nhello golden\n",
+        "request_id": "permission-1",
+        "summary": "✏️  write_file › golden.txt",
+        "thread_id": "<thread-id-1>",
+        "tool": "write_file",
+        "turn_id": "turn-1",
+        "type": "permission_request"
+      }
+    },
+    {
+      "send": {
+        "decision": "approve_once",
+        "request_id": "permission-1",
+        "type": "permission_response"
+      }
+    },
+    {
+      "recv": {
+        "call_id": "call_1",
+        "content": "Updated file golden.txt",
+        "is_error": false,
+        "thread_id": "<thread-id-1>",
+        "tool": "write_file",
+        "turn_id": "turn-1",
+        "type": "tool_finished"
+      }
+    },
+    {
+      "recv": {
+        "text": "Created ",
+        "thread_id": "<thread-id-1>",
+        "turn_id": "turn-1",
+        "type": "token"
+      }
+    },
+    {
+      "recv": {
+        "text": "golden.txt.",
+        "thread_id": "<thread-id-1>",
+        "turn_id": "turn-1",
+        "type": "token"
+      }
+    },
+    {
+      "recv": {
+        "thread_id": "<thread-id-1>",
+        "turn_id": "turn-1",
+        "type": "done"
+      }
+    },
+    {
+      "http": {
+        "body": {
+          "agent_ready": true,
+          "bridge_ready": true,
+          "protocol": 4,
+          "status": "ok"
+        },
+        "content_type": "application/json",
+        "request": "GET /healthz",
+        "status": 200
+      }
+    }
+  ]
+}

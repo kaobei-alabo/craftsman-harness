@@ -1,0 +1,13 @@
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "REPLACE_WITH_OPENAI_API_KEY",
+  "model": "gpt-5.3-codex",
+  "harness_profile": "auto",
+  "provider_profile": "auto",
+  "model_profiles": {
+    "gpt-5.3-codex": {
+      "temperature": 0.2,
+      "max_tokens": 8192
+    }
+  }
+}

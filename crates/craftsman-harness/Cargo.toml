@@ -1,0 +1,14 @@
+[package]
+name = "craftsman-harness"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Craftsman's agent harness framework: the middleware protocol, backends, subagents and planning"
+license = "MIT"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }

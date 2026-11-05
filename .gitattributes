@@ -1,0 +1,6 @@
+# The compatibility fixtures must stay byte-exact on every checkout, Windows
+# included: a checkout with core.autocrlf=true would otherwise rewrite the LF
+# line endings of the JSONL journals and break the hashes in the fixtures'
+# README.md. SQLite databases are binary whatever their content looks like.
+crates/craftsman-rs/tests/fixtures/** -text
+*.db binary

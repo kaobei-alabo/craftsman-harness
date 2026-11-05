@@ -1,0 +1,2 @@
+{"data":{"content":"Say hello.","role":"user"},"kind":"user","ts":1760000001}
+{"data":{"content":"Hello from the fixture model.","role":"assistant"},"kind":"assistant","ts":1760000002}

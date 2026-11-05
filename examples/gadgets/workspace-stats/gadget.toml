@@ -1,0 +1,6 @@
+id = "workspace-stats"
+version = "0.1.0"
+description = "Workspace file statistics using the scoped host API."
+
+[capabilities]
+read = ["workspace"]

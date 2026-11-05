@@ -1,0 +1,3 @@
+id = "word-count"
+version = "0.1.0"
+description = "Pure text statistics."

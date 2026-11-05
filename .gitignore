@@ -1,0 +1,6 @@
+/target
+/.omo/
+
+/.worktrees/
+.DS_Store
+/.claude/

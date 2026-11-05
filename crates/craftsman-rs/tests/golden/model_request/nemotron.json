@@ -1,0 +1,481 @@
+{
+  "messages": [
+    {
+      "content": "You are Craftsman, a capable general assistant running in a terminal. You help with any task — research, writing, analysis, planning, and software engineering — using the tools available: host filesystem tools, shell execution (behind user approval), web fetch/search (behind user approval), platform capabilities, and delegation to subagents via the task tool.\n\nGuidance: Lead with the outcome; be concise and complete. Use tools rather than guessing — read files before editing, verify claims when you can. For multi-step work use write_todos and keep it current. Delegate self-contained subtasks to the general-purpose subagent. Long-term memory lives under /memories/ — read relevant memory files when a task begins and update them (write_file/edit_file on /memories/ paths) when you learn something durable the user would want kept.\n\nFormat your answers with Markdown when useful.\n\n# Host environment\nOperating system: <os>\nCommand shell: <shell>\nUse host-appropriate command syntax when the execute tool is necessary.\n\n\n# Memory protocol\nYour long-term memory is the virtual /memories/ directory — it persists\nacross sessions and is stored durably (not on the working filesystem).\nAlways use paths starting exactly with /memories/ (e.g.\n/memories/preferences.md); never write memory anywhere else.\n1. Research — check it for relevant context before starting a task\n(ls /memories/, read_file).\n2. Response — if unsure about something the user has shared previously,\ncheck memories before asking.\n3. Learning — when you learn something useful for future sessions, save it\nas a short markdown note there via write_file (or edit_file to update).\nKeep notes short, factual, topical.\n\n\n# Permission mode: manual\nFile changes, shell commands, and network actions require user approval. Present precise, reviewable operations.\n\nYou are running non-interactively. Make reasonable assumptions and proceed autonomously rather than ask clarifying questions. Prefer non-interactive variants of shell commands (e.g. `npm init -y`, `apt-get install -y`).\n\n<approach>\nPlan briefly, then act. Batch independent reads and lookups.\n</approach>\n\n<grounding>\nVerify state with tools. Read files before describing or editing them, resolve opaque identifiers with lookup tools, and perform requested mutations before saying they are complete.\n</grounding>\n\n<loop_control>\nIf a tool fails, inspect the error and change the call or approach before retrying. Do not repeat the same failing call unchanged. Keep tool loops bounded and move to a useful fallback when progress stalls.\n</loop_control>\n\n<tool_selection>\nUse filesystem tools for repository, path, file, and document work. Prefer task-specific platform tools for business objects and operational data. For ranking or counting questions, gather candidates and compare observed results rather than guessing.\n</tool_selection>\n\n<final_answer>\nAfter successful tool calls, report the concrete result and preserve important names, versions, IDs, titles, and other short literals. Resolve opaque IDs to human-readable details when a suitable lookup tool is available.\n</final_answer>\n\n## `write_todos`\n\nYou have access to the `write_todos` tool to help you manage and plan complex objectives.\nUse this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.\nThis tool is very helpful for planning complex objectives, and for breaking down these larger complex objectives into smaller steps.\n\nIt is critical that you mark todos as completed as soon as you are done with a step. Do not batch up multiple steps before marking them as completed.\nFor simple objectives that only require a few steps, it is better to just complete the objective directly and NOT use this tool.\nWriting todos takes time and tokens, use it when it helps you stay organized and track progress.\n\n<agent_memory>\n(No memory loaded)\n</agent_memory>\n\n<memory_guidelines>\nThe <agent_memory> above was loaded from files under `/memories/` in your filesystem.\nAs you learn durable facts and preferences from the user, persist them by writing or\nediting files under `/memories/` (create with `write_file`, update with `edit_file`).\n\n- Read your memory before acting; treat it as authoritative context for this user.\n- When the user states a lasting preference, gives corrective feedback, or provides\ninformation useful for future tasks, update `/memories/` IMMEDIATELY — before replying.\n- Capture the underlying principle behind a correction, not just the one-off fix.\n- Do NOT record transient details (one-off tasks, small talk, momentary status).\n- Never store API keys, tokens, passwords, or other credentials in memory.\n</memory_guidelines>\n\nLaunch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.\n\nAvailable agent types and the tools they have access to:\n- general-purpose: General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to the main agent's non-interactive host, web, and platform tools.\n\nWhen using the Task tool, you must specify a subagent_type parameter to select which agent type to use.\n\n## Usage notes:\n1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses\n2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.\n3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.\n4. The agent's outputs should generally be trusted\n5. Clearly tell the agent whether you expect it to create content, perform analysis, or just do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent\n6. No more than 5 delegated agents may run concurrently; wait for a running task to finish before launching another.",
+      "role": "system"
+    },
+    {
+      "content": "golden request",
+      "role": "user"
+    }
+  ],
+  "model": "golden-model",
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "tools": [
+    {
+      "function": {
+        "description": "Ask the user a question and wait for their typed reply. Use this only when you genuinely need a decision or detail that you cannot determine yourself. Returns the user's answer as the tool result.",
+        "name": "ask_user",
+        "parameters": {
+          "properties": {
+            "question": {
+              "description": "The question to ask the user.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Replace an exact string in a file. old_string must occur exactly once unless replace_all.",
+        "name": "edit_file",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "type": "string"
+            },
+            "new_string": {
+              "type": "string"
+            },
+            "old_string": {
+              "type": "string"
+            },
+            "replace_all": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "file_path",
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Run a shell command on the host and return its output.",
+        "name": "execute",
+        "parameters": {
+          "properties": {
+            "command": {
+              "description": "Shell command to run",
+              "type": "string"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Find files matching a glob pattern (relative to the working directory).",
+        "name": "glob",
+        "parameters": {
+          "properties": {
+            "pattern": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search file contents for a pattern. Returns matching lines with file and line number.",
+        "name": "grep",
+        "parameters": {
+          "properties": {
+            "path": {
+              "description": "Optional directory to scope the search.",
+              "type": "string"
+            },
+            "pattern": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "List directory contents.",
+        "name": "ls",
+        "parameters": {
+          "properties": {
+            "path": {
+              "default": ".",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Find the semantic definition at a source position.",
+        "name": "lsp_definition",
+        "parameters": {
+          "properties": {
+            "column": {
+              "description": "1-based Unicode character column",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "file_path": {
+              "description": "Workspace-relative or absolute file path",
+              "type": "string"
+            },
+            "line": {
+              "description": "1-based line",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "file_path",
+            "line",
+            "column"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Return compiler/language-server diagnostics for a source file.",
+        "name": "lsp_diagnostics",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Workspace-relative or absolute file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "List semantic symbols declared in a source file.",
+        "name": "lsp_document_symbols",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Workspace-relative or absolute file path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Return type information and documentation at a source position.",
+        "name": "lsp_hover",
+        "parameters": {
+          "properties": {
+            "column": {
+              "description": "1-based Unicode character column",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "file_path": {
+              "description": "Workspace-relative or absolute file path",
+              "type": "string"
+            },
+            "line": {
+              "description": "1-based line",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "file_path",
+            "line",
+            "column"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Find semantic references to the symbol at a source position.",
+        "name": "lsp_references",
+        "parameters": {
+          "properties": {
+            "column": {
+              "description": "1-based Unicode character column",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "file_path": {
+              "description": "Workspace-relative or absolute file path",
+              "type": "string"
+            },
+            "include_declaration": {
+              "default": true,
+              "type": "boolean"
+            },
+            "line": {
+              "description": "1-based line",
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "file_path",
+            "line",
+            "column"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search semantic symbols in the workspace. file_path selects the language server.",
+        "name": "lsp_workspace_symbols",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Workspace-relative or absolute file path",
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path",
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read a file with numbered source lines. Use offset and limit for pagination. When the user asks for an entire file, continue reading chunks until EOF rather than treating one full page as the whole file. Use smaller pages for very large files, and always read a file before editing it.",
+        "name": "read_file",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Absolute path to the file to read.",
+              "type": "string"
+            },
+            "limit": {
+              "default": 100,
+              "description": "Maximum number of lines to read.",
+              "type": "integer"
+            },
+            "offset": {
+              "default": 0,
+              "description": "Line number to start reading from (0-indexed).",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Send a free-form message to another agent (e.g. a running background subagent). The message is queued for the recipient.",
+        "name": "send_message",
+        "parameters": {
+          "properties": {
+            "message": {
+              "description": "The message content to deliver.",
+              "type": "string"
+            },
+            "to": {
+              "description": "The name of the recipient agent.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "to",
+            "message"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Launch an ephemeral subagent to handle a complex, multi-step independent task with an isolated context window. Provide a detailed, autonomous task description and the subagent_type to use. At most 5 delegated agents may run concurrently.",
+        "name": "task",
+        "parameters": {
+          "properties": {
+            "description": {
+              "description": "A highly detailed, autonomous task description for the subagent to perform, including exactly what to return.",
+              "type": "string"
+            },
+            "run_in_background": {
+              "description": "If true, run the subagent in the background and return immediately; you will be notified when it completes.",
+              "type": "boolean"
+            },
+            "subagent_type": {
+              "description": "The type of subagent to delegate to.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "description",
+            "subagent_type"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Fetch a URL over HTTP(S) and return its text content. HTML is reduced to readable text; other text types are returned as-is. Follows up to 5 redirects, 15s timeout, 200KB cap.",
+        "name": "web_fetch",
+        "parameters": {
+          "properties": {
+            "url": {
+              "description": "The URL to fetch.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search the web and return ranked result titles, URLs, and snippets.",
+        "name": "web_search",
+        "parameters": {
+          "properties": {
+            "query": {
+              "description": "The search query.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Create a new file with the given content. Fails if the file already exists — read it and use edit_file instead, or write to a new path.",
+        "name": "write_file",
+        "parameters": {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "file_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path",
+            "content"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Create and manage a structured task list for the current session. Overwrites the entire list; include every item each time.",
+        "name": "write_todos",
+        "parameters": {
+          "properties": {
+            "todos": {
+              "items": {
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "pending",
+                      "in_progress",
+                      "completed"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "content",
+                  "status"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "todos"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+[package]
+name = "example-gadget-workspace-stats"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+craftsman-gadget = { path = "../../../crates/craftsman-gadget" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"

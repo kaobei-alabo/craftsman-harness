@@ -1,0 +1,121 @@
+{
+  "description": "`craftsman acp-bridge --port <p> -- craftsman acp-serve` with CRAFTSMAN_WORKSPACE_PROXY_SECRET set, as in a workspace pod. GET /healthz (unauthenticated), GET /stats without and with the proxy secret, the WebSocket upgrade refused without the secret and accepted with it, and an ACP initialize relayed verbatim over the WebSocket to the harness.",
+  "scenario": "acp_bridge_http_and_relay",
+  "steps": [
+    {
+      "http": {
+        "body": {
+          "harness": "craftsman",
+          "status": "ok",
+          "uptime_s": "<float>"
+        },
+        "content_type": "application/json",
+        "request": "GET /healthz",
+        "status": 200
+      }
+    },
+    {
+      "http": {
+        "body": {
+          "detail": "forbidden"
+        },
+        "content_type": "application/json",
+        "request": "GET /stats",
+        "status": 403
+      }
+    },
+    {
+      "http": {
+        "body": {
+          "disk": {
+            "total_bytes": "<uint>",
+            "used_bytes": "<uint>"
+          },
+          "harness": "craftsman",
+          "home": {
+            "used_bytes": "<uint>"
+          },
+          "uptime_s": "<float>"
+        },
+        "content_type": "application/json",
+        "request": "GET /stats",
+        "request_headers": {
+          "x-craftsman-workspace-proxy": "golden-proxy-secret"
+        },
+        "status": 200
+      }
+    },
+    {
+      "http": {
+        "body": {
+          "detail": "unauthorized"
+        },
+        "request": "GET /chat (WebSocket upgrade)",
+        "status": 401
+      }
+    },
+    {
+      "http": {
+        "request": "GET /chat (WebSocket upgrade)",
+        "request_headers": {
+          "x-craftsman-workspace-proxy": "golden-proxy-secret"
+        },
+        "status": 101
+      }
+    },
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            }
+          },
+          "clientInfo": {
+            "name": "golden-client",
+            "version": "1.0.0"
+          },
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "a2uiMimeType": "application/vnd.craftsman.a2ui+json",
+              "extensions": [
+                "_craftsman/session/request_input",
+                "_craftsman/session/set_model",
+                "_craftsman/session/list"
+              ],
+              "harness": "craftsman-harness",
+              "profile": "v1"
+            }
+          },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": {
+              "audio": false,
+              "embeddedContext": true,
+              "image": false
+            }
+          },
+          "agentInfo": {
+            "name": "craftsman-harness",
+            "version": "<crate-version>"
+          },
+          "authMethods": [],
+          "protocolVersion": 1
+        }
+      }
+    }
+  ]
+}

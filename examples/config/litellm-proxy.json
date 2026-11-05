@@ -1,0 +1,13 @@
+{
+  "base_url": "http://localhost:4000/v1",
+  "api_key": "REPLACE_WITH_PROXY_API_KEY_OR_EMPTY_STRING",
+  "model": "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
+  "harness_profile": "auto",
+  "provider_profile": "none",
+  "model_profiles": {
+    "openrouter:nvidia/nemotron-3-ultra-550b-a55b": {
+      "temperature": 0.2,
+      "max_tokens": 8192
+    }
+  }
+}

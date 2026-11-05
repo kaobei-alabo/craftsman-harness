@@ -1,0 +1,108 @@
+[package]
+name = "craftsman-rs"
+version = "0.4.0"
+default-run = "craftsman"
+edition = "2024"
+rust-version = "1.85"
+description = "Terminal chat client and workspace-agent runtime for the Craftsman platform"
+
+[[bin]]
+name = "craftsman"
+path = "src/main.rs"
+
+[[bin]]
+name = "craftsman-rs"
+path = "src/bin/craftsman-rs.rs"
+
+[features]
+default = ["voice", "gadgets"]
+gadgets = ["dep:craftsman-gadget", "dep:wasmtime", "dep:wasmtime-wasi", "dep:toml"]
+voice = ["dep:cpal", "dep:rtrb", "dep:voice_activity_detector", "dep:whisper-rs"]
+
+[dependencies]
+# The local gadget host is app-layer only; the harness remains dependency-light.
+craftsman-gadget = { path = "../craftsman-gadget", optional = true }
+wasmtime = { version = "=48.0.8", default-features = false, features = ["anyhow", "std", "runtime", "cranelift", "component-model", "async", "cache", "parallel-compilation"], optional = true }
+wasmtime-wasi = { version = "=48.0.8", default-features = false, features = ["p2"], optional = true }
+toml = { version = "1", optional = true }
+# App-layer filesystem authority for headless confinement and the gadget host.
+# Available without gadgets/voice; already present in the locked dependency set.
+cap-std = "4"
+cap-fs-ext = "4"
+# Conservative policy keys must cover canonically equivalent Unicode names.
+unicode-normalization = "=0.1.25"
+# Invocation/thread identities use OS randomness, not clocks/PIDs. Already locked.
+getrandom = "=0.4.3"
+# Deep-agent framework (Backend trait, cat_n/glob_match helpers, error types).
+craftsman-harness = { path = "../craftsman-harness" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+tokio = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+# Terminal UI: Ratatui owns rendering; Crossterm supplies raw input/events.
+ratatui = { version = "0.29", features = ["crossterm", "scrolling-regions", "unstable-widget-ref", "unstable-rendered-line-info"] }
+crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
+unicode-width = "0.2"
+unicode-segmentation = "1"
+base64 = "0.22"
+# statvfs for the serve /stats disk numbers.
+libc = "0.2"
+dirs = "6"
+anyhow = "1"
+shlex = "1"
+url = "2"
+# Platform skill bundles (`/skills`): sha256 integrity check + tar.gz extraction.
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+# Local libSQL (SQLite) database for thread checkpoints and memory: one file,
+# ~/.craftsman/threads.db. App-layer only — the dep_guard test forbids this in the
+# framework crate (craftsman-harness). `core` is the embedded engine; the default features
+# also build the Turso remote/replication client (hyper, tonic, rustls 0.22, an SQL
+# parser), which Craftsman does not use. tests/libsql_local_only.rs fails if they come back.
+libsql = { version = "0.10", default-features = false, features = ["core"] }
+# Local token-count estimator for CompactionMiddleware's token-based trigger
+# (craftsman_harness::TokenCounter impl in token_counter.rs). App-layer only —
+# the dep_guard test forbids adding a tokenizer to craftsman-harness itself.
+tiktoken-rs = "0.12"
+
+# `craftsman serve` — the WS front-door the platform workspace dials (protocol
+# v2; keep in lockstep with the frontend kit's contract.ts).
+axum = { version = "0.8", features = ["ws"] }
+# A2UI v0.9 message validation against the vendored spec bundle
+# (src/data/a2ui_v0_9_schema.json) — invalid payloads bounce back to the LLM
+# as tool errors for self-repair, so validation quality is prompt quality.
+jsonschema = { version = "0.30", default-features = false }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+cpal = { version = "0.18.1", optional = true }
+rtrb = { version = "0.3.2", optional = true }
+voice_activity_detector = { version = "0.2.1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16.0", optional = true, features = ["metal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+whisper-rs = { version = "0.16.0", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6.5"
+# WS client for the serve integration test.
+tokio-tungstenite = "0.26"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+# The `execute` tool's process tree on Windows: a Job Object with kill-on-close
+# around PowerShell (platform_os::ProcessTree). Pinned exactly: the P0 spike
+# (docs/spikes/p0-windows-jobobject-conpty.md) measured this version, and its
+# four usage rules are enforced in platform_os.rs and tested there.
+process-wrap = { version = "=10.0.1", default-features = false, features = ["tokio1", "job-object", "creation-flags", "kill-on-drop"] }

@@ -1,0 +1,47 @@
+name: gadget-benchmark
+# Informational only. No timing threshold and no model-quality/default gate.
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Samples per warm distribution
+        type: choice
+        options: ["100", "500", "1000"]
+        default: "500"
+permissions:
+  contents: read
+concurrency:
+  group: gadget-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    name: benchmark (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      BENCH_SAMPLES: ${{ inputs.samples }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Verify benchmark driver contracts
+        run: python -B scripts/test-benchmark-gadgets.py
+      - name: Measure without voice or any model credentials
+        run: python -B scripts/benchmark-gadgets.py --samples "$BENCH_SAMPLES" --output target/gadget-benchmark.json
+      - name: Publish the measurement (not a pass-rate gate)
+        uses: actions/upload-artifact@v4
+        with:
+          name: gadget-benchmark-${{ matrix.os }}
+          path: target/gadget-benchmark.json
+          if-no-files-found: error

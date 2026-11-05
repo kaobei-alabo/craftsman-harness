@@ -1,0 +1,6 @@
+{"data":{"content":"Plan the work, read missing.txt and remember the outcome.","role":"user"},"kind":"user","ts":1760010801}
+{"data":{"content":"","role":"assistant","tool_calls":[{"args":{"todos":[{"content":"step one","status":"in_progress"},{"content":"step two","status":"pending"}]},"id":"call_1","name":"write_todos"},{"args":{"file_path":"missing.txt"},"id":"call_2","name":"read_file"},{"args":{"content":"remember me\n","file_path":"/memories/fixture.md"},"id":"call_3","name":"write_file"}]},"kind":"assistant","ts":1760010802}
+{"data":{"content":"Updated todo list to [{\"content\":\"step one\",\"status\":\"in_progress\"},{\"content\":\"step two\",\"status\":\"pending\"}]","is_error":false,"role":"tool","tool_call_id":"call_1"},"kind":"tool","ts":1760010803}
+{"data":{"content":"state error: Error reading /workspace/missing.txt: No such file or directory (os error 2)","is_error":true,"role":"tool","tool_call_id":"call_2"},"kind":"tool","ts":1760010804}
+{"data":{"content":"Updated file /memories/fixture.md","is_error":false,"role":"tool","tool_call_id":"call_3"},"kind":"tool","ts":1760010805}
+{"data":{"content":"Planned two steps; missing.txt does not exist; noted in memory.","role":"assistant"},"kind":"assistant","ts":1760010806}

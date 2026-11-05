@@ -1,0 +1,8 @@
+# The one toolchain local builds and CI both use. Bump it by PR (monthly).
+# CI installs exactly this toolchain: see .github/workflows/ci.yml.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+# Gadget tests build their fixture components from source (G1).
+targets = ["wasm32-wasip2"]

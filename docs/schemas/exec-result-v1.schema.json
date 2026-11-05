@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:craftsman-harness:exec-result:1",
+  "title": "Accepted headless result v1",
+  "description": "Accepted October 20, 2026; load exec-contract-v1.schema.json as the local URN resource. No network retrieval is necessary.",
+  "$ref": "urn:craftsman-harness:exec-contract:1#/$defs/result"
+}

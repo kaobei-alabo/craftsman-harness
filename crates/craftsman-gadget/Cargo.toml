@@ -1,0 +1,21 @@
+[package]
+name = "craftsman-gadget"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Write Craftsman gadgets: the #[gadget_call] entry point and the host functions"
+license = "MIT"
+
+[dependencies]
+craftsman-gadget-macros = { path = "../craftsman-gadget-macros", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+# The registry #[gadget_call] submits each function to.
+inventory = "0.3"
+
+# The component bindings exist only in a gadget build (wasm32-wasip2). A native
+# build compiles the registry and dispatch, so `cargo test` covers them without
+# a wasm target; the host functions then return an error.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = { version = "0.57.1", default-features = false, features = ["macros", "realloc", "std"] }

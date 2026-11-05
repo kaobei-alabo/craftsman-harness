@@ -1,0 +1,178 @@
+{
+  "description": "ACP over stdio. session/new adopts the client's _meta.craftsman.threadId as the session id; a session/cancel notification sent while the model call is in flight ends the pending session/prompt with stopReason cancelled. An initialize that asks for protocolVersion 99 is answered with protocolVersion 1, the version the agent implements.",
+  "scenario": "acp_stdio_cancel",
+  "steps": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            }
+          },
+          "clientInfo": {
+            "name": "golden-client",
+            "version": "1.0.0"
+          },
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "a2uiMimeType": "application/vnd.craftsman.a2ui+json",
+              "extensions": [
+                "_craftsman/session/request_input",
+                "_craftsman/session/set_model",
+                "_craftsman/session/list"
+              ],
+              "harness": "craftsman-harness",
+              "profile": "v1"
+            }
+          },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": {
+              "audio": false,
+              "embeddedContext": true,
+              "image": false
+            }
+          },
+          "agentInfo": {
+            "name": "craftsman-harness",
+            "version": "<crate-version>"
+          },
+          "authMethods": [],
+          "protocolVersion": 1
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "session/new",
+        "params": {
+          "_meta": {
+            "craftsman": {
+              "threadId": "golden-thread"
+            }
+          },
+          "cwd": "<WORKSPACE>",
+          "mcpServers": []
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "threadId": "golden-thread"
+            }
+          },
+          "sessionId": "golden-thread"
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "session/prompt",
+        "params": {
+          "prompt": [
+            {
+              "text": "work slowly",
+              "type": "text"
+            }
+          ],
+          "sessionId": "golden-thread"
+        }
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": {
+          "sessionId": "golden-thread"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "cancelled"
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            }
+          },
+          "clientInfo": {
+            "name": "golden-client",
+            "version": "1.0.0"
+          },
+          "protocolVersion": 99
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "_meta": {
+            "craftsman": {
+              "a2uiMimeType": "application/vnd.craftsman.a2ui+json",
+              "extensions": [
+                "_craftsman/session/request_input",
+                "_craftsman/session/set_model",
+                "_craftsman/session/list"
+              ],
+              "harness": "craftsman-harness",
+              "profile": "v1"
+            }
+          },
+          "agentCapabilities": {
+            "loadSession": true,
+            "promptCapabilities": {
+              "audio": false,
+              "embeddedContext": true,
+              "image": false
+            }
+          },
+          "agentInfo": {
+            "name": "craftsman-harness",
+            "version": "<crate-version>"
+          },
+          "authMethods": [],
+          "protocolVersion": 1
+        }
+      }
+    }
+  ]
+}

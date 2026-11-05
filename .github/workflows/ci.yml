@@ -1,0 +1,106 @@
+name: ci
+# Pull request checks: formatting, the workspace tests and untouched goldens.
+#
+# The repository ruleset is meant to require fmt, test (ubuntu-24.04) and
+# test (macos-14) by job name, so renaming a job silently drops its check.
+#
+# First-party actions only: the org allowlist blocks third-party ones and their
+# transitive action references (see release.yml). The toolchain comes from
+# rustup, which the runners ship, and from rust-toolchain.toml in the checkout.
+# That file also selects the toolchain for every cargo call below, so there is
+# no `rustup default`. It is installed explicitly because rustup no longer
+# promises to install it on first use: 1.28.0 dropped that, 1.28.1 restored it,
+# RUSTUP_AUTO_INSTALL=0 and `rustup set auto-install disable` turn it off, and
+# 1.29.1 warns that it is deprecated for most commands (rust-lang/rustup#4836).
+# With no arguments, `rustup toolchain install` installs what the file names
+# (profile and components included) and does nothing if it is already there.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+# A new push to a pull request cancels the run it supersedes; runs on main and
+# manual dispatches are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+defaults:
+  run:
+    shell: bash
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+          cargo --version
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+  test:
+    name: test (${{ matrix.os }})
+    # matrix.os is the stable required-check context; runner is the actual image.
+    # Keep test (macos-14) until a separately reviewed ruleset/context migration.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    continue-on-error: ${{ matrix.informational }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            runner: ubuntu-24.04
+            informational: false
+          # macOS14 retired November2, 2026 (runner-images#13518); explicit15,
+          # not a moving latest alias. The os key above remains a legacy check id.
+          - os: macos-14
+            runner: macos-15
+            informational: false
+          # Informational until phase P2d (docs/craftsman-harness-plan.md), which
+          # makes Windows required: a failure here does not fail the run.
+          - os: windows-2025
+            runner: windows-2025
+            informational: true
+    env:
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+          cargo --version
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Test benchmark driver contracts (no network or model calls)
+        run: python -B scripts/test-benchmark-gadgets.py
+      - name: Test accepted headless contract (no CLI or model execution)
+        run: python -I docs/schemas/check_exec.py --self-test
+      - name: Test
+        # --no-fail-fast: cargo otherwise stops at the first failing test binary
+        # and never runs the rest, which hides failures (on windows-2025 the
+        # integration tests would not run at all after one unit-test failure).
+        run: cargo test --locked --no-default-features --workspace --no-fail-fast -- --test-threads=4
+      - name: Test gadget host
+        # A baseline failure must not hide new gadget regressions (especially
+        # on the informational Windows job). Skip only cancelled runs.
+        if: ${{ !cancelled() }}
+        # Default-feature-free source builds deliberately omit Wasmtime. Test
+        # the opt-in host too: escape suites build WASM fixtures from source.
+        run: cargo test --locked --no-default-features --features craftsman-rs/gadgets --workspace --no-fail-fast -- --test-threads=4
+      - name: Goldens unchanged
+        if: ${{ !cancelled() }}
+        # The golden-frame tests refuse UPDATE_GOLDEN when CI is set
+        # (crates/craftsman-rs/tests/common/golden.rs), so no run here rewrites a
+        # golden. This step keeps that true if a test ever does: a rewritten
+        # golden passes its own test, and only a person reading the diff of
+        # the golden stands between a protocol change and a green build.
+        run: git diff --exit-code -- crates/craftsman-rs/tests/golden

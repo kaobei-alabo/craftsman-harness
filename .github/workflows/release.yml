@@ -1,0 +1,231 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  # Dry-run without cutting a real release. On a manual dispatch the build
+  # matrix runs exactly as it does for a tag, but the final job uploads the
+  # binaries + manifest as workflow artifacts instead of publishing a GitHub
+  # release (see the release job's ref_type guards below).
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            bin: craftsman
+            asset: craftsman-darwin-arm64
+            rs_asset: craftsman-rs-aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bin: craftsman
+            asset: craftsman-linux-x86_64
+            rs_asset: craftsman-rs-x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bin: craftsman
+            asset: craftsman-linux-arm64
+            rs_asset: craftsman-rs-aarch64-unknown-linux-gnu
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            bin: craftsman.exe
+            asset: craftsman-windows-x86_64.exe
+            rs_asset: craftsman-rs-x86_64-pc-windows-msvc.exe
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      # No private git dependencies: the crate graph is public-crates only, so
+      # the workflow GITHUB_TOKEN suffices for a plain checkout.
+      # No third-party toolchain action: the org allowlist blocks their
+      # transitive action references. Runners ship rustup preinstalled.
+      # The toolchain is the one pinned in rust-toolchain.toml (the same file
+      # ci.yml uses). With no arguments, `rustup toolchain install` installs what
+      # that file names, profile and components included, and does nothing if it
+      # is already there. rustup selects it for every command in this checkout,
+      # so `target add` and `cargo build` below both use it.
+      - run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+          rustup target add ${{ matrix.target }}
+      - name: Install Linux voice build prerequisites
+        if: startsWith(matrix.target, 'x86_64-unknown-linux') || startsWith(matrix.target, 'aarch64-unknown-linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config cmake clang
+      - name: Verify macOS voice build prerequisite
+        if: contains(matrix.target, 'apple-darwin')
+        run: cmake --version
+      # Release artifacts must run on CPUs older than the hosted runner.
+      # whisper.cpp otherwise defaults GGML_NATIVE=ON and may emit AMX/AVX-512
+      # instructions that crash with SIGILL on ordinary desktops and GKE nodes.
+      - run: GGML_NATIVE=OFF cargo build --release --locked --target ${{ matrix.target }} -p craftsman-rs
+      # Package both the historical CLI asset and the craftsman-rs-<triple> asset
+      # the desktop sidecar pins. The craftsman-rs launcher bin is a deprecated
+      # compat shim; the desktop's UPSTREAM_BASELINE.json records that the
+      # craftsman-rs-<triple> resource IS the real `craftsman` executable, so both
+      # assets are the same binary under two names (backwards compatible).
+      - name: Package artifacts and manifest fragment
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: ${{ matrix.bin }}
+          ASSET: ${{ matrix.asset }}
+          RS_ASSET: ${{ matrix.rs_asset }}
+        run: |
+          set -euo pipefail
+          sha256() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            else
+              shasum -a 256 "$1" | awk '{print $1}'
+            fi
+          }
+          src="target/${TARGET}/release/${BIN}"
+          cp "$src" "${ASSET}"
+          cp "$src" "${RS_ASSET}"
+          cli_sha="$(sha256 "${ASSET}")"
+          rs_sha="$(sha256 "${RS_ASSET}")"
+          mkdir -p manifest-fragments
+          jq -n \
+            --arg triple "$TARGET" \
+            --arg bin "$BIN" \
+            --arg cli_name "$ASSET" --arg cli_sha "$cli_sha" \
+            --arg rs_name "$RS_ASSET" --arg rs_sha "$rs_sha" \
+            '{artifacts: [
+              {name: $cli_name, target_triple: $triple, bin: $bin, role: "cli", sha256: $cli_sha},
+              {name: $rs_name, target_triple: $triple, bin: $bin, role: "craftsman-rs-sidecar", sha256: $rs_sha}
+            ]}' > "manifest-fragments/${TARGET}.json"
+      - name: Upload CLI asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+      - name: Upload craftsman-rs sidecar asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.rs_asset }}
+          path: ${{ matrix.rs_asset }}
+          if-no-files-found: error
+      - name: Upload manifest fragment
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-fragment-${{ matrix.target }}
+          path: manifest-fragments/${{ matrix.target }}.json
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Source checkout is required to read the protocol/config-schema/crate
+      # version records that go into the manifest (single source of truth).
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: staged
+          merge-multiple: true
+      - name: Assemble release manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_KIND: ${{ github.ref_type == 'tag' && 'tag' || 'dispatch' }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          # Protocol version: the desktop-serve wire protocol the sidecar
+          # exposes on /healthz (desktop_serve.rs is the single source).
+          protocol="$(grep -oE 'const PROTOCOL_VERSION: u64 = [0-9]+' \
+            crates/craftsman-rs/src/desktop_serve.rs | grep -oE '[0-9]+$')"
+          if [ -z "${protocol}" ]; then
+            echo "::error::could not extract PROTOCOL_VERSION from desktop_serve.rs" >&2
+            exit 1
+          fi
+          # craftsman-rs crate version (drives both bins).
+          crate_version="$(grep -m1 -E '^version[[:space:]]*=' \
+            crates/craftsman-rs/Cargo.toml | cut -d'"' -f2)"
+          if [ -z "${crate_version}" ]; then
+            echo "::error::could not extract crate version from craftsman-rs/Cargo.toml" >&2
+            exit 1
+          fi
+          # Merge every per-target fragment into one artifacts array.
+          artifacts="$(jq -s '{artifacts: (map(.artifacts) | add)}' staged/*.json)"
+
+          tag_value=null
+          if [ "${RELEASE_KIND}" = "tag" ]; then
+            tag_value="$(jq -n --arg t "${RELEASE_TAG}" '$t')"
+          fi
+
+          mkdir -p out
+          jq -n \
+            --argjson artifacts_obj "${artifacts}" \
+            --argjson tag "${tag_value}" \
+            --arg release_kind "${RELEASE_KIND}" \
+            --arg source_commit "${SOURCE_COMMIT}" \
+            --arg run_url "${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}" \
+            --argjson protocol "${protocol}" \
+            --arg crate_version "${crate_version}" \
+            '{
+              schema: "craftsman-harness/release-manifest@1",
+              release_kind: $release_kind,
+              tag: $tag,
+              source_commit: $source_commit,
+              workflow_run_url: $run_url,
+              protocol_version: $protocol,
+              config_schema: {
+                source: "crates/craftsman-rs/src/config.rs::Config",
+                config_path: "$HOME/.craftsman/config.json",
+                minimal_required_fields: ["base_url", "api_key", "model"]
+              },
+              crate: { name: "craftsman-rs", version: $crate_version },
+              artifacts: $artifacts_obj.artifacts
+            }' > out/manifest.json
+
+          # Stage the binaries alongside the manifest and emit a conventional
+          # SHA256SUMS file (verifiable with `sha256sum -c`).
+          for f in staged/*; do
+            case "$f" in
+              *.json) : ;;                 # skip manifest fragments
+              *) cp "$f" "out/$(basename "$f")" ;;
+            esac
+          done
+          ( cd out
+            : > SHA256SUMS
+            for f in *; do
+              case "$f" in
+                manifest.json|SHA256SUMS) : ;;
+                *) echo "$(sha256sum "$f" | awk '{print $1}')  $f" >> SHA256SUMS ;;
+              esac
+            done )
+          echo "----- manifest.json -----"
+          cat out/manifest.json
+          echo "----- SHA256SUMS -----"
+          cat out/SHA256SUMS
+      # Real tag push -> publish a GitHub release with all assets + manifest.
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+      # Manual dispatch dry-run -> no release; expose the same outputs as a
+      # downloadable workflow artifact so names/manifest can be inspected.
+      - name: Upload dry-run bundle
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: out/*
+          if-no-files-found: error

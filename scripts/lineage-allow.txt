@@ -1,0 +1,62 @@
+# Allow list for scripts/check-lineage.sh (format: see the header of that script).
+#
+#   <path glob>[:<fixed substring>]  # <reason>
+#
+# Every entry names a path and a reason. Prefer a path plus a substring; a whole
+# file or directory is only for records of the past and for documents that quote
+# the old code on purpose. An entry that covers no hit is an error.
+
+# --- the checker itself ---
+scripts/check-lineage.sh  # the checker: its header and search patterns name the words it looks for
+scripts/lineage-allow.txt  # this file: its reasons name the words the checker looks for
+
+# --- records of the past, and documents that quote the old code on purpose ---
+docs/craftsman-harness-plan.md  # the harness plan: records the lineage it removes (A29) and the rename map
+docs/oss-review.md  # the OSS-compliance review: an inventory of inherited text that quotes it on purpose
+docs/superpowers/*  # design records written before the rename (voice input spec and plan)
+docs/spikes/*  # P0 spike reports: records of the code as it was measured
+NOTICE  # interim attribution for text inherited from deepagents and LangChain
+
+# --- PROVENANCE(P5) markers above the 20 named prompt constants (A19) ---
+crates/*.rs:// PROVENANCE(P5): adapted from  # provenance marker: classification from docs/oss-review.md 5.1; removed when P5 rewrites the constant
+crates/*.rs:// PROVENANCE(P5): verbatim  # provenance marker: classification from docs/oss-review.md 5.1; removed when P5 rewrites the constant
+crates/*.rs:// PROVENANCE(P5): no match found in  # provenance marker: classification from docs/oss-review.md 5.1; removed when P5 rewrites the constant
+
+# --- billing-origin header value (A20; decision 2 drops it in P5) ---
+crates/craftsman-rs/src/harness_profiles/providers.rs:"X-BILLING-INVOKE-ORIGIN": "DeepAgents"  # string literal: reworded in P5 (billing-origin value sent to the provider, A20)
+crates/craftsman-rs/src/harness_profiles/tests.rs:"X-BILLING-INVOKE-ORIGIN": "DeepAgents"  # string literal: reworded in P5 (test pins the billing-origin value, A20)
+crates/craftsman-rs/tests/loop_test.rs:header("x-billing-invoke-origin", "DeepAgents")  # string literal: reworded in P5 (test pins the billing-origin header on the main client, A20)
+
+# --- "upstream" in the network sense: the provider, proxy or server side ---
+crates/craftsman-rs/src/harness_profiles/providers.rs:the platform LLM proxy owns upstream headers  # network sense: headers toward the provider behind the proxy
+crates/craftsman-rs/src/llm.rs:a class of upstream body-decoder failures  # network sense: the provider or proxy side of the HTTP stream
+crates/craftsman-rs/src/llm.rs:"upstream closed without any SSE events"  # network sense (user-visible error): the provider or proxy closed the stream
+crates/craftsman-rs/src/llm.rs:"upstream closed before finish_reason or [DONE]"  # network sense (user-visible error): the provider or proxy closed the stream
+crates/craftsman-rs/src/llm.rs:The upstream proxy/provider closed a truncated response  # network sense (user-visible error): the provider or proxy closed the stream
+crates/craftsman-rs/src/serve.rs:injects on the upstream dial  # network sense: the platform bridge's dial toward this pod
+.github/workflows/release.yml:the desktop's UPSTREAM_BASELINE.json  # names a file of the desktop repository, not lineage
+
+# --- legacy-database migration (compatibility code; archive name is on disk) ---
+crates/craftsman-rs/src/threads_db.rs://! The retired Python client also used `threads.db`, but with a LangGraph  # legacy-database migration: names the on-disk schema it detects and archives
+crates/craftsman-rs/src/threads_db.rs:SchemaKind::Python  # legacy-database migration: variant name also shows in a user-visible migration error (Debug), so it stays
+crates/craftsman-rs/src/threads_db.rs:    Python,  # legacy-database migration: the SchemaKind variant declaration
+
+# --- config round-trip of legacy keys (compatibility code) ---
+crates/craftsman-rs/src/config.rs://! Python client wrote keys like `langfuse_*`)  # legacy config keys: says which client wrote the keys the struct round-trips
+
+# --- Python the interpreter, not lineage ---
+scripts/gen-fixtures-v040.py:Python  # the fixture generator is a Python script; names interpreter versions
+crates/craftsman-rs/tests/fixtures/v0.4.0/README.md:Python  # fixture notes: the Python interpreter and SQLite library that wrote the fixture
+docs/schemas/check_trace.py:with the Python standard library  # the trace validator is a Python script and needs no package
+docs/trace-schema-v1.md:(Python 3 standard library, run it with `python3 -I`)  # how to run the validator
+docs/baseline-instrumented.md:(Python 3 standard library only)  # the mock model server used in the proof is a Python script
+
+# --- the baseline as it was built ---
+docs/baseline-instrumented.md:(113 `deepagents-rs`,  # test counts of the baseline-0.4.0 tree, where the framework crate still had that name
+
+# --- documents pointing at the attribution record ---
+AGENTS.md:NOTICE (interim attribution for text inherited from deepagents and LangChain)  # points readers at NOTICE and the OSS review
+
+# --- benchmark driver interpreter, not lineage ---
+scripts/benchmark-gadgets.py:Python 3.11+  # names the interpreter minimum for the standard-library benchmark driver
+scripts/test-benchmark-gadgets.py:Python standard library  # describes the benchmark driver's dependency-free contract tests

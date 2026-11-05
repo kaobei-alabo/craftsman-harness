@@ -1,0 +1,3 @@
+{"data":{"content":"Read README.md.","role":"user"},"kind":"user","ts":1760007201}
+{"data":{"content":"","role":"assistant","tool_calls":[{"args":{"file_path":"README.md"},"id":"call_1","name":"read_file"}]},"kind":"assistant","ts":1760007202}
+{"data":{"content":"     1\t# Fixture workspace\n     2\t\n     3\tA tiny project.","is_error":false,"role":"tool","tool_call_id":"call_1"},"kind":"tool","ts":1760007203}

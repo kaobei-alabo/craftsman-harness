@@ -1,0 +1,28 @@
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "${OPENAI_API_KEY}",
+  "model": "gpt-5.3-codex",
+  "mcp_servers": [
+    {
+      "name": "craftsman-platform",
+      "url": "https://platform.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CRAFTSMAN_PLATFORM_TOKEN}"
+      }
+    },
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {
+        "API_KEY": "${SOME_MCP_API_KEY}"
+      }
+    }
+  ],
+  "model_profiles": {
+    "gpt-5.3-codex": {
+      "context_window": 131072
+    }
+  }
+}

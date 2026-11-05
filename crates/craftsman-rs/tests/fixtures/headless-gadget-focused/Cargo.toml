@@ -1,0 +1,22 @@
+[package]
+name = "headless-gadget-focused-fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+wit-bindgen = { version = "=0.57.1", default-features = false, features = ["macros", "realloc", "std"] }
+
+# This profile belongs ONLY to this standalone test-input component. Keep the
+# production host and root workspace/toolchain/lock/profile settings unchanged.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"

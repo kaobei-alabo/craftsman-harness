@@ -1,0 +1,27 @@
+{
+  "base_url": "https://platform.example.com/apps/llm/api/v1",
+  "api_key": "${CRAFTSMAN_PLATFORM_TOKEN}",
+  "model": "gpt-5.3-codex",
+  "harness_profile": "auto",
+  "model_profiles": {
+    "gpt-5.3-codex": {
+      "temperature": 0.2,
+      "max_tokens": 8192,
+      "context_window": 131072
+    }
+  },
+  "provider_profile": "none",
+  "mcp_servers": [
+    {
+      "name": "craftsman-platform",
+      "url": "https://platform.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CRAFTSMAN_PLATFORM_TOKEN}"
+      }
+    }
+  ],
+  "platform": {
+    "base_url": "https://platform.example.com",
+    "api_token": ""
+  }
+}

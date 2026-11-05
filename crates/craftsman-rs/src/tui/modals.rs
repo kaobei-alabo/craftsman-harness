@@ -1,0 +1,819 @@
+//! Modal dialogs: their state, key handling, rendering and the pickers that
+//! open them.
+
+use super::app::App;
+use super::commands::display_submission;
+use super::session_bridge::ApprovalChoice;
+use crate::config::Config;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use std::sync::mpsc as std_mpsc;
+
+pub(super) struct ApprovalModal {
+    pub(super) tool: String,
+    pub(super) summary: String,
+    pub(super) details: String,
+    pub(super) selected: usize,
+    pub(super) feedback: String,
+    pub(super) feedback_mode: bool,
+    pub(super) response: std_mpsc::Sender<ApprovalChoice>,
+}
+
+pub(super) struct AskModal {
+    pub(super) question: String,
+    pub(super) answer: String,
+    pub(super) response: std_mpsc::Sender<Option<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum AppAction {
+    SelectModel(String),
+    SelectVoiceModel(String),
+    SelectHarness(String),
+    SelectAgent(String),
+    SelectMode(crate::config::PermissionMode),
+    ResumeSession(String),
+    CancelTask(String),
+    RemoveQueued(usize),
+    SetupPlatform {
+        url: String,
+        token: String,
+    },
+    SetupDirect {
+        base_url: String,
+        api_key: String,
+        model: String,
+    },
+    Skill(crate::skills_browser::BrowserAction),
+}
+
+#[derive(Clone)]
+pub(super) struct SelectionItem {
+    pub(super) label: String,
+    pub(super) detail: String,
+    pub(super) enter_action: Option<AppAction>,
+    pub(super) delete_action: Option<AppAction>,
+}
+
+pub(super) struct SelectionModal {
+    pub(super) title: String,
+    pub(super) items: Vec<SelectionItem>,
+    pub(super) selected: usize,
+    pub(super) hint: String,
+}
+
+pub(super) struct EditorModal {
+    pub(super) text: String,
+}
+
+pub(super) struct SetupModal {
+    kind: usize,
+    pub(super) fields: Vec<String>,
+    pub(super) field: usize,
+}
+
+impl SetupModal {
+    fn new() -> Self {
+        Self {
+            kind: 0,
+            fields: vec![String::new(), String::new(), String::new()],
+            field: 0,
+        }
+    }
+
+    fn labels(&self) -> [&'static str; 3] {
+        if self.kind == 0 {
+            ["Platform URL", "API token", "Model (optional)"]
+        } else {
+            ["Base URL", "API key", "Model"]
+        }
+    }
+}
+
+pub(super) enum Modal {
+    Approval(ApprovalModal),
+    Ask(AskModal),
+    Selection(SelectionModal),
+    Setup(SetupModal),
+    Editor(EditorModal),
+}
+
+pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
+    let Some(modal) = app.modal.as_mut() else {
+        return;
+    };
+    match modal {
+        Modal::Approval(approval) if approval.feedback_mode => match key.code {
+            KeyCode::Char(character) => approval.feedback.push(character),
+            KeyCode::Backspace => {
+                approval.feedback.pop();
+            }
+            KeyCode::Enter => {
+                if let Some(Modal::Approval(modal)) = app.modal.take() {
+                    let _ = modal.response.send(ApprovalChoice::Deny(modal.feedback));
+                }
+            }
+            KeyCode::Esc => approval.feedback_mode = false,
+            _ => {}
+        },
+        Modal::Approval(approval) => match key.code {
+            KeyCode::Up => approval.selected = approval.selected.saturating_sub(1),
+            KeyCode::Down => approval.selected = (approval.selected + 1).min(3),
+            KeyCode::Enter => {
+                if approval.selected == 3 {
+                    approval.feedback_mode = true;
+                } else if let Some(Modal::Approval(modal)) = app.modal.take() {
+                    let choice = match modal.selected {
+                        0 => ApprovalChoice::Approve,
+                        1 => ApprovalChoice::Always,
+                        _ => ApprovalChoice::Deny(String::new()),
+                    };
+                    let _ = modal.response.send(choice);
+                }
+            }
+            KeyCode::Esc => {
+                if let Some(Modal::Approval(modal)) = app.modal.take() {
+                    let _ = modal.response.send(ApprovalChoice::Deny(String::new()));
+                }
+            }
+            _ => {}
+        },
+        Modal::Ask(ask) => match key.code {
+            KeyCode::Char(character) => ask.answer.push(character),
+            KeyCode::Backspace => {
+                ask.answer.pop();
+            }
+            KeyCode::Enter => {
+                if let Some(Modal::Ask(modal)) = app.modal.take() {
+                    let _ = modal.response.send(Some(modal.answer));
+                }
+            }
+            KeyCode::Esc => {
+                if let Some(Modal::Ask(modal)) = app.modal.take() {
+                    let _ = modal.response.send(None);
+                }
+            }
+            _ => {}
+        },
+        Modal::Selection(selection) => match key.code {
+            KeyCode::Up => selection.selected = selection.selected.saturating_sub(1),
+            KeyCode::Down => {
+                if !selection.items.is_empty() {
+                    selection.selected = (selection.selected + 1).min(selection.items.len() - 1);
+                }
+            }
+            KeyCode::PageUp => selection.selected = selection.selected.saturating_sub(10),
+            KeyCode::PageDown => {
+                if !selection.items.is_empty() {
+                    selection.selected = (selection.selected + 10).min(selection.items.len() - 1);
+                }
+            }
+            KeyCode::Home => selection.selected = 0,
+            KeyCode::End => {
+                selection.selected = selection.items.len().saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let action = selection
+                    .items
+                    .get(selection.selected)
+                    .and_then(|item| item.enter_action.clone());
+                if let Some(action) = action {
+                    app.pending_action = Some(action);
+                    app.modal = None;
+                }
+            }
+            KeyCode::Char('d') => {
+                let action = selection
+                    .items
+                    .get(selection.selected)
+                    .and_then(|item| item.delete_action.clone());
+                if let Some(action) = action {
+                    app.pending_action = Some(action);
+                    app.modal = None;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.modal = None,
+            _ => {}
+        },
+        Modal::Editor(editor) => match key.code {
+            KeyCode::F(2) => {
+                if let Some(Modal::Editor(modal)) = app.modal.take() {
+                    app.input = modal.text;
+                    app.cursor = app.input.len();
+                }
+            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(Modal::Editor(modal)) = app.modal.take() {
+                    app.input = modal.text;
+                    app.cursor = app.input.len();
+                }
+            }
+            KeyCode::Enter => editor.text.push('\n'),
+            KeyCode::Tab => editor.text.push_str("    "),
+            KeyCode::Backspace => {
+                editor.text.pop();
+            }
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                editor.text.push(character)
+            }
+            KeyCode::Esc => app.modal = None,
+            _ => {}
+        },
+        Modal::Setup(setup) => match key.code {
+            KeyCode::Left | KeyCode::Right => {
+                setup.kind = 1 - setup.kind;
+                setup.field = 0;
+                setup.fields = vec![String::new(), String::new(), String::new()];
+            }
+            KeyCode::Tab | KeyCode::Down => setup.field = (setup.field + 1) % 3,
+            KeyCode::BackTab | KeyCode::Up => setup.field = (setup.field + 2) % 3,
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                setup.fields[setup.field].push(character)
+            }
+            KeyCode::Backspace => {
+                setup.fields[setup.field].pop();
+            }
+            KeyCode::Enter if setup.field < 2 => setup.field += 1,
+            KeyCode::Enter => {
+                // Platform flow: URL + token required; the model is chosen
+                // from the endpoint's listing afterwards. Direct flow: URL +
+                // model required (key may be empty for a local proxy).
+                let missing = if setup.kind == 0 {
+                    setup.fields[0].trim().is_empty() || setup.fields[1].trim().is_empty()
+                } else {
+                    setup.fields[0].trim().is_empty() || setup.fields[2].trim().is_empty()
+                };
+                if !missing && let Some(Modal::Setup(modal)) = app.modal.take() {
+                    app.pending_action = Some(if modal.kind == 0 {
+                        AppAction::SetupPlatform {
+                            url: modal.fields[0].trim().to_string(),
+                            token: modal.fields[1].clone(),
+                        }
+                    } else {
+                        AppAction::SetupDirect {
+                            base_url: modal.fields[0].trim().to_string(),
+                            api_key: modal.fields[1].clone(),
+                            model: modal.fields[2].trim().to_string(),
+                        }
+                    });
+                }
+            }
+            KeyCode::Esc => app.modal = None,
+            _ => {}
+        },
+    }
+    app.promote_queued_modal();
+    app.dirty = true;
+}
+
+pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
+    let area = centered_rect(72, 55, frame.area());
+    frame.render_widget(Clear, area);
+    match modal {
+        Modal::Approval(modal) if modal.feedback_mode => {
+            let block = Block::default()
+                .title(" deny with feedback ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(modal.feedback.as_str()).wrap(Wrap { trim: false }),
+                inner,
+            );
+        }
+        Modal::Approval(modal) => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(6)])
+                .split(area);
+            let summary = Paragraph::new(format!(
+                "{}\n\n{}\n\n{}",
+                modal.tool, modal.summary, modal.details
+            ))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::default()
+                    .title(" approval required ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+            frame.render_widget(summary, chunks[0]);
+            let always = if matches!(modal.tool.as_str(), "web_fetch" | "web_search") {
+                "Allow all network access this session"
+            } else {
+                "Allow all local changes this session"
+            };
+            let choices = ["Approve once", always, "Deny", "Deny with feedback…"];
+            let mut state = ListState::default().with_selected(Some(modal.selected));
+            frame.render_stateful_widget(
+                List::new(choices.map(ListItem::new))
+                    .block(Block::default().borders(Borders::ALL))
+                    .highlight_symbol("▶ ")
+                    .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+                chunks[1],
+                &mut state,
+            );
+        }
+        Modal::Ask(modal) => {
+            let block = Block::default()
+                .title(" question from agent ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(format!("{}\n\n> {}", modal.question, modal.answer))
+                    .wrap(Wrap { trim: false }),
+                inner,
+            );
+        }
+        Modal::Editor(modal) => {
+            let area = centered_rect(92, 82, frame.area());
+            frame.render_widget(Clear, area);
+            let block = Block::default()
+                .title(" Prompt editor · F2/Ctrl-Enter save · Esc cancel ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(
+                Paragraph::new(modal.text.as_str()).wrap(Wrap { trim: false }),
+                inner,
+            );
+        }
+        Modal::Setup(modal) => {
+            let area = centered_rect(76, 58, frame.area());
+            frame.render_widget(Clear, area);
+            let block = Block::default()
+                .title(" Set up Craftsman ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Length(2),
+                    Constraint::Min(2),
+                ])
+                .split(inner);
+            let tabs = if modal.kind == 0 {
+                "[ Craftsman Platform ]   Direct provider"
+            } else {
+                "Craftsman Platform   [ Direct provider ]"
+            };
+            frame.render_widget(
+                Paragraph::new(format!("{tabs}\n←/→ switch connection type"))
+                    .style(Style::default().fg(Color::Cyan)),
+                chunks[0],
+            );
+            for (index, label) in modal.labels().into_iter().enumerate() {
+                let secret = (index == 1 && modal.kind == 0) || (index == 1 && modal.kind == 1);
+                let value = if secret {
+                    "•".repeat(modal.fields[index].chars().count())
+                } else {
+                    modal.fields[index].clone()
+                };
+                let style = if modal.field == index {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                frame.render_widget(
+                    Paragraph::new(format!("{label}: {value}")).style(style),
+                    chunks[index + 1],
+                );
+            }
+            frame.render_widget(
+                Paragraph::new(if modal.kind == 0 {
+                    "Mint an API key on the platform, then paste it here · model is picked after connect"
+                } else {
+                    "API key may be empty for a local proxy · Enter finish · Esc cancel"
+                })
+                .style(Style::default().fg(Color::DarkGray)),
+                chunks[4],
+            );
+        }
+        Modal::Selection(modal) => {
+            let area = centered_rect(82, 72, frame.area());
+            frame.render_widget(Clear, area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(2)])
+                .split(area);
+            let items = modal.items.iter().map(|item| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        item.label.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(if item.detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", item.detail)
+                    }),
+                ]))
+            });
+            let mut state = ListState::default().with_selected(
+                (!modal.items.is_empty()).then_some(modal.selected.min(modal.items.len() - 1)),
+            );
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(
+                        Block::default()
+                            .title(format!(" {} ", modal.title))
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Cyan)),
+                    )
+                    .highlight_symbol("▶ ")
+                    .highlight_style(
+                        Style::default()
+                            .bg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                chunks[0],
+                &mut state,
+            );
+            frame.render_widget(
+                Paragraph::new(modal.hint.as_str()).style(Style::default().fg(Color::DarkGray)),
+                chunks[1],
+            );
+        }
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+pub(super) fn show_setup_modal(app: &mut App) {
+    app.modal = Some(Modal::Setup(SetupModal::new()));
+    app.dirty = true;
+}
+
+pub(super) fn show_voice_model_modal(app: &mut App) {
+    let models = crate::voice::model_names().collect::<Vec<_>>();
+    let selected = models
+        .iter()
+        .position(|model| *model == app.voice.model)
+        .unwrap_or(0);
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Voice transcription model".to_string(),
+        items: models
+            .into_iter()
+            .map(|model| {
+                let current = model == app.voice.model;
+                let downloaded = crate::voice::model_downloaded(model);
+                SelectionItem {
+                    label: model.to_string(),
+                    detail: match (current, downloaded) {
+                        (true, true) => "current · downloaded".to_string(),
+                        (true, false) => "current · downloads on first activation".to_string(),
+                        (false, true) => "downloaded".to_string(),
+                        (false, false) => "downloads on first activation".to_string(),
+                    },
+                    enter_action: Some(AppAction::SelectVoiceModel(model.to_string())),
+                    delete_action: None,
+                }
+            })
+            .collect(),
+        selected,
+        hint: "↑/↓ select · Enter choose · Esc close · /voice model <name> also works".to_string(),
+    }));
+    app.dirty = true;
+}
+
+pub(super) fn show_mode_modal(cfg: &Config, app: &mut App) {
+    let modes = crate::config::PermissionMode::ALL;
+    let selected = modes
+        .iter()
+        .position(|mode| *mode == cfg.permission_mode)
+        .unwrap_or(0);
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Permission mode".to_string(),
+        items: modes
+            .into_iter()
+            .map(|mode| SelectionItem {
+                label: mode.as_str().to_string(),
+                detail: if mode == cfg.permission_mode {
+                    format!("current · {}", mode.description())
+                } else {
+                    mode.description().to_string()
+                },
+                enter_action: Some(AppAction::SelectMode(mode)),
+                delete_action: None,
+            })
+            .collect(),
+        selected,
+        hint: "↑/↓ select · Enter apply · Shift-Tab cycles · Esc close".to_string(),
+    }));
+    app.dirty = true;
+}
+
+pub(super) fn show_queue_modal(app: &mut App) {
+    if app.queued_messages.is_empty() {
+        app.push("(no queued follow-ups)");
+        return;
+    }
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Queued follow-ups".to_string(),
+        items: app
+            .queued_messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| SelectionItem {
+                label: format!(
+                    "{}. {}",
+                    index + 1,
+                    crate::util::one_line(&display_submission(message), 64)
+                ),
+                detail: String::new(),
+                enter_action: None,
+                delete_action: Some(AppAction::RemoveQueued(index)),
+            })
+            .collect(),
+        selected: 0,
+        hint: "↑/↓ select · d remove · Esc close".to_string(),
+    }));
+    app.dirty = true;
+}
+
+pub(super) fn show_tasks_modal(app: &mut App, tasks: Vec<craftsman_harness::AgentTaskInfo>) {
+    if tasks.is_empty() {
+        app.push("(no subagent tasks)");
+        return;
+    }
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Subagent tasks".to_string(),
+        items: tasks
+            .into_iter()
+            .map(|task| {
+                let running = task.status == craftsman_harness::AgentStatus::Running;
+                let name = task.name;
+                SelectionItem {
+                    label: name.clone(),
+                    detail: format!("{:?} · {}", task.status, task.progress),
+                    enter_action: None,
+                    delete_action: running.then_some(AppAction::CancelTask(name)),
+                }
+            })
+            .collect(),
+        selected: 0,
+        hint: "↑/↓ select · d cancel running task · /tasks message <name> <text>".to_string(),
+    }));
+    app.dirty = true;
+}
+
+pub(super) fn show_skills_modal(app: &mut App, statuses: Vec<crate::platform_skills::SkillStatus>) {
+    use crate::platform_skills::SkillState;
+    use crate::skills_browser::BrowserAction;
+    let items = statuses
+        .into_iter()
+        .map(|status| {
+            let enter_action = match status.state {
+                SkillState::NotInstalled => {
+                    Some(AppAction::Skill(BrowserAction::Install(status.id.clone())))
+                }
+                SkillState::UpdateAvailable => {
+                    Some(AppAction::Skill(BrowserAction::Update(status.id.clone())))
+                }
+                SkillState::UpToDate | SkillState::LocalOnly => None,
+            };
+            let delete_action = if status.installed_version.is_some()
+                && !matches!(status.state, SkillState::LocalOnly)
+            {
+                Some(AppAction::Skill(BrowserAction::Remove(status.id.clone())))
+            } else {
+                None
+            };
+            let version = status
+                .installed_version
+                .as_deref()
+                .or(status.platform_version.as_deref())
+                .unwrap_or("?");
+            let state = match status.state {
+                SkillState::UpToDate => "installed".to_string(),
+                SkillState::UpdateAvailable => format!(
+                    "update → {}",
+                    status.platform_version.as_deref().unwrap_or("?")
+                ),
+                SkillState::NotInstalled => "available".to_string(),
+                SkillState::LocalOnly => "local".to_string(),
+            };
+            SelectionItem {
+                label: format!("{:<18} v{version}", status.name),
+                detail: if status.description.is_empty() {
+                    state
+                } else {
+                    format!(
+                        "{state} · {}",
+                        crate::util::one_line(&status.description, 70)
+                    )
+                },
+                enter_action,
+                delete_action,
+            }
+        })
+        .collect();
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Skills".to_string(),
+        items,
+        selected: 0,
+        hint: "↑/↓ select · Enter install/update · d remove · Esc close".to_string(),
+    }));
+    app.dirty = true;
+}
+
+pub(super) fn show_harness_modal(cfg: &Config, app: &mut App) {
+    let current = crate::harness_profiles::configured_harness_preset(cfg);
+    let presets = crate::harness_profiles::harness_presets();
+    let selected = presets
+        .iter()
+        .position(|preset| preset.id == current.id)
+        .unwrap_or_default();
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Select harness profile".to_string(),
+        items: presets
+            .iter()
+            .map(|preset| SelectionItem {
+                label: preset.label.to_string(),
+                detail: if preset.id == current.id {
+                    format!("current · {}", preset.description)
+                } else {
+                    preset.description.to_string()
+                },
+                enter_action: Some(AppAction::SelectHarness(preset.id.to_string())),
+                delete_action: None,
+            })
+            .collect(),
+        selected,
+        hint: "↑/↓ select · Enter apply and rebuild · Esc close · /harness status inspects"
+            .to_string(),
+    }));
+    app.dirty = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_enter_emits_action() {
+        let mut app = App::new(&Config::default());
+        app.modal = Some(Modal::Selection(SelectionModal {
+            title: "Select model".into(),
+            items: vec![SelectionItem {
+                label: "model-a".into(),
+                detail: String::new(),
+                enter_action: Some(AppAction::SelectModel("model-a".into())),
+                delete_action: None,
+            }],
+            selected: 0,
+            hint: String::new(),
+        }));
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.pending_action,
+            Some(AppAction::SelectModel("model-a".into()))
+        );
+        assert!(app.modal.is_none());
+    }
+
+    #[cfg(all(feature = "voice", any(target_os = "macos", target_os = "linux")))]
+    #[test]
+    fn voice_model_command_opens_selectable_model_picker() {
+        let mut app = App::new(&Config::default());
+        app.voice.available = true;
+        app.voice.model = "small-q5_1".into();
+        show_voice_model_modal(&mut app);
+        let Some(Modal::Selection(modal)) = app.modal.as_ref() else {
+            panic!("expected voice model selection modal");
+        };
+        assert_eq!(modal.title, "Voice transcription model");
+        assert_eq!(
+            modal
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            ["large-v3-turbo-q5_0", "small-q5_1", "base-q5_1"]
+        );
+        assert_eq!(modal.selected, 1);
+        assert_eq!(
+            modal.items[2].enter_action,
+            Some(AppAction::SelectVoiceModel("base-q5_1".into()))
+        );
+    }
+
+    #[test]
+    fn harness_modal_lists_selectable_example_profiles() {
+        let cfg = Config::default();
+        let mut app = App::new(&cfg);
+        show_harness_modal(&cfg, &mut app);
+        let Some(Modal::Selection(modal)) = app.modal.as_ref() else {
+            panic!("expected harness selection modal");
+        };
+        assert_eq!(modal.title, "Select harness profile");
+        assert_eq!(
+            modal
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Automatic",
+                "General",
+                "OpenAI / Codex",
+                "Claude",
+                "NVIDIA Nemotron",
+            ]
+        );
+        assert_eq!(modal.selected, 0);
+        assert_eq!(
+            modal.items[3].enter_action,
+            Some(AppAction::SelectHarness("claude".into()))
+        );
+    }
+
+    #[test]
+    fn skills_modal_maps_install_update_and_remove_actions() {
+        use crate::platform_skills::{SkillState, SkillStatus};
+        let mut app = App::new(&Config::default());
+        show_skills_modal(
+            &mut app,
+            vec![
+                SkillStatus {
+                    id: "new".into(),
+                    name: "New".into(),
+                    description: String::new(),
+                    installed_version: None,
+                    platform_version: Some("1".into()),
+                    state: SkillState::NotInstalled,
+                    source: "platform".into(),
+                },
+                SkillStatus {
+                    id: "update".into(),
+                    name: "Update".into(),
+                    description: String::new(),
+                    installed_version: Some("1".into()),
+                    platform_version: Some("2".into()),
+                    state: SkillState::UpdateAvailable,
+                    source: "platform".into(),
+                },
+            ],
+        );
+        let Some(Modal::Selection(modal)) = app.modal.as_ref() else {
+            panic!("expected selection modal");
+        };
+        assert_eq!(
+            modal.items[0].enter_action,
+            Some(AppAction::Skill(
+                crate::skills_browser::BrowserAction::Install("new".into())
+            ))
+        );
+        assert_eq!(
+            modal.items[1].enter_action,
+            Some(AppAction::Skill(
+                crate::skills_browser::BrowserAction::Update("update".into())
+            ))
+        );
+        assert_eq!(
+            modal.items[1].delete_action,
+            Some(AppAction::Skill(
+                crate::skills_browser::BrowserAction::Remove("update".into())
+            ))
+        );
+    }
+}
