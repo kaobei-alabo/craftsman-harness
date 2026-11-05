@@ -15,6 +15,16 @@ The inherited handover was committed to local `main` without a push. See
 [production readiness](docs/production-readiness.md) for the new repository's
 implementation and publication state.
 
+The takeover implementation has now merged as [PR #1](https://github.com/yumingchangsabodota/craftsman-harness/pull/1).
+Its final PR head passed every required Linux/macOS/Windows job and both full
+native test modes. Independent merged-main validation is recorded separately.
+The next terminal reliability change makes Ctrl-C reach approval/question
+waiters without granting tools; see [terminal cancellation](docs/terminal-cancellation.md).
+Its required Ubuntu gadget run also exposed the original desktop idle-reconnect
+race. [Desktop connections](docs/desktop-connections.md) records the owned cleanup
+correction and separate failed/corrected validation. The owner selected terminal
+reliability and self-built gadgets as the current production priority on November 6.
+
 ## 1. Read this first
 
 - The existing terminal agent works. The new headless agent has substantial
@@ -128,9 +138,9 @@ from implementation, enforcement and release approval.
 - Use [rust-toolchain.toml](rust-toolchain.toml): **Rust 1.99.1**, edition 2024,
   `rustfmt`, `clippy`, and `wasm32-wasip2`. Do not substitute a moving `stable`
   toolchain or change global defaults to make a build pass.
-- The application manifest declares MSRV 1.85, but the pinned application
-  dependency graph needs a newer compiler. Standalone gadget SDK/MSRV evidence
-  is separate; use the pinned toolchain for this workspace.
+- The application manifest now declares MSRV 1.99, matching its tested pinned
+  toolchain family. Standalone framework/gadget SDK/macros retain their separate
+  1.85 declarations; use the pinned toolchain for this workspace.
 - Wasmtime and wasmtime-wasi are pinned to **48.0.8**. No unrelated dependency or
   toolchain upgrade belongs in the argument-adapter task.
 - The default voice build needs CMake, plus ALSA development headers on Linux.
