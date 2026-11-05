@@ -57,6 +57,17 @@ that uses it, and the documentation uses ordinary interpreter terminology. No
 warning suppression, broader provenance exception, changed assertion or deadline
 is used. This first run remains separate from corrected-source verification.
 
+Corrected-source verification at `0745e6e` passed all nine `scripts/verify.sh`
+steps, exit **0**, with no compiler warnings: core **1887 / 0 / 10**, gadgets
+**2042 / 0 / 12**. Every original named/ignored/doctest entry remains present,
+with exactly nine cancellation cases added in each mode. The 30 request-budget
+cases and the actual scaffold/edit/build/discover/call agent test also pass.
+Formatting, locked core/default builds, exec conformance, benchmark-driver
+contracts, provenance and unchanged goldens passed. Raw first/corrected logs and
+inventory audits remain under `target/verification/`. Hosted checks and any
+merged-main run are separate evidence; live model/microphone/native-cancellation
+latency and full P2c/P2g readiness are not established by these tests.
+
 ## Remaining lifecycle work
 
 This change releases human-input waits and reaches the existing cooperative

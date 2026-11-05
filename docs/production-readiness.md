@@ -105,7 +105,7 @@ These are new repository rules; old macOS 14 check labels describe past evidence
 | New GitHub first push | Passed: private repository main began with parentless snapshot `d20e622`, verified against the remote SHA |
 | Request-budget hosted CI | Passed on PR #1 head `d3a9b9a`: all four jobs/every expected step and both full modes; details below |
 | Request-budget merge | PR #1 merged normally at `774a5d5`; independent main-run verification is separate from the PR result |
-| Terminal prompt cancellation | Implemented with additive regression/actual bridge/Agent cases; current validation in [terminal-cancellation.md](terminal-cancellation.md) |
+| Terminal prompt cancellation | Local corrected `0745e6e` verification passed: core 1887/0/10 and gadgets 2042/0/12, all nine new cases, all checks and no compiler warnings; hosted checks remain separate |
 
 The first complete run at `96c3a4d` retained **1877 passed / 1 failed / 10 ignored**
 in core mode and **2032 passed / 1 failed / 12 ignored** with gadgets, with no
