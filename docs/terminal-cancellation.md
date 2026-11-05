@@ -48,6 +48,15 @@ do not open user configuration, run an installed gadget or spend model credits.
 Existing tests/assertions, native deadlines and framework behavior stay intact.
 Full local and hosted validation must be recorded before merge.
 
+The first complete verification at `9104a04` retained core **1887 / 0 / 10** and
+gadgets **2042 / 0 / 12** (passed/failed/ignored), with all nine new cases passing.
+The overall script still exited **1**: the provenance checker rejected the new
+interpreter post-step wording, and compiler checks reported a newly unused
+`TranscriptKind` import. The import now lives only in the existing test module
+that uses it, and the documentation uses ordinary interpreter terminology. No
+warning suppression, broader provenance exception, changed assertion or deadline
+is used. This first run remains separate from corrected-source verification.
+
 ## Remaining lifecycle work
 
 This change releases human-input waits and reaches the existing cooperative

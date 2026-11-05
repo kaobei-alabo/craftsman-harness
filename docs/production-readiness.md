@@ -151,7 +151,7 @@ or substitute the PR run for independent merged-main verification.
 The initial snapshot's [main run 42059194736](https://github.com/yumingchangsabodota/craftsman-harness/actions/runs/42059194736)
 is retained separately. Its inherited informational Windows job failed the
 original `acp_bridge_http_and_relay` case during the bounded real 60-second cold
-`/stats` setup: core **1771 / 1 / 9**, later gadgets **1916 / 0 / 11**, Python
+`/stats` setup: core **1771 / 1 / 9**, later gadgets **1916 / 0 / 11**, interpreter
 post step skipped. Overall success did not mean all steps passed. The PR's pass
 does not establish a cause or fix for that baseline failure; no unchanged run,
 deadline relaxation, warmed setup or assertion change was used to replace it.

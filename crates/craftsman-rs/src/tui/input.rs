@@ -1,7 +1,7 @@
 //! Keyboard, mouse and paste handling, voice dictation state and the
 //! composer layout.
 
-use super::app::{App, TranscriptKind};
+use super::app::App;
 use super::modals::{Modal, handle_modal_key};
 use super::terminal::{copy_selected_text, copy_to_clipboard};
 use crate::config::Config;
@@ -817,7 +817,7 @@ fn build_styled_segments(
 
 #[cfg(test)]
 mod tests {
-    use super::super::app::BlockState;
+    use super::super::app::{BlockState, TranscriptKind};
     use super::super::render::ScreenSnapshot;
     use super::*;
     use ratatui::layout::Rect;
