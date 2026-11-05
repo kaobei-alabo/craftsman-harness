@@ -64,6 +64,14 @@ The first hosted run also passed macOS **1887 / 0 / 10**, **2042 / 0 / 12** and
 Windows **1811 / 0 / 10**, **1955 / 0 / 12** (core, gadgets); the Ubuntu gadget
 failure remains a failure. No unchanged whole run was retried.
 
+Corrected full local verification at `4c83934` passed all nine verification steps,
+exit **0**, with no compiler warnings: core **1895 / 0 / 10**, gadgets
+**2050 / 0 / 12**. Every original named/ignored/doctest entry is retained; the
+terminal and desktop changes add exactly **17** cases per mode (nine plus eight).
+The original reconnect assertion, 30 request-budget cases and actual agent
+scaffold/edit/build/discover/call sequence passed. This is corrected local source
+evidence; fresh hosted checks and any merged-main run remain separate records.
+
 The independently audited request-budget main run
 [42078817023](https://github.com/yumingchangsabodota/craftsman-harness/actions/runs/42078817023)
 remains a separate passing checkpoint; it does not replace this failing PR run.

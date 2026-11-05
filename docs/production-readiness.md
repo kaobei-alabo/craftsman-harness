@@ -24,6 +24,11 @@ baselines and target diagrams do not describe completed features. Public
 `craftsman exec` is still absent. Existing `-m` is a legacy one-shot frontend;
 its broad configured permissions are not an unattended isolation contract.
 
+The owner selected **terminal reliability and self-built gadgets** as the current
+production priority on November 6. The dialog-cancellation and desktop-reconnect
+changes improve those supported frontends. Future unattended headless work keeps
+its separate accepted contracts and implementation gates.
+
 ## Build and use the gadget workflow
 
 Use the exact **Rust 1.99.1** toolchain in `rust-toolchain.toml`. The application
@@ -106,7 +111,7 @@ These are new repository rules; old macOS 14 check labels describe past evidence
 | Request-budget hosted CI | Passed on PR #1 head `d3a9b9a`: all four jobs/every expected step and both full modes; details below |
 | Request-budget merge | PR #1 merged normally at `774a5d5`; independent main-run verification is separate from the PR result |
 | Terminal prompt cancellation | Local corrected `0745e6e` verification passed: core 1887/0/10 and gadgets 2042/0/12, all nine new cases, all checks and no compiler warnings; hosted checks remain separate |
-| Desktop reconnect correction | Original Ubuntu gadget reconnect assertion failed on PR #2; owned reader/cleanup/writer handoff and eight additive tests are under corrected validation; see [desktop connections](desktop-connections.md) |
+| Desktop reconnect correction | Corrected local `4c83934` passed all steps, core 1895/0/10 and gadgets 2050/0/12, all 17 new terminal/desktop cases and no compiler warnings; original failed hosted row remains separate |
 
 The first complete run at `96c3a4d` retained **1877 passed / 1 failed / 10 ignored**
 in core mode and **2032 passed / 1 failed / 12 ignored** with gadgets, with no
