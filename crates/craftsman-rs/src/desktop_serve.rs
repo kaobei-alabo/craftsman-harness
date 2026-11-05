@@ -31,6 +31,8 @@ const PROXY_SECRET_ENV: &str = "CRAFTSMAN_WORKSPACE_PROXY_SECRET";
 const DESKTOP_TOKEN_ENV: &str = "CRAFTSMAN_DESKTOP_TOKEN";
 const DEFAULT_THREAD_PAGE_SIZE: usize = 10;
 const MAX_THREAD_PAGE_SIZE: usize = 100;
+const CONNECTION_HANDOFF: std::time::Duration = std::time::Duration::from_millis(250);
+const WRITER_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct ThreadPage {
     threads: Vec<Value>,
@@ -78,6 +80,7 @@ impl Drop for WorkspaceSwitchGuard {
 /// blocked, the same channel design as the Ratatui `UiBridge`.
 struct DesktopBridge {
     slot: Mutex<Option<BridgeConnection>>,
+    connection_owner: Arc<tokio::sync::Mutex<()>>,
     next_connection_generation: AtomicU64,
     approvals: Mutex<HashMap<String, PendingApproval>>,
     questions: Mutex<HashMap<String, PendingQuestion>>,
@@ -91,6 +94,7 @@ impl DesktopBridge {
     fn new() -> Self {
         Self {
             slot: Mutex::new(None),
+            connection_owner: Arc::new(tokio::sync::Mutex::new(())),
             next_connection_generation: AtomicU64::new(1),
             approvals: Mutex::new(HashMap::new()),
             questions: Mutex::new(HashMap::new()),
@@ -2157,8 +2161,17 @@ async fn chat_session(socket: WebSocket, state: AppState) {
     let (mut socket_tx, mut socket_rx) = socket.split();
     let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
 
+    let (close_writer, mut writer_close) = tokio::sync::oneshot::channel::<()>();
     let writer = tokio::spawn(async move {
-        while let Some(frame) = frame_rx.recv().await {
+        loop {
+            let frame = tokio::select! {
+                biased;
+                _ = &mut writer_close => break,
+                frame = frame_rx.recv() => match frame {
+                    Some(frame) => frame,
+                    None => break,
+                },
+            };
             if socket_tx
                 .send(WsMessage::Text(frame.to_string().into()))
                 .await
@@ -2167,9 +2180,11 @@ async fn chat_session(socket: WebSocket, state: AppState) {
                 break;
             }
         }
+        let _ = tokio::time::timeout(WRITER_SHUTDOWN, socket_tx.close()).await;
     });
+    let _writer_guard = WriterGuard(writer.abort_handle());
 
-    let Some(connection_generation) = state.bridge.attach(frame_tx.clone()) else {
+    let Some(connection) = DesktopConnection::attach(&state, frame_tx.clone()).await else {
         send_operation_error(
             &frame_tx,
             "client_already_connected",
@@ -2179,9 +2194,10 @@ async fn chat_session(socket: WebSocket, state: AppState) {
             None,
         );
         drop(frame_tx);
-        let _ = writer.await;
+        finish_writer(writer).await;
         return;
     };
+    let connection_generation = connection.generation;
     let _ = frame_tx.send(json!({
         "type": "hello",
         "protocol": PROTOCOL_VERSION,
@@ -2193,6 +2209,9 @@ async fn chat_session(socket: WebSocket, state: AppState) {
     send_snapshot(&state, &frame_tx, None, connection_generation).await;
 
     while let Some(Ok(message)) = socket_rx.next().await {
+        if matches!(message, WsMessage::Close(_)) {
+            break;
+        }
         let WsMessage::Text(raw) = message else {
             continue;
         };
@@ -3184,12 +3203,76 @@ async fn chat_session(socket: WebSocket, state: AppState) {
         }
     }
 
-    if state.bridge.detach(connection_generation) {
-        let _ = state.runner.cancel_voice();
-        let _ = state.runner.cancel();
-    }
+    // The owned admission lease stays held through real waiter/turn cleanup.
+    // A new client cannot be admitted and then cancelled by the old reader.
+    drop(connection);
     drop(frame_tx);
-    let _ = writer.await;
+    let _ = close_writer.send(());
+    finish_writer(writer).await;
+}
+
+async fn finish_writer(mut writer: tokio::task::JoinHandle<()>) {
+    if tokio::time::timeout(WRITER_SHUTDOWN, &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+        let _ = tokio::time::timeout(WRITER_SHUTDOWN, writer).await;
+    }
+}
+
+/// Dropping/aborting the reader must not detach an in-flight socket writer.
+struct WriterGuard(tokio::task::AbortHandle);
+impl Drop for WriterGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// One reader owns admission until its synchronous disconnect cleanup is done.
+/// The bounded, event-driven wait lets an already-closing client hand off its
+/// slot without replacing a live client or changing protocol-v4 frames.
+struct DesktopConnection {
+    bridge: Arc<DesktopBridge>,
+    runner: Arc<dyn DesktopDriver>,
+    generation: u64,
+    _owner: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl DesktopConnection {
+    async fn attach(state: &AppState, frames: FrameTx) -> Option<Self> {
+        let owner = tokio::time::timeout(
+            CONNECTION_HANDOFF,
+            state.bridge.connection_owner.clone().lock_owned(),
+        )
+        .await
+        .ok()?;
+        let generation = state.bridge.attach(frames)?;
+        Some(Self {
+            bridge: state.bridge.clone(),
+            runner: state.runner.clone(),
+            generation,
+            _owner: owner,
+        })
+    }
+}
+
+impl Drop for DesktopConnection {
+    fn drop(&mut self) {
+        let owns_slot = self
+            .bridge
+            .slot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|connection| connection.generation == self.generation);
+        if owns_slot {
+            let _ = self.runner.cancel_voice();
+            let _ = self.runner.cancel();
+            self.bridge.detach(self.generation);
+        }
+        // _owner unlocks only AFTER this cleanup, including an unwinding reader.
+    }
 }
 
 fn spawn_turn(
@@ -3397,6 +3480,8 @@ mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
     use std::sync::atomic::AtomicBool;
+
+    mod connection_tests;
 
     struct StubDesktopDriver {
         bridge: Arc<DesktopBridge>,

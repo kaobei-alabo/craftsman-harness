@@ -486,6 +486,10 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   agent receives the stop; late prompts are refused while the turn is stopping.
   Composer/editor drafts survive. See [terminal cancellation](docs/terminal-cancellation.md)
   for the remaining stream, native-process and signal limits.
+- Desktop connections retain one owner through disconnect cleanup. A closing
+  client can hand off to a reconnect; a live client still rejects a second peer.
+  Reader/writer cleanup keeps protocol v4 frames unchanged. See
+  [desktop connections](docs/desktop-connections.md).
 - Tool-calling agent loop on the `craftsman-harness` middleware framework, with
   the host tools `execute`, `read_file`, `write_file`, `edit_file`, `ls`,
   `glob` and `grep` (`tools.rs`, adapted to the framework's `Backend` trait by

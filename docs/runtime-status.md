@@ -32,6 +32,15 @@
 > provider, running native tool or foreground child, or complete signal shutdown.
 > See [terminal cancellation](terminal-cancellation.md) for implementation and tests.
 
+> **Desktop reconnect correction (November 6):** the required Ubuntu gadget suite
+> exposed the original idle reconnect assertion on PR #2. An actual connection
+> owner now stays held through old-reader cancellation/detach cleanup, with one
+> bounded handoff wait and an explicit Close/writer-stop path. A live peer remains
+> exclusive and original turn context persists until real completion. This changes
+> lifecycle ordering, with no protocol-v4/schema/golden/native-limit change.
+> [Desktop connections](desktop-connections.md) keeps the failing and corrected
+> validation records separate; all four corrected-head checks still gate merge.
+
 > **Current shell maintenance:** the November2 post-merge main run `41398538418`
 > failed one feature-off Windows partial-output test, despite an informational
 > overall success and a later green gadget-host step. A narrow Windows fixture

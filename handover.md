@@ -20,6 +20,10 @@ Its final PR head passed every required Linux/macOS/Windows job and both full
 native test modes. Independent merged-main validation is recorded separately.
 The next terminal reliability change makes Ctrl-C reach approval/question
 waiters without granting tools; see [terminal cancellation](docs/terminal-cancellation.md).
+Its required Ubuntu gadget run also exposed the original desktop idle-reconnect
+race. [Desktop connections](docs/desktop-connections.md) records the owned cleanup
+correction and separate failed/corrected validation. The owner selected terminal
+reliability and self-built gadgets as the current production priority on November 6.
 
 ## 1. Read this first
 
