@@ -209,6 +209,20 @@ impl Invocation {
             invocation: super::invocation::Invocation::from_runtime_input(runtime, input),
         })
     }
+    pub(crate) async fn prepare_with_request_limit(
+        options: Options,
+        sources: Sources<'_>,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, StdinPreparationError> {
+        let prepared = PreparedStdinInput::prepare(options, sources).await?;
+        let (prepared, input) = prepared.into_parts();
+        let runtime = Runtime::build_with_request_limit(prepared, requests)
+            .await
+            .map_err(|_| StdinPreparationError::Runtime)?;
+        Ok(Self {
+            invocation: super::invocation::Invocation::from_runtime_input(runtime, input),
+        })
+    }
     pub(crate) fn prepared(&self) -> &Prepared {
         self.invocation.prepared()
     }

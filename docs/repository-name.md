@@ -1,24 +1,29 @@
 # Craftsman identity migration
 
+> **Current ownership, November 5, 2026:** the canonical repository is now
+> `yumingchangsabodota/craftsman-harness`, with a fresh source-only Git history.
+> The November 4 rename and its old commits/checks below are historical context.
+
 > **Approved:** November 4, 2026 (UTC). The migration covers every case of the
 > product name in tracked code/docs and source file/directory names. It is a
 > breaking identity migration, not a runtime-feature or release announcement.
 
 ## Canonical repository and interfaces
 
-The existing repository is **`trend-mgai/craftsman-harness`**. It was renamed
-in place: repository identity, commit history, issues, pull requests and
-protection rules are retained.
+The current repository is **`yumingchangsabodota/craftsman-harness`**. The new
+owner reset the inherited commit history and removed the old remote. Issues,
+pull requests, releases, secrets and protection rules from the former repository
+are not transferred by this source snapshot.
 
 ```bash
-git clone https://github.com/trend-mgai/craftsman-harness.git
+git clone https://github.com/yumingchangsabodota/craftsman-harness.git
 cd craftsman-harness
 ```
 
 Existing clones use:
 
 ```bash
-git remote set-url origin https://github.com/trend-mgai/craftsman-harness.git
+git remote set-url origin https://github.com/yumingchangsabodota/craftsman-harness.git
 ```
 
 Current first-party identities are:

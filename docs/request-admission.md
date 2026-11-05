@@ -6,6 +6,11 @@ foundation, not public `craftsman exec` or a complete token/usage meter.** The a
 its representation/compatibility decision. This implementation does not reopen
 that decision or enable token-budget flags, public results/events or release gates.
 
+**November 5:** a separate private
+[request-budget argv adapter](request-budget-arguments.md) now chooses this cap
+using `--max-rounds` before input-first preparation. Default and earlier argv
+routes retain their original behavior; no public command or usage producer ships.
+
 ## Actual-builder source and scope
 
 `exec::meter` is app-layer code. `Runtime::build` selects the accepted default
@@ -13,8 +18,9 @@ that decision or enable token-budget flags, public results/events or release gat
 validated in1..10000. Select that pure typed value before preparation. No ambient
 config, project setting or model text can change the cap after construction.
 Existing framework loop guards still apply: a ceiling is not a promise to keep
-running until that many calls. Public headless limit flags remain rejected by
-the unchanged private argv adapters, not accepted and ignored.
+running until that many calls. Earlier private argv adapters still reject limit
+flags. Only the explicitly selected request-budget adapter accepts `--max-rounds`;
+unsupported token/deadline/public-output controls remain rejected.
 
 The SAME shared session-construction core creates one meter from an opaque
 `agent::RequestMeterScope` and its actual captured invocation gate. Each of the

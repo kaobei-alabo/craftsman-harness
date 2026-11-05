@@ -1,5 +1,13 @@
 # Headless mode — accepted contract v1
 
+> **November 5 takeover:** the new repository is
+> `yumingchangsabodota/craftsman-harness` with a fresh Git history. A separate
+> private [request-budget adapter](request-budget-arguments.md) now implements
+> `--max-rounds` selection through the existing shared request meter. This does
+> not expose public exec or supply usage/output/shutdown completion. Current
+> source validation and the terminal gadget workflow are recorded in
+> [production-readiness.md](production-readiness.md); old checks below are inherited.
+
 > **Identity migration (November 4, 2026):** names/paths in this document use
 > current Craftsman identifiers. Historical dates, hashes, counts, accepted
 > semantics and failure outcomes remain original evidence, not a new run or

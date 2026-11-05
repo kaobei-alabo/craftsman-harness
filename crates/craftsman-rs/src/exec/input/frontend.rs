@@ -360,3 +360,40 @@ pub(in crate::exec::input) fn preflight(
 ) -> Result<(), SelectionError> {
     Selected::select(defaults, arguments).map(drop)
 }
+
+impl Invocation {
+    pub(crate) async fn prepare_with_request_limit(
+        defaults: Defaults,
+        arguments: &[OsString],
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, Error> {
+        let selected = Selected::select(defaults, arguments).map_err(Error::Selection)?;
+        let invocation = super::ArgumentInvocation::prepare_with_request_limit(
+            selected.options,
+            &selected.source_arguments,
+            requests,
+        )
+        .await
+        .map_err(Error::Preparation)?;
+        Ok(Self { invocation })
+    }
+}
+impl FileInvocation {
+    pub(crate) async fn prepare_with_request_limit(
+        defaults: Defaults,
+        arguments: &[OsString],
+        destination: Destination,
+        requests: crate::exec::meter::RequestLimit,
+    ) -> Result<Self, Error> {
+        let selected = Selected::select(defaults, arguments).map_err(Error::Selection)?;
+        let invocation = super::ArgumentFileInvocation::prepare_with_request_limit(
+            selected.options,
+            &selected.source_arguments,
+            destination,
+            requests,
+        )
+        .await
+        .map_err(Error::Preparation)?;
+        Ok(Self { invocation })
+    }
+}

@@ -11,7 +11,9 @@ The latest remote `main` was fetched and matched local `main` at
 This is a practical starting point for someone new to the project. It describes
 that source baseline and clearly labels later, local investigation evidence.
 Read [AGENTS.md](AGENTS.md) before editing; it contains the detailed constraints.
-This handover is committed to **local `main` only, not pushed**.
+The inherited handover was committed to local `main` without a push. See
+[production readiness](docs/production-readiness.md) for the new repository's
+implementation and publication state.
 
 ## 1. Read this first
 
@@ -23,8 +25,10 @@ This handover is committed to **local `main` only, not pushed**.
   gadget-list calls to solve discovery.
 - The local macOS shell problem, **issue #138, is deferred, not fixed**. The user
   chose to continue independent work. That choice does not waive failing checks.
-- The next proposed implementation is a **private `--max-rounds` argument
-  adapter** connected to the existing shared request meter. It has not started.
+- The proposed **private `--max-rounds` argument adapter** is now implemented
+  through the existing shared request meter. See
+  [request-budget arguments](docs/request-budget-arguments.md) for its contract
+  and [production readiness](docs/production-readiness.md) for validation.
 - Keep public headless execution, headless gadget callables and release gates off.
   Passing a private test is not proof that those features are ready to ship.
 
@@ -149,7 +153,10 @@ handover or the next private parser.
 
 ## 5. Next implementation: private request-budget arguments
 
-**Status: proposed next slice; no implementation has been added.**
+**Status: implemented after takeover; the original planning contract follows.**
+The separate `input::request_budget` route and typed invocation factories now
+exist, with 30 additive tests covering syntax, actual role sharing, native stdin
+and guarded publication. Public exec and usage settlement remain unimplemented.
 The aim is to let an explicitly selected private argument path choose the
 existing request cap. Do not expose a new public CLI command in this slice.
 
@@ -343,8 +350,8 @@ CI jobs** and every setup/test/mandatory/post step, including both test modes:
 
 - `fmt`
 - `test (ubuntu-24.04)`
-- `test (macos-14)` — retained check name; the actual runner is **macOS 15**
-- `test (windows-2025)` — informational in the workflow, but still must pass
+- `test (macos-15)` — the new repository's check name and actual runner
+- `test (windows-2025)` — required in the new workflow
 
 An overall green badge can hide a failed informational Windows step. Admin merge
 may override only missing formal review, **never failed checks**. Independently
