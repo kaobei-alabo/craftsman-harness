@@ -495,6 +495,10 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   Composer/editor drafts survive. Signals and quit close the session and restore
   the terminal. See [terminal lifecycle](docs/terminal-lifecycle.md) for bounds,
   background behavior and remaining containment/recovery limits.
+- Terminal sessions save user intent and each completed tool result. A failed
+  checkpoint stops further agent work; reopening warns about unfinished calls
+  and retains their unknown completion without automatic replay. See
+  [terminal recovery](docs/terminal-recovery.md) for storage and effect limits.
 - Desktop connections retain one owner through disconnect cleanup. A closing
   client can hand off to a reconnect; a live client still rejects a second peer.
   Reader/writer cleanup keeps protocol v4 frames unchanged. See

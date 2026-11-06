@@ -972,6 +972,7 @@ async fn handle_session_command(args: Vec<&str>, slot: &mut AgentSlot, app: &mut
             Ok(true) => {
                 hydrate_transcript(app, &session.agent.state.lock().unwrap());
                 app.push(format!("Resumed session {id}"));
+                app.show_recovery_notice(session);
             }
             Ok(false) => app.push_error(format!("No such session {id}")),
             Err(error) => app.push_error(format!("Could not load session {id}: {error}")),
@@ -1078,6 +1079,7 @@ pub(super) async fn handle_app_action(
                 Ok(true) => {
                     hydrate_transcript(app, &session.agent.state.lock().unwrap());
                     app.push(format!("Resumed session {id}"));
+                    app.show_recovery_notice(session);
                     if let Some(suspension) = session.agent.pending_suspension() {
                         app.push(format!(
                             "thread is awaiting approval: {}",

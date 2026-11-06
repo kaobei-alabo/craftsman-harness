@@ -159,10 +159,13 @@ pub struct Agent {
     interrupt_model_on_cancel: bool,
     cancellation_session: Option<crate::SessionCancellation>,
     /// Optional durable state store. When set, the committed snapshot is saved at
-    /// every round commit, at a suspension park, and at turn end. Save failures
-    /// are swallowed (see [`Checkpointer`] docs) so a flaky store never aborts a
-    /// turn. Defaults to `None` (no persistence).
+    /// every round commit, at a suspension park, and at turn end. Explicit
+    /// durable-turn mode also saves progress and propagates fixed save errors.
+    /// Defaults to `None` (no persistence).
     checkpointer: Option<Arc<dyn Checkpointer>>,
+    durable_turn_checkpoints: bool,
+    checkpoint_failed: Arc<std::sync::atomic::AtomicBool>,
+    recovery_info: Arc<Mutex<Option<crate::checkpoint::RecoveryInfo>>>,
     /// Optional append-only observability sink. When set, lifecycle events (user
     /// / assistant / tool / suspended / resumed) are journaled fire-and-forget.
     /// Defaults to `None`.
@@ -235,6 +238,11 @@ impl Agent {
     }
 
     async fn run_turn_inner(&self, user_input: String) -> Result<TurnResult, AgentError> {
+        if self.durable_turn_checkpoints && self.pending.lock().unwrap().is_some() {
+            return Err(AgentError::State(
+                "Resolve the pending approval before starting another turn.".into(),
+            ));
+        }
         // Preserve temporal order across turns: a background result that
         // arrived while idle belongs before the user's next message.
         self.drain_agent_notifications_into_state();
@@ -244,8 +252,12 @@ impl Agent {
         self.journal("user", serde_json::to_value(&user_msg).unwrap_or_default());
         {
             let mut committed = self.state.lock().unwrap();
+            if self.durable_turn_checkpoints {
+                reconcile_recovered_calls(&mut committed, None);
+            }
             committed.messages.push(user_msg);
         }
+        self.save_progress_checkpoint(None).await?;
 
         // 2. turn_start on a working clone, committed back.
         {
@@ -272,6 +284,7 @@ impl Agent {
             // silently lost behind an in-flight model request.
             self.drain_steering_into_state();
             self.drain_agent_notifications_into_state();
+            self.save_progress_checkpoint(None).await?;
             let mut working = self.snapshot();
 
             // Round-boundary mailbox injection: drain any messages a peer sent
@@ -355,7 +368,7 @@ impl Agent {
                 "assistant",
                 serde_json::to_value(&assistant).unwrap_or_default(),
             );
-            self.save_checkpoint(None).await;
+            self.save_checkpoint(None).await?;
 
             // A response can complete in the same poll that requests a stop.
             // Keep its actual usage/transcript and balance calls without dispatch.
@@ -392,22 +405,26 @@ impl Agent {
                             self.append_cancelled_calls(&calls[i..]);
                             return self.finish_cancelled().await;
                         }
-                        if let Err(AgentError::Suspended(s)) = self.dispatch_call(c.clone()).await {
-                            // A gated call paused the turn: park the call, the
-                            // not-yet-dispatched rest of this round, and the
-                            // round index for `resume` to pick up.
-                            *self.pending.lock().unwrap() = Some(PendingResume {
-                                call: c.clone(),
-                                remaining: calls[i + 1..].to_vec(),
-                                round,
-                            });
-                            *self.parked_suspension.lock().unwrap() = Some((*s).clone());
-                            self.journal(
-                                "suspended",
-                                serde_json::to_value(s.as_ref()).unwrap_or_default(),
-                            );
-                            self.save_checkpoint(Some(&s)).await;
-                            return Ok(TurnResult::Suspended(*s));
+                        match self.dispatch_call(c.clone()).await {
+                            Ok(()) => {}
+                            Err(AgentError::Suspended(s)) => {
+                                // A gated call paused the turn: park the call, the
+                                // not-yet-dispatched rest of this round, and the
+                                // round index for `resume` to pick up.
+                                *self.pending.lock().unwrap() = Some(PendingResume {
+                                    call: c.clone(),
+                                    remaining: calls[i + 1..].to_vec(),
+                                    round,
+                                });
+                                *self.parked_suspension.lock().unwrap() = Some((*s).clone());
+                                self.journal(
+                                    "suspended",
+                                    serde_json::to_value(s.as_ref()).unwrap_or_default(),
+                                );
+                                self.save_checkpoint(Some(&s)).await?;
+                                return Ok(TurnResult::Suspended(*s));
+                            }
+                            Err(error) => return Err(error),
                         }
                     }
                 }
@@ -453,6 +470,10 @@ impl Agent {
         // `pending_suspension` reports `None` unless a later call re-parks.
         *self.parked_suspension.lock().unwrap() = None;
         self.journal("resumed", serde_json::to_value(&action).unwrap_or_default());
+        // Retire the durable approval BEFORE executing an approved call. A
+        // crash after approval must recover an unknown operation, not a stale
+        // parked approval that appears safe to execute for the first time.
+        self.save_progress_checkpoint(None).await?;
 
         // Apply the decision to the parked call.
         match action {
@@ -467,6 +488,7 @@ impl Agent {
                     content,
                     is_error: true,
                 });
+                self.save_progress_checkpoint(None).await?;
             }
             HitlAction::Approve => {
                 self.dispatch_approved(call).await?;
@@ -480,19 +502,23 @@ impl Agent {
 
         // Drain the remaining calls of the suspended round in order.
         for (i, c) in remaining.iter().enumerate() {
-            if let Err(AgentError::Suspended(s)) = self.dispatch_call(c.clone()).await {
-                *self.pending.lock().unwrap() = Some(PendingResume {
-                    call: c.clone(),
-                    remaining: remaining[i + 1..].to_vec(),
-                    round,
-                });
-                *self.parked_suspension.lock().unwrap() = Some((*s).clone());
-                self.journal(
-                    "suspended",
-                    serde_json::to_value(s.as_ref()).unwrap_or_default(),
-                );
-                self.save_checkpoint(Some(&s)).await;
-                return Ok(TurnResult::Suspended(*s));
+            match self.dispatch_call(c.clone()).await {
+                Ok(()) => {}
+                Err(AgentError::Suspended(s)) => {
+                    *self.pending.lock().unwrap() = Some(PendingResume {
+                        call: c.clone(),
+                        remaining: remaining[i + 1..].to_vec(),
+                        round,
+                    });
+                    *self.parked_suspension.lock().unwrap() = Some((*s).clone());
+                    self.journal(
+                        "suspended",
+                        serde_json::to_value(s.as_ref()).unwrap_or_default(),
+                    );
+                    self.save_checkpoint(Some(&s)).await?;
+                    return Ok(TurnResult::Suspended(*s));
+                }
+                Err(error) => return Err(error),
             }
         }
 
@@ -557,7 +583,7 @@ impl Agent {
         let mut working = self.snapshot();
         self.chain.turn_end(&mut working).await?;
         self.commit(working);
-        self.save_checkpoint(None).await;
+        self.save_checkpoint(None).await?;
         Ok(TurnResult::Done(TurnOutput { message }))
     }
 
@@ -681,6 +707,7 @@ impl Agent {
         };
         self.journal("tool", serde_json::to_value(&msg).unwrap_or_default());
         self.state.lock().unwrap().messages.push(msg);
+        self.save_progress_checkpoint(None).await?;
         Ok(())
     }
 
@@ -935,17 +962,68 @@ impl Agent {
     }
 
     /// Persist the current committed snapshot to the checkpointer, if one is set.
-    /// Bumps `seq` and saves under the current thread id. Save errors are
-    /// **swallowed** — a checkpoint failure must not kill the turn (the impl owns
-    /// its own retries/logging; see [`Checkpointer`]). A no-op when no
-    /// checkpointer is configured.
-    async fn save_checkpoint(&self, suspension: Option<&Suspension>) {
-        if let Some(cp) = &self.checkpointer {
-            let snapshot = self.snapshot();
-            let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-            let thread = self.thread();
-            let _ = cp.save(&thread, seq, &snapshot, suspension).await;
+    /// Bumps `seq` and saves under the current thread id. Legacy agents ignore
+    /// save errors; durable-turn agents refuse further work with a fixed error.
+    async fn save_progress_checkpoint(
+        &self,
+        suspension: Option<&Suspension>,
+    ) -> Result<(), AgentError> {
+        if self.durable_turn_checkpoints {
+            self.save_checkpoint(suspension).await?;
         }
+        Ok(())
+    }
+
+    async fn save_checkpoint(&self, suspension: Option<&Suspension>) -> Result<(), AgentError> {
+        let result = self.try_save_checkpoint(suspension).await;
+        self.checkpoint_failed
+            .store(result.is_err(), Ordering::SeqCst);
+        if self.durable_turn_checkpoints && result.is_err() {
+            return Err(checkpoint_save_error());
+        }
+        Ok(())
+    }
+
+    async fn try_save_checkpoint(&self, suspension: Option<&Suspension>) -> Result<(), AgentError> {
+        if let Some(cp) = &self.checkpointer {
+            let mut snapshot = self.snapshot();
+            if self.durable_turn_checkpoints {
+                if snapshot.custom.contains_key(RECOVERY_KEY) {
+                    return Err(checkpoint_save_error());
+                }
+                snapshot.custom.insert(
+                    RECOVERY_KEY.into(),
+                    serde_json::json!({
+                        "version": 1,
+                        "in_progress": !self.turn_input.lock().unwrap().finishing
+                    }),
+                );
+            }
+            let seq = self.seq.load(Ordering::SeqCst);
+            let next = seq.checked_add(1).ok_or_else(checkpoint_save_error)?;
+            self.seq
+                .compare_exchange(seq, next, Ordering::SeqCst, Ordering::SeqCst)
+                .map_err(|_| checkpoint_save_error())?;
+            let thread = self.thread();
+            cp.save(&thread, seq, &snapshot, suspension).await?;
+        } else if self.durable_turn_checkpoints {
+            return Err(checkpoint_save_error());
+        }
+        Ok(())
+    }
+
+    /// Whether the last attempted checkpoint failed. Completed effects remain
+    /// in memory; applications must not claim that those effects were saved.
+    pub fn checkpoint_failed(&self) -> bool {
+        self.checkpoint_failed.load(Ordering::SeqCst)
+    }
+
+    pub fn durable_turn_checkpoints_enabled(&self) -> bool {
+        self.durable_turn_checkpoints
+    }
+
+    pub fn recovery_info(&self) -> Option<crate::checkpoint::RecoveryInfo> {
+        *self.recovery_info.lock().unwrap()
     }
 
     /// Append a lifecycle event to the transcript sink, if one is set.
@@ -969,13 +1047,46 @@ impl Agent {
             .checkpointer
             .as_ref()
             .ok_or_else(|| AgentError::State("no checkpointer configured".into()))?;
-        let Some((seq, state, suspension)) = cp.load_latest(thread_id).await? else {
+        let loaded = cp.load_latest(thread_id).await.map_err(|error| {
+            if self.durable_turn_checkpoints {
+                checkpoint_load_error()
+            } else {
+                error
+            }
+        })?;
+        let Some((seq, mut state, suspension)) = loaded else {
             return Ok(false);
+        };
+        let next_seq = seq.checked_add(1).ok_or_else(checkpoint_load_error)?;
+        let recovery = if self.durable_turn_checkpoints {
+            let unfinished_turn = match state.custom.remove(RECOVERY_KEY) {
+                Some(value) => {
+                    let marker: RecoveryMarker =
+                        serde_json::from_value(value).map_err(|_| checkpoint_load_error())?;
+                    if marker.version != 1 {
+                        return Err(checkpoint_load_error());
+                    }
+                    marker.in_progress
+                }
+                None => false,
+            };
+            let unanswered = reconcile_recovered_calls(
+                &mut state,
+                suspension.as_ref().map(|s| s.request.tool_call.id.as_str()),
+            );
+            (unfinished_turn || unanswered > 0).then_some(crate::checkpoint::RecoveryInfo {
+                unfinished_turn,
+                unresolved_tool_calls: unanswered,
+            })
+        } else {
+            None
         };
         *self.thread_id.lock().unwrap() = thread_id.to_string();
         self.clear_pending_input();
         self.commit(state);
-        self.seq.store(seq + 1, Ordering::SeqCst);
+        self.seq.store(next_seq, Ordering::SeqCst);
+        self.checkpoint_failed.store(false, Ordering::SeqCst);
+        *self.recovery_info.lock().unwrap() = recovery;
         // Re-park a persisted suspension so the app can resume the interrupted
         // turn. The remaining calls of the suspended round are not persisted, so
         // resume continues from the model↔tool loop after applying the decision.
@@ -1006,7 +1117,72 @@ impl Agent {
     pub fn set_thread_id(&self, id: &str) {
         *self.thread_id.lock().unwrap() = id.to_string();
         self.seq.store(0, Ordering::SeqCst);
+        self.checkpoint_failed.store(false, Ordering::SeqCst);
+        *self.recovery_info.lock().unwrap() = None;
     }
+}
+
+const RECOVERY_KEY: &str = "_craftsman_durable_turn_v1";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryMarker {
+    version: u64,
+    in_progress: bool,
+}
+
+fn checkpoint_save_error() -> AgentError {
+    AgentError::State("Session checkpoint could not be saved. Further work was stopped; completed operations may have effects that were not saved. Inspect the workspace before retrying.".into())
+}
+
+fn checkpoint_load_error() -> AgentError {
+    AgentError::State("Session checkpoint could not be restored. The current session was kept; no recovered operations were replayed.".into())
+}
+
+// Reconcile each assistant/tool group separately: ids can be reused in later
+// rounds. Put unknown results BEFORE the next user/assistant message so a new
+// turn never accidentally supplies results to an earlier interrupted round.
+fn reconcile_recovered_calls(state: &mut AgentState, parked_id: Option<&str>) -> usize {
+    let mut pending: Vec<String> = Vec::new();
+    let mut recovered = 0;
+    let original = std::mem::take(&mut state.messages);
+    for message in original {
+        match &message {
+            Msg::Tool { tool_call_id, .. } => {
+                if let Some(index) = pending.iter().position(|id| id == tool_call_id) {
+                    pending.remove(index);
+                }
+            }
+            _ => {
+                recovered += append_unknown_results(&mut state.messages, &mut pending, parked_id);
+            }
+        }
+        if let Msg::Assistant { tool_calls, .. } = &message {
+            pending.extend(tool_calls.iter().map(|call| call.id.clone()));
+        }
+        state.messages.push(message);
+    }
+    recovered + append_unknown_results(&mut state.messages, &mut pending, parked_id)
+}
+
+fn append_unknown_results(
+    messages: &mut Vec<Msg>,
+    pending: &mut Vec<String>,
+    parked_id: Option<&str>,
+) -> usize {
+    let mut count = 0;
+    for id in pending.drain(..) {
+        if parked_id == Some(id.as_str()) {
+            continue;
+        }
+        messages.push(Msg::Tool {
+            tool_call_id: id,
+            content: "Completion was not recorded before the session was interrupted. This operation may have had effects. Inspect the workspace before retrying it.".into(),
+            is_error: true,
+        });
+        count += 1;
+    }
+    count
 }
 
 /// Dispatch commit: the tool may have mutated state through TWO channels —
@@ -1084,6 +1260,7 @@ pub struct AgentBuilder {
     registry: Option<Arc<crate::subagent::AgentRegistry>>,
     notifications: Option<crate::subagent::NotificationQueue>,
     checkpointer: Option<Arc<dyn Checkpointer>>,
+    durable_turn_checkpoints: bool,
     journal: Option<Arc<dyn TranscriptSink>>,
     thread_id: String,
     harness_profile: Option<crate::profiles::HarnessProfile>,
@@ -1105,6 +1282,7 @@ impl AgentBuilder {
             registry: None,
             notifications: None,
             checkpointer: None,
+            durable_turn_checkpoints: false,
             journal: None,
             thread_id: "default".into(),
             harness_profile: None,
@@ -1189,6 +1367,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Require successful durable saves before sampling/dispatch and after each
+    /// completed tool. Defaults false, preserving legacy persistence behavior.
+    /// A missing store or save failure stops further work with a fixed error.
+    /// Reopening preserves recorded results and marks unresolved calls unknown;
+    /// it never automatically replays operations. This is not effect rollback.
+    pub fn durable_turn_checkpoints(mut self, enabled: bool) -> Self {
+        self.durable_turn_checkpoints = enabled;
+        self
+    }
+
     /// Install an append-only [`TranscriptSink`] for lifecycle journaling.
     /// Defaults to no journal.
     pub fn journal(mut self, journal: Arc<dyn TranscriptSink>) -> Self {
@@ -1270,12 +1458,19 @@ impl AgentBuilder {
             turn_input: Arc::new(Mutex::new(TurnInputState::default())),
             model_cancel: Arc::new(tokio::sync::Notify::new()),
             checkpointer: self.checkpointer,
+            durable_turn_checkpoints: self.durable_turn_checkpoints,
+            checkpoint_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            recovery_info: Arc::new(Mutex::new(None)),
             journal: self.journal,
             thread_id: Arc::new(Mutex::new(self.thread_id)),
             seq: Arc::new(AtomicU64::new(0)),
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_recovery_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 #[path = "agent_owned_cancellation_tests.rs"]

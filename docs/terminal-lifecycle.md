@@ -96,3 +96,7 @@ The inherited shell investigation remains unresolved. SDK/WIT, dependency pins,
 schemas, protocol-v4/ACP frames and goldens remain unchanged. Live task/gadget
 quality, crash diagnostics, native containment and durable recovery still need
 their separate validation. Binary and container publication remains disabled.
+
+The subsequent [terminal recovery](terminal-recovery.md) continuation adds required
+per-tool checkpoints and unknown-completion notices. Its verification is separate
+from the lifecycle PR/main results, and native/diagnostic/live-quality limits remain.

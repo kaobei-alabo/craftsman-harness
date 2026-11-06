@@ -11,7 +11,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 
 | Area | Current implementation | Remaining production work |
 | --- | --- | --- |
-| Terminal coding agent | Streaming model/tool loop, approvals, shared turn/session stops through compaction/helpers/native commands, signal cleanup, file/shell/web tools, sessions and memory | Complete current validation, evaluate live tasks/console events and durable recovery, and handle remaining containment limits |
+| Terminal coding agent | Streaming model/tool loop, approvals, owned cancellation/signal cleanup, file/shell/web tools, required per-tool checkpoints and interrupted-session warnings | Complete recovery validation, live task/console evaluation and remaining recovery/containment work |
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic WASM publication, capability checks and deterministic discovery before model rounds | Keep opt-in and separate build/load approvals; gather live quality evidence |
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
@@ -179,6 +179,23 @@ machine cannot establish the cause or erase those results.
 
 ## Next engineering gates
 
+Terminal lifecycle [PR #5](https://github.com/yumingchangsabodota/craftsman-harness/pull/5)
+and independent [main run 42170055307](https://github.com/yumingchangsabodota/craftsman-harness/actions/runs/42170055307)
+passed every required job/step and both modes with original inventories retained:
+macOS core 1927/0/12 and gadgets 2083/0/15, Ubuntu 1873/0/12 and 2029/0/15,
+Windows 1847/0/11 and 1992/0/14. Linux/macOS had no compiler warnings; the existing
+Windows five/eight occurrences matched the reviewed PR. Isolated scripted probes
+also exercised an actual terminal file write, SIGTERM during native work and
+terminal restoration without network or host credentials. This is runtime/source
+verification, not live model-quality evidence.
+
+The next [terminal recovery](terminal-recovery.md) change saves completed tool
+results immediately, stops after failed saves, atomically commits local metadata/
+state/pruning and warns about unknown effects. Stable local verification passes
+all nine checks: core 1947/0/13 and gadgets 2103/0/16, no compiler warnings, with
+every original case and 20 new cases/one helper retained. Hosted and independent
+main checks remain separate from the lifecycle results above.
+
 1. Verify shared terminal cancellation through tools/builds, compaction and child
    agents, plus SIGTERM/SIGHUP shutdown and terminal restoration. Evaluate remaining
    exceptional/native containment and durable recovery limits. Verify each
@@ -207,8 +224,8 @@ It is a working, extensively source-tested agent suitable for supervised trials
 in a disposable checkout with explicit model configuration and manual approvals.
 It is not yet production ready. Shared cancellation now reaches native builds,
 compaction and foreground helpers, and signals enter owned shutdown. The
-continuation still needs complete validation, real console-event/task evaluation
-and durable recovery. The inherited shell issue remains open, and live
+recovery continuation still needs complete validation, real console-event/task
+evaluation and its remaining recovery/diagnostic cases. The inherited shell issue remains open, and live
 model/task/gadget quality has not been measured. The host shell and
 filesystem are not sandboxed by the gadget WASM engine. Keep backups and review
 the agent's changes; do not rely on it for unattended production changes yet.

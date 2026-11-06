@@ -195,6 +195,7 @@ impl AgentSlot {
             .expect("the terminal root has depth zero");
         extras.cancellation_session = Some(cancellation.clone());
         let building = cancellation.clone();
+        let startup = bridge.tx.clone();
         Self {
             inner: AgentSlotInner::Pending(tokio::spawn(async move {
                 if building.is_cancelled() {
@@ -206,6 +207,14 @@ impl AgentSlot {
                         &cfg, approval, "", false, false, None, extras,
                     ))
                     .await;
+                if session
+                    .as_ref()
+                    .is_some_and(|session| session.checkpointer.is_none())
+                {
+                    let _ = startup.send(UiEvent::Activity(
+                        "Session persistence is unavailable. Agent requests will stop before model or tool work until checkpoint storage is available.".into(),
+                    ));
+                }
                 if building.is_cancelled() {
                     if let Some(session) = &session {
                         session.lsp.shutdown().await;
