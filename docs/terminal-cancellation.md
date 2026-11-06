@@ -62,8 +62,17 @@ Two TUI cases drive the real key handler, bridge, `StreamingLlmProvider` and
 loopback HTTP client. The synthetic peer never completes its response; after
 Ctrl-C the real connection closes both before headers and after a partial SSE
 delta. They use bounded waits and no sleeps, live model credentials, user config
-or installed gadgets. Focused checks pass; full local/hosted evidence remains
-required before merge.
+or installed gadgets. Focused checks pass. The full local run preserves every
+original named/ignored/doctest entry and passes core **1903 / 0 / 10** and gadgets
+**2058 / 0 / 12** (passed/failed/ignored), with all eight additions in both modes
+and no compiler warnings. The actual scaffold/edit/build/discover/call gadget
+test also passes. Its script exit **1** is retained: provenance rejected a new
+model-cancellation documentation phrase in the framework source. That phrase
+was corrected without a new allow-list exception. Targeted formatting,
+locked core/default builds, provenance and whitespace checks pass on corrected
+source; the complete suites were not retried unchanged. Raw full evidence and
+the inventory audit are retained in `target/verification/`. All four hosted
+jobs/every step and independent merged-main verification still gate completion.
 
 The original prompt-cancellation evidence below is retained separately.
 
