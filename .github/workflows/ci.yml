@@ -5,7 +5,7 @@ name: ci
 # jobs. Require fmt and every test job in its main-branch protection rules.
 #
 # First-party actions only: the org allowlist blocks third-party ones and their
-# transitive action references (see release.yml). The toolchain comes from
+# transitive action references. The toolchain comes from
 # rustup, which the runners ship, and from rust-toolchain.toml in the checkout.
 # That file also selects the toolchain for every cargo call below, so there is
 # no `rustup default`. It is installed explicitly because rustup no longer
