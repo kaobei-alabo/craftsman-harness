@@ -34,7 +34,6 @@ crates/craftsman-rs/src/llm.rs:"upstream closed without any SSE events"  # netwo
 crates/craftsman-rs/src/llm.rs:"upstream closed before finish_reason or [DONE]"  # network sense (user-visible error): the provider or proxy closed the stream
 crates/craftsman-rs/src/llm.rs:The upstream proxy/provider closed a truncated response  # network sense (user-visible error): the provider or proxy closed the stream
 crates/craftsman-rs/src/serve.rs:injects on the upstream dial  # network sense: the platform bridge's dial toward this pod
-.github/workflows/release.yml:the desktop's UPSTREAM_BASELINE.json  # names a file of the desktop repository, not lineage
 
 # --- legacy-database migration (compatibility code; archive name is on disk) ---
 crates/craftsman-rs/src/threads_db.rs://! The retired Python client also used `threads.db`, but with a LangGraph  # legacy-database migration: names the on-disk schema it detects and archives
