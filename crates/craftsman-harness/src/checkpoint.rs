@@ -27,11 +27,10 @@ pub struct ThreadInfo {
 /// (each round commit, at a suspension park, and at turn end) and
 /// [`load_latest`](Checkpointer::load_latest) via [`Agent::load_thread`].
 ///
-/// **Save failures do not abort the turn.** The agent invokes `save` on a
-/// fire-and-forget basis: the returned `Result` is discarded by the loop, so an
-/// impl is responsible for its own retries/logging. This keeps a flaky store
-/// from killing an in-flight conversation. `load_latest`, by contrast, is a
-/// deliberate user action and its errors *do* propagate.
+/// By default save failures do not abort the turn. Agents explicitly selecting
+/// `AgentBuilder::durable_turn_checkpoints` instead await successful saves
+/// before work and after each tool result, and stop further dispatch on failure.
+/// Neither policy rolls back completed effects. Load errors always propagate.
 #[async_trait]
 pub trait Checkpointer: Send + Sync {
     async fn save(
@@ -47,6 +46,14 @@ pub trait Checkpointer: Send + Sync {
     ) -> Result<Option<(u64, AgentState, Option<Suspension>)>, AgentError>;
     async fn list_threads(&self) -> Result<Vec<ThreadInfo>, AgentError>;
     async fn delete_thread(&self, thread_id: &str) -> Result<(), AgentError>;
+}
+
+/// Facts about a reopened checkpoint. An unresolved call may have had effects;
+/// absence of a durable result is never evidence that it did not execute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryInfo {
+    pub unfinished_turn: bool,
+    pub unresolved_tool_calls: usize,
 }
 
 /// Append-only observability sink (the Claude-Code-style JSONL journal).

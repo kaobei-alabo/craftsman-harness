@@ -61,7 +61,8 @@ pub struct Session {
     /// The concrete checkpointer, when persistence is available — the SAME `Arc`
     /// handed to the agent builder (as `Arc<dyn Checkpointer>`), kept here typed
     /// concretely so `/session` can call `list_threads`. `None` when the store
-    /// failed to open (the session still runs, just without persistence).
+    /// failed to open. Owned terminal requests require persistence; legacy
+    /// frontends may still run without it.
     pub checkpointer: Option<Arc<LibsqlCheckpointer>>,
     /// Per-turn workspace file checkpoint/rewind service. It shares the
     /// conversation store and follows thread switches through Session helpers.
@@ -1856,6 +1857,9 @@ async fn build_session_with_profile(
 
     let mut builder = Agent::builder(provider)
         .name("main")
+        .durable_turn_checkpoints(
+            construction.prepared().is_none() && extras.cancellation_session.is_some(),
+        )
         .interrupt_model_on_cancel(
             construction.prepared().is_none() && extras.interrupt_model_on_cancel,
         )
@@ -1935,6 +1939,11 @@ async fn build_session_with_profile(
 /// transient failure doesn't wedge the next turn with unanswered history.
 /// No-op unless the last message is the user's (i.e. no progress was made).
 pub fn rollback_dangling_user(agent: &Agent) {
+    // Durable terminal input was already checkpointed before sampling. Keep
+    // its live and durable copies consistent even when the provider fails.
+    if agent.durable_turn_checkpoints_enabled() {
+        return;
+    }
     let mut st = agent.state.lock().unwrap();
     if matches!(st.messages.last(), Some(Msg::User { .. })) {
         st.messages.pop();

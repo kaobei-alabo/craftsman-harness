@@ -57,6 +57,9 @@ pub struct LibsqlCheckpointer {
     /// Held for the connection's lifetime; never read.
     _db: libsql::Database,
     conn: libsql::Connection,
+    /// Dedicated connection so concurrent workspace/catalog operations cannot
+    /// accidentally participate in a checkpoint transaction on `conn`.
+    checkpoint_conn: tokio::sync::Mutex<libsql::Connection>,
     workspace: String,
 }
 
@@ -195,6 +198,23 @@ impl LibsqlCheckpointer {
         let init_guard = crate::threads_db::local_database_init_guard().await;
         let conn = db.connect().map_err(|e| e.to_string())?;
         crate::threads_db::configure_local_connection(&conn).await?;
+        // A returned checkpoint commit must ask SQLite to sync its WAL. This
+        // remains a local database, not a power-loss/OS-storage guarantee.
+        conn.execute("PRAGMA synchronous = FULL", ())
+            .await
+            .map_err(|e| e.to_string())?;
+        let checkpoint_conn = db.connect().map_err(|e| e.to_string())?;
+        checkpoint_conn
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
+        checkpoint_conn
+            .execute("PRAGMA synchronous = FULL", ())
+            .await
+            .map_err(|e| e.to_string())?;
+        checkpoint_conn
+            .execute("PRAGMA foreign_keys = ON", ())
+            .await
+            .map_err(|e| e.to_string())?;
         Self::apply_schema(&conn).await.map_err(|e| e.to_string())?;
         if retire_legacy {
             Self::retire_legacy_workspace_metadata(&conn)
@@ -206,6 +226,7 @@ impl LibsqlCheckpointer {
         Ok(Self {
             _db: db,
             conn,
+            checkpoint_conn: tokio::sync::Mutex::new(checkpoint_conn),
             workspace,
         })
     }
@@ -923,8 +944,23 @@ impl Checkpointer for LibsqlCheckpointer {
         state: &AgentState,
         suspension: Option<&Suspension>,
     ) -> Result<(), AgentError> {
+        let seq = i64::try_from(seq).map_err(|_| {
+            AgentError::State("checkpoint sequence exceeds the storage range".into())
+        })?;
+        // Serialize before any database mutation. Metadata, state and pruning
+        // share one commit so a failed save cannot partially advance a thread.
+        let state_json = serde_json::to_string(state).map_err(state_err)?;
+        let suspension_json = match suspension {
+            Some(s) => Some(serde_json::to_string(s).map_err(state_err)?),
+            None => None,
+        };
+        let connection = self.checkpoint_conn.lock().await;
+        let transaction = connection
+            .transaction_with_behavior(libsql::TransactionBehavior::Immediate)
+            .await
+            .map_err(state_err)?;
         // Insert the thread row once (title/created fixed at creation).
-        self.conn
+        transaction
             .execute(
                 "INSERT INTO threads (id, created, updated, title, workspace) VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(id) DO UPDATE SET
@@ -939,7 +975,7 @@ impl Checkpointer for LibsqlCheckpointer {
             .map_err(state_err)?;
 
         if !is_general_chat_workspace(&self.workspace) {
-            self.conn
+            transaction
                 .execute(
                     "INSERT OR IGNORE INTO thread_project_contexts (thread_id, path, position)
                      VALUES (?1, ?2, 0)",
@@ -949,23 +985,17 @@ impl Checkpointer for LibsqlCheckpointer {
                 .map_err(state_err)?;
         }
 
-        let state_json = serde_json::to_string(state).map_err(state_err)?;
-        let suspension_json = match suspension {
-            Some(s) => Some(serde_json::to_string(s).map_err(state_err)?),
-            None => None,
-        };
-
-        self.conn
+        transaction
             .execute(
                 "INSERT OR REPLACE INTO checkpoints (thread_id, seq, state_json, suspension_json)
                  VALUES (?1, ?2, ?3, ?4)",
-                libsql::params![thread_id, seq as i64, state_json, suspension_json],
+                libsql::params![thread_id, seq, state_json, suspension_json],
             )
             .await
             .map_err(state_err)?;
 
         // Prune all but the newest N checkpoints for this thread.
-        self.conn
+        transaction
             .execute(
                 "DELETE FROM checkpoints
                  WHERE thread_id = ?1 AND seq NOT IN (
@@ -976,6 +1006,7 @@ impl Checkpointer for LibsqlCheckpointer {
             )
             .await
             .map_err(state_err)?;
+        transaction.commit().await.map_err(state_err)?;
         Ok(())
     }
 
@@ -1008,7 +1039,9 @@ impl Checkpointer for LibsqlCheckpointer {
             Some(s) => Some(serde_json::from_str::<Suspension>(&s).map_err(state_err)?),
             None => None,
         };
-        Ok(Some((seq as u64, state, suspension)))
+        let seq = u64::try_from(seq)
+            .map_err(|_| AgentError::State("checkpoint sequence is invalid".into()))?;
+        Ok(Some((seq, state, suspension)))
     }
 
     async fn list_threads(&self) -> Result<Vec<ThreadInfo>, AgentError> {
@@ -1194,6 +1227,10 @@ fn is_general_chat_workspace(path: &str) -> bool {
         .trim_end_matches('/')
         .ends_with("/.craftsman/general-chat")
 }
+
+#[cfg(test)]
+#[path = "checkpoints/recovery_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 mod tests {

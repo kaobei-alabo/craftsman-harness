@@ -1076,6 +1076,15 @@ impl App {
         self.push_kind(TranscriptKind::Activity, line);
     }
 
+    pub(super) fn show_recovery_notice(&mut self, session: &Session) {
+        if let Some(recovery) = session.agent.recovery_info() {
+            self.push_error(format!(
+                "This session has an unfinished turn. {} tool call(s) have no recorded completion and may have had effects. Inspect the workspace before asking to retry them.",
+                recovery.unresolved_tool_calls
+            ));
+        }
+    }
+
     pub(super) fn finish_turn(
         &mut self,
         result: Result<TurnResult, String>,
@@ -1092,7 +1101,8 @@ impl App {
                 self.push(format!("[turn suspended: {}]", suspension.request.summary));
             }
             Err(error) => {
-                if let Some(session) = session {
+                if let Some(session) = session.filter(|session| !session.agent.checkpoint_failed())
+                {
                     agent::rollback_dangling_user(&session.agent);
                 }
                 self.push_error(format!("Request failed: {error}"));
@@ -1214,6 +1224,7 @@ pub async fn run(
                         let state = session.agent.state.lock().unwrap().clone();
                         hydrate_transcript(&mut app, &state);
                         app.push(format!("Resumed session {thread_id}"));
+                        app.show_recovery_notice(session);
                         if let Some(suspension) = session.agent.pending_suspension() {
                             app.push(format!(
                                 "Session is awaiting approval: {}",
@@ -1545,10 +1556,6 @@ pub async fn run(
         }
     }
 
-    let resume_id = slot.peek().and_then(|session| {
-        let has_messages = !session.agent.state.lock().unwrap().messages.is_empty();
-        (has_messages && session.checkpointer.is_some()).then(|| session.thread_id.clone())
-    });
     app.closing = true;
     shutdown.cancellation.cancel();
     if let Some(session) = slot.peek() {
@@ -1567,6 +1574,13 @@ pub async fn run(
         slot.shutdown().await;
     })
     .await;
+    // Cleanup may perform the final save or discover its failure. Determine
+    // the resume hint from that actual return, not from pre-shutdown state.
+    let resume_id = slot.peek().and_then(|session| {
+        let has_messages = !session.agent.state.lock().unwrap().messages.is_empty();
+        (has_messages && session.checkpointer.is_some() && !session.agent.checkpoint_failed())
+            .then(|| session.thread_id.clone())
+    });
     let cursor_result = terminal.show_cursor();
     drop(terminal);
     drop(guard);

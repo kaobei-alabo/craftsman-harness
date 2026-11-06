@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 5, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 6, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -48,7 +48,18 @@
 > panic restoration are owned. Native 5 s kill/reap and 2 s drain bounds are
 > unchanged, with a truthful overall shutdown timeout. Legacy/private/frozen
 > agents mask ambient scopes. [Terminal lifecycle](terminal-lifecycle.md) records
-> tests, pending full verification and remaining OS/recovery/live-quality gates.
+> tests and remaining OS/recovery/live-quality gates. PR #5 and independent main
+> run 42170055307 passed all four jobs/every step and both native modes.
+
+> **Terminal recovery (November 6 continuation):** the owned terminal selects
+> required user/round/tool-result checkpoints. Failed saves stop further work;
+> reopening keeps durable results and warns about unknown effects without
+> automatic replay. Local metadata/state/pruning writes share a transaction on a
+> separate connection with FULL WAL synchronization. [Terminal recovery](terminal-recovery.md)
+> records failure/crash tests and remaining concurrent-owner, native, diagnostic
+> and live-quality limits. Stable local verification passes all nine checks,
+> core 1947/0/13 and gadgets 2103/0/16, with no warnings and all original cases
+> retained. Hosted and independent main checks remain separate from PR #5.
 
 > **Desktop reconnect correction (November 6):** the required Ubuntu gadget suite
 > exposed the original idle reconnect assertion on PR #2. An actual connection
@@ -96,7 +107,7 @@ occurrences. The migration note records the completed validation checkpoint.
 
 | Surface | Current behavior | Important limit |
 |---|---|---|
-| `craftsman` TUI | Streaming conversation, steering/queue, shared turn/session stops through models/compaction/helpers/native commands, signal and terminal restoration, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host tools are not an OS sandbox; uninterruptible/escaping work, durable recovery and live task/console-event quality still need evaluation |
+| `craftsman` TUI | Streaming conversation, steering/queue, owned cancellation/terminal restoration, HITL, host/web tools, required per-tool checkpoints, recovery warnings, memory/LSP/skills, opt-in gadgets | Host tools are not an OS sandbox; escaping/uninterruptible work, concurrent owners, remaining recovery and live task/console-event quality need evaluation |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
 | `serve`, `desktop-serve`, `acp-serve`, `acp-bridge` | Existing transports/adapters remain supported | Desktop v4 is frozen; ACP stays standard with declared Craftsman extensions; no new headless/gadget opt-in is inferred |
