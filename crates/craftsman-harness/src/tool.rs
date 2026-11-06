@@ -75,6 +75,8 @@ impl ToolMeta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ToolErrorKind {
+    /// A real turn/session stop interrupted the operation.
+    Cancelled,
     /// The call hit its time limit and was stopped.
     Timeout,
     /// The tool could not start its process.

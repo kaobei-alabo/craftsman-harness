@@ -531,3 +531,130 @@ async fn ctrl_c_interrupts_the_real_main_provider_awaiting_headers() {
 async fn ctrl_c_interrupts_the_real_main_provider_after_a_partial_sse_delta() {
     cancel_real_stream(true).await;
 }
+
+async fn scoped_waiter(approval: bool) {
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let extras = UiBridge { tx }.session_extras();
+    let turn = craftsman_harness::SessionCancellation::new().new_turn();
+    let running = turn.clone();
+    let task = tokio::spawn(async move {
+        running
+            .scope(async {
+                if approval {
+                    assert_eq!(
+                        extras.approval_prompt.unwrap()("execute", "scoped", "details"),
+                        ApprovalPromptResult::Reject(String::new())
+                    );
+                } else {
+                    assert_eq!(extras.ask_user_prompt.unwrap()("scoped question"), None);
+                }
+            })
+            .await
+    });
+    let event = tokio::time::timeout(WAIT, events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event, UiEvent::ScopedPrompt { .. }));
+    // No UI reply: cancellation itself must release the real blocking waiter.
+    turn.cancel();
+    tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+    let mut app = App::new(&Config::default());
+    handle_ui_event(&mut app, event, None);
+    assert!(app.modal.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_approval_waiter_releases_on_stop_without_a_ui_reply_or_late_grant() {
+    scoped_waiter(true).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scoped_question_waiter_releases_on_stop_without_a_ui_reply_or_partial_answer() {
+    scoped_waiter(false).await;
+}
+
+#[test]
+fn closing_refuses_new_prompts_even_after_an_operation_completion_resets_the_turn() {
+    let mut app = App::new(&Config::default());
+    app.closing = true;
+    app.running = true;
+    handle_ui_event(
+        &mut app,
+        UiEvent::OperationFinished("actual completion".into()),
+        None,
+    );
+    let (response, received) = std_mpsc::channel();
+    app.enqueue_modal(Modal::Ask(AskModal {
+        question: "late".into(),
+        answer: "never submit".into(),
+        response,
+    }));
+    assert_eq!(received.recv_timeout(WAIT).unwrap(), None);
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn ctrl_c_reaches_an_owned_shell_operation_without_an_active_model_agent() {
+    let mut app = App::new(&Config::default());
+    let turn = craftsman_harness::SessionCancellation::new().new_turn();
+    app.operation_cancellation = Some(turn.clone());
+    app.running = true;
+    handle_key(&mut app, ctrl_c());
+    apply_turn_cancellation(&mut app, None);
+    assert!(turn.is_cancelled());
+    assert!(
+        app.running,
+        "the operation remains running until actual cleanup returns"
+    );
+    handle_ui_event(
+        &mut app,
+        UiEvent::OperationFinished("command cancelled".into()),
+        None,
+    );
+    assert!(!app.running);
+    assert!(app.operation_cancellation.is_none());
+}
+
+#[tokio::test]
+async fn cancelling_manual_compaction_keeps_the_unmodified_conversation() {
+    struct SummaryModel(tokio::sync::Notify);
+    #[async_trait::async_trait]
+    impl ModelProvider for SummaryModel {
+        async fn complete(&self, _req: ModelRequest) -> Result<ModelResponse, AgentError> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+    let model = Arc::new(SummaryModel(tokio::sync::Notify::new()));
+    let agent = Agent::builder(model.clone()).build();
+    let original = vec![
+        Msg::user("original one"),
+        Msg::assistant("original answer"),
+        Msg::user("original two"),
+        Msg::assistant("original last answer"),
+        Msg::user("tail"),
+    ];
+    agent.state.lock().unwrap().messages = original.clone();
+    let compaction = Arc::new(craftsman_harness::builtin::CompactionMiddleware::new(
+        model.clone(),
+        craftsman_harness::builtin::CompactionTrigger::MessageCount {
+            threshold_msgs: 2,
+            keep_tail_msgs: 1,
+        },
+    ));
+    let turn = craftsman_harness::SessionCancellation::new().new_turn();
+    let running = turn.clone();
+    let state = agent.clone();
+    let task = tokio::spawn(async move {
+        running
+            .scope(crate::tui::commands::compact_session(state, compaction))
+            .await
+    });
+    tokio::time::timeout(WAIT, model.0.notified())
+        .await
+        .unwrap();
+    turn.cancel();
+    let output = tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
+    assert!(output.contains("cancelled by the user"));
+    assert_eq!(agent.state.lock().unwrap().messages, original);
+}

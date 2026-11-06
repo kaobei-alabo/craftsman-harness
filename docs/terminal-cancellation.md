@@ -1,5 +1,10 @@
 # Terminal cancellation
 
+The continuation in [terminal lifecycle](terminal-lifecycle.md) adds shared
+turn/session stops, owned native cleanup, compaction/helper cancellation and
+signal/terminal restoration. The model-only and prompt-only validation below
+remains the dated evidence for those earlier slices.
+
 Ctrl-C reaches the active terminal turn while an approval, an agent question,
 or another dialog is open. The TUI also interrupts a pending main-model request,
 including a wait for HTTP headers or further streamed content. Running tools and

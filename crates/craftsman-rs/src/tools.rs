@@ -19,6 +19,8 @@ use tokio::io::AsyncReadExt;
 
 #[cfg(test)]
 mod observations;
+#[cfg(test)]
+pub(crate) mod owned_cancellation_tests;
 
 pub const GATED_TOOLS: &[&str] = &["execute", "write_file", "edit_file"];
 
@@ -96,6 +98,8 @@ impl ExecRaw {
 /// Why `execute_impl` produced no normal result.
 #[derive(Debug)]
 pub(crate) enum ExecFailure {
+    /// An actual turn/session stop; captured bytes exist only after a spawn.
+    Cancelled { partial: Option<Box<ExecRaw>> },
     /// The shell could not be started.
     Spawn(std::io::Error),
     /// The call hit its limit; the tree was killed. `partial` is what the
@@ -112,6 +116,7 @@ impl ExecFailure {
     /// tail: the timeout error names the limit and carries the partial output.
     pub(crate) fn text(&mut self, settings: &ShellSettings) -> String {
         match self {
+            ExecFailure::Cancelled { .. } => "Error: command cancelled by the user.".into(),
             ExecFailure::Spawn(e) => format!("Error spawning command: {e}"),
             ExecFailure::TimedOut {
                 limit_secs,
@@ -229,8 +234,16 @@ impl ShellRunner {
         }
         let limit = Duration::from_secs(self.settings.call_timeout_secs(timeout_arg));
         let started = std::time::Instant::now();
+        let cancellation = craftsman_harness::TurnCancellation::current();
         #[cfg(not(test))]
-        let result = execute_impl(cmd, &self.root, &self.settings, limit).await;
+        let result = execute_impl_core(
+            cmd,
+            &self.root,
+            &self.settings,
+            limit,
+            cancellation.as_ref(),
+        )
+        .await;
         #[cfg(test)]
         let result = execute_impl_core(
             cmd,
@@ -238,6 +251,7 @@ impl ShellRunner {
             &self.settings,
             limit,
             self.legacy_observations.as_ref(),
+            cancellation.as_ref(),
         )
         .await;
         match result {
@@ -250,6 +264,13 @@ impl ShellRunner {
                 let mut meta = craftsman_harness::ToolMeta::new();
                 meta.duration = Some(started.elapsed());
                 let text = match &failure {
+                    ExecFailure::Cancelled { partial } => {
+                        meta.error_kind = Some(craftsman_harness::ToolErrorKind::Cancelled);
+                        if let Some(partial) = partial {
+                            meta.bytes = Some(partial.stdout.total() + partial.stderr.total());
+                        }
+                        tool_error(text)
+                    }
                     ExecFailure::TimedOut { partial, .. } => {
                         meta.error_kind = Some(craftsman_harness::ToolErrorKind::Timeout);
                         meta.bytes = Some(partial.stdout.total() + partial.stderr.total());
@@ -406,6 +427,7 @@ pub(crate) async fn execute_impl(
     settings: &ShellSettings,
     limit: Duration,
 ) -> Result<ExecRaw, ExecFailure> {
+    let cancellation = craftsman_harness::TurnCancellation::current();
     execute_impl_core(
         cmd,
         cwd,
@@ -413,6 +435,7 @@ pub(crate) async fn execute_impl(
         limit,
         #[cfg(test)]
         None,
+        cancellation.as_ref(),
     )
     .await
 }
@@ -425,12 +448,19 @@ async fn execute_impl_core(
     settings: &ShellSettings,
     limit: Duration,
     #[cfg(test)] owner: Option<&observations::Owner>,
+    cancellation: Option<&craftsman_harness::TurnCancellation>,
 ) -> Result<ExecRaw, ExecFailure> {
     let started = tokio::time::Instant::now();
     #[cfg(test)]
     let observation = owner.and_then(|owner| owner.begin(started, limit));
     let deadline = started + limit;
-    let options = settings.spawn_options();
+    if cancellation.is_some_and(|turn| turn.is_cancelled()) {
+        return Err(ExecFailure::Cancelled { partial: None });
+    }
+    let mut options = settings.spawn_options();
+    if cancellation.is_some() {
+        options.process_group = true;
+    }
     let mut tree = crate::platform_os::ProcessTree::spawn_shell(cmd, cwd, &options)
         .map_err(ExecFailure::Spawn)?;
     #[cfg(test)]
@@ -475,25 +505,40 @@ async fn execute_impl_core(
     if let Some(call) = &observation {
         call.readers_enter();
     }
-    let readers_result = tokio::time::timeout_at(deadline, &mut readers).await;
+    let mut cancelled = false;
+    let readers_result = match cancellation {
+        Some(turn) => tokio::select! {
+            biased;
+            _ = turn.cancelled() => { cancelled = true; None },
+            result = tokio::time::timeout_at(deadline, &mut readers) => Some(result),
+        },
+        None => Some(tokio::time::timeout_at(deadline, &mut readers).await),
+    };
     #[cfg(test)]
     if let Some(call) = &observation {
-        call.readers_return(readers_result.is_ok());
+        call.readers_return(readers_result.as_ref().is_some_and(|result| result.is_ok()));
     }
     let status = match readers_result {
-        Ok(_) => {
+        Some(Ok(_)) => {
             #[cfg(test)]
             if let Some(call) = &observation {
                 call.wait_enter();
             }
-            let result = tokio::time::timeout_at(deadline, tree.wait()).await.ok();
+            let result = match cancellation {
+                Some(turn) => tokio::select! {
+                    biased;
+                    _ = turn.cancelled() => { cancelled = true; None },
+                    result = tokio::time::timeout_at(deadline, tree.wait()) => result.ok(),
+                },
+                None => tokio::time::timeout_at(deadline, tree.wait()).await.ok(),
+            };
             #[cfg(test)]
             if let Some(call) = &observation {
                 call.wait_return(&result);
             }
             result
         }
-        Err(_) => None,
+        Some(Err(_)) | None => None,
     };
     let take = |capture: &SharedCapture| match capture.lock() {
         Ok(c) => c.snapshot(),
@@ -522,7 +567,7 @@ async fn execute_impl_core(
             if let Some(call) = &observation {
                 call.stop_return();
             }
-            if settings.output_format == OutputFormat::HeadTail {
+            if cancelled || settings.output_format == OutputFormat::HeadTail {
                 #[cfg(test)]
                 if let Some(call) = &observation {
                     call.drain_enter();
@@ -536,17 +581,23 @@ async fn execute_impl_core(
             }
             #[cfg(test)]
             if let Some(call) = &observation {
-                call.returned(true);
+                call.returned(!cancelled);
             }
             // Legacy does not read the partial output (today's text drops it).
+            let partial = Box::new(ExecRaw {
+                stdout: take(&out),
+                stderr: take(&err),
+                exit_code: -1,
+                duration: started.elapsed(),
+            });
+            if cancelled {
+                return Err(ExecFailure::Cancelled {
+                    partial: Some(partial),
+                });
+            }
             Err(ExecFailure::TimedOut {
                 limit_secs: limit.as_secs(),
-                partial: Box::new(ExecRaw {
-                    stdout: take(&out),
-                    stderr: take(&err),
-                    exit_code: -1,
-                    duration: started.elapsed(),
-                }),
+                partial,
             })
         }
     }

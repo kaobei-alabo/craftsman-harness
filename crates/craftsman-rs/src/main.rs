@@ -170,7 +170,7 @@ enum Cmd {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<std::process::ExitCode> {
     let cli = Cli::parse();
     let mut cfg = Config::load()?.unwrap_or_default();
     if let Some(mode) = cli
@@ -196,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "gadgets")]
         Some(Cmd::Gadgets { command }) => gadgets::cli::run(cfg, command).await,
         Some(Cmd::Setup) => {
-            tui::run(
+            return tui::run(
                 cfg,
                 cli.auto_approve,
                 cli.mouse || !cli.no_mouse,
@@ -204,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
                 None,
             )
             .await
+            .map(|code| std::process::ExitCode::from(code as u8));
         }
         Some(Cmd::Serve { host, port }) => serve::run(cfg, &host, port).await,
         Some(Cmd::DesktopServe { host, port }) => desktop_serve::run(cfg, &host, port).await,
@@ -233,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
                 .await
             }
             None => {
-                tui::run(
+                return tui::run(
                     cfg,
                     cli.auto_approve,
                     cli.mouse || !cli.no_mouse,
@@ -241,9 +242,11 @@ async fn main() -> anyhow::Result<()> {
                     cli.session,
                 )
                 .await
+                .map(|code| std::process::ExitCode::from(code as u8));
             }
         },
-    }
+    }?;
+    Ok(std::process::ExitCode::SUCCESS)
 }
 
 /// `craftsman -m` with `shell.process_group` on: a command runs in a process

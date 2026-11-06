@@ -705,8 +705,10 @@ impl Tool for McpFrameworkTool {
 /// established terminal behavior; explicit sinks never use terminal stdout.
 #[derive(Default)]
 pub struct SessionExtras {
-    /// TUI main-model opt-in. Legacy/private/frozen frontends leave this false.
-    /// Tool, compaction and child cancellation remain cooperative.
+    /// Installed terminal shutdown router's session owner. Absent in other modes.
+    pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
+    /// TUI turn-scope opt-in. Legacy/private/frozen frontends leave this false.
+    /// Native tools observe the stop while retaining their cleanup ownership.
     pub interrupt_model_on_cancel: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
@@ -1867,6 +1869,11 @@ async fn build_session_with_profile(
         // Copy the already cleaned checkpoint; never load_thread/resume, which
         // would re-park persisted approvals and enable a middleware bypass.
         builder = builder.state(Arc::new(Mutex::new(prepared.initial_state().clone())));
+    }
+    if construction.prepared().is_none() {
+        if let Some(session) = extras.cancellation_session {
+            builder = builder.cancellation_session(session);
+        }
     }
     for entry in middleware {
         builder = builder.middleware(entry);

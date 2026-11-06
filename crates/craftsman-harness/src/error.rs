@@ -2,6 +2,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AgentError {
+    #[error("cancelled by the user")]
+    Cancelled,
     #[error("model error: {0}")]
     Model(String),
     #[error("tool '{name}' error: {message}")]
