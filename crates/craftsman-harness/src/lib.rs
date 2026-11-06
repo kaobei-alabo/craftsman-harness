@@ -1,6 +1,9 @@
 pub mod error;
 pub use error::AgentError;
 
+pub mod cancellation;
+pub use cancellation::{SessionCancellation, TurnCancellation};
+
 pub mod state;
 pub use state::{AgentState, FileData, FileMap, Msg, Todo, TodoStatus, ToolCall};
 

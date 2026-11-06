@@ -479,25 +479,7 @@ Re-run with --force only if overwriting those newer changes is intended.",
                 app.push("no agent yet");
                 return false;
             };
-            let messages = session.agent.state.lock().unwrap().messages.clone();
-            match session.compaction.compact_now(&messages).await {
-                Ok(Some(compacted)) => {
-                    let before = messages.len();
-                    let after = compacted.len();
-                    let mut st = session.agent.state.lock().unwrap();
-                    st.messages = compacted;
-                    // The usage anchor describes the transcript before
-                    // compaction, so it no longer matches this one.
-                    st.last_usage = None;
-                    st.last_usage_msg_count = 0;
-                    drop(st);
-                    app.push(format!(
-                        "compacted conversation: {before} -> {after} messages"
-                    ));
-                }
-                Ok(None) => app.push("(conversation too short to compact)"),
-                Err(error) => app.push(format!("could not compact conversation: {error}")),
-            }
+            app.push(compact_session(session.agent.clone(), session.compaction.clone()).await);
         }
         "/agents" => {
             let Some(name) = parts.next() else {
@@ -788,6 +770,35 @@ Re-run with --force only if overwriting those newer changes is intended.",
         other => app.push(format!("unknown command {other} — /help for the list")),
     }
     false
+}
+
+pub(super) async fn compact_session(
+    agent: craftsman_harness::Agent,
+    compaction: Arc<craftsman_harness::builtin::CompactionMiddleware>,
+) -> String {
+    let messages = agent.state.lock().unwrap().messages.clone();
+    match compaction.compact_now(&messages).await {
+        Ok(Some(compacted)) => {
+            let mut state = agent.state.lock().unwrap();
+            if craftsman_harness::TurnCancellation::current()
+                .is_some_and(|turn| turn.is_cancelled())
+            {
+                return "could not compact conversation: cancelled by the user".into();
+            }
+            if state.messages != messages {
+                return "could not compact conversation: conversation changed during compaction"
+                    .into();
+            }
+            let before = messages.len();
+            let after = compacted.len();
+            state.messages = compacted;
+            state.last_usage = None;
+            state.last_usage_msg_count = 0;
+            format!("compacted conversation: {before} -> {after} messages")
+        }
+        Ok(None) => "(conversation too short to compact)".into(),
+        Err(error) => format!("could not compact conversation: {error}"),
+    }
 }
 
 async fn handle_tasks_command(args: Vec<&str>, slot: &mut AgentSlot, app: &mut App) {

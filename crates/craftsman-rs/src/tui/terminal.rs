@@ -12,14 +12,63 @@ use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use std::io::{self, Stdout, stdout};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) struct TerminalGuard {
+    owner: Arc<TerminalOwner>,
+}
+
+struct TerminalOwner {
     mouse: bool,
+    restored: AtomicBool,
+    #[cfg(unix)]
+    original: UnixTerminalMode,
+}
+
+#[cfg(unix)]
+struct UnixTerminalMode {
+    descriptor: std::os::fd::OwnedFd,
+    attributes: libc::termios,
+}
+#[cfg(unix)]
+impl UnixTerminalMode {
+    fn capture() -> io::Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        // Retain the actual terminal; never reopen an ambient path on shutdown.
+        let fd = unsafe { libc::fcntl(0, libc::F_DUPFD_CLOEXEC, 3) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let descriptor = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        let mut attributes = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(descriptor.as_raw_fd(), &mut attributes) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            descriptor,
+            attributes,
+        })
+    }
+    fn restore(&self) {
+        use std::os::fd::AsRawFd;
+        let _ = unsafe {
+            libc::tcsetattr(self.descriptor.as_raw_fd(), libc::TCSANOW, &self.attributes)
+        };
+    }
 }
 
 impl TerminalGuard {
     pub(super) fn enter(mouse: bool) -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        let original = UnixTerminalMode::capture()?;
         enable_raw_mode()?;
+        let owner = Arc::new(TerminalOwner {
+            mouse,
+            restored: AtomicBool::new(false),
+            #[cfg(unix)]
+            original,
+        });
         let result = if mouse {
             execute!(
                 stdout(),
@@ -31,15 +80,72 @@ impl TerminalGuard {
             execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)
         };
         if let Err(error) = result {
-            let _ = disable_raw_mode();
+            owner.restore();
             return Err(error.into());
         }
-        Ok(Self { mouse })
+        Ok(Self { owner })
+    }
+
+    pub(super) fn panic_hook(
+        &self,
+        cancellation: craftsman_harness::SessionCancellation,
+    ) -> PanicHookGuard {
+        let previous = Arc::new(std::panic::take_hook());
+        let original = previous.clone();
+        let owner = Arc::downgrade(&self.owner);
+        let triggered = Arc::new(AtomicBool::new(false));
+        let panicked = triggered.clone();
+        std::panic::set_hook(Box::new(move |information| {
+            if let Some(owner) = owner.upgrade() {
+                panicked.store(true, Ordering::Release);
+                cancellation.cancel();
+                owner.restore();
+                // Fixed text only: a panic payload can contain tool/model data
+                // or terminal control sequences. It never bypasses SafeBackend.
+                use std::io::Write;
+                let _ = std::io::stderr()
+                    .write_all(b"Craftsman encountered an internal error and is shutting down.\n");
+            } else {
+                original(information);
+            }
+        }));
+        PanicHookGuard {
+            previous,
+            triggered,
+        }
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        self.owner.restore();
+    }
+}
+
+type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+pub(super) struct PanicHookGuard {
+    previous: Arc<PanicHook>,
+    triggered: Arc<AtomicBool>,
+}
+impl PanicHookGuard {
+    pub(super) fn triggered(&self) -> bool {
+        self.triggered.load(Ordering::Acquire)
+    }
+}
+impl Drop for PanicHookGuard {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let previous = self.previous.clone();
+            std::panic::set_hook(Box::new(move |information| previous(information)));
+        }
+    }
+}
+
+impl TerminalOwner {
+    fn restore(&self) {
+        if self.restored.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let _ = disable_raw_mode();
         if self.mouse {
             let _ = execute!(
@@ -51,6 +157,8 @@ impl Drop for TerminalGuard {
         } else {
             let _ = execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen);
         }
+        #[cfg(unix)]
+        self.original.restore();
     }
 }
 

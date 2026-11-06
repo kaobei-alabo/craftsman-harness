@@ -490,10 +490,11 @@ filesystem rewind snapshots whose paths belonged to the previous context.
 - Ctrl-C requests turn cancellation from approval, question and
   other dialogs. Pending approval/question waiters are refused after the real
   agent receives the stop; late prompts are refused while the turn is stopping.
-  Pending main-model HTTP/stream waits are interrupted in the TUI; running tools
-  retain their cleanup. Composer/editor drafts survive. See
-  [terminal cancellation](docs/terminal-cancellation.md) for remaining child,
-  compaction, native-process and signal limits.
+  Models, compaction and foreground helpers share the stop; native commands
+  retain their kill/reap/drain owner. Inline shell commands remain responsive.
+  Composer/editor drafts survive. Signals and quit close the session and restore
+  the terminal. See [terminal lifecycle](docs/terminal-lifecycle.md) for bounds,
+  background behavior and remaining containment/recovery limits.
 - Desktop connections retain one owner through disconnect cleanup. A closing
   client can hand off to a reconnect; a live client still rejects a second peer.
   Reader/writer cleanup keeps protocol v4 frames unchanged. See

@@ -207,6 +207,11 @@ fn compile(
         .name(spec.name.clone())
         .system_prompt(spec.system_prompt.clone())
         .registry(registry.clone());
+    if let Some(turn) = crate::TurnCancellation::current() {
+        builder = builder
+            .interrupt_model_on_cancel(true)
+            .cancellation_session(turn.session());
+    }
     for t in &spec.tools {
         builder = builder.tool(Arc::new(ProgressTool {
             inner: t.clone(),
@@ -372,6 +377,11 @@ impl Tool for TaskTool {
         args: serde_json::Value,
         ctx: &mut ToolCtx<'_>,
     ) -> Result<ToolOutcome, AgentError> {
+        if crate::TurnCancellation::current().is_some_and(|turn| turn.is_cancelled()) {
+            let mut meta = crate::ToolMeta::new();
+            meta.error_kind = Some(crate::ToolErrorKind::Cancelled);
+            return Ok(ToolOutcome::err("Task cancelled before startup.").with_meta(meta));
+        }
         let description = args
             .get("description")
             .and_then(|v| v.as_str())
@@ -466,12 +476,28 @@ impl TaskTool {
             .set_progress(task_id, task_preview(description));
         match handle.run_task(description, inherited).await {
             Ok(TaskResult::Done(outcome)) => {
-                ctx.registry.set_progress(task_id, "completed");
-                ctx.registry.set_status(task_id, AgentStatus::Done);
+                let cancelled =
+                    crate::TurnCancellation::current().is_some_and(|turn| turn.is_cancelled());
+                ctx.registry
+                    .set_progress(task_id, if cancelled { "cancelled" } else { "completed" });
+                ctx.registry.set_status(
+                    task_id,
+                    if cancelled {
+                        AgentStatus::Failed
+                    } else {
+                        AgentStatus::Done
+                    },
+                );
                 for (k, v) in outcome.state_updates.files {
                     ctx.state.files.insert(k, v);
                 }
-                ToolOutcome::ok(outcome.final_text)
+                if cancelled {
+                    let mut meta = crate::ToolMeta::new();
+                    meta.error_kind = Some(crate::ToolErrorKind::Cancelled);
+                    ToolOutcome::err(outcome.final_text).with_meta(meta)
+                } else {
+                    ToolOutcome::ok(outcome.final_text)
+                }
             }
             // A foreground subagent hit a HITL gate. Inline approval of a nested
             // subagent's gated tool is not yet wired (Plan 3 scope), so we
@@ -515,11 +541,12 @@ impl TaskTool {
         // The SHARED queue — its receiver is the app's, so completion reaches it.
         let notifications = ctx.notifications.clone();
         let (inbox_tx, inbox_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let cancellation = crate::TurnCancellation::current().map(|turn| turn.background());
 
         // FIX: seed the registry entry BEFORE spawning. `set_status` is a no-op
         // when the entry is absent, so a subagent that finishes before the entry
         // exists would otherwise leave the status stuck on `Running`.
-        ctx.registry.insert_entry(
+        ctx.registry.insert_cancellable_entry(
             unique_id.clone(),
             AgentEntry {
                 status: AgentStatus::Running,
@@ -527,6 +554,7 @@ impl TaskTool {
                 join: None,
                 inbox: Some(inbox_tx),
             },
+            cancellation.clone(),
         );
 
         let spawn_name = unique_id.clone();
@@ -536,12 +564,25 @@ impl TaskTool {
         // whose JoinHandle the outer task awaits: a panic anywhere in the child
         // still surfaces as a join error and finalizes the registry entry.
         let join = tokio::spawn(async move {
+            let child_cancellation = cancellation.clone();
             let mut child = AbortOnDrop::new(tokio::spawn(async move {
-                handle
-                    .run_task_with_inbox(&description, inherited, Some(inbox_rx))
-                    .await
+                let work = handle.run_task_with_inbox(&description, inherited, Some(inbox_rx));
+                match child_cancellation {
+                    Some(turn) => turn.scope(work).await,
+                    None => work.await,
+                }
             }));
             let (kind, status) = match child.join().await {
+                Ok(Ok(TaskResult::Done(outcome)))
+                    if cancellation
+                        .as_ref()
+                        .is_some_and(|turn| turn.is_cancelled()) =>
+                {
+                    (
+                        NotificationKind::Completed(outcome.final_text),
+                        AgentStatus::Failed,
+                    )
+                }
                 Ok(Ok(TaskResult::Done(outcome))) => (
                     NotificationKind::Completed(outcome.final_text),
                     AgentStatus::Done,
@@ -571,6 +612,15 @@ impl TaskTool {
                 AgentStatus::Failed => "failed".to_string(),
                 AgentStatus::Suspended => "waiting for approval".to_string(),
                 AgentStatus::Running => "running".to_string(),
+            };
+            let progress = if cancellation
+                .as_ref()
+                .is_some_and(|turn| turn.is_cancelled())
+                && status == AgentStatus::Failed
+            {
+                "cancelled".to_string()
+            } else {
+                progress
             };
             registry.set_progress(&spawn_name, progress);
             registry.set_status(&spawn_name, status);

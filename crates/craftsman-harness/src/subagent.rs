@@ -164,13 +164,17 @@ pub struct AgentEntry {
 #[derive(Default)]
 pub struct AgentRegistry {
     inner: Mutex<HashMap<String, AgentEntry>>,
+    cancellations: Mutex<HashMap<String, crate::TurnCancellation>>,
 }
 
 impl AgentRegistry {
     /// Insert (or replace) a status-only entry with no join handle or inbox.
     pub fn insert(&self, name: impl Into<String>, status: AgentStatus) {
-        self.inner.lock().unwrap().insert(
-            name.into(),
+        let name = name.into();
+        let mut entries = self.inner.lock().unwrap();
+        self.cancellations.lock().unwrap().remove(&name);
+        entries.insert(
+            name,
             AgentEntry {
                 status,
                 progress: default_progress(status).to_string(),
@@ -183,7 +187,38 @@ impl AgentRegistry {
     /// Insert (or replace) a full entry — used for background agents that carry a
     /// join handle and a mailbox sender.
     pub fn insert_entry(&self, name: impl Into<String>, entry: AgentEntry) {
-        self.inner.lock().unwrap().insert(name.into(), entry);
+        let name = name.into();
+        let mut entries = self.inner.lock().unwrap();
+        self.cancellations.lock().unwrap().remove(&name);
+        entries.insert(name, entry);
+    }
+
+    pub(crate) fn insert_cancellable_entry(
+        &self,
+        name: String,
+        entry: AgentEntry,
+        cancellation: Option<crate::TurnCancellation>,
+    ) {
+        let mut entries = self.inner.lock().unwrap();
+        self.cancellations.lock().unwrap().remove(&name);
+        if let Some(turn) = cancellation {
+            self.cancellations
+                .lock()
+                .unwrap()
+                .insert(name.clone(), turn);
+        }
+        entries.insert(name, entry);
+    }
+
+    /// Transfer actual background joins to the terminal shutdown owner. Entries
+    /// remain running until their workers really return and update their status.
+    pub fn take_background_joins(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        self.inner
+            .lock()
+            .unwrap()
+            .values_mut()
+            .filter_map(|entry| entry.join.take())
+            .collect()
     }
 
     /// Deliver a message to a named agent's inbox. Returns `true` only if the
@@ -210,6 +245,7 @@ impl AgentRegistry {
         if let Some(e) = self.inner.lock().unwrap().get_mut(name) {
             e.status = status;
             if status != AgentStatus::Running {
+                self.cancellations.lock().unwrap().remove(name);
                 e.join = None;
                 e.inbox = None;
             }
@@ -269,6 +305,11 @@ impl AgentRegistry {
         };
         if entry.status != AgentStatus::Running {
             return false;
+        }
+        if let Some(turn) = self.cancellations.lock().unwrap().get(name) {
+            turn.cancel();
+            entry.progress = "cancelling".to_string();
+            return true;
         }
         let Some(handle) = entry.join.take() else {
             return false;

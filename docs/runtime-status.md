@@ -37,9 +37,18 @@
 > late prompts cannot keep that stopping turn waiting for input. Unrelated drafts
 > survive and next-turn prompts work normally. The TUI now opts in to dropping
 > pending main-model HTTP/stream waits. Running tools, compaction and children
-> retain their owned work; signal shutdown remains unfinished. Other frontends
-> keep cooperative model cancellation.
+> retain their owned work. The continuation below adds shared scopes and signal
+> routing; other frontends keep their existing cooperative behavior.
 > See [terminal cancellation](terminal-cancellation.md) for implementation and tests.
+
+> **Owned terminal lifecycle (November 6 continuation):** turn/session scopes now
+> reach compaction, foreground helpers and native commands; background stops
+> retain running status until actual cleanup. Inline shell/manual compaction work
+> uses owned tasks. Signals/quit close the session and its waiters; raw-mode and
+> panic restoration are owned. Native 5 s kill/reap and 2 s drain bounds are
+> unchanged, with a truthful overall shutdown timeout. Legacy/private/frozen
+> agents mask ambient scopes. [Terminal lifecycle](terminal-lifecycle.md) records
+> tests, pending full verification and remaining OS/recovery/live-quality gates.
 
 > **Desktop reconnect correction (November 6):** the required Ubuntu gadget suite
 > exposed the original idle reconnect assertion on PR #2. An actual connection
@@ -87,7 +96,7 @@ occurrences. The migration note records the completed validation checkpoint.
 
 | Surface | Current behavior | Important limit |
 |---|---|---|
-| `craftsman` TUI | Streaming conversation, steering/queue, dialog cancellation and interruptible main-model waits, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host filesystem and native shell are not a Craftsman OS sandbox; tools, compaction and children still stop cooperatively; signal shutdown is unfinished |
+| `craftsman` TUI | Streaming conversation, steering/queue, shared turn/session stops through models/compaction/helpers/native commands, signal and terminal restoration, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host tools are not an OS sandbox; uninterruptible/escaping work, durable recovery and live task/console-event quality still need evaluation |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
 | `serve`, `desktop-serve`, `acp-serve`, `acp-bridge` | Existing transports/adapters remain supported | Desktop v4 is frozen; ACP stays standard with declared Craftsman extensions; no new headless/gadget opt-in is inferred |

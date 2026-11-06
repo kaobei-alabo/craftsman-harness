@@ -81,6 +81,8 @@ struct TurnInputState {
     active: bool,
     pending: VecDeque<String>,
     cancel_requested: bool,
+    cancellation: Option<crate::TurnCancellation>,
+    finishing: bool,
 }
 
 /// Resets the active-turn bit on every exit path, including model/tool errors
@@ -101,6 +103,8 @@ impl Drop for TurnActivityGuard {
         let mut state = self.state.lock().unwrap();
         state.active = false;
         state.cancel_requested = false;
+        state.cancellation = None;
+        state.finishing = false;
     }
 }
 
@@ -153,6 +157,7 @@ pub struct Agent {
     /// Wakes an opted-in model wait; the turn-input flag remains stop authority.
     model_cancel: Arc<tokio::sync::Notify>,
     interrupt_model_on_cancel: bool,
+    cancellation_session: Option<crate::SessionCancellation>,
     /// Optional durable state store. When set, the committed snapshot is saved at
     /// every round commit, at a suspension park, and at turn end. Save failures
     /// are swallowed (see [`Checkpointer`] docs) so a flaky store never aborts a
@@ -201,13 +206,41 @@ impl Agent {
     /// finish it with [`resume`](Agent::resume).
     pub async fn run_turn(&self, user_input: impl Into<String>) -> Result<TurnResult, AgentError> {
         let _turn_activity = self.begin_turn()?;
+        let user_input = user_input.into();
+        self.in_turn_scope(self.run_turn_inner(user_input)).await
+    }
 
+    async fn in_turn_scope<F>(&self, work: F) -> Result<TurnResult, AgentError>
+    where
+        F: std::future::Future<Output = Result<TurnResult, AgentError>>,
+    {
+        let cancellation = self.turn_input.lock().unwrap().cancellation.clone();
+        match cancellation {
+            Some(turn) => {
+                turn.scope(async {
+                    match work.await {
+                        Err(AgentError::Cancelled)
+                            if turn.is_cancelled()
+                                && !self.turn_input.lock().unwrap().finishing =>
+                        {
+                            self.finish_cancelled().await
+                        }
+                        result => result,
+                    }
+                })
+                .await
+            }
+            None => crate::cancellation::unscoped(work).await,
+        }
+    }
+
+    async fn run_turn_inner(&self, user_input: String) -> Result<TurnResult, AgentError> {
         // Preserve temporal order across turns: a background result that
         // arrived while idle belongs before the user's next message.
         self.drain_agent_notifications_into_state();
 
         // 1. Commit the user message.
-        let user_msg = Msg::user(user_input.into());
+        let user_msg = Msg::user(user_input);
         self.journal("user", serde_json::to_value(&user_msg).unwrap_or_default());
         {
             let mut committed = self.state.lock().unwrap();
@@ -394,8 +427,17 @@ impl Agent {
         action: crate::interrupt::HitlAction,
         deny_default: &str,
     ) -> Result<TurnResult, AgentError> {
-        use crate::interrupt::HitlAction;
         let _turn_activity = self.begin_turn()?;
+        self.in_turn_scope(self.resume_inner(action, deny_default))
+            .await
+    }
+
+    async fn resume_inner(
+        &self,
+        action: crate::interrupt::HitlAction,
+        deny_default: &str,
+    ) -> Result<TurnResult, AgentError> {
+        use crate::interrupt::HitlAction;
         let pending = self
             .pending
             .lock()
@@ -511,6 +553,7 @@ impl Agent {
     /// per turn on the End / no-more-tool-calls paths (not on `MaxRounds`,
     /// which is an error exit).
     async fn finish(&self, message: Msg) -> Result<TurnResult, AgentError> {
+        self.turn_input.lock().unwrap().finishing = true;
         let mut working = self.snapshot();
         self.chain.turn_end(&mut working).await?;
         self.commit(working);
@@ -673,11 +716,18 @@ impl Agent {
         }
         input.cancel_requested = true;
         input.pending.clear();
+        if let Some(turn) = &input.cancellation {
+            turn.cancel();
+        }
         self.model_cancel.notify_waiters();
         true
     }
 
     async fn model_cancelled(&self) {
+        if let Some(turn) = crate::TurnCancellation::current() {
+            turn.cancelled().await;
+            return;
+        }
         loop {
             let notified = self.model_cancel.notified();
             tokio::pin!(notified);
@@ -704,8 +754,34 @@ impl Agent {
         if input.active {
             return Err(AgentError::State("an agent turn is already running".into()));
         }
+        let cancellation = if self.interrupt_model_on_cancel {
+            Some(
+                crate::TurnCancellation::current()
+                    .filter(|turn| {
+                        self.cancellation_session
+                            .as_ref()
+                            .is_none_or(|session| session.same_owner(&turn.session()))
+                    })
+                    .unwrap_or_else(|| {
+                        self.cancellation_session
+                            .clone()
+                            .unwrap_or_default()
+                            .new_turn()
+                    }),
+            )
+        } else {
+            None
+        };
+        if cancellation
+            .as_ref()
+            .is_some_and(|turn| turn.is_cancelled())
+        {
+            return Err(AgentError::Cancelled);
+        }
         input.active = true;
         input.cancel_requested = false;
+        input.cancellation = cancellation;
+        input.finishing = false;
         drop(input);
         Ok(TurnActivityGuard {
             state: self.turn_input.clone(),
@@ -722,7 +798,11 @@ impl Agent {
 
     fn take_cancel_request(&self) -> bool {
         let mut input = self.turn_input.lock().unwrap();
-        let requested = input.cancel_requested;
+        let requested = input.cancel_requested
+            || input
+                .cancellation
+                .as_ref()
+                .is_some_and(|turn| turn.is_cancelled());
         input.cancel_requested = false;
         if requested {
             input.pending.clear();
@@ -740,7 +820,12 @@ impl Agent {
         let received_notification = self.drain_agent_notifications_into_state();
         let pending = {
             let mut input = self.turn_input.lock().unwrap();
-            if input.cancel_requested {
+            if input.cancel_requested
+                || input
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(|turn| turn.is_cancelled())
+            {
                 input.cancel_requested = false;
                 input.pending.clear();
                 input.active = false;
@@ -830,6 +915,8 @@ impl Agent {
         turn_input.active = false;
         turn_input.pending.clear();
         turn_input.cancel_requested = false;
+        turn_input.cancellation = None;
+        turn_input.finishing = false;
     }
 
     /// Clone the committed state into a working copy.
@@ -992,6 +1079,7 @@ pub struct AgentBuilder {
     system_prompt: String,
     max_rounds: usize,
     interrupt_model_on_cancel: bool,
+    cancellation_session: Option<crate::SessionCancellation>,
     state: Option<Arc<Mutex<AgentState>>>,
     registry: Option<Arc<crate::subagent::AgentRegistry>>,
     notifications: Option<crate::subagent::NotificationQueue>,
@@ -1012,6 +1100,7 @@ impl AgentBuilder {
             system_prompt: String::new(),
             max_rounds: 50,
             interrupt_model_on_cancel: false,
+            cancellation_session: None,
             state: None,
             registry: None,
             notifications: None,
@@ -1056,10 +1145,19 @@ impl AgentBuilder {
     /// Default false preserves cooperative framework behavior. Opt in only
     /// when the provider and all `around_model` middleware are safe to drop:
     /// they must own their I/O and release it without detached work or required
-    /// async cleanup. This does not interrupt tools, other lifecycle hooks,
-    /// compaction or child agents, or imply remote generation/billing stopped.
+    /// async cleanup. This creates an opted-in turn scope; cancellation-aware
+    /// tools finish their owned cleanup, compaction models observe the scope,
+    /// and explicitly opted-in foreground children inherit it. It does not
+    /// force-drop mutation hooks or imply remote generation/billing stopped.
     pub fn interrupt_model_on_cancel(mut self, enabled: bool) -> Self {
         self.interrupt_model_on_cancel = enabled;
+        self
+    }
+
+    /// Attach the session shutdown owner to opted-in turns. Other agents ignore
+    /// it, and foreground children inherit only when explicitly opted in.
+    pub fn cancellation_session(mut self, session: crate::SessionCancellation) -> Self {
+        self.cancellation_session = Some(session);
         self
     }
 
@@ -1162,6 +1260,7 @@ impl AgentBuilder {
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
+            cancellation_session: self.cancellation_session,
             registry,
             notifications,
             notification_inbox,
@@ -1177,6 +1276,10 @@ impl AgentBuilder {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_owned_cancellation_tests.rs"]
+mod owned_cancellation_tests;
 
 #[cfg(test)]
 #[path = "agent_model_cancellation_tests.rs"]

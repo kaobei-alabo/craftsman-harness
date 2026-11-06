@@ -256,7 +256,7 @@ impl CompactionMiddleware {
             messages,
             tools: vec![],
         };
-        let resp = self.model.complete(req).await?;
+        let resp = crate::cancellation::model(self.model.complete(req)).await?;
         Ok(match resp.message {
             Msg::Assistant { content, .. } => content,
             Msg::User { content } | Msg::System { content } => content,

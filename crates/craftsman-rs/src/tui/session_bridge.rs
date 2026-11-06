@@ -13,6 +13,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 #[cfg(test)]
 mod cancellation_tests;
+#[cfg(test)]
+#[path = "session_bridge/lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[derive(Debug)]
 pub(super) enum ApprovalChoice {
@@ -37,12 +40,47 @@ pub(super) enum UiEvent {
         response: std_mpsc::Sender<Option<String>>,
     },
     TurnFinished(Result<TurnResult, String>),
+    OperationFinished(String),
+    ScopedPrompt {
+        cancellation: craftsman_harness::TurnCancellation,
+        event: Box<UiEvent>,
+    },
     Voice(crate::voice::VoiceEvent),
 }
 
 #[derive(Clone)]
 pub(super) struct UiBridge {
     pub(super) tx: mpsc::UnboundedSender<UiEvent>,
+}
+
+struct CancelPrompt(tokio::task::JoinHandle<()>);
+impl Drop for CancelPrompt {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn cancel_prompt<T: Send + 'static>(
+    turn: Option<craftsman_harness::TurnCancellation>,
+    response: std_mpsc::Sender<T>,
+    refusal: T,
+) -> Option<CancelPrompt> {
+    turn.map(|turn| {
+        CancelPrompt(tokio::spawn(async move {
+            turn.cancelled().await;
+            let _ = response.send(refusal);
+        }))
+    })
+}
+
+fn scoped_prompt(event: UiEvent, turn: &Option<craftsman_harness::TurnCancellation>) -> UiEvent {
+    match turn {
+        Some(turn) => UiEvent::ScopedPrompt {
+            cancellation: turn.clone(),
+            event: Box::new(event),
+        },
+        None => event,
+    }
 }
 
 impl UiBridge {
@@ -71,18 +109,31 @@ impl UiBridge {
             })),
             approval_prompt: Some(Arc::new(move |tool, summary, details| {
                 let (response, receive) = std_mpsc::channel();
+                let turn = craftsman_harness::TurnCancellation::current();
+                let _cancel = cancel_prompt(
+                    turn.clone(),
+                    response.clone(),
+                    ApprovalChoice::Deny(String::new()),
+                );
                 if approval_tx
-                    .send(UiEvent::Approval {
-                        tool: tool.to_string(),
-                        summary: summary.to_string(),
-                        details: details.to_string(),
-                        response,
-                    })
+                    .send(scoped_prompt(
+                        UiEvent::Approval {
+                            tool: tool.to_string(),
+                            summary: summary.to_string(),
+                            details: details.to_string(),
+                            response,
+                        },
+                        &turn,
+                    ))
                     .is_err()
                 {
                     return ApprovalPromptResult::Reject(String::new());
                 }
-                match tokio::task::block_in_place(|| receive.recv()) {
+                let result = tokio::task::block_in_place(|| receive.recv());
+                if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
+                    return ApprovalPromptResult::Reject(String::new());
+                }
+                match result {
                     Ok(ApprovalChoice::Approve) => ApprovalPromptResult::Approve,
                     Ok(ApprovalChoice::Always) => ApprovalPromptResult::ApproveAlways,
                     Ok(ApprovalChoice::Deny(feedback)) => ApprovalPromptResult::Reject(feedback),
@@ -91,15 +142,25 @@ impl UiBridge {
             })),
             ask_user_prompt: Some(Arc::new(move |question| {
                 let (response, receive) = std_mpsc::channel();
+                let turn = craftsman_harness::TurnCancellation::current();
+                let _cancel = cancel_prompt(turn.clone(), response.clone(), None);
                 ask_tx
-                    .send(UiEvent::AskUser {
-                        question: question.to_string(),
-                        response,
-                    })
+                    .send(scoped_prompt(
+                        UiEvent::AskUser {
+                            question: question.to_string(),
+                            response,
+                        },
+                        &turn,
+                    ))
                     .ok()?;
-                tokio::task::block_in_place(|| receive.recv())
+                let answer = tokio::task::block_in_place(|| receive.recv())
                     .ok()
-                    .flatten()
+                    .flatten();
+                if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
+                    None
+                } else {
+                    answer
+                }
             })),
             extra_tools: Vec::new(),
             ..SessionExtras::default()
@@ -110,6 +171,9 @@ impl UiBridge {
 pub(super) struct AgentSlot {
     inner: AgentSlotInner,
     pub(super) bridge: UiBridge,
+    root_cancellation: craftsman_harness::SessionCancellation,
+    cancellation: craftsman_harness::SessionCancellation,
+    retired: tokio::task::JoinSet<()>,
 }
 
 enum AgentSlotInner {
@@ -122,25 +186,84 @@ impl AgentSlot {
         cfg: &Config,
         approval: Arc<Mutex<ApprovalState>>,
         bridge: UiBridge,
+        root_cancellation: craftsman_harness::SessionCancellation,
     ) -> Self {
         let cfg = cfg.clone();
-        let extras = bridge.session_extras();
+        let mut extras = bridge.session_extras();
+        let cancellation = root_cancellation
+            .child()
+            .expect("the terminal root has depth zero");
+        extras.cancellation_session = Some(cancellation.clone());
+        let building = cancellation.clone();
         Self {
             inner: AgentSlotInner::Pending(tokio::spawn(async move {
-                agent::build_session_ext(&cfg, approval, "", false, false, None, extras).await
+                if building.is_cancelled() {
+                    return None;
+                }
+                let session = building
+                    .new_turn()
+                    .scope(agent::build_session_ext(
+                        &cfg, approval, "", false, false, None, extras,
+                    ))
+                    .await;
+                if building.is_cancelled() {
+                    if let Some(session) = &session {
+                        session.lsp.shutdown().await;
+                    }
+                    None
+                } else {
+                    session
+                }
             })),
             bridge,
+            root_cancellation,
+            cancellation,
+            retired: tokio::task::JoinSet::new(),
         }
     }
 
     pub(super) fn rebuild(&mut self, cfg: &Config, approval: Arc<Mutex<ApprovalState>>) {
-        if let Some(session) = self.peek() {
-            let lsp = session.lsp.clone();
-            tokio::spawn(async move {
-                lsp.shutdown().await;
-            });
+        self.retire_previous();
+        let mut next = Self::spawn(
+            cfg,
+            approval,
+            self.bridge.clone(),
+            self.root_cancellation.clone(),
+        );
+        std::mem::swap(&mut next.retired, &mut self.retired);
+        *self = next;
+    }
+
+    fn retire_previous(&mut self) {
+        self.cancellation.cancel();
+        let previous = std::mem::replace(&mut self.inner, AgentSlotInner::Ready(Box::new(None)));
+        self.retired.spawn(async move {
+            let session = match previous {
+                AgentSlotInner::Pending(handle) => handle.await.ok().flatten(),
+                AgentSlotInner::Ready(session) => *session,
+            };
+            if let Some(session) = session {
+                for join in session.registry.take_background_joins() {
+                    let _ = join.await;
+                }
+                session.lsp.shutdown().await;
+            }
+        });
+    }
+
+    pub(super) fn cancellation(&self) -> craftsman_harness::SessionCancellation {
+        self.cancellation.clone()
+    }
+
+    pub(super) async fn shutdown(&mut self) {
+        self.cancellation.cancel();
+        if let Some(session) = self.get().await.as_ref() {
+            for join in session.registry.take_background_joins() {
+                let _ = join.await;
+            }
+            session.lsp.shutdown().await;
         }
-        *self = Self::spawn(cfg, approval, self.bridge.clone());
+        while self.retired.join_next().await.is_some() {}
     }
 
     pub(super) fn is_pending(&self) -> bool {
@@ -173,8 +296,42 @@ impl AgentSlot {
     }
 }
 
-fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
+impl Drop for AgentSlot {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        if let AgentSlotInner::Pending(handle) = &self.inner {
+            handle.abort();
+        }
+    }
+}
+
+pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
     match event {
+        UiEvent::ScopedPrompt {
+            cancellation,
+            event,
+        } => {
+            if cancellation.is_cancelled() {
+                match *event {
+                    UiEvent::Approval { response, .. } => {
+                        let _ = response.send(ApprovalChoice::Deny(String::new()));
+                    }
+                    UiEvent::AskUser { response, .. } => {
+                        let _ = response.send(None);
+                    }
+                    _ => {}
+                }
+            } else {
+                handle_ui_event(app, *event, session);
+            }
+        }
+        UiEvent::OperationFinished(output) => {
+            app.operation_cancellation = None;
+            app.running = false;
+            app.cancel_requested = false;
+            app.discard_stream_deltas = false;
+            app.push(output);
+        }
         UiEvent::ModelRoundStarted => {
             app.active_response = None;
             app.dirty = true;
@@ -315,7 +472,11 @@ pub(super) fn apply_turn_cancellation(app: &mut App, agent: Option<&craftsman_ha
     if !std::mem::take(&mut app.cancel_requested) {
         return;
     }
-    let accepted = agent.is_some_and(|agent| agent.request_cancel());
+    let mut accepted = agent.is_some_and(|agent| agent.request_cancel());
+    if let Some(turn) = &app.operation_cancellation {
+        turn.cancel();
+        accepted = true;
+    }
     app.cancel_pending_prompts();
     if accepted {
         app.push_kind(TranscriptKind::Activity, "Cancellation requested.");

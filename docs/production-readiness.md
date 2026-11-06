@@ -11,11 +11,11 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 
 | Area | Current implementation | Remaining production work |
 | --- | --- | --- |
-| Terminal coding agent | Streaming model/tool loop, approvals, dialog cancellation and interruptible main-model waits, file/shell/web tools, foreground delegates, sessions and local memory | Interrupt tools/compaction/children safely, complete signal lifecycle and run live model/task evaluation |
+| Terminal coding agent | Streaming model/tool loop, approvals, shared turn/session stops through compaction/helpers/native commands, signal cleanup, file/shell/web tools, sessions and memory | Complete current validation, evaluate live tasks/console events and durable recovery, and handle remaining containment limits |
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic WASM publication, capability checks and deterministic discovery before model rounds | Keep opt-in and separate build/load approvals; gather live quality evidence |
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
-| Process lifecycle | Bounded shell capture, Unix groups/Windows Job Objects and typed stop gates | Complete signal routing/cancellation and native containment; earlier shell issue remains unresolved |
+| Process lifecycle | Bounded shell capture and owned cancellation, scoped TUI Unix groups/Windows Job Objects, signal shutdown | Validate native containment and exceptional cleanup; earlier shell issue remains unresolved |
 | Distribution | Authenticated new repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled and workflows removed | Explicit owner approval before restoring publication, plan-supported branch protection and licensing/distribution decisions |
 
 The roadmap in [craftsman-harness-plan.md](craftsman-harness-plan.md) includes
@@ -179,8 +179,9 @@ machine cannot establish the cause or erase those results.
 
 ## Next engineering gates
 
-1. Complete terminal cancellation through tools/builds, compaction and child
-   agents, plus SIGTERM/SIGHUP shutdown and terminal restoration. Verify each
+1. Verify shared terminal cancellation through tools/builds, compaction and child
+   agents, plus SIGTERM/SIGHUP shutdown and terminal restoration. Evaluate remaining
+   exceptional/native containment and durable recovery limits. Verify each
    implementation and independent merged-main run, including
    every required job/step and both Windows modes. The fresh history, login,
    initial push and first implementation's PR verification are complete.
@@ -204,10 +205,11 @@ readiness.
 
 It is a working, extensively source-tested agent suitable for supervised trials
 in a disposable checkout with explicit model configuration and manual approvals.
-It is not yet production ready. Its main model wait can now stop promptly, but
-a tool/build, compaction or foreground child can still delay cancellation. Signal
-shutdown and recovery need completion, the inherited shell issue remains open,
-and live model/task/gadget quality has not been measured. The host shell and
+It is not yet production ready. Shared cancellation now reaches native builds,
+compaction and foreground helpers, and signals enter owned shutdown. The
+continuation still needs complete validation, real console-event/task evaluation
+and durable recovery. The inherited shell issue remains open, and live
+model/task/gadget quality has not been measured. The host shell and
 filesystem are not sandboxed by the gadget WASM engine. Keep backups and review
 the agent's changes; do not rely on it for unattended production changes yet.
 Binary/container publication stays on hold by owner request.

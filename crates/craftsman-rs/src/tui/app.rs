@@ -141,6 +141,8 @@ pub(super) struct App {
     pub(super) transcript_scroll: usize,
     pub(super) transcript_scroll_target: usize,
     pub(super) cancel_requested: bool,
+    pub(super) operation_cancellation: Option<craftsman_harness::TurnCancellation>,
+    pub(super) closing: bool,
     pub(super) mode_cycle_requested: bool,
     pub(super) copy_requested: bool,
     pub(super) discard_stream_deltas: bool,
@@ -199,6 +201,8 @@ impl App {
             transcript_scroll: 0,
             transcript_scroll_target: 0,
             cancel_requested: false,
+            operation_cancellation: None,
+            closing: false,
             mode_cycle_requested: false,
             copy_requested: false,
             discard_stream_deltas: false,
@@ -391,7 +395,7 @@ impl App {
         // A prompt may already be in the event channel when Ctrl-C arrives.
         // Keep releasing waiters until this turn finishes, including after the
         // one-shot cancel_requested flag has been consumed by the main loop.
-        if self.discard_stream_deltas && modal.cancel_prompt() {
+        if (self.closing || self.discard_stream_deltas) && modal.cancel_prompt() {
             return;
         }
         self.clear_screen_selection();
@@ -1077,6 +1081,7 @@ impl App {
         result: Result<TurnResult, String>,
         session: Option<&Session>,
     ) {
+        self.operation_cancellation = None;
         self.active_response = None;
         self.running = false;
         self.cancel_requested = false;
@@ -1124,10 +1129,12 @@ pub async fn run(
     mouse_capture: bool,
     force_setup: bool,
     resume_thread: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     if !stdout().is_terminal() || !std::io::stdin().is_terminal() {
         anyhow::bail!("interactive mode requires a terminal");
     }
+    let shutdown = super::shutdown::Shutdown::install()?;
+    let mut work = tokio::task::JoinSet::new();
 
     if cfg.has_legacy_credentials() {
         // One-time migration notice (printed once per launch, not per turn).
@@ -1155,6 +1162,7 @@ pub async fn run(
     ));
 
     let guard = TerminalGuard::enter(mouse_capture)?;
+    let panic_hook = guard.panic_hook(shutdown.cancellation.clone());
     let mut terminal = Terminal::new(SafeBackend(CrosstermBackend::new(stdout())))?;
     terminal.clear()?;
 
@@ -1172,8 +1180,14 @@ pub async fn run(
         }
     });
     let mut voice_controller: Option<crate::voice::VoiceController> = None;
-    let mut slot = AgentSlot::spawn(&cfg, approval.clone(), bridge.clone());
+    let mut slot = AgentSlot::spawn(
+        &cfg,
+        approval.clone(),
+        bridge.clone(),
+        shutdown.cancellation.clone(),
+    );
     let mut app = App::new(&cfg);
+    let mut drawing_error: Option<anyhow::Error> = None;
     if let Some(error) = agent_seed_error {
         app.push_error(format!(
             "Could not initialize agent profile '{}': {error}",
@@ -1190,26 +1204,30 @@ pub async fn run(
     }
     if let Some(thread_id) = resume_thread {
         app.push(format!("Resuming session {thread_id}…"));
-        draw(&mut terminal, &mut app, &cfg, &slot, &approval)?;
-        match slot.get().await.as_mut() {
-            Some(session) => match session.load_thread(&thread_id).await {
-                Ok(true) => {
-                    let state = session.agent.state.lock().unwrap().clone();
-                    hydrate_transcript(&mut app, &state);
-                    app.push(format!("Resumed session {thread_id}"));
-                    if let Some(suspension) = session.agent.pending_suspension() {
-                        app.push(format!(
-                            "Session is awaiting approval: {}",
-                            suspension.request.summary
-                        ));
+        if let Err(error) = draw(&mut terminal, &mut app, &cfg, &slot, &approval) {
+            drawing_error = Some(error);
+        }
+        if drawing_error.is_none() {
+            match slot.get().await.as_mut() {
+                Some(session) => match session.load_thread(&thread_id).await {
+                    Ok(true) => {
+                        let state = session.agent.state.lock().unwrap().clone();
+                        hydrate_transcript(&mut app, &state);
+                        app.push(format!("Resumed session {thread_id}"));
+                        if let Some(suspension) = session.agent.pending_suspension() {
+                            app.push(format!(
+                                "Session is awaiting approval: {}",
+                                suspension.request.summary
+                            ));
+                        }
                     }
-                }
-                Ok(false) => app.push_error(format!("No saved session found for {thread_id}")),
-                Err(error) => {
-                    app.push_error(format!("Could not resume session {thread_id}: {error}"))
-                }
-            },
-            None => app.push_error("Cannot resume a session until a model is configured"),
+                    Ok(false) => app.push_error(format!("No saved session found for {thread_id}")),
+                    Err(error) => {
+                        app.push_error(format!("Could not resume session {thread_id}: {error}"))
+                    }
+                },
+                None => app.push_error("Cannot resume a session until a model is configured"),
+            }
         }
         app.dirty = true;
     }
@@ -1218,9 +1236,13 @@ pub async fn run(
     let mut frame_tick = tokio::time::interval(Duration::from_millis(16));
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    loop {
+    'ui: while drawing_error.is_none() {
         tokio::select! {
             biased;
+            _ = shutdown.cancellation.cancelled() => break,
+            Some(joined) = work.join_next() => {
+                if joined.is_err() { app.finish_turn(Err("agent task stopped after an internal error".into()), slot.peek()); }
+            },
             _ = frame_tick.tick() => {
                 let subagent_running = slot
                     .peek()
@@ -1231,7 +1253,7 @@ pub async fn run(
                     app.dirty = true;
                 }
                 if app.dirty {
-                    draw(&mut terminal, &mut app, &cfg, &slot, &approval)?;
+                    if let Err(error) = draw(&mut terminal, &mut app, &cfg, &slot, &approval) { drawing_error = Some(error); break 'ui; }
                     app.dirty = false;
                 }
             }
@@ -1356,9 +1378,17 @@ pub async fn run(
             if let Some(status) = action_status(&action) {
                 app.push(status);
             }
-            draw(&mut terminal, &mut app, &cfg, &slot, &approval)?;
+            if let Err(error) = draw(&mut terminal, &mut app, &cfg, &slot, &approval) {
+                drawing_error = Some(error);
+                break 'ui;
+            }
             app.dirty = false;
-            handle_app_action(action, &mut cfg, &mut slot, &approval, &mut app).await;
+            let command_scope = slot.cancellation().new_turn();
+            command_scope
+                .scope(handle_app_action(
+                    action, &mut cfg, &mut slot, &approval, &mut app,
+                ))
+                .await;
             app.dirty = true;
             continue;
         }
@@ -1378,11 +1408,19 @@ pub async fn run(
 
         if let Some((line, queue_for_next, _from_queue)) = submission {
             app.follow_latest();
+            if line == "/quit" || line == "/exit" {
+                app.push_user(display_submission(&line));
+                break;
+            }
             if app.running {
                 if line.starts_with('/') && live_command(&line) {
                     app.push_user(display_submission(&line));
-                    let rebuild =
-                        handle_slash(&line, &mut cfg, &mut slot, &approval, &mut app).await;
+                    let command_scope = slot.cancellation().new_turn();
+                    let rebuild = command_scope
+                        .scope(handle_slash(
+                            &line, &mut cfg, &mut slot, &approval, &mut app,
+                        ))
+                        .await;
                     if rebuild {
                         slot.rebuild(&cfg, approval.clone());
                     }
@@ -1418,20 +1456,52 @@ pub async fn run(
             // other slash command and lands here when it is popped.)
             let extension_prompt = crate::extensions::expand_command_in_cwd(&line, &cfg);
             let route = submission_route(&line, extension_prompt.as_deref());
-            draw(&mut terminal, &mut app, &cfg, &slot, &approval)?;
+            if let Err(error) = draw(&mut terminal, &mut app, &cfg, &slot, &approval) {
+                drawing_error = Some(error);
+                break 'ui;
+            }
             app.dirty = false;
             match route {
                 SubmissionRoute::Shell(command) => {
-                    let output = crate::tools::run_shell_escape(
-                        command.trim(),
-                        &crate::shell::ShellSettings::from_config(&cfg),
-                    )
-                    .await;
-                    app.push(output);
+                    let command = command.trim().to_string();
+                    let settings = crate::shell::ShellSettings::from_config(&cfg);
+                    let turn = slot.cancellation().new_turn();
+                    app.running = true;
+                    app.operation_cancellation = Some(turn.clone());
+                    let tx = bridge.tx.clone();
+                    work.spawn(async move {
+                        let output = turn
+                            .scope(crate::tools::run_shell_escape(&command, &settings))
+                            .await;
+                        let _ = tx.send(UiEvent::OperationFinished(output));
+                    });
                 }
                 SubmissionRoute::Slash => {
-                    let rebuild =
-                        handle_slash(&line, &mut cfg, &mut slot, &approval, &mut app).await;
+                    if line.split_whitespace().next() == Some("/compact") {
+                        let turn = slot.cancellation().new_turn();
+                        if let Some(session) = slot.get().await.as_ref() {
+                            let agent = session.agent.clone();
+                            let compaction = session.compaction.clone();
+                            let tx = bridge.tx.clone();
+                            app.running = true;
+                            app.operation_cancellation = Some(turn.clone());
+                            work.spawn(async move {
+                                let output = turn
+                                    .scope(super::commands::compact_session(agent, compaction))
+                                    .await;
+                                let _ = tx.send(UiEvent::OperationFinished(output));
+                            });
+                        } else {
+                            app.push("no agent yet");
+                        }
+                        continue;
+                    }
+                    let command_scope = slot.cancellation().new_turn();
+                    let rebuild = command_scope
+                        .scope(handle_slash(
+                            &line, &mut cfg, &mut slot, &approval, &mut app,
+                        ))
+                        .await;
                     if rebuild {
                         slot.rebuild(&cfg, approval.clone());
                     }
@@ -1439,7 +1509,10 @@ pub async fn run(
                 SubmissionRoute::Prompt => {
                     if slot.is_pending() {
                         app.push("(finishing startup…)".to_string());
-                        draw(&mut terminal, &mut app, &cfg, &slot, &approval)?;
+                        if let Err(error) = draw(&mut terminal, &mut app, &cfg, &slot, &approval) {
+                            drawing_error = Some(error);
+                            break 'ui;
+                        }
                     }
                     let Some(session) = slot.get().await.as_ref() else {
                         app.push("No model configured. Run /setup or set base_url in ~/.craftsman/config.json, then /model.".to_string());
@@ -1451,7 +1524,7 @@ pub async fn run(
                     let agent = session.agent.clone();
                     let tx = bridge.tx.clone();
                     let prompt = extension_prompt.unwrap_or(line);
-                    tokio::spawn(async move {
+                    work.spawn(async move {
                         let result = agent
                             .run_turn(prompt)
                             .await
@@ -1476,17 +1549,47 @@ pub async fn run(
         let has_messages = !session.agent.state.lock().unwrap().messages.is_empty();
         (has_messages && session.checkpointer.is_some()).then(|| session.thread_id.clone())
     });
-    if let Some(controller) = voice_controller.take() {
-        controller.shutdown().await;
-    }
+    app.closing = true;
+    shutdown.cancellation.cancel();
     if let Some(session) = slot.peek() {
-        session.lsp.shutdown().await;
+        session.agent.request_cancel();
     }
-    terminal.show_cursor()?;
+    ui_rx.close();
+    app.cancel_pending_prompts();
+    while let Ok(event) = ui_rx.try_recv() {
+        super::session_bridge::handle_ui_event(&mut app, event, slot.peek());
+    }
+    let cleanup = tokio::time::timeout(Duration::from_secs(30), async {
+        while work.join_next().await.is_some() {}
+        if let Some(controller) = voice_controller.take() {
+            controller.shutdown().await;
+        }
+        slot.shutdown().await;
+    })
+    .await;
+    let cursor_result = terminal.show_cursor();
     drop(terminal);
     drop(guard);
+    drop(slot);
+    let panicked = panic_hook.triggered();
+    drop(panic_hook);
+    let exit_code = shutdown.exit_code();
+    drop(shutdown);
+    if cleanup.is_err() {
+        anyhow::bail!("terminal shutdown timed out; work may still be completing");
+    }
+    if panicked {
+        anyhow::bail!("terminal stopped after an internal error");
+    }
+    cursor_result?;
+    if let Some(error) = drawing_error {
+        return Err(error);
+    }
+    if exit_code != 0 {
+        return Ok(exit_code);
+    }
     print!("{}", exit_message(resume_id.as_deref()));
-    Ok(())
+    Ok(0)
 }
 
 pub(super) fn truncate_block_details(text: &str, max_chars: usize) -> String {
