@@ -54,6 +54,7 @@ impl UiBridge {
         let approval_tx = self.tx.clone();
         let ask_tx = self.tx.clone();
         SessionExtras {
+            interrupt_model_on_cancel: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             round_sink: Some(Arc::new(move || {
@@ -309,7 +310,7 @@ fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
 }
 
 /// Mark the real turn as stopping before waking any synchronous prompt waiter.
-/// Cancellation remains cooperative; this does not abort native work or streams.
+/// The TUI main model wait is interruptible; native work retains owned cleanup.
 pub(super) fn apply_turn_cancellation(app: &mut App, agent: Option<&craftsman_harness::Agent>) {
     if !std::mem::take(&mut app.cancel_requested) {
         return;
@@ -317,10 +318,7 @@ pub(super) fn apply_turn_cancellation(app: &mut App, agent: Option<&craftsman_ha
     let accepted = agent.is_some_and(|agent| agent.request_cancel());
     app.cancel_pending_prompts();
     if accepted {
-        app.push_kind(
-            TranscriptKind::Activity,
-            "Cancellation requested; stopping at the next safe boundary.",
-        );
+        app.push_kind(TranscriptKind::Activity, "Cancellation requested.");
     } else if app.running {
         app.push_error("Could not cancel the active turn.");
     }

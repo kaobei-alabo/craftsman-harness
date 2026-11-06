@@ -35,8 +35,10 @@
 > approval/question dialogs and other modals. The actual agent receives the
 > cooperative stop before synchronous waiters receive denial/absence; queued and
 > late prompts cannot keep that stopping turn waiting for input. Unrelated drafts
-> survive and next-turn prompts work normally. This does not abort a streaming
-> provider, running native tool or foreground child, or complete signal shutdown.
+> survive and next-turn prompts work normally. The TUI now opts in to dropping
+> pending main-model HTTP/stream waits. Running tools, compaction and children
+> retain their owned work; signal shutdown remains unfinished. Other frontends
+> keep cooperative model cancellation.
 > See [terminal cancellation](terminal-cancellation.md) for implementation and tests.
 
 > **Desktop reconnect correction (November 6):** the required Ubuntu gadget suite
@@ -85,7 +87,7 @@ occurrences. The migration note records the completed validation checkpoint.
 
 | Surface | Current behavior | Important limit |
 |---|---|---|
-| `craftsman` TUI | Streaming conversation, steering/queue, cooperative cancellation from dialogs, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host filesystem and native shell are not a Craftsman OS sandbox; in-flight work is not immediately interrupted |
+| `craftsman` TUI | Streaming conversation, steering/queue, dialog cancellation and interruptible main-model waits, HITL, host/web tools, local sessions/memory, lazy LSP, skills, opt-in gadgets | Host filesystem and native shell are not a Craftsman OS sandbox; tools, compaction and children still stop cooperatively; signal shutdown is unfinished |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
 | `serve`, `desktop-serve`, `acp-serve`, `acp-bridge` | Existing transports/adapters remain supported | Desktop v4 is frozen; ACP stays standard with declared Craftsman extensions; no new headless/gadget opt-in is inferred |

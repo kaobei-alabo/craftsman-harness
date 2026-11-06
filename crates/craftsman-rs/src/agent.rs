@@ -705,6 +705,9 @@ impl Tool for McpFrameworkTool {
 /// established terminal behavior; explicit sinks never use terminal stdout.
 #[derive(Default)]
 pub struct SessionExtras {
+    /// TUI main-model opt-in. Legacy/private/frozen frontends leave this false.
+    /// Tool, compaction and child cancellation remain cooperative.
+    pub interrupt_model_on_cancel: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
     pub local_gadgets: bool,
@@ -1851,6 +1854,9 @@ async fn build_session_with_profile(
 
     let mut builder = Agent::builder(provider)
         .name("main")
+        .interrupt_model_on_cancel(
+            construction.prepared().is_none() && extras.interrupt_model_on_cancel,
+        )
         .system_prompt(system)
         .backend(backend.clone())
         .registry(registry.clone())

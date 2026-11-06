@@ -405,3 +405,129 @@ fn modified_shortcuts_do_not_insert_control_letters_or_accept_a_prompt() {
     };
     assert_eq!(modal.answer, "original answerC");
 }
+
+/// Own the synthetic TCP server even when an assertion unwinds.
+struct StreamServer(tokio::task::JoinHandle<()>);
+impl Drop for StreamServer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn cancel_real_stream(send_delta: bool) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const STREAM_WAIT: Duration = Duration::from_secs(5);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let received = Arc::new(tokio::sync::Notify::new());
+    let server_received = received.clone();
+    let mut server = StreamServer(tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        // Consume the actual bounded request before checking connection EOF.
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(count > 0);
+            request.extend_from_slice(&buffer[..count]);
+            assert!(request.len() <= 65536);
+            if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&request[..end]).unwrap();
+                assert!(headers.starts_with("POST /chat/completions HTTP/1.1\r\n"));
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .expect("the client sends a content length");
+                if request.len() == end + 4 + length {
+                    break;
+                }
+            }
+        }
+        if send_delta {
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"partial fixture\"}}]}\n\n").await.unwrap();
+            socket.flush().await.unwrap();
+        }
+        server_received.notify_one();
+        // The server never completes the response. Cancellation must close
+        // this actual connection without a stream timeout or fixture release.
+        assert_eq!(socket.read(&mut buffer).await.unwrap(), 0);
+    }));
+    let (tx, mut receive) = mpsc::unbounded_channel();
+    let extras = UiBridge { tx }.session_extras();
+    assert!(extras.interrupt_model_on_cancel);
+    assert!(!SessionExtras::default().interrupt_model_on_cancel);
+    let usage = Arc::new(std::sync::Mutex::new((0, 0)));
+    let provider = Arc::new(agent::StreamingLlmProvider {
+        client: crate::llm::LlmClient::new_with_options(
+            &format!("http://{address}"),
+            "synthetic-key",
+            "synthetic-model",
+            &std::collections::BTreeMap::new(),
+        ),
+        usage: usage.clone(),
+        sink: extras.token_sink.unwrap(),
+        round_sink: extras.round_sink,
+        status_sink: extras.activity_sink,
+    });
+    let agent = Agent::builder(provider)
+        .interrupt_model_on_cancel(extras.interrupt_model_on_cancel)
+        .build();
+    let running = agent.clone();
+    let task = tokio::spawn(async move { running.run_turn("isolated synthetic stream").await });
+    let mut app = App::new(&Config::default());
+    app.running = true;
+    tokio::time::timeout(STREAM_WAIT, received.notified())
+        .await
+        .unwrap();
+    if send_delta {
+        loop {
+            let event = tokio::time::timeout(STREAM_WAIT, receive.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let is_delta = matches!(&event, UiEvent::Delta(text) if text == "partial fixture");
+            handle_ui_event(&mut app, event, None);
+            if is_delta {
+                break;
+            }
+        }
+    }
+    assert!(!task.is_finished());
+    handle_key(&mut app, ctrl_c());
+    apply_turn_cancellation(&mut app, Some(&agent));
+    let result = tokio::time::timeout(STREAM_WAIT, task)
+        .await
+        .expect("Ctrl-C must release the pending client request")
+        .unwrap()
+        .unwrap();
+    let TurnResult::Done(output) = &result else {
+        panic!("model cancellation cannot park a tool approval")
+    };
+    assert_eq!(output.final_text(), "Stopped by the user.");
+    tokio::time::timeout(STREAM_WAIT, &mut server.0)
+        .await
+        .expect("the actual TCP peer must observe client disconnect")
+        .unwrap();
+    assert!(!agent.is_turn_active());
+    assert!(agent.state.lock().unwrap().last_usage.is_none());
+    // No completed usage was received; the existing aggregate is unchanged.
+    assert_eq!(*usage.lock().unwrap(), (0, 0));
+    handle_ui_event(&mut app, UiEvent::TurnFinished(Ok(result)), None);
+    assert!(!app.running);
+    assert!(!app.discard_stream_deltas);
+    assert!(agent.state.lock().unwrap().messages.iter().all(|message| !matches!(message, Msg::Assistant { content, .. } if content.contains("partial fixture"))));
+}
+
+#[tokio::test]
+async fn ctrl_c_interrupts_the_real_main_provider_awaiting_headers() {
+    cancel_real_stream(false).await;
+}
+
+#[tokio::test]
+async fn ctrl_c_interrupts_the_real_main_provider_after_a_partial_sse_delta() {
+    cancel_real_stream(true).await;
+}
