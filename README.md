@@ -22,6 +22,12 @@ remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented
 capability/approval boundaries. Run `./scripts/verify.sh` for both complete test
 modes and the default build; it selects an installed Python 3.11+ interpreter.
 
+Binary publication is on hold at the owner's request. The release, workspace
+image and service-agent image workflows have been removed and disabled in GitHub.
+CI validates source; the optional gadget benchmark uploads only its JSON report.
+Restoring any binary or container publication requires a new reviewed change and
+the owner's explicit approval.
+
 **New implementation:** the private
 [request-budget adapter](docs/request-budget-arguments.md) accepts `--max-rounds`
 (default 50, range 1..10000) and passes the selected limit to the existing shared

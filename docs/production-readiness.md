@@ -16,7 +16,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
 | Process lifecycle | Bounded shell capture, Unix groups/Windows Job Objects and typed stop gates | Complete signal routing/cancellation and native containment; earlier shell issue remains unresolved |
-| Distribution | Authenticated new repository, initial snapshot pushed, first verified implementation merged, pinned toolchain and source/release/image workflows | Plan-supported branch protection, independent main validation and licensing/distribution decisions |
+| Distribution | Authenticated new repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled and workflows removed | Explicit owner approval before restoring publication, plan-supported branch protection and licensing/distribution decisions |
 
 The roadmap in [craftsman-harness-plan.md](craftsman-harness-plan.md) includes
 future events, recovery, editing, context and containment work. Its historical
@@ -90,13 +90,22 @@ model, enable the user's gadgets, alter user config or publish a release.
 
 The new CI requires all of `fmt`, `test (ubuntu-24.04)`, `test (macos-15)` and
 `test (windows-2025)`; Windows is no longer informational. Default voice/gadget
-compilation is checked as well as both native test modes. Release and advisory
-benchmark workflows also use macOS 15. The four matching required contexts should
+compilation is checked as well as both native test modes. The advisory benchmark
+workflow also uses macOS 15. The four matching required contexts should
 be configured in main-branch protection. GitHub returned HTTP 403 for the new
 private repository because its current account plan requires GitHub Pro for
 branch protection. No privacy or billing setting was changed. CI failures fail
 the run, but server-side required-check enforcement is not configured.
 These are new repository rules; old macOS 14 check labels describe past evidence.
+
+At the owner's November 6 request, `.github/workflows/release.yml`,
+`service-agent-image.yml` and `publish-workspace-images.yml` were disabled in
+GitHub and removed from source. This holds tag releases, manual binary artifacts
+and container publication. No releases or workflow artifacts existed when the
+hold was applied. Normal CI still compiles and tests the agent, and the optional
+benchmark uploads only `target/gadget-benchmark.json`. Restore publication only
+through a reviewed change after explicit owner approval; no variable or manual
+workflow input bypasses the hold.
 
 ## Current validation record
 

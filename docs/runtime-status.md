@@ -24,6 +24,13 @@
 > [Production readiness](production-readiness.md) records current validation and
 > the working self-built gadget path; older check/issue records below are historical.
 
+> **Publication hold (November 6):** the owner requested no agent binary
+> publication and removal of the obsolete workspace/service-agent image workflows.
+> All three publishing workflows (including release binary artifacts) are disabled
+> in GitHub and removed from source. Validation CI and JSON-only gadget benchmark
+> reports remain available. Re-enabling publication needs explicit owner approval
+> and a reviewed implementation change.
+
 > **Terminal prompt cancellation (November 6):** Ctrl-C now requests a stop from
 > approval/question dialogs and other modals. The actual agent receives the
 > cooperative stop before synchronous waiters receive denial/absence; queued and
