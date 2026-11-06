@@ -150,6 +150,9 @@ pub struct Agent {
     /// are drained at model-round boundaries; a pending steer forces another
     /// model sample even when the previous sample looked final.
     turn_input: Arc<Mutex<TurnInputState>>,
+    /// Wakes an opted-in model wait; the turn-input flag remains stop authority.
+    model_cancel: Arc<tokio::sync::Notify>,
+    interrupt_model_on_cancel: bool,
     /// Optional durable state store. When set, the committed snapshot is saved at
     /// every round commit, at a suspension park, and at turn end. Save failures
     /// are swallowed (see [`Checkpointer`] docs) so a flaky store never aborts a
@@ -265,7 +268,17 @@ impl Agent {
                 let model = model.clone();
                 Box::pin(async move { model.complete(req).await })
             };
-            let response = self.chain.around_model(req, &terminal).await?;
+            let response = if self.interrupt_model_on_cancel {
+                // Only model sampling is dropped. Tool dispatch, prepare/review
+                // hooks and turn-end persistence retain their normal ownership.
+                tokio::select! {
+                    biased;
+                    _ = self.model_cancelled() => return self.finish_cancelled().await,
+                    response = self.chain.around_model(req, &terminal) => response?,
+                }
+            } else {
+                self.chain.around_model(req, &terminal).await?
+            };
 
             // Remember where the assistant message lands: review_model hooks may
             // MUTATE it in place (e.g. patch_tool_calls arg repair), and
@@ -311,8 +324,8 @@ impl Agent {
             );
             self.save_checkpoint(None).await;
 
-            // Cancellation is cooperative: an in-flight model request is
-            // allowed to return, but no tool calls from that response run.
+            // A response can complete in the same poll that requests a stop.
+            // Keep its actual usage/transcript and balance calls without dispatch.
             if self.take_cancel_request() {
                 self.append_cancelled_tool_results(&assistant);
                 return self.finish_cancelled().await;
@@ -649,9 +662,10 @@ impl Agent {
         self.turn_input.lock().unwrap().active
     }
 
-    /// Request cooperative cancellation of the active turn. In-flight model
-    /// or tool work is not force-aborted; the loop stops at its next safe
-    /// boundary and records skipped tool calls as cancelled results.
+    /// Request cancellation of the active turn. By default the loop stops at
+    /// its next safe boundary. With `interrupt_model_on_cancel` enabled, a
+    /// pending model sample is dropped; tools still finish their owned work.
+    /// Skipped committed tool calls receive cancelled results.
     pub fn request_cancel(&self) -> bool {
         let mut input = self.turn_input.lock().unwrap();
         if !input.active {
@@ -659,7 +673,22 @@ impl Agent {
         }
         input.cancel_requested = true;
         input.pending.clear();
+        self.model_cancel.notify_waiters();
         true
+    }
+
+    async fn model_cancelled(&self) {
+        loop {
+            let notified = self.model_cancel.notified();
+            tokio::pin!(notified);
+            // Register before checking the authoritative flag: a stop between
+            // that check and the first await must not strand a stalled stream.
+            notified.as_mut().enable();
+            if self.turn_input.lock().unwrap().cancel_requested {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// Drop queued steering input. Intended for explicit conversation resets
@@ -962,6 +991,7 @@ pub struct AgentBuilder {
     backend: Option<Arc<dyn Backend>>,
     system_prompt: String,
     max_rounds: usize,
+    interrupt_model_on_cancel: bool,
     state: Option<Arc<Mutex<AgentState>>>,
     registry: Option<Arc<crate::subagent::AgentRegistry>>,
     notifications: Option<crate::subagent::NotificationQueue>,
@@ -981,6 +1011,7 @@ impl AgentBuilder {
             backend: None,
             system_prompt: String::new(),
             max_rounds: 50,
+            interrupt_model_on_cancel: false,
             state: None,
             registry: None,
             notifications: None,
@@ -1018,6 +1049,17 @@ impl AgentBuilder {
 
     pub fn max_rounds(mut self, n: usize) -> Self {
         self.max_rounds = n;
+        self
+    }
+
+    /// Drop pending model sampling when this agent receives `request_cancel`.
+    /// Default false preserves cooperative framework behavior. Opt in only
+    /// when the provider and all `around_model` middleware are safe to drop:
+    /// they must own their I/O and release it without detached work or required
+    /// async cleanup. This does not interrupt tools, other lifecycle hooks,
+    /// compaction or child agents, or imply remote generation/billing stopped.
+    pub fn interrupt_model_on_cancel(mut self, enabled: bool) -> Self {
+        self.interrupt_model_on_cancel = enabled;
         self
     }
 
@@ -1119,6 +1161,7 @@ impl AgentBuilder {
             backend,
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
+            interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             registry,
             notifications,
             notification_inbox,
@@ -1126,6 +1169,7 @@ impl AgentBuilder {
             parked_suspension: Arc::new(Mutex::new(None)),
             inbox: Arc::new(Mutex::new(None)),
             turn_input: Arc::new(Mutex::new(TurnInputState::default())),
+            model_cancel: Arc::new(tokio::sync::Notify::new()),
             checkpointer: self.checkpointer,
             journal: self.journal,
             thread_id: Arc::new(Mutex::new(self.thread_id)),
@@ -1133,6 +1177,10 @@ impl AgentBuilder {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_model_cancellation_tests.rs"]
+mod model_cancellation_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,9 @@
-# Terminal prompt cancellation
+# Terminal cancellation
 
-The working terminal agent uses cooperative cancellation. Ctrl-C can now reach
-the active turn while an approval, an agent question, or another dialog is open.
+Ctrl-C reaches the active terminal turn while an approval, an agent question,
+or another dialog is open. The TUI also interrupts a pending main-model request,
+including a wait for HTTP headers or further streamed content. Running tools and
+other lifecycle work keep cooperative cancellation and their existing cleanup.
 Previously approval pickers ignored the key; feedback and question fields typed
 `c` into the input. That left the agent waiting for a response.
 
@@ -33,6 +35,46 @@ cancelled when the dialog's Ctrl-C requests a stop. Rendering still passes throu
 `SafeBackend`; this change adds no terminal escape or public protocol channel.
 
 ## Validation
+
+The model-wait implementation adds an explicit framework builder opt-in,
+`interrupt_model_on_cancel`, default false. The TUI selects it through
+`UiBridge::session_extras`; the shared application builder refuses to enable it
+for private prepared runtimes. Other frontends and children retain the default.
+The opted-in provider and `around_model` middleware must own their I/O and be
+safe to drop without asynchronous cleanup. The normal terminal provider awaits
+its HTTP/stream work directly; it does not spawn a detached request task.
+
+A notification wakes the pending sampler; the mutex-protected active-turn flag
+remains cancellation authority. Registering the waiter before checking that
+flag closes the lost-notification window. Cancellation is checked before polling
+a ready model future. If the provider itself requests cancellation while
+returning a complete response in the same poll, the original response/usage is
+committed and its tool calls receive cancelled results. A dropped incomplete
+response adds no assistant message or completed usage. Partial screen text is
+not a completed conversation result. Closing the local HTTP connection does
+not prove remote generation or billing stopped, and unchanged usage aggregates
+are not a claim that the interrupted request consumed zero tokens.
+
+Six additional framework cases cover stalled requests, fresh subsequent turns,
+the ready-response race, owned tool completion, cancellation before waiter
+registration, model-wrapper cleanup before turn-end and original error types.
+Two TUI cases drive the real key handler, bridge, `StreamingLlmProvider` and
+loopback HTTP client. The synthetic peer never completes its response; after
+Ctrl-C the real connection closes both before headers and after a partial SSE
+delta. They use bounded waits and no sleeps, live model credentials, user config
+or installed gadgets. Focused checks pass. The full local run preserves every
+original named/ignored/doctest entry and passes core **1903 / 0 / 10** and gadgets
+**2058 / 0 / 12** (passed/failed/ignored), with all eight additions in both modes
+and no compiler warnings. The actual scaffold/edit/build/discover/call gadget
+test also passes. Its script exit **1** is retained: provenance rejected a new
+model-cancellation documentation phrase in the framework source. That phrase
+was corrected without a new allow-list exception. Targeted formatting,
+locked core/default builds, provenance and whitespace checks pass on corrected
+source; the complete suites were not retried unchanged. Raw full evidence and
+the inventory audit are retained in `target/verification/`. All four hosted
+jobs/every step and independent merged-main verification still gate completion.
+
+The original prompt-cancellation evidence below is retained separately.
 
 Two new regression tests first reproduced the swallowed Ctrl-C behavior. The
 implementation adds real synchronous UI bridge and framework Agent coverage:
@@ -70,9 +112,10 @@ latency and full P2c/P2g readiness are not established by these tests.
 
 ## Remaining lifecycle work
 
-This change releases human-input waits and reaches the existing cooperative
-stop checks. It does not immediately interrupt a successful provider stream,
-running shell/build, blocking filesystem work, or a foreground subagent. A
+The main TUI model wait and human-input waits are interruptible. A running
+shell/build, blocking filesystem operation, preparation/compaction hook or
+foreground subagent still finishes its owned operation before the main loop
+stops. A
 background agent that continues after main-turn completion has its normal prompt
 lifecycle. There is no whole-process quiescence or rollback claim.
 

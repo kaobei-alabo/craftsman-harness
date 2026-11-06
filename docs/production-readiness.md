@@ -11,7 +11,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 
 | Area | Current implementation | Remaining production work |
 | --- | --- | --- |
-| Terminal coding agent | Streaming model/tool loop, approvals, cooperative cancellation from dialogs, file/shell/web tools, foreground delegates, sessions and local memory | Complete interrupt/signal lifecycle and live model/task evaluation |
+| Terminal coding agent | Streaming model/tool loop, approvals, dialog cancellation and interruptible main-model waits, file/shell/web tools, foreground delegates, sessions and local memory | Interrupt tools/compaction/children safely, complete signal lifecycle and run live model/task evaluation |
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic WASM publication, capability checks and deterministic discovery before model rounds | Keep opt-in and separate build/load approvals; gather live quality evidence |
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
@@ -179,7 +179,9 @@ machine cannot establish the cause or erase those results.
 
 ## Next engineering gates
 
-1. Verify each new implementation and independent merged-main run, including
+1. Complete terminal cancellation through tools/builds, compaction and child
+   agents, plus SIGTERM/SIGHUP shutdown and terminal restoration. Verify each
+   implementation and independent merged-main run, including
    every required job/step and both Windows modes. The fresh history, login,
    initial push and first implementation's PR verification are complete.
 2. Finish successful-provider-response and safe public result/storage/trace
@@ -197,3 +199,15 @@ machine cannot establish the cause or erase those results.
 This checkpoint improves the working terminal/gadget foundation and advances R5.
 It does not assert complete unattended execution, OS containment or release
 readiness.
+
+## Is the terminal agent production ready?
+
+It is a working, extensively source-tested agent suitable for supervised trials
+in a disposable checkout with explicit model configuration and manual approvals.
+It is not yet production ready. Its main model wait can now stop promptly, but
+a tool/build, compaction or foreground child can still delay cancellation. Signal
+shutdown and recovery need completion, the inherited shell issue remains open,
+and live model/task/gadget quality has not been measured. The host shell and
+filesystem are not sandboxed by the gadget WASM engine. Keep backups and review
+the agent's changes; do not rely on it for unattended production changes yet.
+Binary/container publication stays on hold by owner request.
