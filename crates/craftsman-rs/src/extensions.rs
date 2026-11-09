@@ -25,6 +25,7 @@ pub const RESERVED_COMMANDS: &[&str] = &[
     "diff",
     "doctor",
     "editor",
+    "effort",
     "exit",
     "gadgets",
     "harness",

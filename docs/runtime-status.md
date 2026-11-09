@@ -105,6 +105,17 @@ occurrences. The migration note records the completed validation checkpoint.
 
 ## 1. What users can run now
 
+The November 9 [terminal model controls](terminal-models.md) continuation adds
+provider/config model catalogs, per-model reasoning effort and conversation-
+preserving reconfiguration. Thread ids, checkpoint sequence and actual main
+usage survive a switch; old cleanup finishes before the new agent is ready.
+Discovery is cancellable, and failed initialization retains history and stops
+sampling. Private/frozen/legacy controls, API transport, SDK/WIT, schema/frames/
+goldens and publication gates stay unchanged. Full native local tests pass
+1965/0/14 and 2121/0/17 with no warnings and all prior cases retained. The first
+full script fails only new documentation provenance; its correction passes
+separately. Hosted and independent main verification remain separate.
+
 | Surface | Current behavior | Important limit |
 |---|---|---|
 | `craftsman` TUI | Streaming conversation, steering/queue, owned cancellation/terminal restoration, HITL, host/web tools, required per-tool checkpoints, recovery warnings, memory/LSP/skills, opt-in gadgets | Host tools are not an OS sandbox; escaping/uninterruptible work, concurrent owners, remaining recovery and live task/console-event quality need evaluation |

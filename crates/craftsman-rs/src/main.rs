@@ -34,6 +34,7 @@ mod inbox_poller;
 mod llm;
 mod lsp;
 mod mcp;
+mod model_controls;
 mod oneshot_io;
 mod picker;
 mod platform;

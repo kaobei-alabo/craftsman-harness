@@ -1248,6 +1248,10 @@ pub async fn run(
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     'ui: while drawing_error.is_none() {
+        if slot.initialization_finished() {
+            let _ = slot.get().await;
+            app.dirty = true;
+        }
         tokio::select! {
             biased;
             _ = shutdown.cancellation.cancelled() => break,

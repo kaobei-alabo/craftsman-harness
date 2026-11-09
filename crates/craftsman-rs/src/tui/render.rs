@@ -780,6 +780,8 @@ fn footer(
     width: usize,
 ) -> String {
     let model = cfg.model.as_deref().unwrap_or("(no model)");
+    let model = crate::model_controls::display_effort(cfg)
+        .map_or_else(|| model.to_owned(), |effort| format!("{model} ({effort})"));
     let (input, output) = session
         .map(|session| *session.usage.lock().unwrap())
         .unwrap_or_default();

@@ -70,6 +70,7 @@ pub enum TurnResult {
 /// The parked state of a suspended turn: the gated `call` awaiting a decision,
 /// the `remaining` calls in the same round not yet dispatched, and the `round`
 /// index so [`Agent::resume`] can continue the model↔tool loop afterward.
+#[derive(Clone)]
 struct PendingResume {
     call: ToolCall,
     remaining: Vec<ToolCall>,
@@ -1026,6 +1027,42 @@ impl Agent {
         *self.recovery_info.lock().unwrap()
     }
 
+    /// Carry an idle conversation into a newly built agent. Model, middleware,
+    /// tools, registry and cancellation owners remain those of the new agent.
+    /// Applications must finish old background work before calling this. No
+    /// model, tool, turn hook or checkpoint is executed by the transfer.
+    pub fn inherit_conversation(&self, previous: &Agent) -> Result<(), AgentError> {
+        let refused =
+            || AgentError::State("conversation transfer requires two distinct idle agents".into());
+        if Arc::ptr_eq(&self.turn_input, &previous.turn_input) {
+            return Err(refused());
+        }
+        let mut old_input = previous.turn_input.lock().map_err(|_| refused())?;
+        let input = self.turn_input.try_lock().map_err(|_| refused())?;
+        if old_input.active || input.active {
+            return Err(refused());
+        }
+        let pending_input = old_input.pending.drain(..).collect();
+        previous.append_steering_messages(pending_input);
+        previous.drain_agent_notifications_into_state();
+        let mut snapshot = previous.snapshot();
+        // A usage anchor from another model is not a token estimate for the
+        // newly selected model. Actual application usage totals are separate.
+        snapshot.last_usage = None;
+        snapshot.last_usage_msg_count = 0;
+        self.commit(snapshot);
+        *self.thread_id.lock().unwrap() = previous.thread();
+        self.seq
+            .store(previous.seq.load(Ordering::SeqCst), Ordering::SeqCst);
+        *self.pending.lock().unwrap() = previous.pending.lock().unwrap().clone();
+        *self.parked_suspension.lock().unwrap() =
+            previous.parked_suspension.lock().unwrap().clone();
+        self.checkpoint_failed
+            .store(previous.checkpoint_failed(), Ordering::SeqCst);
+        *self.recovery_info.lock().unwrap() = previous.recovery_info();
+        Ok(())
+    }
+
     /// Append a lifecycle event to the transcript sink, if one is set.
     /// Fire-and-forget: `ts` is `0` (the framework has no clock — app-side sinks
     /// may restamp on write). A no-op when no journal is configured.
@@ -1467,6 +1504,10 @@ impl AgentBuilder {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "agent_continuation_tests.rs"]
+mod continuation_tests;
 
 #[cfg(test)]
 #[path = "agent_recovery_tests.rs"]

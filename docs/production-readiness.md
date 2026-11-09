@@ -29,6 +29,12 @@ production priority on November 6. The dialog-cancellation and desktop-reconnect
 changes improve those supported frontends. Future unattended headless work keeps
 its separate accepted contracts and implementation gates.
 
+The next [terminal model controls](terminal-models.md) change addresses a model
+switch that previously showed the old transcript while giving the new agent an
+empty history. Model/effort selectors now retain state and checkpoint sequencing;
+new code is pending complete local and hosted validation. Real model quality and
+provider/tool compatibility remain separate gates.
+
 ## Build and use the gadget workflow
 
 Use the exact **Rust 1.99.1** toolchain in `rust-toolchain.toml`. The application

@@ -41,6 +41,10 @@ pub(super) enum UiEvent {
     },
     TurnFinished(Result<TurnResult, String>),
     OperationFinished(String),
+    ModelCatalogLoaded {
+        current: Option<String>,
+        result: Result<(Vec<crate::model_controls::CatalogModel>, bool), String>,
+    },
     ScopedPrompt {
         cancellation: craftsman_harness::TurnCancellation,
         event: Box<UiEvent>,
@@ -178,7 +182,33 @@ pub(super) struct AgentSlot {
 
 enum AgentSlotInner {
     Pending(tokio::task::JoinHandle<Option<Session>>),
+    Reconfiguring(tokio::task::JoinHandle<ReconfiguredSession>),
     Ready(Box<Option<Session>>),
+}
+
+struct ReconfiguredSession {
+    session: Option<Session>,
+    cancellation: craftsman_harness::SessionCancellation,
+}
+
+async fn finish_initialization(
+    inner: AgentSlotInner,
+    cancellation: craftsman_harness::SessionCancellation,
+) -> ReconfiguredSession {
+    match inner {
+        AgentSlotInner::Pending(handle) => ReconfiguredSession {
+            session: handle.await.ok().flatten(),
+            cancellation,
+        },
+        AgentSlotInner::Ready(session) => ReconfiguredSession {
+            session: *session,
+            cancellation,
+        },
+        AgentSlotInner::Reconfiguring(handle) => handle.await.unwrap_or(ReconfiguredSession {
+            session: None,
+            cancellation,
+        }),
+    }
 }
 
 impl AgentSlot {
@@ -232,26 +262,90 @@ impl AgentSlot {
     }
 
     pub(super) fn rebuild(&mut self, cfg: &Config, approval: Arc<Mutex<ApprovalState>>) {
-        self.retire_previous();
-        let mut next = Self::spawn(
-            cfg,
-            approval,
-            self.bridge.clone(),
-            self.root_cancellation.clone(),
-        );
-        std::mem::swap(&mut next.retired, &mut self.retired);
-        *self = next;
+        let previous = std::mem::replace(&mut self.inner, AgentSlotInner::Ready(Box::new(None)));
+        let previous_owner = self.cancellation.clone();
+        let cfg = cfg.clone();
+        let bridge = self.bridge.clone();
+        let owner = self
+            .root_cancellation
+            .child()
+            .expect("the terminal root has depth zero");
+        self.cancellation = owner.clone();
+        self.inner = AgentSlotInner::Reconfiguring(tokio::spawn(async move {
+            let old = finish_initialization(previous, previous_owner).await;
+            let thread_id = old
+                .session
+                .as_ref()
+                .map(|session| session.thread_id.clone());
+            let mut extras = bridge.session_extras();
+            extras.cancellation_session = Some(owner.clone());
+            let candidate = if owner.is_cancelled() {
+                None
+            } else {
+                owner
+                    .new_turn()
+                    .scope(agent::build_session_ext(
+                        &cfg, approval, "", false, false, thread_id, extras,
+                    ))
+                    .await
+            };
+            let Some(candidate) = candidate else {
+                let _ = bridge.tx.send(UiEvent::Activity("Model/session configuration could not be initialized. The earlier conversation was retained and further work was stopped. Select a working model to continue.".into()));
+                owner.cancel();
+                old.cancellation.cancel();
+                if let Some(previous) = &old.session {
+                    previous.agent.request_cancel();
+                    for join in previous.registry.take_background_joins() {
+                        let _ = join.await;
+                    }
+                    previous.lsp.shutdown().await;
+                }
+                return old;
+            };
+            if owner.is_cancelled() {
+                candidate.lsp.shutdown().await;
+                return old;
+            }
+            if let Some(previous) = old.session {
+                old.cancellation.cancel();
+                previous.agent.request_cancel();
+                for join in previous.registry.take_background_joins() {
+                    let _ = join.await;
+                }
+                previous.lsp.shutdown().await;
+                // Snapshot only after actual old cleanup: completed child writes
+                // and addressed notifications are part of the continued chat.
+                if candidate
+                    .agent
+                    .inherit_conversation(&previous.agent)
+                    .is_err()
+                {
+                    candidate.lsp.shutdown().await;
+                    owner.cancel();
+                    let _ = bridge.tx.send(UiEvent::Activity("The earlier conversation is still retained, but its transfer was refused. Wait for active work to stop before selecting a model.".into()));
+                    return ReconfiguredSession {
+                        session: Some(previous),
+                        cancellation: old.cancellation,
+                    };
+                }
+                *candidate.usage.lock().unwrap() = *previous.usage.lock().unwrap();
+            }
+            ReconfiguredSession {
+                session: Some(candidate),
+                cancellation: owner,
+            }
+        }));
     }
 
+    #[cfg(test)]
     fn retire_previous(&mut self) {
         self.cancellation.cancel();
         let previous = std::mem::replace(&mut self.inner, AgentSlotInner::Ready(Box::new(None)));
+        let owner = self.cancellation.clone();
         self.retired.spawn(async move {
-            let session = match previous {
-                AgentSlotInner::Pending(handle) => handle.await.ok().flatten(),
-                AgentSlotInner::Ready(session) => *session,
-            };
-            if let Some(session) = session {
+            let previous = finish_initialization(previous, owner).await;
+            previous.cancellation.cancel();
+            if let Some(session) = previous.session {
                 for join in session.registry.take_background_joins() {
                     let _ = join.await;
                 }
@@ -264,9 +358,38 @@ impl AgentSlot {
         self.cancellation.clone()
     }
 
+    pub(super) fn fetch_model_catalog(
+        &mut self,
+        cfg: Config,
+    ) -> craftsman_harness::TurnCancellation {
+        let turn = self.cancellation.new_turn();
+        let cancellation = turn.clone();
+        let tx = self.bridge.tx.clone();
+        self.retired.spawn(async move {
+            let current = cfg.model.clone();
+            let result = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => Err("Model catalog lookup cancelled.".into()),
+                result = async {
+                    let remote = match crate::route::resolve_chat_endpoint(&cfg).await {
+                        Ok(route) => crate::platform::model_catalog(&route).await.ok(),
+                        Err(_) => None,
+                    };
+                    let available = remote.is_some();
+                    crate::model_controls::merge_catalog(&cfg, remote.unwrap_or_default())
+                        .map(|models| (models, available))
+                } => result,
+            };
+            let _ = tx.send(UiEvent::ModelCatalogLoaded { current, result });
+        });
+        turn
+    }
+
     pub(super) async fn shutdown(&mut self) {
         self.cancellation.cancel();
-        if let Some(session) = self.get().await.as_ref() {
+        let _ = self.get().await;
+        self.cancellation.cancel();
+        if let Some(session) = self.peek() {
             for join in session.registry.take_background_joins() {
                 let _ = join.await;
             }
@@ -276,31 +399,44 @@ impl AgentSlot {
     }
 
     pub(super) fn is_pending(&self) -> bool {
-        matches!(self.inner, AgentSlotInner::Pending(_))
+        matches!(
+            self.inner,
+            AgentSlotInner::Pending(_) | AgentSlotInner::Reconfiguring(_)
+        )
+    }
+
+    pub(super) fn initialization_finished(&self) -> bool {
+        match &self.inner {
+            AgentSlotInner::Pending(handle) => handle.is_finished(),
+            AgentSlotInner::Reconfiguring(handle) => handle.is_finished(),
+            AgentSlotInner::Ready(_) => false,
+        }
     }
 
     pub(super) fn peek(&self) -> Option<&Session> {
         match &self.inner {
             AgentSlotInner::Ready(session) => session.as_ref().as_ref(),
-            AgentSlotInner::Pending(_) => None,
+            AgentSlotInner::Pending(_) | AgentSlotInner::Reconfiguring(_) => None,
         }
     }
 
     pub(super) fn peek_mut(&mut self) -> Option<&mut Session> {
         match &mut self.inner {
             AgentSlotInner::Ready(session) => session.as_mut().as_mut(),
-            AgentSlotInner::Pending(_) => None,
+            AgentSlotInner::Pending(_) | AgentSlotInner::Reconfiguring(_) => None,
         }
     }
 
     pub(super) async fn get(&mut self) -> &mut Option<Session> {
-        if let AgentSlotInner::Pending(handle) = &mut self.inner {
-            let session = handle.await.ok().flatten();
-            self.inner = AgentSlotInner::Ready(Box::new(session));
+        if self.is_pending() {
+            let inner = std::mem::replace(&mut self.inner, AgentSlotInner::Ready(Box::new(None)));
+            let ready = finish_initialization(inner, self.cancellation.clone()).await;
+            self.cancellation = ready.cancellation;
+            self.inner = AgentSlotInner::Ready(Box::new(ready.session));
         }
         match &mut self.inner {
             AgentSlotInner::Ready(session) => session,
-            AgentSlotInner::Pending(_) => unreachable!(),
+            AgentSlotInner::Pending(_) | AgentSlotInner::Reconfiguring(_) => unreachable!(),
         }
     }
 }
@@ -340,6 +476,28 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             app.cancel_requested = false;
             app.discard_stream_deltas = false;
             app.push(output);
+        }
+        UiEvent::ModelCatalogLoaded { current, result } => {
+            let cancelled = app.cancel_requested || app.closing;
+            app.operation_cancellation = None;
+            app.running = false;
+            app.cancel_requested = false;
+            app.discard_stream_deltas = false;
+            if cancelled {
+                if !app.closing {
+                    app.push("Model catalog lookup cancelled.");
+                }
+            } else {
+                match result {
+                    Ok((models, available)) => {
+                        if !available {
+                            app.push("Provider catalog unavailable; showing configured models.");
+                        }
+                        super::model_commands::show_model_catalog(app, models, current.as_deref());
+                    }
+                    Err(error) => app.push_error(error),
+                }
+            }
         }
         UiEvent::ModelRoundStarted => {
             app.active_response = None;
