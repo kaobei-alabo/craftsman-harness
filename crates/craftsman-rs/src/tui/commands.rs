@@ -17,13 +17,14 @@ use crate::route::resolve_chat_endpoint;
 use craftsman_harness::Checkpointer;
 use std::sync::{Arc, Mutex};
 
-const HELP: &str = "Commands\n  /setup      guided platform or direct-provider setup\n  /help       show this help\n  /model      list models; /model <name> selects\n  /mode       choose permissions; Shift-Tab cycles modes\n  /status     show route, model, mode, token, and task status\n  /doctor     diagnose local configuration and connectivity state\n  /agents     list agents; /agents <name> selects/creates\n  /skills     list installed/platform skills\n  /gadgets    list local gadgets, capabilities, and approval status\n  /mcp        list MCP servers and tools\n  /lsp        show/restart language servers; /lsp restart <name>\n  /config     show current config\n  /harness    choose or inspect the harness profile\n  /clear      start a fresh conversation\n  /compact    summarize older messages\n  /session    list/resume sessions; supports rename/delete/export\n  /queue      inspect or remove queued follow-ups\n  /tokens     show token usage\n  /tasks      open the subagent task drawer\n  /memories   list long-term memory files\n  /diff       show staged, unstaged, and untracked workspace changes\n  /checkpoints list per-turn workspace file checkpoints\n  /rewind     restore files; /rewind [checkpoint-id] [--force]\n  /copy       copy the latest Craftsman answer\n  /editor     open a large multiline prompt editor\n  /version    print version\n  /voice      dictate by voice (Ctrl+G)\n  /quit       exit (also /exit)\nInline: !cmd runs a shell command. Ctrl-C stops a running turn.
+const HELP: &str = "Commands\n  /setup      guided platform or direct-provider setup\n  /help       show this help\n  /model      list models; /model <name> [--reasoning=level] selects\n  /effort     choose model reasoning effort\n  /mode       choose permissions; Shift-Tab cycles modes\n  /status     show route, model, mode, token, and task status\n  /doctor     diagnose local configuration and connectivity state\n  /agents     list agents; /agents <name> selects/creates\n  /skills     list installed/platform skills\n  /gadgets    list local gadgets, capabilities, and approval status\n  /mcp        list MCP servers and tools\n  /lsp        show/restart language servers; /lsp restart <name>\n  /config     show current config\n  /harness    choose or inspect the harness profile\n  /clear      start a fresh conversation\n  /compact    summarize older messages\n  /session    list/resume sessions; supports rename/delete/export\n  /queue      inspect or remove queued follow-ups\n  /tokens     show token usage\n  /tasks      open the subagent task drawer\n  /memories   list long-term memory files\n  /diff       show staged, unstaged, and untracked workspace changes\n  /checkpoints list per-turn workspace file checkpoints\n  /rewind     restore files; /rewind [checkpoint-id] [--force]\n  /copy       copy the latest Craftsman answer\n  /editor     open a large multiline prompt editor\n  /version    print version\n  /voice      dictate by voice (Ctrl+G)\n  /quit       exit (also /exit)\nInline: !cmd runs a shell command. Ctrl-C stops a running turn.
 Navigation: ↑/↓ prompt/history · trackpad/mouse or PgUp/PgDn chat · click tool/task rows or Ctrl-O to expand.";
 
 pub(super) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/setup", "guided connection and model setup"),
     ("/help", "show help"),
-    ("/model", "list or select a model"),
+    ("/model", "list or select a model and reasoning effort"),
+    ("/effort", "choose reasoning effort for the current model"),
     ("/mode", "choose a permission mode"),
     ("/status", "show runtime status"),
     ("/doctor", "diagnose configuration"),
@@ -719,54 +720,44 @@ Re-run with --force only if overwriting those newer changes is intended.",
         }
         "/version" => app.push(format!("craftsman {}", env!("CARGO_PKG_VERSION"))),
         "/model" => {
-            if let Some(name) = parts.next() {
-                cfg.model = Some(name.to_string());
-                if let Err(error) = cfg.save() {
-                    app.push_error(format!(
-                        "Model changed for this run, but could not save it: {error}"
-                    ));
-                }
-                app.push(format!("Model: {name}"));
-                return true;
+            let tokens: Vec<_> = parts.collect();
+            if tokens.is_empty() {
+                app.running = true;
+                app.cancel_requested = false;
+                app.operation_cancellation = Some(slot.fetch_model_catalog(cfg.clone()));
+                app.push("Loading provider and configured model catalog…");
+                return false;
             }
-            let route = match resolve_chat_endpoint(cfg).await {
-                Ok(route) => route,
-                Err(error) => {
-                    app.push_error(format!("route resolution failed: {error}"));
-                    return false;
+            match crate::model_controls::parse_selection(tokens.into_iter()) {
+                Ok(selection) => {
+                    super::model_commands::select_model(cfg, selection, slot, approval, app)
                 }
-            };
-            match crate::platform::list_models(cfg, &route).await {
-                Ok(models) if !models.is_empty() => {
-                    let selected = cfg
-                        .model
-                        .as_deref()
-                        .and_then(|current| models.iter().position(|model| model == current))
-                        .unwrap_or_default();
-                    app.modal = Some(Modal::Selection(SelectionModal {
-                        title: "Select model".to_string(),
-                        items: models
-                            .into_iter()
-                            .map(|model| SelectionItem {
-                                detail: if cfg.model.as_deref() == Some(model.as_str()) {
-                                    "current".to_string()
-                                } else {
-                                    String::new()
-                                },
-                                enter_action: Some(AppAction::SelectModel(model.clone())),
-                                delete_action: None,
-                                label: model,
-                            })
-                            .collect(),
-                        selected,
-                        hint: "↑/↓ select · Enter choose · Esc close".to_string(),
-                    }));
-                    app.dirty = true;
-                }
-                Ok(_) => app.push("no models reported; use /model <name>"),
-                Err(error) => app.push(format!("could not list models: {error}")),
+                Err(error) => app.push_error(error),
             }
         }
+        "/effort" => match (parts.next(), parts.next()) {
+            (None, None) => super::model_commands::show_effort_picker(cfg, app),
+            (Some(value), None) => {
+                let selection = (|| -> Result<crate::model_controls::ModelSelection, String> {
+                    let effort = if value == "default" {
+                        None
+                    } else {
+                        Some(crate::model_controls::ReasoningEffort::parse(value)?)
+                    };
+                    Ok(crate::model_controls::ModelSelection {
+                        model: None,
+                        effort: Some(effort),
+                    })
+                })();
+                match selection {
+                    Ok(selection) => {
+                        super::model_commands::select_model(cfg, selection, slot, approval, app)
+                    }
+                    Err(error) => app.push_error(error),
+                }
+            }
+            _ => app.push_error("Usage: /effort [default|none|minimal|low|medium|high|xhigh|max]"),
+        },
         other => app.push(format!("unknown command {other} — /help for the list")),
     }
     false
@@ -1001,14 +992,28 @@ pub(super) async fn handle_app_action(
 ) {
     match action {
         AppAction::SelectModel(model) => {
-            cfg.model = Some(model.clone());
-            match cfg.save() {
-                Ok(()) => {
-                    app.push(format!("Model: {model}"));
-                    slot.rebuild(cfg, approval.clone());
-                }
-                Err(error) => app.push(format!("could not save model selection: {error}")),
-            }
+            super::model_commands::select_model(
+                cfg,
+                crate::model_controls::ModelSelection {
+                    model: Some(model),
+                    effort: None,
+                },
+                slot,
+                approval,
+                app,
+            );
+        }
+        AppAction::SelectModelEffort { model, effort } => {
+            super::model_commands::select_model(
+                cfg,
+                crate::model_controls::ModelSelection {
+                    model: Some(model),
+                    effort: Some(effort),
+                },
+                slot,
+                approval,
+                app,
+            );
         }
         AppAction::SelectVoiceModel(model) => {
             select_voice_model(&model, cfg, app);

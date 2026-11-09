@@ -499,6 +499,10 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   checkpoint stops further agent work; reopening warns about unfinished calls
   and retains their unknown completion without automatic replay. See
   [terminal recovery](docs/terminal-recovery.md) for storage and effect limits.
+- `/model` selects provider or configured catalog models while keeping the chat
+  and checkpoint sequence. `/effort` or `/model --reasoning=high` selects the
+  current model's reasoning effort. See [terminal models](docs/terminal-models.md)
+  for config, compatibility and cancellation behavior.
 - Desktop connections retain one owner through disconnect cleanup. A closing
   client can hand off to a reconnect; a live client still rejects a second peer.
   Reader/writer cleanup keeps protocol v4 frames unchanged. See

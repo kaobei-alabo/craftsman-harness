@@ -8,6 +8,7 @@ mod app;
 mod commands;
 mod input;
 mod modals;
+mod model_commands;
 mod render;
 mod session_bridge;
 mod shutdown;

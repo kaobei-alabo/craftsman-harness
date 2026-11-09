@@ -1206,7 +1206,7 @@ async fn build_session_with_profile(
         || resolved_profiles.model_id.clone(),
         |provider| format!("{provider}:{}", resolved_profiles.model_id),
     );
-    let provider_options = match resolved_profiles
+    let mut provider_options = match resolved_profiles
         .provider_profile
         .profile
         .apply(&profile_spec, &caller_model_kwargs)
@@ -1219,6 +1219,16 @@ async fn build_session_with_profile(
             caller_model_kwargs
         }
     };
+    // Explicit terminal controls are separate from catalog metadata and win
+    // over caller kwargs. Private/frozen/legacy construction stays unchanged.
+    if construction.prepared().is_none() && extras.cancellation_session.is_some() {
+        if let Err(error) = crate::model_controls::apply(cfg, &model, &mut provider_options) {
+            if let Some(sink) = &extras.activity_sink {
+                sink(&error);
+            }
+            return None;
+        }
+    }
     if verbose {
         println!(
             "route: {} · model: {model} · harness: {}",

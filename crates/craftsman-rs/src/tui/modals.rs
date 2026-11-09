@@ -31,6 +31,10 @@ pub(super) struct AskModal {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum AppAction {
     SelectModel(String),
+    SelectModelEffort {
+        model: String,
+        effort: Option<crate::model_controls::ReasoningEffort>,
+    },
     SelectVoiceModel(String),
     SelectHarness(String),
     SelectAgent(String),
