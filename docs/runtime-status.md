@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 10, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 11, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -22,11 +22,26 @@
 > actual return; reopening never retries tools or compaction. See
 > [terminal compaction](terminal-compaction.md).
 
-> Combined hosted head 957b004 retains a Windows core failure in the original
-> shell poll-progress fixture despite later gadget success. A separate test-only
-> flush/native-exit input keeps the actual shell/Job path, original assertions
-> and deadlines; fresh proof remains required. This is not a historical #138
-> root-cause finding. See [terminal compaction](terminal-compaction.md).
+> **Previous verified main:** PR #9 and independent merged-main run
+> [42841802167](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/42841802167)
+> at `5e4f271` pass all four jobs/every applicable step/both native modes.
+> Fresh local verification passes all nine checks (core 2005/0/17; gadgets
+> 2161/0/20). The earlier Windows failure at 957b004 is retained separately;
+> the corrected fixture keeps the shell/Job path and original assertions/bounds.
+> **Shell diagnostic retirement (November 11):** temporary test-only phase
+> recorders, native snapshots and sampling hooks have been removed at the owner's
+> request. Actual output, timeout, invalid-byte and approval-stop behavior checks
+> remain. This maintenance does not establish the cause of historical shell stalls.
+> Fresh local verification passes all nine checks: core 1927/0/17 and gadgets
+> 2083/0/20, warning-free. Inventory differences are exactly 81 retired diagnostic
+> entries and three converted behavior cases per macOS mode; unrelated tests and
+> ignored/doctest entries are retained. Fresh hosted and independent main proof
+> still gate delivery of this changed source.
+> The first retirement CI run passed all four jobs and both modes, but its warning
+> audit found a newly unused Windows test-only PID accessor. That accessor is now
+> Unix-only, matching its remaining native test callers; production process code
+> and limits are unchanged. The first run remains a separate warning-rejected
+> delivery record pending fresh corrected-source verification.
 
 > **Provider-aware setup (November 10):** `/setup` and `craftsman setup` edit a
 > configured named connection instead of writing ignored flat fields and an
@@ -1152,107 +1167,6 @@ while Windows is formally informational. This is not the private headless six-se
 readiness fixture, usage/settlement, public exec, OS shutdown or live acceptance;
 those remaining gates and independently blocked provider work are unchanged.
 
-### November 3: cfg(test)-only scoped-shell observations for unresolved #138
-
-[shell-test-observations.md](shell-test-observations.md) records native launch
-preparation/return and post-delegation pipe facts through the actual private
-Shell owner. Fixture panic teardown reports only bounded fixed metadata, never
-commands/paths/keys/raw bytes/errors; no global hook, env/cwd mutation, writer or
-runnable-agent interface is added. Every original assertion/20s readiness/15s
-invalid-byte/10s stop and production capture/pump/process behavior stays exact.
-The failed local full runs remain failed; a new instrumented or focused pass
-neither replaces them nor establishes the cause. #138 is unresolved. This is
-not production tracing, public exec/usage settlement or a blocked-provider bypass.
-
-
-### Native failure snapshot refinement for #138
-
-The first instrumented full runs still failed:1554/2/7 off and1697/2/9 gadgets.
-Actual launch return/first read polls were under3ms with zero received bytes;
-this is not a root-cause fix. The live children were gone when those logs were
-inspected, so no post-hoc lookup of possibly reused PIDs is performed.
-A cfg(test)/macOS-only panic-teardown query now records fixed BSD image class,
-state and flags ONLY for an active actual PID after exact struct/PID/current
-parent/group validation. It retains no raw process name/path/argv/environment,
-starts no sampling thread and sends no signal. The bounded native-call count is
-not an absolute OS-latency/PID-reuse/exec/quiescence guarantee. New source evidence
-and all4-job/every-step/both-mode gates remain separate from old failed runs;
-all original assertions/deadlines and production behavior are unchanged.
-
-
-### Native task/thread failure refinement for #138 (November 3)
-
-PR139 merged only the diagnostic slice after exact-head all-four-job/every-step/
-both-mode/source/warning/tree audits; #138 is still OPEN. Its refined local full
-off run still failed1554/2/7, independently of hosted green evidence. No root
-cause or exec/usage/settlement/public-output/P2g/live/release approval follows.
-The next cfg(test)/macOS-only failure snapshot adds original kernel task CPU/
-thread/running/context-switch/syscall/fault counters and bounded per-thread
-run-state/native-time facts. It uses one complete TASKALLINFO snapshot, at most8
-native thread entries and a final original PID/start/current-parent/group
-revalidation; incomplete, overbound, duplicate or changed subqueries are fixed
-unavailable/refusal diagnostics, never a clipped complete set. At most11 native
-calls per active entry, with no retry/sampler/signal/sleep/native IO under the
-recorder lock or raw name/pthread-address/path/argv/environment rendering.
-Native counters are not wall-time/rate/CPU-spin/wait-channel/exec/progress/usage
-proof; calls are bounded, not absolutely interruptible OS-latency guarantees.
-All old runnable code/reader/process semantics/assertions/deadlines stay exact.
-New native metadata and actual-builder cases are separate from full evidence;
-full validation of genuinely changed source is not an unchanged broad retry.
-See [shell-test-observations.md](shell-test-observations.md) for exact limits and
-remaining diagnosis; every partial slice keeps current documentation in sync.
-
-
-### Native executable/CWD observation refinement for #138 (November 3)
-
-PR140's independently audited merged-main run41631110649 passed all FOUR jobs/
-every setup/mandatory/post step/BOTH modes; its failed full local1562/1/7 off
-and1704/2/9 gadgets remain failed and #138 is OPEN. The next cfg(test)/macOS-only
-snapshot distinguishes a process display-name class from the actual native
-executable path class and compares native CWD device/inode to the SAME retained
-ConfinedFs workspace captured from the actual ShellScope. Only exact literal
-image classes and fixed match/different/unavailable relations are retained or
-rendered, never paths, names, argv/environment or device/inode values. A native
-path has one initialized4096-byte buffer/exact strlen+NUL validation; CWD uses a
-complete exact native vnode struct, ignores embedded paths and checks directory
-mode/nonzero identity. No alias normalization, path reopen, metadata as authority
-or root rebinding to manufacture a match. Final ORIGINAL PID/start/parent/group
-revalidation gates ALL new execution facts and existing thread facts; reads are
-not atomic/exec/containment/wait-cause/usage proofs. Maximum13 native queries per
-active entry, plus one clone/metadata/close of the retained directory at TEST-ONLY
-Shell construction; no sampler/signal/sleep/retry/clock/launcher/default change.
-Seven macOS additions include real same-workspace and OWNED namespace-rebind
-cases; every older body/assertion/deadline/production source stays exact. Earlier
-failed full evidence is never replaced by focused/hosted passes or an unchanged
-broad retry. See [shell-test-observations.md](shell-test-observations.md); docs and
-all-four exact-head job/step/mode/source/warning/tree gates accompany this slice.
-
-
-### Bounded pre-kill native snapshot refinement for #138 (November 3 UTC)
-
-PR141 merged-main41647609134 independently passed all FOUR jobs/every setup/
-mandatory/post step/BOTH modes with exact source/tree/runner/case/warning proof.
-Its FAILED local1566/4/7 off and1709/4/9 gadget results, INCLUDING new integration
-readiness failures, remain failed and #138 OPEN. A new cfgtest/macOS-only hook
-records the actual original stop decision/current owned tree ID/observed pipe
-facts BEFORE ORIGINAL kill/reap, so later invalid-byte Timeout assertions can
-report saved fixed native data without querying old/reused PIDs. One non-clone
-query ticket per retained call is shared with active failure views; reserve under
-lock, query outside, cap4096 safe ASCII bytes/13 native calls, never clip/echo raw
-text or refund/rebind an evicted ticket. Prior active data stays labelled active-
-view, not fresh before-stop; clocks explicitly distinguish active-query vs call.
-No stop/pid mismatch/released call authorizes a saved-PID query. Existing report/
-failure_report remain path-free and hide released native facts; ONLY original
-fixture-panic teardown/new explicit TEST view includes the bounded saved history.
-No sampler/signal/sleep/retry/timer/launcher/production/default/old assertion/
-deadline/reader/process change. Twelve macOS additions (eight pure/four actual
-builder) test one-shot identity/caps/eviction/before-drain facts and real timeout/
-approval/prior-view/normal-return behavior, NOT root cause/exec/quiescence/usage
-or replacement full coverage. See [shell-test-observations.md](shell-test-observations.md);
-docs plus all-four exact-head job/step/mode/source/warning/tree gates accompany
-this incomplete slice. Public/blocked-provider/usage/live/release gates stay off.
-
-
 ## Windows Job/PID fixture follow-up — November4,2026 Asia/Taipei
 
 PR142's separately audited merged-main41668514031 is NOT all-four green:
@@ -1284,222 +1198,12 @@ accompany every partial slice; historical plan/Appendix A/R1–R7/#97 stay intac
 ALL FOUR fresh exact-head jobs/every setup/mandatory/post step/both modes/actual
 macOS15+Windows/old+2-new-inventory/warning/source/tree proof precede review-only
 merge. No warmup/unchanged retry/deadline/assertion/launcher workaround, real model
-call/user config/env/SDK mutation or blocked-provider work. #138 stays OPEN;
+call/user config/env/SDK mutation or blocked-provider work.
 public exec/usage/settlement/callables/P2g/live/default-on/release remain off.
 
 
-## Read-only native scheduling facts — November4,2026 UTC
+## Immutable environment test fixtures
 
-PR143/main41683501397 is independently all-four/every-step/both-mode/source/
-old+new-inventory/warning/tree verified. Earlier Windows main41668514031 remains
-FAILED; prior local macOS1578/4/7 off and1721/4/9 gadgets remain FAILED/#138 OPEN.
-Retained pre-kill flags20987920 are not, alone, a wait-cause or startup witness.
-A conservative PUBLIC flag projection and original nice/task/thread priority/
-policy fields are now copied from ALREADY complete native query buffers.
-
-This is cfgtest/macOS-only, ZERO additional native queries/handles/root reads:
-unchanged13-query/8-thread/call/view bounds and original final PID/start/current-
-parent/group revalidation gate ALL new process/thread scheduler details. Process
-facts are labelled initial-task-info, not atomic last state. Resource POLICY is
-one masked enum (0x600=terminate, never two policies); unknown ACTION combinations
-and all non-public/unclassified bits remain numeric, never guessed private flag
-names or rewritten as none. EXEC/TRACED/PPWAIT/etc are exported bit predicates,
-not current executable/script entry/tracer/whole-process wait/permission/usage
-proof. Native signed priorities/policies are preserved, not normalized into
-high/low/starved/suppressed or treated as a portable scheduling explanation.
-
-The SAME one non-clone active/pre-kill ticket, original phase/clock/pipe facts,
-released-native hiding and cached teardown semantics remain intact. Whole fixed
-ASCII/LF reports still fit4096 bytes or WHOLE fixed refusal, never clipping/raising
-caps to rescue extra fields. No sampler/signal/sleep/poll/clock/timer/launcher/
-production/capture/process/default/permission/config/storage/frame change. Eight
-additive pure cases plus one real actual-builder1s zero-byte timeout (NOT startup/
-partial proof) protect projection, masked enum/unknown bits/native signs/no raw
-name/address, final revalidation and saved history without another PID lookup.
-All old15s invalid-byte/20s readiness/10s stop/6s partial/Windows2s+3s/30s outer/
-2s drain/source/test/assertion bodies remain exact. Docs with incomplete work;
-historical plan/Appendix A/R1–R7/#97 and SDK/WIT/framework/deps/lock/pin/workflow/
-frontends/schemas/goldens/trace/corpus stay exact. Native and ALL FOUR exact-head
-job/every-step/both-mode/actual macOS15+Windows/old+9-new-inventory/warning/source/
-tree verification remains required before missing-formal-review-only merge.
-No unchanged broad retry/warmup, fake PID/bytes/readiness/usage, stale PID lookup,
-real model/gadget/user config/env/SDK mutation, agents/goals/blocked-provider work
-or public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-## Test-only original shell poll/selection follow-up — November 4, 2026 UTC
-
-[shell-poll-progress.md](shell-poll-progress.md) records a bounded diagnostic
-follow-up to unresolved #138 after the independently verified rebrand. Original
-inner read polls now retain optional count/Pending count/last result/time, using
-the exact original waker/buffer/result before metadata recording. Existing
-reader/wait select branches retain enter/return facts, not OS startup or
-inner-wait polling. A pre-stop copy stays historical and separate from real
-later drain; no additional native lookup or changed snapshot ticket/clock.
-The entire new progress section fits4096 fixed ASCII/LF bytes or refuses whole.
-
-This is cfg(test)-only, not a production fix or public producer. All13 new cases
-pass both local modes without compiler warnings; both locked all-target checks
-and frozen contracts/source/history/link audits pass. ONE changed-source full
-run per mode then finishes warning-free: off FAILED1600/4/7 (12 new passes/one
-new normal-output failure plus three old readiness failures), gadgets1747/0/9
-passed. Original Pending polls/no wait-selection entry are phase facts, not a
-root fix; the gadget pass does not erase failures. Exact-head hosted verification
-is in progress. Every old assertion/deadline/process/reader/native bound remains
-intact and #138 OPEN. No public exec/usage/settlement/callable-gadget/P2g/live/release or
-independently blocked provider work is enabled.
-
-
-## Corrective environment-test isolation — November 4, 2026 UTC
-
-PR146's diagnostic source is now merged after ALL FOUR exact-head jobs/EVERY
-setup/mandatory/post step/BOTH modes/actual macOS15+Windows/source/inventory/
-warning/tree proof. Independent merged-main41825763199 is audited separately;
-the prior FAILED1600/4/7 off/new-normal-output failure is NOT replaced.
-
-The next [test-environment-isolation.md](test-environment-isolation.md) correction
-removes actual unsafe test-global environment mutations. Config/MCP/route
-assertions retain their original bodies in fixed marked children with immutable
-pre-start environment plans; the same concurrent serve protocol/auth assertions
-select a thread-safe cfgtest-only per-router source. Original production env/
-empty/lossy/header/constant-time auth behavior is independently exercised, not
-mocked. No runtime/shell/permission/deadline/frame/SDK or user-config change.
-Validation is in progress; fixing this concrete isolation defect does not by
-itself prove #138's root cause. Public exec/usage/settlement/callables/P2g/live/
-default-on/release and independently blocked provider work remain off/separate.
-
-
-Corrective full validation (November 4 UTC): all five original environment/
-protocol cases and eight new substantive cases pass both modes, warning-free.
-Full off still FAILED1605/4/8 with the same four shell/readiness failures;
-gadgets1752/0/10 passes. Unsafe environment mutation is removed, but it is NOT
-proved #138's sole cause/fix; no old assertion/deadline/process/reader/SDK or
-provider workaround. All prior failed evidence is retained and #138 OPEN;
-all-four/every-step/both-mode hosted verification remains required.
-
-
-Windows PR147 first-head41829354220 is preserved FAILED in BOTH modes only for
-the NEW offline declaration guard's LF-only source match (native main1552/0/8
-and1684/0/10 and every old/env assertion pass; interpreter post step skipped).
-Correction normalizes ONLY CRLF pairs to LF in that NEW guard; original exact
-cfg/declaration checks remain, with an additive LF/CRLF-versus-lone-CR/wrong-cfg/
-wrong-name/tab negative case. No production/old assertion/deadline/pin/SDK/
-workflow/warning suppression or unchanged CI retry. Require ALL FOUR fresh
-corrected-head jobs/every step/both modes/native/inventory/warning/source/tree
-proof before review-only merge; #138 and old local failures remain unresolved.
-
-
-## PR147 corrected-head Windows failure and test-only phases — November 4 UTC
-
-Corrected head3919f640/CI41835883954 attempt1 passes ALL four new CRLF/environment
-source guards and ALL five original environment/protocol cases BOTH modes on
-Ubuntu24.04/actual macOS15/Windows2025. It is still NOT all-four green: Windows
-feature-off Test fails the ORIGINAL2s partial-output stdout assertion with empty
-wording (1551/1/8); later gadgets1684/0/10 does not replace it and interpreter post is
-skipped. All other jobs/steps/old+new inventories and Windows9 warning signatures/
-17 occurrences remain verified. PR147 remains DRAFT/unmerged; #138 stays OPEN.
-No startup/reader/wake/capture cause follows from the missing output.
-
-The next [test-only legacy phase observer](legacy-shell-observations.md) records original spawn return,
-exact delegated read polls and existing reader/wait/kill/drain selections, owned
-by the actual ordinary test ShellRunner. At most8 calls/WHOLE4096 ASCII-LF report
-or fixed refusal; original clock/counters and pre-stop/current histories remain
-separate. No extra poll/waker/native lookup/raw bytes/error/env/clock reset/global
-hook/launcher/warmup/retry. Only original assertion-panic teardown prints it;
-headless retains its SAME existing recorder/native bounds. Shared executor
-extraction and cfgtest-only seams keep original pump/process/capture/defaults/
-old commands/assertions/Windows2s+3s/30s outer/2s drain/private15s+20s+10s+6s and
-env20s+5s limits intact. Eight additive cases plus a CRLF-safe source guard are
-not a root fix/Windows proof. Docs with incomplete work; all FOUR fresh exact-head
-jobs/EVERY step/BOTH modes/native/source/tree/inventory/warning/review proof still
-gate missing-review-only merge. No unchanged broad retry/admin failure bypass,
-real model/user config/SDK/global-env mutation, agents/goals/blocked-provider work
-or public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-One genuinely changed-source full command per mode at c1cac545 (November4 UTC)
-completed warning-free with every old native name/ignored/doctest plus the eight
-new main cases/new guard/CRLF guard preserved. All original environment/auth and
-all18 new substantive cases relative to PR146 pass BOTH modes. Off remains
-FAILED1613/4/8, exit101,998.48s whole command: the SAME four scoped-shell cases
-still fail. Gadgets1760/0/10 passes, exit0,73.85s; never substitute that pass.
-Temporary lack of startup output from an offline test binary later cleared; its
-original source assertions pass. No root-cause/PID/startup-latency inference,
-clock/assertion/launcher workaround, unbounded wait or unchanged broad retry.
-Full evidence stays retained; #138 OPEN and PR147 draft pending ALL FOUR fresh
-exact-head jobs/EVERY step/BOTH native modes/source/tree/inventory/warning/review
-proof. Public/usage/settlement/callable/P2g/live/default-on/release remain off.
-
-
-## Native current-child pipe snapshots — November 5 Asia/Taipei / November 4 UTC
-
-PR147/main86704e4 are independently ALL FOUR/every-step/both-mode/source/tree/
-inventory/old Windows9-signature17-occurrence verified; live main/p0-integration
-branches were FF-only/data-preserving. The transient null Windows main-job
-metadata was strictly refused, then SAME-run/job metadata converged before
-verification/FF; no CI retry/faked completion. Local off1613/4/8 remains FAILED,
-gadgets1760/0/10 passes, #138 OPEN and all older failed evidence sealed/read-only.
-
-The next [read-only pipe facet](native-pipe-snapshots.md) queries ONLY the existing live actual
-native snapshot ticket's CURRENT child fd1/2 metadata; no read/dup/poll/waker/
-launcher/environment/clock/signal/sampler/public output change. Complete exact
-public ABI/write-pipe/FIFO/signed-count checks and SAME final PID/start/parent/
-group validation gate all facts. Buffer counts are not original pipeline
-identity/read/emission/EOF/usage or cause proof; child fd rebinding is explicit.
-SAME13-query/8-thread/call/view/4096-byte whole-report bounds:5 fixed + whole-list
-reserved threads; two pipe queries only if<=6 fit,7/8 preserves old threads and
-refuses new facet, no refund/retry/clip. Old phase/ticket/clock/limits/assertions/
-production/SDK/WIT/deps/lock/pin/frontends/frames/schemas/goldens/trace stay exact.
-Additive ABI/pure/real-unread-pipe/actual-builder-zero-timeout tests and docs are
-not a root fix. Require fresh all FOUR exact-head jobs/EVERY step/both modes/
-native/source/tree/inventory/warning/review proof before review-only merge and
-separate main verification before safe live FF. No warmed/unchanged broad retry,
-real model/user config/SDK/env mutation, agents/goals/blocked-provider work or
-public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-Changed-source full validation completed November5 Asia/Taipei/November4 UTC:
-off remains **FAILED1622/4/8**, exit101,427.17s whole command; gadgets1769/0/10
-passes, exit0,77.20s. All nine additive cases and original environment/auth cases
-pass BOTH modes; every old named/ignored/doctest inventory is retained, no warnings.
-The SAME four failures each have zero buffered bytes in CURRENT child fd1/2 at
-their original native query, with one original Pending poll/no wait-selection
-return. That is not original pipeline/prior emission/startup/wait-cause proof or
-a root fix. The offline guard's temporary absent startup output later cleared
-and its original assertion passes. No unchanged broad retry; #138 stays OPEN.
-See [the complete pipe diagnostic validation](native-pipe-snapshots.md).
-
-
-## Explicit owned-child native stack experiment — November 5, 2026
-
-The user approved ONE bounded native stack capture of a newly owned failing
-child, expanding no-sampling only for an explicitly marked cfgtest/macOS
-experiment. PR148/main151d4bf are all-four/every-step/both-mode verified; local
-off1622/4/8 remains FAILED/#138 OPEN. The new private seam borrows the SAME actual
-pre-kill ProcessTree/Call, selects only a fixed libtest diagnostic case plus
-explicit owned directory marker, never old/reused/caller PID or runtime role
-authority. Normal CI/unmarked/production paths do not sample. One consumed budget,
-fixed1s/1000ms tool request,5s execution/2s owned cleanup/8KiB pipes/1MiB trace
-and sampler-only file limit; actual return/signal/identity/hash facts, no retry.
-Sampling SUSPENDS/RESUMES threads: perturbation is explicit, not passive wait/exec/
-EOF/usage/quiescence/cause proof. Original native13-query/8-thread/call/view/4096
-report/ticket/clock and old assertions/deadlines/production/pump/reader/waker/
-ProcessTree/environment/framework/SDK/WIT/deps/pins/workflows/frontends/frames/
-schemas/goldens/trace remain intact. Guards/docs in progress; no inferred root
-fix, public exec/usage/settlement/callables/P2g/live/default-on/release, model/
-installed gadget/user config/env/SDK mutation, agents/goals or blocked-provider
-work. See [the owned-stack scope and validation](owned-child-stack-capture.md).
-
-
-Owned-stack experiment completed: ONE newly owned pre-kill child trace succeeded
-(exit0/no signal,1.127321s,859 bytes) with a single `_dyld_start + 0` frame and
-no binary-image description; symbol-lookup warning is retained. It is a perturbed
-loader-entry userspace observation, not kernel wait cause/exec/EOF/usage proof or
-a root fix. Original off1630/4/8 remains FAILED, gadgets1777/0/10 passes; all8 new
-guards and original environment/auth cases pass, warnings0. The initial free
-marker filtered two rustdoc cases: a targeted unmarked doc-only companion restores
-exact combined inventory, NOT a claim of first-command full doctest coverage.
-Future authorized markers use a nonmatching --skip VALUE; metadata-only unit/doc
-lists prove no actual case exclusion. No unchanged broad retry/second sampler/old
-PID lookup/assertion/deadline/launcher/permission workaround; #138 OPEN. See
-[the complete owned-stack evidence](owned-child-stack-capture.md).
+Config, MCP, route and HTTP/WS auth tests preserve their original assertions
+using immutable child environments and per-router state. See
+[environment-test isolation](test-environment-isolation.md) for the maintained contract.

@@ -210,7 +210,7 @@ impl ProcessTree {
     }
 
     /// The direct child's pid.
-    #[cfg(test)]
+    #[cfg(all(unix, test))]
     pub fn id(&self) -> Option<u32> {
         self.child.id()
     }

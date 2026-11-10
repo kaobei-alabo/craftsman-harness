@@ -15,7 +15,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic WASM publication, capability checks and deterministic discovery before model rounds | Keep opt-in and separate build/load approvals; gather live quality evidence |
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
-| Process lifecycle | Bounded shell capture and owned cancellation, scoped TUI Unix groups/Windows Job Objects, signal shutdown | Validate native containment and exceptional cleanup; earlier shell issue remains unresolved |
+| Process lifecycle | Bounded shell capture and owned cancellation, scoped TUI Unix groups/Windows Job Objects, signal shutdown; native behavior regression checks | Validate native containment and exceptional cleanup |
 | Distribution | Authenticated new repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled and workflows removed | Explicit owner approval before restoring publication, plan-supported branch protection and licensing/distribution decisions |
 
 The roadmap in [craftsman-harness-plan.md](craftsman-harness-plan.md) includes
@@ -42,16 +42,40 @@ provider compatibility, which remain production gates.
 
 The provider change is merged as PR #8 at `45aa2d1`; independent main run
 42776674728 passed all four jobs, every step and both native modes with the
-reviewed inventory and warning signatures intact. The next
+reviewed inventory and warning signatures intact. The
 [durable manual-compaction change](terminal-compaction.md) closes a gap where
 `/compact` reported success before saving its replacement checkpoint. Fresh
-validation of this change remains separate from provider evidence.
+validation of this change is recorded separately from provider evidence.
 
 The same continuation adds [provider-aware setup](provider-setup.md): named
 connections are edited and selected as a complete validated candidate, keeping
 other providers/model settings and the existing conversation. Failed saves
 retain the current session. This fixes setup writing ignored flat connection
 fields and an invalid unqualified model selection.
+
+That continuation is merged as PR #9 at `5e4f271`; corrected PR run 42834187156
+and independent main run
+[42841802167](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/42841802167)
+pass all four jobs, every applicable step and both full modes. Fresh local
+verification passes all nine checks (core 2005/0/17; gadgets 2161/0/20).
+
+Temporary test-only shell phase recorders, native snapshots and manual sampling
+hooks have been retired at the owner's request. Their dedicated investigation
+docs are removed; actual output, exit, timeout, invalid-byte and approval-stop
+checks remain in the maintained suites. Historical failures remain preserved in
+Git and private evidence. Retirement is cleanup, without a root-cause fix claim.
+
+Fresh local verification of the retirement passes all nine checks, including
+core 1927/0/17 and gadgets 2083/0/20 without warnings. The inventory audit accounts
+for exactly 81 retired diagnostic entries and three converted behavior cases in
+each macOS mode, retaining every unrelated named/ignored/doctest entry. Hosted
+platform and independent merged-main verification remain required for delivery.
+
+The first retirement run 42856977134 passed every job and native mode, but its
+warning audit rejected one newly unused Windows test-only PID accessor warning
+per mode. The accessor is restricted to its remaining Unix test callers; this
+does not change production process handling or native bounds. Fresh corrected
+source verification remains distinct from that first run.
 
 ## Build and use the gadget workflow
 
@@ -248,8 +272,9 @@ It is a working, extensively source-tested agent suitable for supervised trials
 in a disposable checkout with explicit model configuration and manual approvals.
 It is not yet production ready. Shared cancellation now reaches native builds,
 compaction and foreground helpers, and signals enter owned shutdown. The
-recovery continuation still needs complete validation, real console-event/task
-evaluation and its remaining recovery/diagnostic cases. The inherited shell issue remains open, and live
+recovery continuation has isolated checkpoint/crash/reopen verification;
+real console-event/task evaluation and remaining background/diagnostic recovery
+still need validation. Live
 model/task/gadget quality has not been measured. The host shell and
 filesystem are not sandboxed by the gadget WASM engine. Keep backups and review
 the agent's changes; do not rely on it for unattended production changes yet.

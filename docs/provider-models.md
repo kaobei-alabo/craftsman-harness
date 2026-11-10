@@ -136,7 +136,7 @@ Full native local modes and all four hosted checks still gate the reviewed
 implementation, followed by independent merged-main validation. Scripted tests
 do not establish live coding/gadget quality or universal model compatibility.
 Remaining native-console, recovery, concurrent-owner and containment work, public
-`craftsman exec`, inherited shell issue #138 and publication gates stay separate.
+`craftsman exec` and publication gates stay separate.
 
 API references reviewed November 10, 2026:
 [OpenAI Responses migration](https://developers.openai.com/api/docs/guides/migrate-to-responses),

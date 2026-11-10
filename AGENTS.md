@@ -1,15 +1,15 @@
 # craftsman-harness — agent notes
+Shell instrumentation retirement (November 11): the owner explicitly authorized removal of temporary cfg-test scoped/legacy phase recorders, native metadata/snapshot/sampling code and diagnostic-only tests/docs. Preserve actual shell output/exit/timeout/invalid-byte/approval-stop regressions, runtime ownership/permission/capture/native cleanup limits and sealed evidence. Retired tests must be inventoried separately from retained or converted behavior tests; removal is maintenance, not a root-cause fix or permission to waive checks. First run42856977134 passes all-four/every-step/both-mode but is warning-rejected: only the unused test-only Windows PID getter is retired by a Unix-test cfg; no production change/suppression. Keep that first evidence separate and require fresh corrected-source full local/all-four/every-step/both-mode/independent-main proof before delivery. No publication, paid calls, old-PID lookup or privileged tracing.
 Repository identity: `kaobei-alabo/craftsman-harness`, transferred from the owner's personal account on November 9, 2026. On November 5 the owner explicitly authorized fresh Git history, removal of the inherited remote, and continued production-readiness work. Preserve user configuration/data and the existing execution, permission, accounting and native limits. Public exec, callable headless gadgets and release readiness still require their documented implementation and validation. `docs/repository-name.md` records the earlier namespace migration; dated commit, issue and CI references below are inherited evidence, not checks run in this repository.
 Publication hold (November 6): the owner explicitly requested that CI not publish agent binaries and that obsolete workspace/service-agent image workflows be removed. Release (including manual binary artifact uploads) and both image workflows are disabled in GitHub and removed from source. Keep validation CI and the JSON-only gadget benchmark; do not restore binary/container publication without explicit owner approval and a reviewed change. This supersedes older release workflow instructions below.
-Owned terminal lifecycle (November 6 continuation): the explicitly opted-in turn/session scope now reaches native ShellRunner cleanup, compaction and foreground helpers; background scopes are independent until session shutdown. Scoped background stops retain running status until actual cleanup return. Legacy/private/frozen agents mask ambient scopes. TUI signals are installed before terminal entry and agent construction; scoped Unix commands own groups, while global/legacy shell.process_group defaults stay false and Windows Job Object rules/native 5 s reap+2 s drain remain exact. Inline shell/manual compaction run on owned tasks; closing rejects waiters and drains role/session/voice/LSP owners under a truthful 30 s error bound, without claiming OS containment or blocking-worker quiescence. Retain actual terminal authority/modes through signal/panic restoration; panic payloads never bypass SafeBackend. New marked cfg-test PTYs record actual flags before process exit; only Darwin's kernel-transient PENDIN bit is excluded in the NEW configured-mode comparison, without consuming input or changing old assertions. SDK/WIT/pins/schemas/frames/goldens/old limits remain fixed. Docs and fresh full native/all-four/every-step/independent-main proof are required; #138 remains unresolved and live quality/recovery/containment/public exec/publication gates remain separate. See docs/terminal-lifecycle.md; this supersedes earlier model-only cancellation limits.
-Terminal durable recovery (November 6 continuation): explicit AgentBuilder::durable_turn_checkpoints defaults false and is selected only by the owned terminal; legacy/private/frozen policies remain. Save user intent/round input/reviewed response and each actual tool result before more work; a failed save refuses further sampling/dispatch with fixed text, retains completed effects/input, and cannot replay turn_end or print Session saved. Reopen preserves real results and marks unresolved calls UNKNOWN (may have effects), per assistant/tool group even with reused ids; no automatic dispatch/model work or approval bypass. Checkpoint-only custom._craftsman_durable_turn_v1 is versioned/removed on restore, collisions/malformed versions/overflow fail fixed. SAME SQLite layout/version/50-row retention/WAL/5s busy bound; metadata/state/context/pruning is one transaction on a separate synchronized connection with FULL WAL sync, without power-loss/OS/exactly-once/cross-process-lease claims. Additive isolated SQL failures and marked actual abrupt-exit/write/checkpoint/reopen proof; unmarked helper returns before path/config. Docs and fresh full/all-four/every-step/both-mode/inventory/warning/independent-main proof required; failed new title expectation is retained and corrected to actual prior metadata. SDK/WIT/pins/native limits/schemas/frames/goldens/public headless gates/publication unchanged; #138, live quality, background/manual-compaction/diagnostic recovery and containment remain separate. See docs/terminal-recovery.md.
-Terminal model controls (November 9 continuation): TUI /model catalog and /effort or --reasoning select explicit per-model settings; model_settings is terminal-only and catalog metadata never becomes generation options. Provider-dependent levels/defaults, default=null differs from literal none; no silent fallback/downgrade or new Responses transport. Reconfiguration retains old initializer/session through background/LSP cleanup, then transfers actual committed messages/files/todos/custom/approval/thread/next-seq and main usage; resets only old model usage anchor, retains new model/profile/tools/registry/stop owner. No model/tool/hook/checkpoint replay in transfer; distinct idle-agent guard. Failed init retains history and closes old sampling. Catalog is bounded 1MiB/512 ids/512-byte names/finite efforts and cancellable under old 15s/owned-30s shutdown bounds. Legacy/private/frozen SessionExtras/Prepared paths stay unchanged; retired helper is now test-only, old tests/assertions/deadlines stay intact. Isolated marked actual-builder/HTTP/file/SQLite/effort/cancellation tests and docs accompany code; no parent/user config/SDK/env mutation or real model expense. Require full local, fresh all-four/every-step/both-mode/inventory/warning/tree and independent-main proof before FF; pins/SDK/WIT/schema/frames/goldens/public exec/publication and #138 gates remain fixed. See docs/terminal-models.md.
+Owned terminal lifecycle (November 6 continuation): the explicitly opted-in turn/session scope now reaches native ShellRunner cleanup, compaction and foreground helpers; background scopes are independent until session shutdown. Scoped background stops retain running status until actual cleanup return. Legacy/private/frozen agents mask ambient scopes. TUI signals are installed before terminal entry and agent construction; scoped Unix commands own groups, while global/legacy shell.process_group defaults stay false and Windows Job Object rules/native 5 s reap+2 s drain remain exact. Inline shell/manual compaction run on owned tasks; closing rejects waiters and drains role/session/voice/LSP owners under a truthful 30 s error bound, without claiming OS containment or blocking-worker quiescence. Retain actual terminal authority/modes through signal/panic restoration; panic payloads never bypass SafeBackend. New marked cfg-test PTYs record actual flags before process exit; only Darwin's kernel-transient PENDIN bit is excluded in the NEW configured-mode comparison, without consuming input or changing old assertions. SDK/WIT/pins/schemas/frames/goldens/old limits remain fixed. Docs and fresh full native/all-four/every-step/independent-main proof are required; live quality/recovery/containment/public exec/publication gates remain separate. See docs/terminal-lifecycle.md; this supersedes earlier model-only cancellation limits.
+Terminal durable recovery (November 6 continuation): explicit AgentBuilder::durable_turn_checkpoints defaults false and is selected only by the owned terminal; legacy/private/frozen policies remain. Save user intent/round input/reviewed response and each actual tool result before more work; a failed save refuses further sampling/dispatch with fixed text, retains completed effects/input, and cannot replay turn_end or print Session saved. Reopen preserves real results and marks unresolved calls UNKNOWN (may have effects), per assistant/tool group even with reused ids; no automatic dispatch/model work or approval bypass. Checkpoint-only custom._craftsman_durable_turn_v1 is versioned/removed on restore, collisions/malformed versions/overflow fail fixed. SAME SQLite layout/version/50-row retention/WAL/5s busy bound; metadata/state/context/pruning is one transaction on a separate synchronized connection with FULL WAL sync, without power-loss/OS/exactly-once/cross-process-lease claims. Additive isolated SQL failures and marked actual abrupt-exit/write/checkpoint/reopen proof; unmarked helper returns before path/config. Docs and fresh full/all-four/every-step/both-mode/inventory/warning/independent-main proof required; failed new title expectation is retained and corrected to actual prior metadata. SDK/WIT/pins/native limits/schemas/frames/goldens/public headless gates/publication unchanged; live quality, background/manual-compaction/diagnostic recovery and containment remain separate. See docs/terminal-recovery.md.
+Terminal model controls (November 9 continuation): TUI /model catalog and /effort or --reasoning select explicit per-model settings; model_settings is terminal-only and catalog metadata never becomes generation options. Provider-dependent levels/defaults, default=null differs from literal none; no silent fallback/downgrade or new Responses transport. Reconfiguration retains old initializer/session through background/LSP cleanup, then transfers actual committed messages/files/todos/custom/approval/thread/next-seq and main usage; resets only old model usage anchor, retains new model/profile/tools/registry/stop owner. No model/tool/hook/checkpoint replay in transfer; distinct idle-agent guard. Failed init retains history and closes old sampling. Catalog is bounded 1MiB/512 ids/512-byte names/finite efforts and cancellable under old 15s/owned-30s shutdown bounds. Legacy/private/frozen SessionExtras/Prepared paths stay unchanged; retired helper is now test-only, old tests/assertions/deadlines stay intact. Isolated marked actual-builder/HTTP/file/SQLite/effort/cancellation tests and docs accompany code; no parent/user config/SDK/env mutation or real model expense. Require full local, fresh all-four/every-step/both-mode/inventory/warning/tree and independent-main proof before FF; pins/SDK/WIT/schema/frames/goldens/public exec/publication gates remain fixed. See docs/terminal-models.md.
 Purpose: Rust workspace for the Craftsman CLI — the `craftsman` terminal client / workspace-agent runtime plus the `craftsman-harness` agent framework.
-Durable manual compaction (November 10): only the owned terminal's existing durable opt-in selects Agent::compact_idle. Save original state before sampling and replacement before success; preserve real results/reconcile unknown calls without dispatch. Exclusive activity rejects turns/transfer/steering and parked approvals; queued user input stays separate. Cancellation/message changes discard uncommitted summaries; replace only messages/usage anchor so concurrent files/todos/custom survives. Final save stays owned through actual return/late stop; failure retains memory/prior disk and refuses saved-session claims. No turn/tool/review/end-hook replay or approval bypass. SAME marker shape/SQL layout/WAL/FULL/5s busy/50-row retention/native/30s cleanup/SDK/WIT/pins/frames/schemas/goldens/legacy/private defaults. Additive framework/marked actual-builder/HTTP/file/SQL-error/abrupt-exit/reopen cases; unmarked/unknown modes return before path/config. Docs/current status with code; full local/all-four/every-step/both-mode/inventory/warning/tree and independent-main gate delivery. No paid calls/publication; background/diagnostic recovery, #138, live quality, containment/public exec remain separate. See docs/terminal-compaction.md.
-November 10 unread-pipe fixture correction: first compaction full validation passes core but fails the original macOS unread-pipe diagnostic in gadgets. Ready-file creation occurred while stdout was redirected; publish readiness by rename after that redirect closes. Only this cfg-test input initializer/shared fixture helper changes; original byte/native assertions and 20s ready/2s drain bounds remain. One additive owned barrier case checks no premature ready name and exact unread stdout/stderr bytes. No production ProcessTree/reader/native query/bound/clock change, warmed retry, old PID lookup or historical #138 root-fix claim; preserve failed full evidence and require fresh changed-source full/all-four/every-step/both-mode/inventory/warning/tree/main proof.
-Provider-aware setup (November 10): named configurations use a connection picker and edit only that provider's endpoint/key/actual API model selection. Validate the entire candidate before save; only successful save swaps cfg and uses the SAME existing conversation-preserving rebuild/cleanup. Keep other providers/catalog/settings/unknown user fields, masked keys, whole bounded paste refusal and cancellation-retained drafts; new model IDs use provider defaults, with no cross-model settings copy or unselected credential resolution. No model/catalog request to claim connection success, hook/tool/checkpoint replay or credential/error-body diagnostics. Legacy flat setup remains; stale legacy actions refuse named configs. New private UI actions only; framework/private prepared/SDK/WIT/pins/lock/SQL/native limits/frames/schemas/goldens/publication unchanged. Additive pure/UI/marked actual-builder/file/HTTP/SQLite/failed-save/usage/no-replay proof; unmarked returns before path/config. Docs every slice and fresh full/all-four/every-step/both-mode/inventory/warning/tree/independent-main gate delivery. No paid model calls or publication; live/background/diagnostic/containment/#138/public-headless gates remain separate.
-November 10 Windows progress fixture: preserve run42827010637 FAILED (core normal-output poll-progress diagnostic; later gadgets passed). Recorded 22 stdout bytes at14.78s/no EOF before15s/no wait entry is phase evidence, not startup/scheduling/wakeup/#138 cause. ONLY its Windows input initializer selects console flushes then current-process Environment.Exit; old print helper/all other commands and original byte/status/poll assertions/15s command/30s outer remain. One new Windows actual-builder case checks stdout+stderr/exit11/returned read+wait in both formats. SAME production ProcessTree/Job shims/kill-read/never-job-wait/never-wait-after-try-wait/readers/clock/5s reap+2s drain, SDK/WIT/pins/lock/frames/schemas/goldens and other gates; no warmup/unchanged broad retry/native latency guarantee/old PID lookup. Require fresh changed-source full/all-four/every-step/both-mode/inventory/warning/tree and independent-main proof before delivery; no paid calls/publication or #138 closure.
-Named model providers (November 10): explicit providers.PROVIDER.models maps use actual API IDs, selected as provider/model-id; no coder aliases or config-version field. Nested generation/reasoning settings are connection/model scoped; catalog metadata never enters generation options and unselected credentials are not resolved during session construction. Explicit Responses, Claude Messages and Gemini GenerateContent adapters serve text/function calls; compatible endpoints retain the existing transport. App-only protected native-history middleware retains original signed/opaque items paired with committed portable messages, bound to endpoint/model/protocol/credential identity, with strict cache/message checks before more work. No transfer replay, unknown usage fabrication, secret/body diagnostics, generation fallback or native HTTP redirect/retry. Directly owned bounded discovery futures cancel with their parent; original late-picker guard remains. New schema/control/API/actual HTTP/cancellation and marked real-builder/file/SQLite/all-four-protocol/no-replay cases accompany docs/provider-models.md. Private prepared runtimes refuse named provider configuration; old defaults, framework boundary, SDK/WIT/pins/lock, native limits, SQL layout and frozen frames/schemas/goldens remain unchanged. Full local/all-four/every-step/native-mode/inventory/warning/tree and independent-main proof still gate review/FF. No paid model calls, publication or #138/blocked-provider work. This supersedes the November 9 terminal-only single-protocol limit for explicitly named app connections. The owner requested a live placeholder config; preserve or back up user edits before authorized migration.
+Durable manual compaction (November 10): only the owned terminal's existing durable opt-in selects Agent::compact_idle. Save original state before sampling and replacement before success; preserve real results/reconcile unknown calls without dispatch. Exclusive activity rejects turns/transfer/steering and parked approvals; queued user input stays separate. Cancellation/message changes discard uncommitted summaries; replace only messages/usage anchor so concurrent files/todos/custom survives. Final save stays owned through actual return/late stop; failure retains memory/prior disk and refuses saved-session claims. No turn/tool/review/end-hook replay or approval bypass. SAME marker shape/SQL layout/WAL/FULL/5s busy/50-row retention/native/30s cleanup/SDK/WIT/pins/frames/schemas/goldens/legacy/private defaults. Additive framework/marked actual-builder/HTTP/file/SQL-error/abrupt-exit/reopen cases; unmarked/unknown modes return before path/config. Docs/current status with code; full local/all-four/every-step/both-mode/inventory/warning/tree and independent-main gate delivery. No paid calls/publication; background/diagnostic recovery, live quality, containment/public exec remain separate. See docs/terminal-compaction.md.
+Provider-aware setup (November 10): named configurations use a connection picker and edit only that provider's endpoint/key/actual API model selection. Validate the entire candidate before save; only successful save swaps cfg and uses the SAME existing conversation-preserving rebuild/cleanup. Keep other providers/catalog/settings/unknown user fields, masked keys, whole bounded paste refusal and cancellation-retained drafts; new model IDs use provider defaults, with no cross-model settings copy or unselected credential resolution. No model/catalog request to claim connection success, hook/tool/checkpoint replay or credential/error-body diagnostics. Legacy flat setup remains; stale legacy actions refuse named configs. New private UI actions only; framework/private prepared/SDK/WIT/pins/lock/SQL/native limits/frames/schemas/goldens/publication unchanged. Additive pure/UI/marked actual-builder/file/HTTP/SQLite/failed-save/usage/no-replay proof; unmarked returns before path/config. Docs every slice and fresh full/all-four/every-step/both-mode/inventory/warning/tree/independent-main gate delivery. No paid model calls or publication; live/background/diagnostic/containment/public-headless gates remain separate.
+November 10 Windows progress fixture: preserve run42827010637 FAILED (core normal-output poll-progress diagnostic; later gadgets passed). Recorded 22 stdout bytes at14.78s/no EOF before15s/no wait entry is phase evidence, not startup/scheduling/wakeup/historical shell cause. ONLY its Windows input initializer selects console flushes then current-process Environment.Exit; old print helper/all other commands and original byte/status/poll assertions/15s command/30s outer remain. One new Windows actual-builder case checks stdout+stderr/exit11/returned read+wait in both formats. SAME production ProcessTree/Job shims/kill-read/never-job-wait/never-wait-after-try-wait/readers/clock/5s reap+2s drain, SDK/WIT/pins/lock/frames/schemas/goldens and other gates; no warmup/unchanged broad retry/native latency guarantee/old PID lookup. Require fresh changed-source full/all-four/every-step/both-mode/inventory/warning/tree and independent-main proof before delivery; no paid calls/publication or historical shell closure.
+Named model providers (November 10): explicit providers.PROVIDER.models maps use actual API IDs, selected as provider/model-id; no coder aliases or config-version field. Nested generation/reasoning settings are connection/model scoped; catalog metadata never enters generation options and unselected credentials are not resolved during session construction. Explicit Responses, Claude Messages and Gemini GenerateContent adapters serve text/function calls; compatible endpoints retain the existing transport. App-only protected native-history middleware retains original signed/opaque items paired with committed portable messages, bound to endpoint/model/protocol/credential identity, with strict cache/message checks before more work. No transfer replay, unknown usage fabrication, secret/body diagnostics, generation fallback or native HTTP redirect/retry. Directly owned bounded discovery futures cancel with their parent; original late-picker guard remains. New schema/control/API/actual HTTP/cancellation and marked real-builder/file/SQLite/all-four-protocol/no-replay cases accompany docs/provider-models.md. Private prepared runtimes refuse named provider configuration; old defaults, framework boundary, SDK/WIT/pins/lock, native limits, SQL layout and frozen frames/schemas/goldens remain unchanged. Full local/all-four/every-step/native-mode/inventory/warning/tree and independent-main proof still gate review/FF. No paid model calls, publication or blocked-provider work. This supersedes the November 9 terminal-only single-protocol limit for explicitly named app connections. The owner requested a live placeholder config; preserve or back up user edits before authorized migration.
 Current contract decision (November1, 2026): #97's optional token-admission refusal/v1 compatibility is explicitly accepted (`docs/token-admission.md`), not a still-pending semantic decision. Older slice notes referring to #97 describe their original gate. The actual builder selects a private shared request-only default cap (`docs/request-admission.md`); a separate private token-reservation opt-in now exists (`docs/token-reservations.md`). Private token-admission-correlated send/header observations now exist (`docs/admission-receipts.md`); usage/settlement/public producer remains unwired.
 Toolchain: pinned to Rust 1.99.1 in rust-toolchain.toml with rustfmt/clippy; edition 2024. The app now declares the tested 1.99 floor; standalone framework/gadget SDK/macros retain separate 1.85 declarations/evidence. The default voice build requires CMake on macOS/Linux and ALSA development headers on Linux. `scripts/verify.sh` selects an installed Python 3.11+ interpreter and runs core/default builds plus both full test modes.
 Build: `cargo build --release --locked -p craftsman-rs` (or `./install.sh` to install `craftsman` into ~/.cargo/bin)
@@ -184,20 +184,6 @@ Gotchas:
 - Existing Windows shell partial-output fixture (November3): preserve post-merge main run41398538418/job125125072743's feature-off tools::tests::head_tail_timeout_returns_the_partial_output failure (1524/1/7), separate from #136's green PR run and later gadget-host pass. Only cfg(windows) PRINT_THEN_HANG now uses ORIGINAL Console stdout/stderr writes+explicit flushes then Thread.Sleep(60000), removing test-only Write-Output/native ping; no profiling/universal startup claim. Every old test body/assertion/Unix input and 2s call/30s outer/2s drain, production ShellRunner/execute_impl/capture/ProcessTree/scrub/defaults stay exact; no warmup/retry/readiness callback or fake output/exit. Three additive native Windows cases protect direct order, BOTH-format actual33-byte/typed-timeout/no-exit facts and deliberate pre-write timeout with genuine0 bytes/empty wording. Mac/Linux zero-selected/format checks are NOT Windows execution evidence. No new warnings/suppression or workflow/required-context mutation; all FOUR fresh exact-head jobs/EVERY mandatory/setup step/BOTH modes/Windows and old warning/source proof precede review-only admin merge, not the informational overall badge. This is separate from the unchanged private6s ready-marker shell fixture, usage/settlement/public exec/provider blocker/P2g/live/release. Docs each correction (`windows-shell-fixtures.md`/README/current status/headless/gadget/harness); preserve all old source/framework/SDK/WIT/deps/lock/pin/frontends/frames/schemas/goldens/trace/history.
 
 
-- Scoped shell test observations (#138, November3): `exec/shell/observations.rs` is cfg(test)-only, created by the actual private Shell owner and queried read-only from ShellRunner. Record ORIGINAL launch preparation/ProcessTree return, actual optional PID and post-delegation poll/read facts; PID is not shell-exec/readiness, scope release not completion/quiescence/usage. Preserve exact inner read buffer/waker/result; no lock around inner poll, zero-capacity not EOF and no raw command/path/auth/byte/error text retention. Bound8 calls/8 fixture views and report only fixed safe facts during ORIGINAL assertion-panic teardown, no global hook/env/cwd/spill/writer/launcher/clock/timer change. All old test assertions/20s readiness/15s invalid-byte/10s stop and production shell/capture/pump/group/job/defaults stay exact. Earlier local full failures remain FAILED; focused/new instrumented passes are not replacements or a root-cause claim. Only genuinely changed instrumented source justifies fresh separately classified full evidence, never an unchanged broad retry. Docs each diagnostic (`shell-test-observations.md`/README/current/headless/gadget/harness); all FOUR exact-head jobs/EVERY mandatory/setup step/BOTH modes/actual macOS15/Windows/source/warning proof before review-only merge. Keep public exec/usage/settlement/result/events/trace/callables/P2g/live/release off; no independently blocked provider work.
-
-- #138 native failure snapshot follow-up: first instrumented full runs still FAILED (1554/2/7 off,1697/2/9 gadgets). Actual launch/read polls were under3ms with zero observed bytes, so add cfgtest/macOS ONLY failure-teardown proc_pidinfo for active recorded PID; verify complete native struct/PID/current PPID/group, emit only fixed image class/state/flags, no raw name/path/argv/env/signal or sampler. Query outside recorder lock, not PID-reuse/exec/quiescence/absolute-OS-latency authority. Old failed child lifetimes were already gone; do NOT inspect possibly reused PIDs after the fact. New diagnostic source justifies fresh classified evidence, never unchanged broad retry or old limit/assertion change; cause still unproven, provider/public/usage/live/release untouched.
-
-
-- #138 task/thread failure refinement: cfgtest/macOS observations/native.rs now queries one exact-size current-owned-child TASKALLINFO, <=8 pthread-key entries paired ONLY with PROC_PIDTHREADINFO and a final original PID/start/current-parent/group check. At most11 native calls/entry, initialized fixed9-slot scratch, no retries/growing list/sampler/signal/sleep/raw names/addresses/paths/argv/env or recorder lock around native queries. Incomplete/overbound/duplicate/changed subqueries are fixed unavailable/refusal, not partial complete sets. Preserve native signed/unsigned values without wall-time/rate/CPU-spin/wait-channel/exec/progress/usage inference; started syscall latency is not an absolute OS bound. Six macOS metadata cases plus one actual-builder active-then-released view case are additive; all old test bodies/deadlines/process/reader/production code stay exact. Earlier full failures remain FAILED; #138 stays OPEN after PR139's diagnostic-only verified merge. Docs every refinement, all FOUR exact-head jobs/every setup/mandatory/post step/both modes/actual macOS15/Windows/source/warning/tree proof before review-only merge; provider/public/usage/P2g/live/release gates untouched.
-
-
-- #138 executable/CWD refinement: cfgtest/macOS native/execution.rs classifies ONE initialized4096-byte proc_pidpath result after exact strlen-excluding-NUL/termination/bound checks and ONE complete PROC_PIDVNODEPATHINFO CWD against device/inode captured ONLY through actual ShellScope's SAME retained ConfinedFs directory clone/metadata. Keep raw paths/names/argv/env/device/inode out of reports; exact literal executable classes and fixed match/different/unavailable only, no normalization/ambient reopen/metadata-to-authority or root rebinding. Final original PID/start/current-parent/group revalidation gates ALL execution/thread facts even after errors. <=13 native queries/active entry, separate test-only retained-directory clone/metadata/close, no retry/sampler/signal/sleep/clock/launcher/default changes. Seven additive macOS cases include actual same-workspace and owned namespace-rebind distinctions; ALL old bodies/assertions/deadlines/production/process/reader/source boundaries stay exact. PR140 main41631110649 is independently all-four/every-step/both-mode verified; prior full1562/1/7 off and1704/2/9 gadgets remain FAILED/#138 OPEN. No exec/containment/wait-cause/usage/public/live/release/blocked-provider inference; docs every refinement and all FOUR exact-head jobs/every setup/mandatory/post step/both modes/actual macOS15/Windows/source/warning/tree proof before review-only merge.
-
-
-- #138 pre-kill snapshot (November3 UTC): cfgtest/macOS snapshots.rs owns ONE non-clone native query ticket per original retained Call, shared by active views and actual owned-tree BEFORE ORIGINAL kill/reap. Record original stop kind/time/current tree ID relation/observed pipe facts before drain; mismatch/no PID/no stop/released/evicted never authorizes saved-PID lookup. Reserve under recorder lock, <=13 native queries outside it, save only <=4096 printable ASCII/LF fixed facts or whole fixed refusal, never raw paths/names/argv/env/error/byte text/clip/refund/rebind. Pending isn't returned/completion; prior active snapshots remain labelled active-view with active-query clock, pre-stop uses call clock, never reclassify historical data as fresh. Existing report/failure_report keep released-native facts hidden; ONLY original panic teardown/new explicit test view shows saved history without new PID query. Eight pure/four actual-builder macOS cases are additive, including1s NEW timeout fixture (not startup/partial proof), real20s readiness/10s approval stop/prior-view/normal paths. All old bodies/assertions/15s invalid-byte/20s readiness/10s stop/production/process/reader/defaults stay exact; no global hook/sampler/signal/sleep/retry/native OS-latency guarantee. PR141 main41647609134 all-four/every-step/both-mode independently verified; prior FAILED1566/4/7 off and1709/4/9 gadgets including new integration failures remain FAILED/#138 OPEN. Docs every partial slice and ALL FOUR exact-head jobs/every step/both modes/actual macOS15/Windows/source/warning/tree gates before review-only merge; no provider/public/usage/live/release bypass.
-
-
 ## Windows Job/PID fixture follow-up — November4,2026 Asia/Taipei
 
 PR142's separately audited merged-main41668514031 is NOT all-four green:
@@ -229,78 +215,8 @@ accompany every partial slice; historical plan/Appendix A/R1–R7/#97 stay intac
 ALL FOUR fresh exact-head jobs/every setup/mandatory/post step/both modes/actual
 macOS15+Windows/old+2-new-inventory/warning/source/tree proof precede review-only
 merge. No warmup/unchanged retry/deadline/assertion/launcher workaround, real model
-call/user config/env/SDK mutation or blocked-provider work. #138 stays OPEN;
+call/user config/env/SDK mutation or blocked-provider work.
 public exec/usage/settlement/callables/P2g/live/default-on/release remain off.
-
-
-## Read-only native scheduling facts — November4,2026 UTC
-
-PR143/main41683501397 is independently all-four/every-step/both-mode/source/
-old+new-inventory/warning/tree verified. Earlier Windows main41668514031 remains
-FAILED; prior local macOS1578/4/7 off and1721/4/9 gadgets remain FAILED/#138 OPEN.
-Retained pre-kill flags20987920 are not, alone, a wait-cause or startup witness.
-A conservative PUBLIC flag projection and original nice/task/thread priority/
-policy fields are now copied from ALREADY complete native query buffers.
-
-This is cfgtest/macOS-only, ZERO additional native queries/handles/root reads:
-unchanged13-query/8-thread/call/view bounds and original final PID/start/current-
-parent/group revalidation gate ALL new process/thread scheduler details. Process
-facts are labelled initial-task-info, not atomic last state. Resource POLICY is
-one masked enum (0x600=terminate, never two policies); unknown ACTION combinations
-and all non-public/unclassified bits remain numeric, never guessed private flag
-names or rewritten as none. EXEC/TRACED/PPWAIT/etc are exported bit predicates,
-not current executable/script entry/tracer/whole-process wait/permission/usage
-proof. Native signed priorities/policies are preserved, not normalized into
-high/low/starved/suppressed or treated as a portable scheduling explanation.
-
-The SAME one non-clone active/pre-kill ticket, original phase/clock/pipe facts,
-released-native hiding and cached teardown semantics remain intact. Whole fixed
-ASCII/LF reports still fit4096 bytes or WHOLE fixed refusal, never clipping/raising
-caps to rescue extra fields. No sampler/signal/sleep/poll/clock/timer/launcher/
-production/capture/process/default/permission/config/storage/frame change. Eight
-additive pure cases plus one real actual-builder1s zero-byte timeout (NOT startup/
-partial proof) protect projection, masked enum/unknown bits/native signs/no raw
-name/address, final revalidation and saved history without another PID lookup.
-All old15s invalid-byte/20s readiness/10s stop/6s partial/Windows2s+3s/30s outer/
-2s drain/source/test/assertion bodies remain exact. Docs with incomplete work;
-historical plan/Appendix A/R1–R7/#97 and SDK/WIT/framework/deps/lock/pin/workflow/
-frontends/schemas/goldens/trace/corpus stay exact. Native and ALL FOUR exact-head
-job/every-step/both-mode/actual macOS15+Windows/old+9-new-inventory/warning/source/
-tree verification remains required before missing-formal-review-only merge.
-No unchanged broad retry/warmup, fake PID/bytes/readiness/usage, stale PID lookup,
-real model/gadget/user config/env/SDK mutation, agents/goals/blocked-provider work
-or public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-## Test-only original read polls and selection phases — November 4, 2026 UTC
-
-`exec/shell/observations/progress.rs` records ORIGINAL inner reader polls only
-AFTER delegation with the exact Context/waker/buffer/result; no wrapped waker,
-additional poll/native lookup/FD/clock reset or byte/error retention. Fixed
-optional counters become unknown on overflow, never reset/refund/saturate into
-facts. Existing reader/wait select enter/return records are branch observations,
-not inner-wait polling/startup/EOF/OS quiescence or usage. The SAME Call copies
-progress before original kill/drain; current-history and before-stop-history use
-the original call clock, not active-query native timing. New progress section is
-whole<=4096 ASCII/LF bytes or whole fixed refusal; existing report/failure_report,
-native13-query/8-thread/call/view/4096-byte/ticket/phase/revalidation semantics and
-ALL old source/assertion/deadline/process/reader/default boundaries stay exact.
-Only additive pure/actual-builder tests and docs (`shell-poll-progress.md`); keep
-#138 OPEN and prior failures FAILED. All FOUR fresh exact-head jobs/EVERY step/
-both modes/native labels/inventories/warning/source/tree/review proof precede
-missing-formal-review-only merge. No broad unchanged retry, warmup, global/user/
-SDK mutation, agents/goals/blocked-provider work or public exec/usage/settlement/
-callables/P2g/live/default-on/release enablement.
-
-
-November 4 changed-source full validation remains mixed: off FAILED1600/4/7
-(including the NEW normal-output diagnostic), gadgets1747/0/9 passed. All old
-inventories plus13 new cases are present; no compiler warnings/unchanged retry.
-ONE original Pending poll per pipe/no wait-selection entry in the off failure
-reports is parent-side phase evidence, NOT a root fix or lost-wakeup explanation.
-The gadget pass never replaces the off/prior failures; #138 stays OPEN and all
-public/usage/settlement/callable/P2g/live/release gates remain separate/off. See
-[the diagnostic validation](docs/shell-poll-progress.md).
 
 
 ## Immutable environment test fixtures — November 4, 2026 UTC
@@ -318,146 +234,9 @@ Serve's real HTTP/WS gate uses a per-router cfgtest source; normal authorized()
 keeps original env/empty/lossy/header/constant-time behavior. Never fake an auth
 result, mutate user/parent environment or walk a real home for a successful
 stats fixture. Independent routers/immutable-child production-env cases guard
-it. See `docs/test-environment-isolation.md`; correction in progress, #138 stays
-OPEN and earlier failures FAILED. Root cause still needs evidence; no changed
+it. See `docs/test-environment-isolation.md`; the environment correction is retained and earlier failures remain historical evidence. Root cause still needs evidence; no changed
 old assertions/deadlines/ProcessTree/reader/SDK/WIT/framework/deps/lock/pin/
 frontends/SafeBackend/frames/schemas/goldens/trace/corpus, public exec/usage/
 settlement/callables/P2g/live/default-on/release, agents/goals or blocked-provider
 work. All FOUR exact-head jobs/EVERY step/both modes/native labels/inventories/
 warning/source/tree/review proof precede missing-formal-review-only merge.
-
-
-Corrective full validation (November 4 UTC): all five original environment/
-protocol cases and eight new substantive cases pass both modes, warning-free.
-Full off still FAILED1605/4/8 with the same four shell/readiness failures;
-gadgets1752/0/10 passes. Unsafe environment mutation is removed, but it is NOT
-proved #138's sole cause/fix; no old assertion/deadline/process/reader/SDK or
-provider workaround. All prior failed evidence is retained and #138 OPEN;
-all-four/every-step/both-mode hosted verification remains required.
-
-
-Windows PR147 first-head41829354220 is preserved FAILED in BOTH modes only for
-the NEW offline declaration guard's LF-only source match (native main1552/0/8
-and1684/0/10 and every old/env assertion pass; interpreter post step skipped).
-Correction normalizes ONLY CRLF pairs to LF in that NEW guard; original exact
-cfg/declaration checks remain, with an additive LF/CRLF-versus-lone-CR/wrong-cfg/
-wrong-name/tab negative case. No production/old assertion/deadline/pin/SDK/
-workflow/warning suppression or unchanged CI retry. Require ALL FOUR fresh
-corrected-head jobs/every step/both modes/native/inventory/warning/source/tree
-proof before review-only merge; #138 and old local failures remain unresolved.
-
-
-## PR147 corrected-head Windows failure and test-only phases — November 4 UTC
-
-Corrected head3919f640/CI41835883954 attempt1 passes ALL four new CRLF/environment
-source guards and ALL five original environment/protocol cases BOTH modes on
-Ubuntu24.04/actual macOS15/Windows2025. It is still NOT all-four green: Windows
-feature-off Test fails the ORIGINAL2s partial-output stdout assertion with empty
-wording (1551/1/8); later gadgets1684/0/10 does not replace it and interpreter post is
-skipped. All other jobs/steps/old+new inventories and Windows9 warning signatures/
-17 occurrences remain verified. PR147 remains DRAFT/unmerged; #138 stays OPEN.
-No startup/reader/wake/capture cause follows from the missing output.
-
-The next [test-only legacy phase observer](docs/legacy-shell-observations.md) records original spawn return,
-exact delegated read polls and existing reader/wait/kill/drain selections, owned
-by the actual ordinary test ShellRunner. At most8 calls/WHOLE4096 ASCII-LF report
-or fixed refusal; original clock/counters and pre-stop/current histories remain
-separate. No extra poll/waker/native lookup/raw bytes/error/env/clock reset/global
-hook/launcher/warmup/retry. Only original assertion-panic teardown prints it;
-headless retains its SAME existing recorder/native bounds. Shared executor
-extraction and cfgtest-only seams keep original pump/process/capture/defaults/
-old commands/assertions/Windows2s+3s/30s outer/2s drain/private15s+20s+10s+6s and
-env20s+5s limits intact. Eight additive cases plus a CRLF-safe source guard are
-not a root fix/Windows proof. Docs with incomplete work; all FOUR fresh exact-head
-jobs/EVERY step/BOTH modes/native/source/tree/inventory/warning/review proof still
-gate missing-review-only merge. No unchanged broad retry/admin failure bypass,
-real model/user config/SDK/global-env mutation, agents/goals/blocked-provider work
-or public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-One genuinely changed-source full command per mode at c1cac545 (November4 UTC)
-completed warning-free with every old native name/ignored/doctest plus the eight
-new main cases/new guard/CRLF guard preserved. All original environment/auth and
-all18 new substantive cases relative to PR146 pass BOTH modes. Off remains
-FAILED1613/4/8, exit101,998.48s whole command: the SAME four scoped-shell cases
-still fail. Gadgets1760/0/10 passes, exit0,73.85s; never substitute that pass.
-Temporary lack of startup output from an offline test binary later cleared; its
-original source assertions pass. No root-cause/PID/startup-latency inference,
-clock/assertion/launcher workaround, unbounded wait or unchanged broad retry.
-Full evidence stays retained; #138 OPEN and PR147 draft pending ALL FOUR fresh
-exact-head jobs/EVERY step/BOTH native modes/source/tree/inventory/warning/review
-proof. Public/usage/settlement/callable/P2g/live/default-on/release remain off.
-
-
-## Native current-child pipe snapshots — November 5 Asia/Taipei / November 4 UTC
-
-PR147/main86704e4 are independently ALL FOUR/every-step/both-mode/source/tree/
-inventory/old Windows9-signature17-occurrence verified; live main/p0-integration
-branches were FF-only/data-preserving. The transient null Windows main-job
-metadata was strictly refused, then SAME-run/job metadata converged before
-verification/FF; no CI retry/faked completion. Local off1613/4/8 remains FAILED,
-gadgets1760/0/10 passes, #138 OPEN and all older failed evidence sealed/read-only.
-
-The next [read-only pipe facet](docs/native-pipe-snapshots.md) queries ONLY the existing live actual
-native snapshot ticket's CURRENT child fd1/2 metadata; no read/dup/poll/waker/
-launcher/environment/clock/signal/sampler/public output change. Complete exact
-public ABI/write-pipe/FIFO/signed-count checks and SAME final PID/start/parent/
-group validation gate all facts. Buffer counts are not original pipeline
-identity/read/emission/EOF/usage or cause proof; child fd rebinding is explicit.
-SAME13-query/8-thread/call/view/4096-byte whole-report bounds:5 fixed + whole-list
-reserved threads; two pipe queries only if<=6 fit,7/8 preserves old threads and
-refuses new facet, no refund/retry/clip. Old phase/ticket/clock/limits/assertions/
-production/SDK/WIT/deps/lock/pin/frontends/frames/schemas/goldens/trace stay exact.
-Additive ABI/pure/real-unread-pipe/actual-builder-zero-timeout tests and docs are
-not a root fix. Require fresh all FOUR exact-head jobs/EVERY step/both modes/
-native/source/tree/inventory/warning/review proof before review-only merge and
-separate main verification before safe live FF. No warmed/unchanged broad retry,
-real model/user config/SDK/env mutation, agents/goals/blocked-provider work or
-public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-Changed-source full validation completed November5 Asia/Taipei/November4 UTC:
-off remains **FAILED1622/4/8**, exit101,427.17s whole command; gadgets1769/0/10
-passes, exit0,77.20s. All nine additive cases and original environment/auth cases
-pass BOTH modes; every old named/ignored/doctest inventory is retained, no warnings.
-The SAME four failures each have zero buffered bytes in CURRENT child fd1/2 at
-their original native query, with one original Pending poll/no wait-selection
-return. That is not original pipeline/prior emission/startup/wait-cause proof or
-a root fix. The offline guard's temporary absent startup output later cleared
-and its original assertion passes. No unchanged broad retry; #138 stays OPEN.
-See [the complete pipe diagnostic validation](docs/native-pipe-snapshots.md).
-
-
-## Explicit owned-child native stack experiment — November 5, 2026
-
-The user approved ONE bounded native stack capture of a newly owned failing
-child, expanding no-sampling only for an explicitly marked cfgtest/macOS
-experiment. PR148/main151d4bf are all-four/every-step/both-mode verified; local
-off1622/4/8 remains FAILED/#138 OPEN. The new private seam borrows the SAME actual
-pre-kill ProcessTree/Call, selects only a fixed libtest diagnostic case plus
-explicit owned directory marker, never old/reused/caller PID or runtime role
-authority. Normal CI/unmarked/production paths do not sample. One consumed budget,
-fixed1s/1000ms tool request,5s execution/2s owned cleanup/8KiB pipes/1MiB trace
-and sampler-only file limit; actual return/signal/identity/hash facts, no retry.
-Sampling SUSPENDS/RESUMES threads: perturbation is explicit, not passive wait/exec/
-EOF/usage/quiescence/cause proof. Original native13-query/8-thread/call/view/4096
-report/ticket/clock and old assertions/deadlines/production/pump/reader/waker/
-ProcessTree/environment/framework/SDK/WIT/deps/pins/workflows/frontends/frames/
-schemas/goldens/trace remain intact. Guards/docs in progress; no inferred root
-fix, public exec/usage/settlement/callables/P2g/live/default-on/release, model/
-installed gadget/user config/env/SDK mutation, agents/goals or blocked-provider
-work. See [the owned-stack scope and validation](docs/owned-child-stack-capture.md).
-
-
-Owned-stack experiment completed: ONE newly owned pre-kill child trace succeeded
-(exit0/no signal,1.127321s,859 bytes) with a single `_dyld_start + 0` frame and
-no binary-image description; symbol-lookup warning is retained. It is a perturbed
-loader-entry userspace observation, not kernel wait cause/exec/EOF/usage proof or
-a root fix. Original off1630/4/8 remains FAILED, gadgets1777/0/10 passes; all8 new
-guards and original environment/auth cases pass, warnings0. The initial free
-marker filtered two rustdoc cases: a targeted unmarked doc-only companion restores
-exact combined inventory, NOT a claim of first-command full doctest coverage.
-Future authorized markers use a nonmatching --skip VALUE; metadata-only unit/doc
-lists prove no actual case exclusion. No unchanged broad retry/second sampler/old
-PID lookup/assertion/deadline/launcher/permission workaround; #138 OPEN. See
-[the complete owned-stack evidence](docs/owned-child-stack-capture.md).

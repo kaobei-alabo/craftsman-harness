@@ -131,47 +131,5 @@ accompany every partial slice; historical plan/Appendix A/R1–R7/#97 stay intac
 ALL FOUR fresh exact-head jobs/every setup/mandatory/post step/both modes/actual
 macOS15+Windows/old+2-new-inventory/warning/source/tree proof precede review-only
 merge. No warmup/unchanged retry/deadline/assertion/launcher workaround, real model
-call/user config/env/SDK mutation or blocked-provider work. #138 stays OPEN;
+call/user config/env/SDK mutation or blocked-provider work. the earlier full-run failure remains recorded;
 public exec/usage/settlement/callables/P2g/live/default-on/release remain off.
-
-
-## PR147 corrected-head Windows failure and test-only phases — November 4 UTC
-
-Corrected head3919f640/CI41835883954 attempt1 passes ALL four new CRLF/environment
-source guards and ALL five original environment/protocol cases BOTH modes on
-Ubuntu24.04/actual macOS15/Windows2025. It is still NOT all-four green: Windows
-feature-off Test fails the ORIGINAL2s partial-output stdout assertion with empty
-wording (1551/1/8); later gadgets1684/0/10 does not replace it and interpreter post is
-skipped. All other jobs/steps/old+new inventories and Windows9 warning signatures/
-17 occurrences remain verified. PR147 remains DRAFT/unmerged; #138 stays OPEN.
-No startup/reader/wake/capture cause follows from the missing output.
-
-The next [test-only legacy phase observer](legacy-shell-observations.md) records original spawn return,
-exact delegated read polls and existing reader/wait/kill/drain selections, owned
-by the actual ordinary test ShellRunner. At most8 calls/WHOLE4096 ASCII-LF report
-or fixed refusal; original clock/counters and pre-stop/current histories remain
-separate. No extra poll/waker/native lookup/raw bytes/error/env/clock reset/global
-hook/launcher/warmup/retry. Only original assertion-panic teardown prints it;
-headless retains its SAME existing recorder/native bounds. Shared executor
-extraction and cfgtest-only seams keep original pump/process/capture/defaults/
-old commands/assertions/Windows2s+3s/30s outer/2s drain/private15s+20s+10s+6s and
-env20s+5s limits intact. Eight additive cases plus a CRLF-safe source guard are
-not a root fix/Windows proof. Docs with incomplete work; all FOUR fresh exact-head
-jobs/EVERY step/BOTH modes/native/source/tree/inventory/warning/review proof still
-gate missing-review-only merge. No unchanged broad retry/admin failure bypass,
-real model/user config/SDK/global-env mutation, agents/goals/blocked-provider work
-or public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-One genuinely changed-source full command per mode at c1cac545 (November4 UTC)
-completed warning-free with every old native name/ignored/doctest plus the eight
-new main cases/new guard/CRLF guard preserved. All original environment/auth and
-all18 new substantive cases relative to PR146 pass BOTH modes. Off remains
-FAILED1613/4/8, exit101,998.48s whole command: the SAME four scoped-shell cases
-still fail. Gadgets1760/0/10 passes, exit0,73.85s; never substitute that pass.
-Temporary lack of startup output from an offline test binary later cleared; its
-original source assertions pass. No root-cause/PID/startup-latency inference,
-clock/assertion/launcher workaround, unbounded wait or unchanged broad retry.
-Full evidence stays retained; #138 OPEN and PR147 draft pending ALL FOUR fresh
-exact-head jobs/EVERY step/BOTH native modes/source/tree/inventory/warning/review
-proof. Public/usage/settlement/callable/P2g/live/default-on/release remain off.

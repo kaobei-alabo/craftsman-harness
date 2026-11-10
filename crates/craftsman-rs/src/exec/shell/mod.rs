@@ -2,8 +2,6 @@
 //! opaque scope. Not general tool/provider/storage/output publication or exec.
 
 mod capture;
-#[cfg(test)]
-mod observations;
 use crate::agent::ShellScope;
 use crate::exec::redaction::Redactor;
 use crate::exec::runtime::InvocationGate;
@@ -11,8 +9,6 @@ use crate::shell::{OutputFormat, ShellSettings};
 use crate::shell_output::{LEGACY_READ_LIMIT, OUTPUT_BUDGET, SPILL_LIMIT};
 use capture::{Capture, Fault, View};
 use craftsman_harness::{ToolErrorKind, ToolMeta, ToolOutcome};
-#[cfg(test)]
-pub(crate) use observations::{FailureObservations, ObservationView};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -24,8 +20,6 @@ pub(crate) struct Shell {
     settings: ShellSettings,
     redactor: Redactor,
     gate: Arc<InvocationGate>,
-    #[cfg(test)]
-    observations: observations::Recorder,
 }
 impl Shell {
     /// Only the actual builder can construct the scope that pairs preparation
@@ -37,13 +31,9 @@ impl Shell {
             settings: prepared.shell().clone(),
             redactor: prepared.credentials().redactor().clone(),
             gate: scope.gate(),
-            #[cfg(test)]
-            observations: observations::Recorder::from_scope(&scope),
         }
     }
     pub(crate) async fn run(&self, command: &str, timeout: Option<&Value>) -> ToolOutcome {
-        #[cfg(test)]
-        let observation = self.observations.begin();
         let started = Instant::now();
         if let Some(outcome) = self.gate.denied("execute", &json!({"command":command})) {
             return self.publish(outcome.content, true, outcome.meta);
@@ -61,8 +51,6 @@ impl Shell {
         }
         let limit_secs = self.settings.call_timeout_secs(timeout);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(limit_secs);
-        #[cfg(test)]
-        observation.launch_enter();
         let mut tree = match crate::platform_os::ProcessTree::spawn_shell(
             command,
             &self.root,
@@ -70,13 +58,9 @@ impl Shell {
         ) {
             Ok(tree) => tree,
             Err(_) => {
-                #[cfg(test)]
-                observation.launch_failed();
                 return self.fixed(ToolErrorKind::Spawn, started.elapsed(), None, false, None);
             }
         };
-        #[cfg(test)]
-        observation.launch_returned(tree.id());
         let (head, tail, read_limit) = match self.settings.output_format {
             OutputFormat::Legacy => (LEGACY_READ_LIMIT as usize, 0, LEGACY_READ_LIMIT),
             OutputFormat::HeadTail => (OUTPUT_BUDGET, OUTPUT_BUDGET, SPILL_LIMIT),
@@ -86,10 +70,6 @@ impl Shell {
         let stdout = tree.take_stdout().expect("ProcessTree stdout is piped");
         let stderr = tree.take_stderr().expect("ProcessTree stderr is piped");
         let readers = async {
-            #[cfg(test)]
-            let stdout = observation.reader(stdout, false);
-            #[cfg(test)]
-            let stderr = observation.reader(stderr, true);
             tokio::try_join!(
                 pump(stdout, out.clone(), read_limit),
                 pump(stderr, err.clone(), read_limit)
@@ -98,26 +78,18 @@ impl Shell {
         tokio::pin!(readers);
         let mut stop = None;
         let mut readers_done = false;
-        #[cfg(test)]
-        observation.readers_selected();
         let read_ok = tokio::select! { biased;
             _ = self.gate.wait_approval_required() => { stop=Some(ToolErrorKind::NeedsApproval); false },
             _ = tokio::time::sleep_until(deadline) => { stop=Some(ToolErrorKind::Timeout); false },
             result = &mut readers => { readers_done = true; result.is_ok() },
         };
-        #[cfg(test)]
-        observation.readers_returned(readers_done, read_ok, stop);
         let mut exit = None;
         if stop.is_none() && read_ok {
-            #[cfg(test)]
-            observation.wait_selected();
             let status = tokio::select! { biased;
                 _ = self.gate.wait_approval_required() => { stop=Some(ToolErrorKind::NeedsApproval); None },
                 _ = tokio::time::sleep_until(deadline) => { stop=Some(ToolErrorKind::Timeout); None },
                 result = tree.wait() => Some(result),
             };
-            #[cfg(test)]
-            observation.wait_returned(&status, stop);
             match status {
                 Some(Ok(status)) => exit = Some(status.code().unwrap_or(-1)),
                 Some(Err(_)) => stop = Some(ToolErrorKind::Failed),
@@ -127,10 +99,6 @@ impl Shell {
             stop = Some(ToolErrorKind::Failed);
         }
         if stop.is_some() {
-            #[cfg(all(test, target_os = "macos"))]
-            observation.before_stop(&tree, stop);
-            #[cfg(all(test, target_os = "macos"))]
-            observation.capture_owned_stack_if_marked(&tree, stop).await;
             // Exactly the existing process-tree kill contract; Unix groups
             // remain configured/default-off and this is not OS containment/P2g.
             tree.kill_tree().await;
@@ -189,11 +157,6 @@ impl Shell {
             }
         }
     }
-    #[cfg(test)]
-    pub(crate) fn observation_view_for_tests(&self) -> ObservationView {
-        self.observations.view()
-    }
-
     fn format(
         &self,
         out: &View,
