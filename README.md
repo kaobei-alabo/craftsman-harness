@@ -500,6 +500,9 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   checkpoint stops further agent work; reopening warns about unfinished calls
   and retains their unknown completion without automatic replay. See
   [terminal recovery](docs/terminal-recovery.md) for storage and effect limits.
+  Manual `/compact` also saves before summary sampling and before confirming
+  success; reopening never repeats the summary or tools. See
+  [terminal compaction](docs/terminal-compaction.md).
 - `/model` selects provider or configured catalog models while keeping the chat
   and checkpoint sequence. `/effort` or `/model --reasoning=high` selects the
   current model's reasoning effort. See [terminal models](docs/terminal-models.md)

@@ -14,6 +14,14 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Durable manual compaction (November 10):** the owned terminal saves its
+> original state before `/compact` sampling and its replacement before success.
+> Active turns/pending approvals refuse; cancellation and concurrent message
+> changes retain the original. Failed saves retain the summary in memory and
+> prevent saved-session claims. Activity/final-save ownership lasts through
+> actual return; reopening never retries tools or compaction. See
+> [terminal compaction](terminal-compaction.md).
+
 > **New ownership and implementation:** `kaobei-alabo/craftsman-harness`
 > starts with a fresh source-only Git history. The new private
 > [request-budget arguments](request-budget-arguments.md) select `--max-rounds`

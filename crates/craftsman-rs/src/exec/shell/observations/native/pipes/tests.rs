@@ -125,6 +125,19 @@ fn fixed_current_descriptor_reports_never_keep_opaque_handles_or_name_authority(
     );
 }
 
+fn unread_pipe_fixture(pause_before_publication: bool) -> String {
+    let pause = if pause_before_publication {
+        "while [ ! -e release-ready ]; do sleep 0.01; done; "
+    } else {
+        ""
+    };
+    // Creation happens while fd 1 is redirected. Publish only after that
+    // command has returned and the shell restored its original pipe writer.
+    format!(
+        "printf native-pipe-output; printf native-pipe-error >&2; printf ready > .ready-pending; {pause}mv .ready-pending ready.txt; sleep 30"
+    )
+}
+
 #[tokio::test]
 async fn actual_owned_child_pipe_snapshot_preserves_real_unread_bytes_without_reading_them() {
     use crate::platform_os::{ProcessTree, SpawnOptions};
@@ -140,11 +153,8 @@ async fn actual_owned_child_pipe_snapshot_preserves_real_unread_bytes_without_re
     };
     // ORIGINAL real writes precede a genuine separate ready file. Retain the
     // original ProcessTree pipe readers untouched until AFTER the snapshot.
-    let mut tree = ProcessTree::spawn_shell(
-        "printf native-pipe-output; printf native-pipe-error >&2; printf ready > ready.txt; sleep 30",
-        root.path(),
-        &options,
-    ).unwrap();
+    let mut tree =
+        ProcessTree::spawn_shell(&unread_pipe_fixture(false), root.path(), &options).unwrap();
     tokio::time::timeout(Duration::from_secs(20), async {
         while !root.path().join("ready.txt").exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -191,6 +201,65 @@ async fn actual_owned_child_pipe_snapshot_preserves_real_unread_bytes_without_re
             .bytes()
             .all(|b| b == b'\n' || (32..=126).contains(&b))
     );
+}
+
+#[tokio::test]
+async fn readiness_is_published_after_redirection_closes_and_preserves_original_pipe_bytes() {
+    use crate::platform_os::{ProcessTree, SpawnOptions};
+    use std::time::Duration;
+    use tokio::io::AsyncReadExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut tree = ProcessTree::spawn_shell(
+        &unread_pipe_fixture(true),
+        root.path(),
+        &SpawnOptions {
+            process_group: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !root.path().join(".ready-pending").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("actual pending readiness file created");
+    assert!(!root.path().join("ready.txt").exists());
+    std::fs::write(
+        root.path().join("release-ready"),
+        b"publish actual readiness",
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !root.path().join("ready.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("actual readiness rename completed");
+    assert_eq!(
+        std::fs::read(root.path().join("ready.txt")).unwrap(),
+        b"ready"
+    );
+    assert!(!root.path().join(".ready-pending").exists());
+    let stdout = tree.take_stdout().unwrap();
+    let stderr = tree.take_stderr().unwrap();
+    tree.kill_tree().await;
+    let read = async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut stdout = stdout.take(4096);
+        let mut stderr = stderr.take(4096);
+        tokio::try_join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err)).unwrap();
+        (out, err)
+    };
+    let (out, err) = tokio::time::timeout(Duration::from_secs(2), read)
+        .await
+        .unwrap();
+    assert_eq!(out, b"native-pipe-output");
+    assert_eq!(err, b"native-pipe-error");
 }
 
 #[test]

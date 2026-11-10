@@ -776,6 +776,18 @@ pub(super) async fn compact_session(
     agent: craftsman_harness::Agent,
     compaction: Arc<craftsman_harness::builtin::CompactionMiddleware>,
 ) -> String {
+    if agent.durable_turn_checkpoints_enabled() {
+        return match agent.compact_idle(&compaction).await {
+            Ok(Some((before, after))) => {
+                format!("compacted conversation: {before} -> {after} messages (saved)")
+            }
+            Ok(None) => "(conversation too short to compact)".into(),
+            Err(craftsman_harness::AgentError::Cancelled) => {
+                "could not compact conversation: cancelled by the user".into()
+            }
+            Err(error) => format!("could not compact conversation: {error}"),
+        };
+    }
     let messages = agent.state.lock().unwrap().messages.clone();
     match compaction.compact_now(&messages).await {
         Ok(Some(compacted)) => {
