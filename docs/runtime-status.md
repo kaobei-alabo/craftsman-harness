@@ -37,6 +37,11 @@
 > entries and three converted behavior cases per macOS mode; unrelated tests and
 > ignored/doctest entries are retained. Fresh hosted and independent main proof
 > still gate delivery of this changed source.
+> The first retirement CI run passed all four jobs and both modes, but its warning
+> audit found a newly unused Windows test-only PID accessor. That accessor is now
+> Unix-only, matching its remaining native test callers; production process code
+> and limits are unchanged. The first run remains a separate warning-rejected
+> delivery record pending fresh corrected-source verification.
 
 > **Provider-aware setup (November 10):** `/setup` and `craftsman setup` edit a
 > configured named connection instead of writing ignored flat fields and an

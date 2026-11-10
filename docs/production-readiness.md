@@ -71,6 +71,12 @@ for exactly 81 retired diagnostic entries and three converted behavior cases in
 each macOS mode, retaining every unrelated named/ignored/doctest entry. Hosted
 platform and independent merged-main verification remain required for delivery.
 
+The first retirement run 42856977134 passed every job and native mode, but its
+warning audit rejected one newly unused Windows test-only PID accessor warning
+per mode. The accessor is restricted to its remaining Unix test callers; this
+does not change production process handling or native bounds. Fresh corrected
+source verification remains distinct from that first run.
+
 ## Build and use the gadget workflow
 
 Use the exact **Rust 1.99.1** toolchain in `rust-toolchain.toml`. The application
