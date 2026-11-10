@@ -11,7 +11,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 
 | Area | Current implementation | Remaining production work |
 | --- | --- | --- |
-| Terminal coding agent | Streaming model/tool loop, approvals, owned cancellation/signal cleanup, file/shell/web tools, required per-tool checkpoints and interrupted-session warnings | Complete recovery validation, live task/console evaluation and remaining recovery/containment work |
+| Terminal coding agent | Streaming model/tool loop, approvals, owned cancellation/signal cleanup, file/shell/web tools, required per-tool/manual-compaction checkpoints and interrupted-session warnings | Live task/console evaluation and remaining background/diagnostic recovery and containment work |
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic WASM publication, capability checks and deterministic discovery before model rounds | Keep opt-in and separate build/load approvals; gather live quality evidence |
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
@@ -39,6 +39,19 @@ The earlier billing-blocked runs remain failed records. The next
 API protocols, nested model settings and durable provider-owned continuation
 data. Its source validation is separate from live model/gadget quality and
 provider compatibility, which remain production gates.
+
+The provider change is merged as PR #8 at `45aa2d1`; independent main run
+42776674728 passed all four jobs, every step and both native modes with the
+reviewed inventory and warning signatures intact. The next
+[durable manual-compaction change](terminal-compaction.md) closes a gap where
+`/compact` reported success before saving its replacement checkpoint. Fresh
+validation of this change remains separate from provider evidence.
+
+The same continuation adds [provider-aware setup](provider-setup.md): named
+connections are edited and selected as a complete validated candidate, keeping
+other providers/model settings and the existing conversation. Failed saves
+retain the current session. This fixes setup writing ignored flat connection
+fields and an invalid unqualified model selection.
 
 ## Build and use the gadget workflow
 

@@ -500,6 +500,9 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   checkpoint stops further agent work; reopening warns about unfinished calls
   and retains their unknown completion without automatic replay. See
   [terminal recovery](docs/terminal-recovery.md) for storage and effect limits.
+  Manual `/compact` also saves before summary sampling and before confirming
+  success; reopening never repeats the summary or tools. See
+  [terminal compaction](docs/terminal-compaction.md).
 - `/model` selects provider or configured catalog models while keeping the chat
   and checkpoint sequence. `/effort` or `/model --reasoning=high` selects the
   current model's reasoning effort. See [terminal models](docs/terminal-models.md)
@@ -654,6 +657,9 @@ GenerateContent and OpenAI-compatible Chat Completions. Models live under each
 provider's `models` map, keyed by the actual API ID; `/model provider/model-id`
 selects the connection and its saved settings while retaining the conversation.
 See [provider models](docs/provider-models.md) and the [complete placeholder config](examples/config/multi-provider.json).
+`/setup` and `craftsman setup` edit one configured connection through the
+[provider setup flow](docs/provider-setup.md), retaining its catalog, other
+connections and the conversation. Flat configs keep their platform/direct setup.
 
 Without named providers, the legacy chat route is the endpoint named by `base_url`
 and `api_key` (`https://api.openai.com/v1` when `base_url` is empty). The

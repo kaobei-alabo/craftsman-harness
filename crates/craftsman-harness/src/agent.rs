@@ -80,6 +80,7 @@ struct PendingResume {
 #[derive(Default)]
 struct TurnInputState {
     active: bool,
+    idle_operation: bool,
     pending: VecDeque<String>,
     cancel_requested: bool,
     cancellation: Option<crate::TurnCancellation>,
@@ -103,6 +104,7 @@ impl Drop for TurnActivityGuard {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap();
         state.active = false;
+        state.idle_operation = false;
         state.cancel_requested = false;
         state.cancellation = None;
         state.finishing = false;
@@ -722,7 +724,7 @@ impl Agent {
             return false;
         }
         let mut input = self.turn_input.lock().unwrap();
-        if !input.active {
+        if !input.active || input.idle_operation {
             return false;
         }
         input.pending.push_back(message);
@@ -778,6 +780,10 @@ impl Agent {
     }
 
     fn begin_turn(&self) -> Result<TurnActivityGuard, AgentError> {
+        self.begin_activity(false)
+    }
+
+    fn begin_activity(&self, idle_operation: bool) -> Result<TurnActivityGuard, AgentError> {
         let mut input = self.turn_input.lock().unwrap();
         if input.active {
             return Err(AgentError::State("an agent turn is already running".into()));
@@ -807,6 +813,7 @@ impl Agent {
             return Err(AgentError::Cancelled);
         }
         input.active = true;
+        input.idle_operation = idle_operation;
         input.cancel_requested = false;
         input.cancellation = cancellation;
         input.finishing = false;
@@ -941,6 +948,7 @@ impl Agent {
         *self.parked_suspension.lock().unwrap() = None;
         let mut turn_input = self.turn_input.lock().unwrap();
         turn_input.active = false;
+        turn_input.idle_operation = false;
         turn_input.pending.clear();
         turn_input.cancel_requested = false;
         turn_input.cancellation = None;
@@ -1504,6 +1512,9 @@ impl AgentBuilder {
         }
     }
 }
+
+#[path = "agent_idle_compaction.rs"]
+mod idle_compaction;
 
 #[cfg(test)]
 #[path = "agent_continuation_tests.rs"]

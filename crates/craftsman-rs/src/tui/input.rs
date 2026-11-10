@@ -124,7 +124,9 @@ pub(super) fn handle_terminal_event(app: &mut App, event: Event) -> bool {
                 Some(Modal::Ask(modal)) => modal.answer.push_str(&text),
                 Some(Modal::Selection(_)) => {}
                 Some(Modal::Setup(modal)) => {
-                    modal.fields[modal.field].push_str(&text.replace(['\r', '\n'], ""));
+                    if !modal.paste(&text) {
+                        app.push_error("The pasted value exceeds the provider setup field limit.");
+                    }
                 }
                 Some(Modal::Editor(modal)) => modal.text.push_str(&text.replace('\r', "\n")),
                 _ => app.insert(&text.replace('\r', "\n")),

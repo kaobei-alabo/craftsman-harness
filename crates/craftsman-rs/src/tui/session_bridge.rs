@@ -14,6 +14,9 @@ use unicode_segmentation::UnicodeSegmentation;
 #[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
+#[path = "session_bridge/compaction_tests.rs"]
+mod compaction_tests;
+#[cfg(test)]
 #[path = "session_bridge/lifecycle_tests.rs"]
 mod lifecycle_tests;
 

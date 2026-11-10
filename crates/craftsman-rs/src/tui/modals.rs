@@ -55,6 +55,13 @@ pub(super) enum AppAction {
         api_key: String,
         model: String,
     },
+    EditProvider(String),
+    SaveProviderSetup {
+        provider: String,
+        base_url: String,
+        api_key: String,
+        model: String,
+    },
     Skill(crate::skills_browser::BrowserAction),
 }
 
@@ -79,21 +86,43 @@ pub(super) struct EditorModal {
 
 pub(super) struct SetupModal {
     kind: usize,
+    provider: Option<(String, &'static str)>,
     pub(super) fields: Vec<String>,
     pub(super) field: usize,
 }
 
 impl SetupModal {
+    pub(super) fn paste(&mut self, text: &str) -> bool {
+        if self.provider.is_some() {
+            let bytes = text
+                .chars()
+                .filter(|c| !matches!(c, '\r' | '\n'))
+                .try_fold(0usize, |size, c| size.checked_add(c.len_utf8()));
+            let bound = [4096, 16384, 512][self.field];
+            if bytes
+                .and_then(|size| self.fields[self.field].len().checked_add(size))
+                .is_none_or(|size| size > bound)
+            {
+                return false;
+            }
+        }
+        self.fields[self.field].push_str(&text.replace(['\r', '\n'], ""));
+        true
+    }
+
     fn new() -> Self {
         Self {
             kind: 0,
+            provider: None,
             fields: vec![String::new(), String::new(), String::new()],
             field: 0,
         }
     }
 
     fn labels(&self) -> [&'static str; 3] {
-        if self.kind == 0 {
+        if self.provider.is_some() {
+            ["Base URL", "API key", "API model ID"]
+        } else if self.kind == 0 {
             ["Platform URL", "API token", "Model (optional)"]
         } else {
             ["Base URL", "API key", "Model"]
@@ -264,7 +293,7 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         Modal::Setup(setup) => match key.code {
-            KeyCode::Left | KeyCode::Right => {
+            KeyCode::Left | KeyCode::Right if setup.provider.is_none() => {
                 setup.kind = 1 - setup.kind;
                 setup.field = 0;
                 setup.fields = vec![String::new(), String::new(), String::new()];
@@ -275,7 +304,17 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT) =>
             {
-                setup.fields[setup.field].push(character)
+                let bound = [4096, 16384, 512][setup.field];
+                if setup.provider.is_none()
+                    || setup.fields[setup.field].len() + character.len_utf8() <= bound
+                {
+                    setup.fields[setup.field].push(character)
+                }
+            }
+            KeyCode::Char('u')
+                if setup.provider.is_some() && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                setup.fields[setup.field].clear()
             }
             KeyCode::Backspace => {
                 setup.fields[setup.field].pop();
@@ -285,13 +324,22 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
                 // Platform flow: URL + token required; the model is chosen
                 // from the endpoint's listing afterwards. Direct flow: URL +
                 // model required (key may be empty for a local proxy).
-                let missing = if setup.kind == 0 {
+                let missing = if setup.provider.is_some() {
+                    setup.fields[0].trim().is_empty() || setup.fields[2].trim().is_empty()
+                } else if setup.kind == 0 {
                     setup.fields[0].trim().is_empty() || setup.fields[1].trim().is_empty()
                 } else {
                     setup.fields[0].trim().is_empty() || setup.fields[2].trim().is_empty()
                 };
                 if !missing && let Some(Modal::Setup(modal)) = app.modal.take() {
-                    app.pending_action = Some(if modal.kind == 0 {
+                    app.pending_action = Some(if let Some((provider, _)) = modal.provider {
+                        AppAction::SaveProviderSetup {
+                            provider,
+                            base_url: modal.fields[0].trim().to_string(),
+                            api_key: modal.fields[1].clone(),
+                            model: modal.fields[2].trim().to_string(),
+                        }
+                    } else if modal.kind == 0 {
                         AppAction::SetupPlatform {
                             url: modal.fields[0].trim().to_string(),
                             token: modal.fields[1].clone(),
@@ -408,14 +456,15 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                     Constraint::Min(2),
                 ])
                 .split(inner);
-            let tabs = if modal.kind == 0 {
-                "[ Craftsman Platform ]   Direct provider"
+            let tabs = if let Some((provider, protocol)) = &modal.provider {
+                format!("{provider} · {protocol}\nCtrl-U clear current field")
+            } else if modal.kind == 0 {
+                "[ Craftsman Platform ]   Direct provider\n←/→ switch connection type".into()
             } else {
-                "Craftsman Platform   [ Direct provider ]"
+                "Craftsman Platform   [ Direct provider ]\n←/→ switch connection type".into()
             };
             frame.render_widget(
-                Paragraph::new(format!("{tabs}\n←/→ switch connection type"))
-                    .style(Style::default().fg(Color::Cyan)),
+                Paragraph::new(tabs).style(Style::default().fg(Color::Cyan)),
                 chunks[0],
             );
             for (index, label) in modal.labels().into_iter().enumerate() {
@@ -438,7 +487,9 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 );
             }
             frame.render_widget(
-                Paragraph::new(if modal.kind == 0 {
+                Paragraph::new(if modal.provider.is_some() {
+                    "Enter save and select · Esc cancel · other providers and models are retained"
+                } else if modal.kind == 0 {
                     "Mint an API key on the platform, then paste it here · model is picked after connect"
                 } else {
                     "API key may be empty for a local proxy · Enter finish · Esc cancel"
@@ -518,6 +569,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 pub(super) fn show_setup_modal(app: &mut App) {
     app.modal = Some(Modal::Setup(SetupModal::new()));
+    app.dirty = true;
+}
+
+pub(super) fn show_provider_setup_modal(
+    app: &mut App,
+    provider: String,
+    protocol: &'static str,
+    fields: Vec<String>,
+) {
+    app.modal = Some(Modal::Setup(SetupModal {
+        kind: 1,
+        provider: Some((provider, protocol)),
+        fields,
+        field: 0,
+    }));
     app.dirty = true;
 }
 

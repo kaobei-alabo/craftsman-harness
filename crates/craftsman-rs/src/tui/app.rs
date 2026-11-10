@@ -6,7 +6,7 @@ use super::commands::{
     handle_slash, live_command, submission_route,
 };
 use super::input::{VoiceRequest, VoiceUiState, handle_terminal_event};
-use super::modals::{AppAction, Modal, show_setup_modal};
+use super::modals::{AppAction, Modal};
 use super::render::{
     BANNER, ScreenSelection, ScreenSnapshot, TranscriptRenderCache, clamp_point_to_rect, draw,
     startup_splash_data, subagent_activity,
@@ -1205,7 +1205,7 @@ pub async fn run(
         ));
     }
     if force_setup {
-        show_setup_modal(&mut app);
+        super::provider_setup::show(&cfg, &mut app);
     } else if cfg.model.is_none() && cfg.platform.base_url.is_empty() && cfg.base_url.is_empty() {
         app.push_kind(
             TranscriptKind::Hint,

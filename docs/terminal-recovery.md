@@ -40,6 +40,14 @@ The database layout/version remain unchanged.
 
 ## Atomic local storage
 
+Manual `/compact` saves the original state before summary sampling and the
+replacement before confirming success. Active turns and pending approvals
+refuse; cancellation or concurrent message changes discard an uncommitted
+summary. Final saves retain ownership through return. Reopening retains actual
+results without repeating compaction or tools. See
+[terminal compaction](terminal-compaction.md) for save/failure ordering and
+isolated actual-builder/HTTP/SQLite/native-exit verification.
+
 Thread metadata, project context, state/suspension and old-checkpoint pruning
 share one SQLite transaction. Failed insertion or pruning rolls back the whole
 save. A dedicated connection and async owner keep concurrent catalog/workspace
@@ -75,8 +83,8 @@ Full local and fresh all-four/every-step/both-mode CI validation remain required
 before merge, with independent merged-main verification. These checks do not
 prove power-loss behavior, trustworthy disks, native containment or live model
 quality. This is not an exactly-once execution or cross-process session lease:
-use one agent owner per conversation. Background task state, manual compaction
-between turns, in-progress native work and retained crash diagnostics have
+use one agent owner per conversation. Background task state,
+in-progress native work and retained crash diagnostics have
 separate recovery limits. Unknown usage/billing stays unknown. The inherited
 shell issue remains open. Public `craftsman exec`, headless persistence/usage/
 producers, SDK/WIT, protocol/schema/goldens and binary/image publication retain
