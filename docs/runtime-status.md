@@ -22,6 +22,12 @@
 > actual return; reopening never retries tools or compaction. See
 > [terminal compaction](terminal-compaction.md).
 
+> Combined hosted head 957b004 retains a Windows core failure in the original
+> shell poll-progress fixture despite later gadget success. A separate test-only
+> flush/native-exit input keeps the actual shell/Job path, original assertions
+> and deadlines; fresh proof remains required. This is not a historical #138
+> root-cause finding. See [terminal compaction](terminal-compaction.md).
+
 > **Provider-aware setup (November 10):** `/setup` and `craftsman setup` edit a
 > configured named connection instead of writing ignored flat fields and an
 > invalid model selection. Candidates validate before save; failures retain the

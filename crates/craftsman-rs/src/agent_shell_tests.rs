@@ -793,6 +793,19 @@ fn original_progress_counter(line: &str, field: &str) -> u64 {
     rest.split_once(')').unwrap().0.parse().unwrap()
 }
 
+fn progress_print(value: &str, error: &str, code: i32) -> String {
+    if cfg!(windows) {
+        // This observer fixture needs actual pipe EOF and a native exit status,
+        // without making managed PowerShell teardown part of its observation.
+        // Keep the original shell/Job owner and bounds; flush actual bytes first.
+        format!(
+            "[Console]::Out.Write('{value}'); [Console]::Error.Write('{error}'); [Console]::Out.Flush(); [Console]::Error.Flush(); [Environment]::Exit({code})"
+        )
+    } else {
+        print(value, error, code)
+    }
+}
+
 #[tokio::test]
 async fn actual_scoped_shell_poll_progress_retains_reader_return_then_wait_and_original_output() {
     let f = Fixture::new();
@@ -807,7 +820,7 @@ async fn actual_scoped_shell_poll_progress_retains_reader_return_then_wait_and_o
             .await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(30),
-            runner.run_outcome(&print(key, "", 7), None),
+            runner.run_outcome(&progress_print(key, "", 7), None),
         )
         .await
         .expect("bounded new original-poll fixture");
@@ -853,6 +866,48 @@ async fn actual_scoped_shell_poll_progress_retains_reader_return_then_wait_and_o
         assert!(original_progress_counter(stderr, "stderr_polls") >= 1);
         assert!(stderr.contains("stderr_last_poll_result=eof stderr_count_loss=false"));
         assert!(view.report().contains("scope_end_us=Some("));
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn explicit_progress_exit_keeps_real_stream_bytes_status_and_reader_wait_phases() {
+    let f = Fixture::new();
+    let key = "synthetic-native-progress-key";
+    let error = "actual-native-progress-error";
+    for format in ["legacy", "head_tail"] {
+        let (runner, _) = f
+            .runner(
+                key,
+                json!({"output_format":format,"timeout_secs":15}),
+                allow(),
+            )
+            .await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            runner.run_outcome(&progress_print(key, error, 11), None),
+        )
+        .await
+        .expect("bounded native-exit progress fixture");
+        assert!(!outcome.is_error, "{}", outcome.content);
+        assert!(outcome.content.contains("[REDACTED]"));
+        assert!(outcome.content.contains(error));
+        assert!(outcome.content.contains("[exit code 11]"));
+        assert_eq!(outcome.meta.bytes, Some((key.len() + error.len()) as u64));
+        assert_eq!(outcome.meta.exit_code, Some(11));
+        let report = runner
+            .observation_view_for_tests()
+            .unwrap()
+            .poll_progress_report_for_tests();
+        assert!(
+            report.contains("readers_result=returned-ok readers_phase_loss=false"),
+            "{report}"
+        );
+        assert!(
+            report.contains("wait_result=returned-status wait_phase_loss=false"),
+            "{report}"
+        );
+        assert!(!report.contains(key));
     }
 }
 

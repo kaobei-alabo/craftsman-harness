@@ -80,3 +80,20 @@ their exact bytes. The old byte/native assertions, 20-second readiness and
 two-second drain bounds remain. No production reader, ProcessTree or native
 query changes, retries, extra PID queries or historical #138 root-fix claim
 follow. The failed full command remains a separate record.
+
+Combined hosted head 957b004/run42827010637 passes Ubuntu/macOS and every new
+compaction/setup case in both Windows modes, but Windows core fails the original
+normal-output poll-progress diagnostic. It retains 22 actual stdout bytes first
+seen at 14.78 seconds, no EOF before the 15-second timeout and no entered wait
+selection. The later gadget pass does not replace this failure. These are phase
+facts, not a startup, scheduling, lost-wakeup or historical #138 cause finding.
+
+Only that diagnostic's Windows input initializer now selects explicit console
+flushes followed by `Environment.Exit` in the same actual PowerShell process.
+Its generic print helper and all other inputs, original output/status/poll
+assertions, 15-second command and 30-second outer bounds remain. One new Windows
+case checks real stdout/stderr bytes, native exit status and returned reader/
+wait phases in both formats. Production ProcessTree/Job rules/readers/clocks/
+five-second reap/two-second drain remain. Fresh changed-source local and all-four
+native proof is required; no universal startup/teardown latency guarantee,
+unchanged broad retry or historical root-fix claim follows.
