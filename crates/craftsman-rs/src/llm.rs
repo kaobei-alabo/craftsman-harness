@@ -72,6 +72,8 @@ pub struct TurnResult {
 }
 
 pub struct LlmClient {
+    pub(crate) native: Option<crate::native_model::NativeClient>,
+    pub(crate) configured_connection: bool,
     http: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -180,6 +182,8 @@ impl LlmClient {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         Self {
+            native: None,
+            configured_connection: false,
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
@@ -408,8 +412,14 @@ impl LlmClient {
             body["tools"] = Value::Array(tools.to_vec());
         }
 
-        self.stream_body(RequestBody::Legacy(&body), on_text, on_status)
-            .await
+        let result = self
+            .stream_body(RequestBody::Legacy(&body), on_text, on_status)
+            .await;
+        if self.configured_connection {
+            result.map_err(|_| anyhow::anyhow!("Configured Chat Completions request failed; verify endpoint, model and credentials."))
+        } else {
+            result
+        }
     }
 
     async fn stream_body(
@@ -792,7 +802,7 @@ fn finalize_tool_calls(calls: Vec<ToolCall>) -> Vec<ToolCall> {
 /// Position and separator length of the first SSE event boundary
 /// (`\n\n` or `\r\n\r\n`; a lone `\n\r\n` tail also matches via LF-LF
 /// after the preceding line's \r is included in the event text).
-fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+pub(crate) fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
     let lf = buf.windows(2).position(|w| w == b"\n\n");
     let crlf = buf.windows(4).position(|w| w == b"\r\n\r\n");
     match (lf, crlf) {

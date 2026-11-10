@@ -85,6 +85,9 @@ pub fn validate_model_id(id: &str) -> Result<(), String> {
 }
 
 pub fn configured_catalog(cfg: &Config) -> Result<Vec<CatalogModel>, String> {
+    if !cfg.providers.is_empty() {
+        return crate::provider_config::catalog(cfg);
+    }
     let entries: Vec<CatalogModel> = match cfg.extra.get("model_catalog") {
         Some(value) => serde_json::from_value(value.clone())
             .map_err(|_| "Invalid model_catalog configuration.".to_string())?,
@@ -130,6 +133,9 @@ pub fn merge_catalog(cfg: &Config, remote: Vec<CatalogModel>) -> Result<Vec<Cata
     let mut models = BTreeMap::new();
     for entry in remote {
         entry.validate()?;
+        if !cfg.providers.is_empty() && crate::provider_config::selection(cfg, &entry.id).is_err() {
+            continue;
+        }
         models.insert(entry.id.clone(), entry);
     }
     for configured in configured_catalog(cfg)? {
@@ -159,6 +165,18 @@ pub fn selected_effort(
     cfg: &Config,
     model: &str,
 ) -> Result<Option<Option<ReasoningEffort>>, String> {
+    if !cfg.providers.is_empty() {
+        let chosen = crate::provider_config::selection(cfg, model)?;
+        return match chosen
+            .entry
+            .map(crate::provider_config::reasoning)
+            .transpose()?
+            .flatten()
+        {
+            Some(crate::provider_config::Reasoning::Effort(effort)) => Ok(Some(Some(effort))),
+            _ => Ok(Some(None)),
+        };
+    }
     let Some(settings) = cfg.extra.get("model_settings") else {
         return Ok(None);
     };
@@ -182,6 +200,11 @@ pub fn apply(
     model: &str,
     options: &mut BTreeMap<String, Value>,
 ) -> Result<(), String> {
+    if !cfg.providers.is_empty() {
+        options.clear();
+        options.extend(crate::provider_config::options(cfg, model)?);
+        return Ok(());
+    }
     match selected_effort(cfg, model)? {
         None => {}
         Some(None) => {
@@ -202,6 +225,9 @@ pub fn set_effort(
     model: &str,
     effort: Option<ReasoningEffort>,
 ) -> Result<(), String> {
+    if !cfg.providers.is_empty() {
+        return crate::provider_config::set_effort(cfg, model, effort);
+    }
     validate_model_id(model)?;
     if let Some(effort) = effort {
         if let Some(entry) = configured_catalog(cfg)?
@@ -233,6 +259,20 @@ pub fn set_effort(
 
 pub fn display_effort(cfg: &Config) -> Option<String> {
     let model = cfg.model.as_deref()?;
+    if !cfg.providers.is_empty() {
+        let chosen = crate::provider_config::selection(cfg, model).ok()?;
+        return Some(
+            match chosen
+                .entry
+                .and_then(|entry| crate::provider_config::reasoning(entry).ok())
+                .flatten()
+            {
+                Some(crate::provider_config::Reasoning::Effort(e)) => e.as_str().into(),
+                Some(crate::provider_config::Reasoning::Budget(n)) => format!("budget:{n}"),
+                None => "default".into(),
+            },
+        );
+    }
     match selected_effort(cfg, model).ok()? {
         Some(Some(effort)) => Some(effort.as_str().into()),
         Some(None) => Some("default".into()),

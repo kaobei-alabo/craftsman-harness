@@ -1,6 +1,6 @@
 # Craftsman production readiness
 
-This is the current starting point under `yumingchangsabodota/craftsman-harness`,
+This is the current starting point under `kaobei-alabo/craftsman-harness`,
 following the November 5, 2026 takeover and November 6 continuation. The handed-over source is preserved in
 one new root commit. The old remote, branches, tags, reflogs and commit objects
 were removed from the inherited checkout. The active workspace and personal
@@ -29,11 +29,16 @@ production priority on November 6. The dialog-cancellation and desktop-reconnect
 changes improve those supported frontends. Future unattended headless work keeps
 its separate accepted contracts and implementation gates.
 
-The next [terminal model controls](terminal-models.md) change addresses a model
+The merged [terminal model controls](terminal-models.md) change addresses a model
 switch that previously showed the old transcript while giving the new agent an
 empty history. Model/effort selectors now retain state and checkpoint sequencing;
-new code is pending complete local and hosted validation. Real model quality and
-provider/tool compatibility remain separate gates.
+the organization-owned main run 42629991063 passed all four jobs/every step and
+both native modes, retaining original cases and the 19 added entries per mode.
+The earlier billing-blocked runs remain failed records. The next
+[named provider/catalog implementation](provider-models.md) adds four explicit
+API protocols, nested model settings and durable provider-owned continuation
+data. Its source validation is separate from live model/gadget quality and
+provider compatibility, which remain production gates.
 
 ## Build and use the gadget workflow
 

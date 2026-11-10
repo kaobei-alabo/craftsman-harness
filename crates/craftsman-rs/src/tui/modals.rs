@@ -35,6 +35,10 @@ pub(super) enum AppAction {
         model: String,
         effort: Option<crate::model_controls::ReasoningEffort>,
     },
+    SelectModelBudget {
+        model: String,
+        budget: u32,
+    },
     SelectVoiceModel(String),
     SelectHarness(String),
     SelectAgent(String),

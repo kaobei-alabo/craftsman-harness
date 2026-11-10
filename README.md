@@ -3,11 +3,12 @@
 A Rust terminal coding agent that edits files, runs tools, delegates work and
 can build reusable **WASM gadgets** for itself. The workspace contains the
 **`craftsman-harness`** agent framework, **`craftsman-rs`** application and the
-gadget SDK/macros. Model routes are OpenAI-compatible; platform skills and MCP
+gadget SDK/macros. Model routes include OpenAI Responses, Claude Messages,
+Gemini GenerateContent and OpenAI-compatible Chat Completions; platform skills and MCP
 are optional integrations. See `docs/platform-token-refactor.md` for token
 configuration.
 
-The canonical repository is **[yumingchangsabodota/craftsman-harness](https://github.com/yumingchangsabodota/craftsman-harness)**.
+The canonical repository is **[kaobei-alabo/craftsman-harness](https://github.com/kaobei-alabo/craftsman-harness)**.
 On November 5, 2026 the project moved to its new owner with a fresh source-only
 Git history. The [handover](handover.md) and dated notes in `docs/` preserve
 engineering context from the inherited project; old commits and hosted checks
@@ -648,13 +649,19 @@ The selection is stored in the shared config as, for example:
 
 ### Route behavior
 
-There is one chat route: the OpenAI-compatible endpoint named by `base_url`
+Named `providers` connections support OpenAI Responses, Claude Messages, Gemini
+GenerateContent and OpenAI-compatible Chat Completions. Models live under each
+provider's `models` map, keyed by the actual API ID; `/model provider/model-id`
+selects the connection and its saved settings while retaining the conversation.
+See [provider models](docs/provider-models.md) and the [complete placeholder config](examples/config/multi-provider.json).
+
+Without named providers, the legacy chat route is the endpoint named by `base_url`
 and `api_key` (`https://api.openai.com/v1` when `base_url` is empty). The
 platform's LLM app is used the same way, with `base_url` pointing at
 `{platform}/apps/llm/api/v1` (see `examples/config/platform.json`). The harness
 profile applies on top of whichever model is selected.
 
-`provider_profile` supports:
+For the legacy route, `provider_profile` supports:
 
 - `"auto"` or omitted: infer from a `provider:model` model spec or the standard
   OpenAI base URL.
@@ -788,7 +795,7 @@ the terminal.
 Clone the canonical repository (GitHub access is required):
 
 ```bash
-git clone https://github.com/yumingchangsabodota/craftsman-harness.git
+git clone https://github.com/kaobei-alabo/craftsman-harness.git
 cd craftsman-harness
 ```
 

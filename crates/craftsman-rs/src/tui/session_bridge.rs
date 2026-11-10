@@ -371,6 +371,10 @@ impl AgentSlot {
                 biased;
                 _ = cancellation.cancelled() => Err("Model catalog lookup cancelled.".into()),
                 result = async {
+                    if !cfg.providers.is_empty() {
+                        let (models, available) = crate::platform::list_provider_models(&cfg).await;
+                        return crate::model_controls::merge_catalog(&cfg, models).map(|models| (models, available));
+                    }
                     let remote = match crate::route::resolve_chat_endpoint(&cfg).await {
                         Ok(route) => crate::platform::model_catalog(&route).await.ok(),
                         Err(_) => None,

@@ -16,6 +16,9 @@ pub(super) fn selected_config(cfg: &Config, selection: ModelSelection) -> Result
         .clone()
         .ok_or("No model selected. Use /model MODEL first.")?;
     crate::model_controls::validate_model_id(&model)?;
+    if !candidate.providers.is_empty() {
+        crate::provider_config::selection(&candidate, &model)?;
+    }
     if let Some(effort) = selection.effort {
         crate::model_controls::set_effort(&mut candidate, &model, effort)?;
     }
@@ -38,8 +41,42 @@ pub(super) fn select_model(
             return;
         }
     };
+    apply_selection(cfg, candidate, slot, approval, app);
+}
+
+pub(super) fn select_budget(
+    cfg: &mut Config,
+    model: Option<&str>,
+    budget: u32,
+    slot: &mut AgentSlot,
+    approval: &Arc<Mutex<ApprovalState>>,
+    app: &mut App,
+) {
+    let mut candidate = cfg.clone();
+    if let Some(model) = model {
+        candidate.model = Some(model.into());
+    }
+    let Some(model) = candidate.model.clone() else {
+        app.push_error("No model selected.");
+        return;
+    };
+    if let Err(error) = crate::provider_config::set_budget(&mut candidate, &model, budget) {
+        app.push_error(error);
+        return;
+    }
+    apply_selection(cfg, candidate, slot, approval, app);
+}
+
+fn apply_selection(
+    cfg: &mut Config,
+    candidate: Config,
+    slot: &mut AgentSlot,
+    approval: &Arc<Mutex<ApprovalState>>,
+    app: &mut App,
+) {
     if !slot.cancellation().is_cancelled()
         && candidate.model == cfg.model
+        && candidate.providers == cfg.providers
         && candidate.extra.get("model_settings") == cfg.extra.get("model_settings")
     {
         app.push("The current model and reasoning settings are already selected.");
@@ -115,6 +152,52 @@ pub(super) fn show_effort_picker(cfg: &Config, app: &mut App) {
         app.push_error("No model selected. Use /model MODEL first.");
         return;
     };
+    if !cfg.providers.is_empty() {
+        if let Ok(chosen) = crate::provider_config::selection(cfg, model) {
+            if let Some(crate::provider_config::ReasoningControls::Budget { min, max }) = chosen
+                .entry
+                .and_then(|entry| entry.reasoning_controls.as_ref())
+            {
+                let mut values = vec![*min, 4096, 8192, 16384, *max];
+                values.sort_unstable();
+                values.dedup();
+                let mut items = vec![SelectionItem {
+                    label: "Provider default".into(),
+                    detail: "Use this model's default thinking settings".into(),
+                    enter_action: Some(AppAction::SelectModelEffort {
+                        model: model.clone(),
+                        effort: None,
+                    }),
+                    delete_action: None,
+                }];
+                for value in values
+                    .into_iter()
+                    .filter(|value| (*min..=*max).contains(value))
+                {
+                    if crate::provider_config::set_budget(&mut cfg.clone(), model, value).is_err() {
+                        continue;
+                    }
+                    items.push(SelectionItem {
+                        label: format!("{value} thinking tokens"),
+                        detail: "Configured model budget".into(),
+                        enter_action: Some(AppAction::SelectModelBudget {
+                            model: model.clone(),
+                            budget: value,
+                        }),
+                        delete_action: None,
+                    });
+                }
+                app.modal = Some(Modal::Selection(SelectionModal {
+                    title: "Thinking token budget".into(),
+                    items,
+                    selected: 0,
+                    hint: "↑/↓ select · Enter apply · Esc close · /effort TOKENS".into(),
+                }));
+                app.dirty = true;
+                return;
+            }
+        }
+    }
     let models = match crate::model_controls::configured_catalog(cfg) {
         Ok(models) => models,
         Err(error) => {
@@ -171,6 +254,9 @@ pub(super) fn show_effort_picker(cfg: &Config, app: &mut App) {
     app.dirty = true;
 }
 
+#[cfg(test)]
+#[path = "model_commands/provider_tests.rs"]
+mod provider_tests;
 #[cfg(test)]
 #[path = "model_commands/tests.rs"]
 mod tests;
