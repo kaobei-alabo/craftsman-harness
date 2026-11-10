@@ -11,7 +11,6 @@ struct Fixture {
     _root: tempfile::TempDir,
     workspace: PathBuf,
     config: PathBuf,
-    observations: crate::exec::shell::FailureObservations,
 }
 impl Fixture {
     fn new() -> Self {
@@ -24,7 +23,6 @@ impl Fixture {
             _root: root,
             workspace,
             config,
-            observations: Default::default(),
         }
     }
     async fn runner(
@@ -62,7 +60,6 @@ impl Fixture {
             prepared: &prepared,
             gate: gate.clone(),
         });
-        self.observations.record(&runner);
         (Arc::new(runner), gate)
     }
 }
@@ -425,378 +422,10 @@ async fn frontend_empty_shell_command_preserves_its_legacy_validation_text() {
     }
 }
 
-#[tokio::test]
-async fn test_only_launch_observations_come_from_the_actual_builder_without_source_text() {
-    let f = Fixture::new();
-    let key = "synthetic-private-observation-key";
-    let (runner, _) = f
-        .runner(key, json!({"output_format":"head_tail"}), allow())
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let outcome = runner.run_outcome(&print(key, "safe-error", 0), None).await;
-    assert!(!outcome.is_error, "{}", outcome.content);
-    let report = view.report();
-    assert!(report.contains("calls=1"), "{report}");
-    assert!(report.contains("launch_return_us=Some("), "{report}");
-    assert!(report.contains("pid=Some("), "{report}");
-    assert!(report.contains("stdout_first_poll_us=Some("), "{report}");
-    assert!(report.contains("stderr_first_poll_us=Some("), "{report}");
-    assert!(report.contains("scope_end_us=Some("), "{report}");
-    assert!(!report.contains(key));
-    assert!(!report.contains(f.workspace.to_str().unwrap()));
-    assert!(!report.contains("safe-error"));
-}
-
-#[tokio::test]
-async fn test_only_denied_call_observations_do_not_fabricate_a_launch_or_pipe_poll() {
-    let f = Fixture::new();
-    let (runner, _) = f
-        .runner(
-            "synthetic-key",
-            json!({}),
-            Selectors {
-                mode: Mode::Plan,
-                ..allow()
-            },
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let outcome = runner.run_outcome("must-not-execute", None).await;
-    assert!(outcome.is_error);
-    let report = view.report();
-    assert!(report.contains("calls=1"), "{report}");
-    assert!(report.contains("launch_enter_us=None"), "{report}");
-    assert!(report.contains("launch_return_us=None"), "{report}");
-    assert!(report.contains("pid=None"), "{report}");
-    assert!(report.contains("stdout_first_poll_us=None"), "{report}");
-    assert!(report.contains("stderr_first_poll_us=None"), "{report}");
-    assert!(!report.contains("must-not-execute"));
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn native_task_snapshot_uses_the_active_actual_builder_child_and_not_a_released_pid() {
-    let f = Fixture::new();
-    let mut selectors = allow();
-    selectors.on_unapproved = OnUnapproved::Fail;
-    let key = "synthetic-native-snapshot-key";
-    let (runner, gate) = f
-        .runner(
-            key,
-            json!({"output_format":"head_tail","timeout_secs":30}),
-            selectors,
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let task = tokio::spawn({
-        let runner = runner.clone();
-        async move {
-            runner
-                .run_outcome(&delayed("synthetic-native-output", true), None)
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while !f.workspace.join("ready.txt").exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("actual native snapshot fixture must write its real ready marker");
-    let report = view.failure_report();
-    assert!(report.contains("native_process=owned-child"), "{report}");
-    assert!(report.contains("native_task=observed"), "{report}");
-    assert!(
-        report.contains("native_threads=observed count=1"),
-        "{report}"
-    );
-    assert!(report.contains("native_thread=0"), "{report}");
-    assert!(report.contains("scope_end_us=None"), "{report}");
-    assert!(!report.contains(key));
-    assert!(!report.contains(f.workspace.to_str().unwrap()));
-    assert!(!report.contains("synthetic-native-output"));
-    gate.observe_error_kind(ToolErrorKind::NeedsApproval);
-    let outcome = tokio::time::timeout(Duration::from_secs(10), task)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::NeedsApproval));
-    assert!(outcome.meta.bytes.unwrap() >= 23);
-    let released = view.failure_report();
-    assert!(released.contains("scope_end_us=Some("), "{released}");
-    assert!(!released.contains("native_process="), "{released}");
-    assert!(!released.contains("native_task="), "{released}");
-    assert!(!released.contains("native_thread="), "{released}");
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn native_execution_observations_match_the_actual_retained_workspace_without_paths() {
-    native_execution_observation_fixture(false).await;
-}
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn native_execution_observations_do_not_rebind_expected_identity_to_a_reused_path() {
-    native_execution_observation_fixture(true).await;
-}
-#[cfg(target_os = "macos")]
-async fn native_execution_observation_fixture(rebind: bool) {
-    let f = Fixture::new();
-    let key = "synthetic-execution-observation-key";
-    let mut selectors = allow();
-    selectors.on_unapproved = OnUnapproved::Fail;
-    let (runner, gate) = f
-        .runner(
-            key,
-            json!({"output_format":"head_tail","timeout_secs":30}),
-            selectors,
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    if rebind {
-        // OWNED fixture namespace only: original metadata must come from the
-        // retained invocation handle, not a later ambient stat of this name.
-        std::fs::rename(&f.workspace, f._root.path().join("original-workspace")).unwrap();
-        std::fs::create_dir(&f.workspace).unwrap();
-    }
-    let task = tokio::spawn({
-        let runner = runner.clone();
-        async move {
-            runner
-                .run_outcome(&delayed("synthetic-native-output", true), None)
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while !f.workspace.join("ready.txt").exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("execution observation fixture requires a genuine ready child");
-    let report = view.failure_report();
-    assert!(
-        report.contains("native_execution=observed executable_class="),
-        "{report}"
-    );
-    let expected = if rebind {
-        "native_cwd=different-from-invocation-workspace"
-    } else {
-        "native_cwd=matches-invocation-workspace"
-    };
-    assert!(report.contains(expected), "{report}");
-    assert!(!report.contains(key));
-    assert!(!report.contains("synthetic-native-output"));
-    assert!(!report.contains(f.workspace.to_str().unwrap()));
-    assert!(!report.contains("/bin/"));
-    assert!(!report.contains("original-workspace"));
-    gate.observe_error_kind(ToolErrorKind::NeedsApproval);
-    let outcome = tokio::time::timeout(Duration::from_secs(10), task)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::NeedsApproval));
-    assert!(outcome.meta.bytes.unwrap() >= 23);
-    assert!(view.failure_report().contains("scope_end_us=Some("));
-    assert!(!view.failure_report().contains("native_execution="));
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn pre_kill_timeout_snapshot_survives_the_actual_owned_child_release_without_pid_lookup() {
-    let f = Fixture::new();
-    let (runner, _) = f
-        .runner(
-            "synthetic-pre-stop-key",
-            json!({"output_format":"head_tail","timeout_secs":1}),
-            allow(),
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let outcome = runner.run_outcome("sleep 30", None).await;
-    assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::Timeout));
-    assert_eq!(outcome.meta.bytes, Some(0));
-    assert!(!view.failure_report().contains("native_process="));
-    let report = view.teardown_report();
-    assert!(report.contains("before_stop_decision=timeout"), "{report}");
-    assert!(
-        report.contains("before_stop_tree_pid_matches_recorded=true"),
-        "{report}"
-    );
-    assert!(
-        report.contains("native_snapshot_phase=before-stop native_snapshot_query_count=1"),
-        "{report}"
-    );
-    assert!(report.contains("native_process=owned-child"), "{report}");
-    assert!(
-        report.contains("before_stop_stdout_bytes=0 before_stop_stdout_eof=false"),
-        "{report}"
-    );
-    assert!(report.contains("scope_end_us=Some("), "{report}");
-    assert_eq!(report, view.teardown_report());
-}
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn pre_kill_approval_snapshot_keeps_real_bytes_and_actual_before_stop_kind() {
-    pre_kill_approval_snapshot_fixture(false).await;
-}
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn active_view_snapshot_is_not_queried_again_or_relabelled_fresh_before_stop() {
-    pre_kill_approval_snapshot_fixture(true).await;
-}
-#[cfg(target_os = "macos")]
-async fn pre_kill_approval_snapshot_fixture(prior_view: bool) {
-    let f = Fixture::new();
-    let mut selectors = allow();
-    selectors.on_unapproved = OnUnapproved::Fail;
-    let (runner, gate) = f
-        .runner(
-            "synthetic-pre-stop-key",
-            json!({"output_format":"head_tail","timeout_secs":30}),
-            selectors,
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let task = tokio::spawn({
-        let runner = runner.clone();
-        async move {
-            runner
-                .run_outcome(&delayed("synthetic-native-output", true), None)
-                .await
-        }
-    });
-    tokio::time::timeout(Duration::from_secs(20), async {
-        while !f.workspace.join("ready.txt").exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("pre-stop fixture requires a real ready child");
-    if prior_view {
-        assert!(view.failure_report().contains("native_process=owned-child"));
-    }
-    gate.observe_error_kind(ToolErrorKind::NeedsApproval);
-    let outcome = tokio::time::timeout(Duration::from_secs(10), task)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::NeedsApproval));
-    assert!(outcome.meta.bytes.unwrap() >= 23);
-    assert!(!view.failure_report().contains("native_process="));
-    let report = view.teardown_report();
-    assert!(
-        report.contains("before_stop_decision=needs-approval"),
-        "{report}"
-    );
-    assert!(
-        report.contains("before_stop_tree_pid_matches_recorded=true"),
-        "{report}"
-    );
-    let phase = if prior_view {
-        "native_snapshot_phase=active-view"
-    } else {
-        "native_snapshot_phase=before-stop"
-    };
-    assert!(report.contains(phase), "{report}");
-    assert!(report.contains("native_snapshot_query_count=1"), "{report}");
-    assert!(!report.contains("synthetic-pre-stop-key"));
-    assert!(!report.contains("synthetic-native-output"));
-    assert!(!report.contains(f.workspace.to_str().unwrap()));
-    assert_eq!(report, view.teardown_report());
-}
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn successful_normal_shell_does_not_invent_a_stop_or_native_snapshot() {
-    let f = Fixture::new();
-    let (runner, _) = f
-        .runner(
-            "synthetic-pre-stop-key",
-            json!({"output_format":"head_tail"}),
-            allow(),
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let outcome = runner.run_outcome(&print("safe", "", 0), None).await;
-    assert!(!outcome.is_error);
-    assert_eq!(outcome.meta.bytes, Some(4));
-    let report = view.teardown_report();
-    assert!(report.contains("scope_end_us=Some("));
-    assert!(!report.contains("before_stop_"));
-    assert!(!report.contains("native_snapshot"));
-    assert!(!report.contains("native_process="));
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn native_scheduling_projection_uses_saved_actual_pre_kill_child_facts_without_requery() {
-    let f = Fixture::new();
-    let (runner, _) = f
-        .runner(
-            "synthetic-scheduling-key",
-            json!({"output_format":"head_tail", "timeout_secs":1}),
-            allow(),
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    let outcome = runner.run_outcome("sleep 30", None).await;
-    assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::Timeout));
-    assert_eq!(outcome.meta.bytes, Some(0));
-    assert!(!view.failure_report().contains("native_scheduling="));
-    let report = view.teardown_report();
-    assert!(report.contains("scope_end_us=Some("), "{report}");
-    assert!(
-        report.contains("native_snapshot_phase=before-stop native_snapshot_query_count=1"),
-        "{report}"
-    );
-    assert!(
-        report.contains("native_scheduling=observed native_scheduling_source=initial-task-info"),
-        "{report}"
-    );
-    for key in [
-        "nice_native=",
-        "task_thread_policy_native=",
-        "task_priority_native=",
-        "native_thread_scheduling=0",
-        "current_priority_native=",
-        "priority_native=",
-        "max_priority_native=",
-    ] {
-        assert!(report.contains(key), "{report}");
-    }
-    let flags: u32 = report
-        .split_whitespace()
-        .find_map(|v| v.strip_prefix("kernel_flags="))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(
-        report.contains(&format!("proc_exec_flag={}", flags & 0x4000 != 0)),
-        "{report}"
-    );
-    assert!(
-        report.contains(&format!(
-            "proc_unclassified_bits_native={}",
-            flags & !0x7fff
-        )),
-        "{report}"
-    );
-    assert!(!report.contains("synthetic-scheduling-key"));
-    assert!(!report.contains(f.workspace.to_str().unwrap()));
-    assert_eq!(report, view.teardown_report());
-}
-
-// Additive original-poll/selection diagnostic cases; no changed older fixture.
-fn original_progress_counter(line: &str, field: &str) -> u64 {
-    let marker = format!("{field}=Some(");
-    let rest = line.split_once(&marker).unwrap().1;
-    rest.split_once(')').unwrap().0.parse().unwrap()
-}
-
-fn progress_print(value: &str, error: &str, code: i32) -> String {
+fn native_exit_output(value: &str, error: &str, code: i32) -> String {
     if cfg!(windows) {
-        // This observer fixture needs actual pipe EOF and a native exit status,
-        // without making managed PowerShell teardown part of its observation.
+        // Preserve real pipe EOF and the native exit status without depending
+        // on managed PowerShell teardown in this bounded output fixture.
         // Keep the original shell/Job owner and bounds; flush actual bytes first.
         format!(
             "[Console]::Out.Write('{value}'); [Console]::Error.Write('{error}'); [Console]::Out.Flush(); [Console]::Error.Flush(); [Environment]::Exit({code})"
@@ -807,7 +436,7 @@ fn progress_print(value: &str, error: &str, code: i32) -> String {
 }
 
 #[tokio::test]
-async fn actual_scoped_shell_poll_progress_retains_reader_return_then_wait_and_original_output() {
+async fn actual_scoped_shell_preserves_original_output_exit_and_raw_bytes() {
     let f = Fixture::new();
     let key = "synthetic-progress-key";
     for format in ["legacy", "head_tail"] {
@@ -820,58 +449,20 @@ async fn actual_scoped_shell_poll_progress_retains_reader_return_then_wait_and_o
             .await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(30),
-            runner.run_outcome(&progress_print(key, "", 7), None),
+            runner.run_outcome(&native_exit_output(key, "", 7), None),
         )
         .await
-        .expect("bounded new original-poll fixture");
+        .expect("bounded native-output fixture");
         assert!(!outcome.is_error, "{}", outcome.content);
         assert_eq!(outcome.content, "[REDACTED]\n[exit code 7]");
         assert_eq!(outcome.meta.bytes, Some(key.len() as u64));
         assert_eq!(outcome.meta.exit_code, Some(7));
-        let view = runner.observation_view_for_tests().unwrap();
-        let progress = view.poll_progress_report_for_tests();
-        assert!(
-            progress.contains("calls=1 omitted=0 recorder_loss=false clock=call"),
-            "{progress}"
-        );
-        assert!(progress.contains("readers_result=returned-ok readers_phase_loss=false"));
-        assert!(progress.contains("wait_result=returned-status wait_phase_loss=false"));
-        assert!(!progress.contains("before-stop-history") && !progress.contains(key));
-        let selection = progress
-            .lines()
-            .find(|line| line.contains("readers_enter_us="))
-            .unwrap();
-        assert!(
-            original_progress_counter(selection, "readers_enter_us")
-                <= original_progress_counter(selection, "readers_return_us")
-        );
-        assert!(
-            original_progress_counter(selection, "readers_return_us")
-                <= original_progress_counter(selection, "wait_enter_us")
-        );
-        assert!(
-            original_progress_counter(selection, "wait_enter_us")
-                <= original_progress_counter(selection, "wait_return_us")
-        );
-        let stdout = progress
-            .lines()
-            .find(|line| line.contains("stdout_polls="))
-            .unwrap();
-        assert!(original_progress_counter(stdout, "stdout_polls") >= 2);
-        assert!(stdout.contains("stdout_last_poll_result=eof stdout_count_loss=false"));
-        let stderr = progress
-            .lines()
-            .find(|line| line.contains("stderr_polls="))
-            .unwrap();
-        assert!(original_progress_counter(stderr, "stderr_polls") >= 1);
-        assert!(stderr.contains("stderr_last_poll_result=eof stderr_count_loss=false"));
-        assert!(view.report().contains("scope_end_us=Some("));
     }
 }
 
 #[cfg(windows)]
 #[tokio::test]
-async fn explicit_progress_exit_keeps_real_stream_bytes_status_and_reader_wait_phases() {
+async fn explicit_native_exit_preserves_real_stdout_stderr_and_status() {
     let f = Fixture::new();
     let key = "synthetic-native-progress-key";
     let error = "actual-native-progress-error";
@@ -885,36 +476,22 @@ async fn explicit_progress_exit_keeps_real_stream_bytes_status_and_reader_wait_p
             .await;
         let outcome = tokio::time::timeout(
             Duration::from_secs(30),
-            runner.run_outcome(&progress_print(key, error, 11), None),
+            runner.run_outcome(&native_exit_output(key, error, 11), None),
         )
         .await
-        .expect("bounded native-exit progress fixture");
+        .expect("bounded native-exit output fixture");
         assert!(!outcome.is_error, "{}", outcome.content);
         assert!(outcome.content.contains("[REDACTED]"));
         assert!(outcome.content.contains(error));
         assert!(outcome.content.contains("[exit code 11]"));
         assert_eq!(outcome.meta.bytes, Some((key.len() + error.len()) as u64));
         assert_eq!(outcome.meta.exit_code, Some(11));
-        let report = runner
-            .observation_view_for_tests()
-            .unwrap()
-            .poll_progress_report_for_tests();
-        assert!(
-            report.contains("readers_result=returned-ok readers_phase_loss=false"),
-            "{report}"
-        );
-        assert!(
-            report.contains("wait_result=returned-status wait_phase_loss=false"),
-            "{report}"
-        );
-        assert!(!report.contains(key));
     }
 }
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn actual_scoped_timeout_poll_progress_keeps_pre_drain_history_separate_without_new_pid_queries()
- {
+async fn actual_scoped_zero_output_timeout_retains_typed_metadata_in_both_formats() {
     let f = Fixture::new();
     for format in ["legacy", "head_tail"] {
         let (runner, _) = f
@@ -930,94 +507,10 @@ async fn actual_scoped_timeout_poll_progress_keeps_pre_drain_history_separate_wi
             runner.run_outcome("sleep 30", None),
         )
         .await
-        .expect("bounded new original-poll timeout fixture");
+        .expect("bounded native timeout fixture");
         assert!(outcome.is_error);
         assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::Timeout));
         assert_eq!(outcome.meta.bytes, Some(0));
         assert_eq!(outcome.meta.exit_code, None);
-        let view = runner.observation_view_for_tests().unwrap();
-        let progress = view.poll_progress_report_for_tests();
-        let before = progress
-            .lines()
-            .find(|line| {
-                line.contains("poll_progress_phase=before-stop-history")
-                    && line.contains("stdout_polls=")
-            })
-            .unwrap();
-        let before_polls = original_progress_counter(before, "stdout_polls");
-        assert!(before_polls >= 1);
-        assert_eq!(
-            before_polls,
-            original_progress_counter(before, "stdout_pending_polls")
-        );
-        assert!(before.contains("stdout_last_poll_result=pending stdout_count_loss=false"));
-        let current = progress
-            .lines()
-            .find(|line| {
-                line.contains("poll_progress_phase=current-history")
-                    && line.contains("stdout_polls=")
-            })
-            .unwrap();
-        assert!(original_progress_counter(current, "stdout_polls") >= before_polls);
-        if format == "head_tail" {
-            assert!(current.contains("stdout_last_poll_result=eof stdout_count_loss=false"));
-        } else {
-            assert!(current.contains("stdout_last_poll_result=pending stdout_count_loss=false"));
-        }
-        assert!(progress.contains("readers_result=timeout-branch readers_phase_loss=false"));
-        assert!(progress.contains(
-            "wait_enter_us=None wait_return_us=None wait_result=not-returned wait_phase_loss=false"
-        ));
-        let saved = view.teardown_report();
-        assert!(saved.contains("before_stop_decision=timeout"));
-        assert!(saved.contains("native_snapshot_phase=before-stop native_snapshot_query_count=1 native_snapshot_clock=call"));
-        assert_eq!(view.poll_progress_report_for_tests(), progress);
-        assert_eq!(view.teardown_report(), saved);
-        assert!(!view.failure_report().contains("native_process="));
     }
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn actual_scoped_zero_byte_timeout_keeps_current_child_pipe_metadata_on_same_saved_ticket() {
-    let f = Fixture::new();
-    let (runner, _) = f
-        .runner(
-            "synthetic-current-pipe-key",
-            json!({"output_format":"head_tail","timeout_secs":1}),
-            allow(),
-        )
-        .await;
-    let view = runner.observation_view_for_tests().unwrap();
-    // A genuine zero-output timeout, NOT a readiness/emission/startup proof.
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(30),
-        runner.run_outcome("sleep 30", None),
-    )
-    .await
-    .expect("one actual scoped call within the original outer bound");
-    assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::Timeout));
-    assert_eq!(outcome.meta.bytes, Some(0));
-    assert_eq!(outcome.meta.exit_code, None);
-    assert!(outcome.meta.duration.unwrap() >= Duration::from_secs(1));
-    let report = view.teardown_report();
-    assert!(report.contains("before_stop_decision=timeout"), "{report}");
-    assert!(
-        report.contains("native_snapshot_phase=before-stop native_snapshot_query_count=1"),
-        "{report}"
-    );
-    assert!(
-        report.contains("native_child_pipe=stdout current_child_fd=1 buffer_bytes_native=0"),
-        "{report}"
-    );
-    assert!(
-        report.contains("native_child_pipe=stderr current_child_fd=2 buffer_bytes_native=0"),
-        "{report}"
-    );
-    assert!(report.contains("scope_end_us=Some("), "{report}");
-    assert!(
-        !report.contains("synthetic-current-pipe-key")
-            && !report.contains(f.workspace.to_str().unwrap())
-    );
-    assert_eq!(report, view.teardown_report()); // cached history, no new PID/FD query
 }

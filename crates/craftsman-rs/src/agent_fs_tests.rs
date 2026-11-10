@@ -12,7 +12,6 @@ struct Fixture {
     root: tempfile::TempDir,
     workspace: PathBuf,
     config: PathBuf,
-    observations: crate::exec::shell::FailureObservations,
 }
 struct Harness {
     filesystem: Arc<TextFs>,
@@ -30,7 +29,6 @@ impl Fixture {
             root,
             workspace,
             config,
-            observations: Default::default(),
         }
     }
     fn put(&self, name: &str, content: impl AsRef<[u8]>) {
@@ -70,7 +68,6 @@ impl Fixture {
             })),
             gate,
         };
-        self.observations.record(&harness.shell);
         harness
     }
 }

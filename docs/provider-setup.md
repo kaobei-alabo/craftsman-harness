@@ -60,5 +60,5 @@ compile errors are retained separately; only the new import/test paths were
 corrected. Fresh full local and all-four/every-step/both-native-mode CI
 verification, with exact original/new inventory, warning and tree audits, then
 independent merged-main validation, gate delivery. Live model/task/gadget quality,
-background/diagnostic recovery, native containment, historical shell #138,
-public headless execution and binary/container publication remain separate.
+background/diagnostic recovery, native containment, public headless execution
+and binary/container publication remain separate.

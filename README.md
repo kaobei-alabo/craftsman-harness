@@ -23,6 +23,10 @@ remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented
 capability/approval boundaries. Run `./scripts/verify.sh` for both complete test
 modes and the default build; it selects an installed Python 3.11+ interpreter.
 
+Native shell regression tests check actual stdout/stderr, exit and timeout
+metadata, invalid UTF-8 refusal and stopping a running command after an approval
+failure. Temporary test-only shell investigation instrumentation has been retired.
+
 Binary publication is on hold at the owner's request. The release, workspace
 image and service-agent image workflows have been removed and disabled in GitHub.
 CI validates source; the optional gadget benchmark uploads only its JSON report.
@@ -180,17 +184,6 @@ not green merely because the informational workflow badge says success. See
 [docs/windows-shell-fixtures.md](docs/windows-shell-fixtures.md) for the preserved
 failure, additive native cases and all-platform verification gate. This does not
 expose headless `exec` or complete usage/settlement.
-A subsequent test-only scoped-shell observation adapter helps investigate the
-unresolved local macOS full-suite discrepancy (#138). It records actual launch/
-read timing and fixed metadata only on a failed fixture; old assertions/deadlines
-and all runnable agent behavior stay unchanged. It is not production tracing or
-a root-cause fix. The next macOS-only failure snapshot records bounded native
-task/thread-state facts and exact executable/CWD classifications against the
-retained invocation workspace. A bounded test-only pre-kill snapshot now preserves
-original stop/pipe/native facts without later PID lookup; none are raw paths,
-CPU-spin/exec/containment/progress/measured-usage proof. Old assertions and
-production behavior remain unchanged. See
-[docs/shell-test-observations.md](docs/shell-test-observations.md).
 A separate private adapter resolves bounded normal-relative scopes against an
 explicit launch base and selects `--output-file` through the SAME guarded file
 owner; public output-format flags still refuse instead of relabeling previews.
@@ -974,178 +967,8 @@ requires native Windows/all-four exact-head verification. See
 [Windows fixture status](docs/windows-shell-fixtures.md).
 
 
-### Private native scheduling diagnostics
+## Immutable environment test fixtures
 
-Test-only macOS shell diagnostics now project exported flag bits and original
-nice/task/thread priority/policy fields from already-returned native buffers,
-with no additional queries. Old deadlines/behavior and4096-byte whole safe-report
-cap stay intact; unknown bits and signed native values are not a startup/wait-
-cause/usage proof. Local #138 failures remain unresolved and preserved. See
-[scoped shell test observations](docs/shell-test-observations.md).
-
-
-### Test-only original shell poll/selection diagnostics — November 4
-
-The unresolved local #138 failures now have a bounded `cfg(test)` follow-up:
-actual original reader-poll counts/last results and existing reader/wait selection
-phases, with pre-stop history kept separate from later drain. No waker wrapper,
-additional native lookup, new poll, changed assertion/deadline or production
-process behavior is added. See [the diagnostic slice](docs/shell-poll-progress.md)
-for validation and limits; public exec/usage/settlement/callables stay unwired.
-
-
-November 4 changed-source full validation remains mixed: off FAILED1600/4/7
-(including the NEW normal-output diagnostic), gadgets1747/0/9 passed. All old
-inventories plus13 new cases are present; no compiler warnings/unchanged retry.
-ONE original Pending poll per pipe/no wait-selection entry in the off failure
-reports is parent-side phase evidence, NOT a root fix or lost-wakeup explanation.
-The gadget pass never replaces the off/prior failures; #138 stays OPEN and all
-public/usage/settlement/callable/P2g/live/release gates remain separate/off. See
-[the diagnostic validation](docs/shell-poll-progress.md).
-
-
-### Corrective test-environment isolation — November 4, 2026
-
-The next correction removes unsafe process-global environment mutation from
-parallel config/MCP/route/protocol tests. Original assertions run with exact
-synthetic values injected BEFORE a marked child starts, and the concurrent serve
-auth case uses a cfg(test)-only per-router source with the same actual gate.
-Runtime auth/environment/shell behavior, SDK/framework/protocols and deadlines
-are unchanged. See [test-environment-isolation.md](docs/test-environment-isolation.md)
-for the partial correction, native validation and remaining #138 root-cause gate.
-
-
-Corrective full validation (November 4 UTC): all five original environment/
-protocol cases and eight new substantive cases pass both modes, warning-free.
-Full off still FAILED1605/4/8 with the same four shell/readiness failures;
-gadgets1752/0/10 passes. Unsafe environment mutation is removed, but it is NOT
-proved #138's sole cause/fix; no old assertion/deadline/process/reader/SDK or
-provider workaround. All prior failed evidence is retained and #138 OPEN;
-all-four/every-step/both-mode hosted verification remains required.
-
-
-Windows PR147 first-head41829354220 is preserved FAILED in BOTH modes only for
-the NEW offline declaration guard's LF-only source match (native main1552/0/8
-and1684/0/10 and every old/env assertion pass; interpreter post step skipped).
-Correction normalizes ONLY CRLF pairs to LF in that NEW guard; original exact
-cfg/declaration checks remain, with an additive LF/CRLF-versus-lone-CR/wrong-cfg/
-wrong-name/tab negative case. No production/old assertion/deadline/pin/SDK/
-workflow/warning suppression or unchanged CI retry. Require ALL FOUR fresh
-corrected-head jobs/every step/both modes/native/inventory/warning/source/tree
-proof before review-only merge; #138 and old local failures remain unresolved.
-
-
-## PR147 corrected-head Windows failure and test-only phases — November 4 UTC
-
-Corrected head3919f640/CI41835883954 attempt1 passes ALL four new CRLF/environment
-source guards and ALL five original environment/protocol cases BOTH modes on
-Ubuntu24.04/actual macOS15/Windows2025. It is still NOT all-four green: Windows
-feature-off Test fails the ORIGINAL2s partial-output stdout assertion with empty
-wording (1551/1/8); later gadgets1684/0/10 does not replace it and interpreter post is
-skipped. All other jobs/steps/old+new inventories and Windows9 warning signatures/
-17 occurrences remain verified. PR147 remains DRAFT/unmerged; #138 stays OPEN.
-No startup/reader/wake/capture cause follows from the missing output.
-
-The next [test-only legacy phase observer](docs/legacy-shell-observations.md) records original spawn return,
-exact delegated read polls and existing reader/wait/kill/drain selections, owned
-by the actual ordinary test ShellRunner. At most8 calls/WHOLE4096 ASCII-LF report
-or fixed refusal; original clock/counters and pre-stop/current histories remain
-separate. No extra poll/waker/native lookup/raw bytes/error/env/clock reset/global
-hook/launcher/warmup/retry. Only original assertion-panic teardown prints it;
-headless retains its SAME existing recorder/native bounds. Shared executor
-extraction and cfgtest-only seams keep original pump/process/capture/defaults/
-old commands/assertions/Windows2s+3s/30s outer/2s drain/private15s+20s+10s+6s and
-env20s+5s limits intact. Eight additive cases plus a CRLF-safe source guard are
-not a root fix/Windows proof. Docs with incomplete work; all FOUR fresh exact-head
-jobs/EVERY step/BOTH modes/native/source/tree/inventory/warning/review proof still
-gate missing-review-only merge. No unchanged broad retry/admin failure bypass,
-real model/user config/SDK/global-env mutation, agents/goals/blocked-provider work
-or public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-One genuinely changed-source full command per mode at c1cac545 (November4 UTC)
-completed warning-free with every old native name/ignored/doctest plus the eight
-new main cases/new guard/CRLF guard preserved. All original environment/auth and
-all18 new substantive cases relative to PR146 pass BOTH modes. Off remains
-FAILED1613/4/8, exit101,998.48s whole command: the SAME four scoped-shell cases
-still fail. Gadgets1760/0/10 passes, exit0,73.85s; never substitute that pass.
-Temporary lack of startup output from an offline test binary later cleared; its
-original source assertions pass. No root-cause/PID/startup-latency inference,
-clock/assertion/launcher workaround, unbounded wait or unchanged broad retry.
-Full evidence stays retained; #138 OPEN and PR147 draft pending ALL FOUR fresh
-exact-head jobs/EVERY step/BOTH native modes/source/tree/inventory/warning/review
-proof. Public/usage/settlement/callable/P2g/live/default-on/release remain off.
-
-
-## Native current-child pipe snapshots — November 5 Asia/Taipei / November 4 UTC
-
-PR147/main86704e4 are independently ALL FOUR/every-step/both-mode/source/tree/
-inventory/old Windows9-signature17-occurrence verified; live main/p0-integration
-branches were FF-only/data-preserving. The transient null Windows main-job
-metadata was strictly refused, then SAME-run/job metadata converged before
-verification/FF; no CI retry/faked completion. Local off1613/4/8 remains FAILED,
-gadgets1760/0/10 passes, #138 OPEN and all older failed evidence sealed/read-only.
-
-The next [read-only pipe facet](docs/native-pipe-snapshots.md) queries ONLY the existing live actual
-native snapshot ticket's CURRENT child fd1/2 metadata; no read/dup/poll/waker/
-launcher/environment/clock/signal/sampler/public output change. Complete exact
-public ABI/write-pipe/FIFO/signed-count checks and SAME final PID/start/parent/
-group validation gate all facts. Buffer counts are not original pipeline
-identity/read/emission/EOF/usage or cause proof; child fd rebinding is explicit.
-SAME13-query/8-thread/call/view/4096-byte whole-report bounds:5 fixed + whole-list
-reserved threads; two pipe queries only if<=6 fit,7/8 preserves old threads and
-refuses new facet, no refund/retry/clip. Old phase/ticket/clock/limits/assertions/
-production/SDK/WIT/deps/lock/pin/frontends/frames/schemas/goldens/trace stay exact.
-Additive ABI/pure/real-unread-pipe/actual-builder-zero-timeout tests and docs are
-not a root fix. Require fresh all FOUR exact-head jobs/EVERY step/both modes/
-native/source/tree/inventory/warning/review proof before review-only merge and
-separate main verification before safe live FF. No warmed/unchanged broad retry,
-real model/user config/SDK/env mutation, agents/goals/blocked-provider work or
-public exec/usage/settlement/callables/P2g/live/default-on/release enablement.
-
-
-Changed-source full validation completed November5 Asia/Taipei/November4 UTC:
-off remains **FAILED1622/4/8**, exit101,427.17s whole command; gadgets1769/0/10
-passes, exit0,77.20s. All nine additive cases and original environment/auth cases
-pass BOTH modes; every old named/ignored/doctest inventory is retained, no warnings.
-The SAME four failures each have zero buffered bytes in CURRENT child fd1/2 at
-their original native query, with one original Pending poll/no wait-selection
-return. That is not original pipeline/prior emission/startup/wait-cause proof or
-a root fix. The offline guard's temporary absent startup output later cleared
-and its original assertion passes. No unchanged broad retry; #138 stays OPEN.
-See [the complete pipe diagnostic validation](docs/native-pipe-snapshots.md).
-
-
-## Explicit owned-child native stack experiment — November 5, 2026
-
-The user approved ONE bounded native stack capture of a newly owned failing
-child, expanding no-sampling only for an explicitly marked cfgtest/macOS
-experiment. PR148/main151d4bf are all-four/every-step/both-mode verified; local
-off1622/4/8 remains FAILED/#138 OPEN. The new private seam borrows the SAME actual
-pre-kill ProcessTree/Call, selects only a fixed libtest diagnostic case plus
-explicit owned directory marker, never old/reused/caller PID or runtime role
-authority. Normal CI/unmarked/production paths do not sample. One consumed budget,
-fixed1s/1000ms tool request,5s execution/2s owned cleanup/8KiB pipes/1MiB trace
-and sampler-only file limit; actual return/signal/identity/hash facts, no retry.
-Sampling SUSPENDS/RESUMES threads: perturbation is explicit, not passive wait/exec/
-EOF/usage/quiescence/cause proof. Original native13-query/8-thread/call/view/4096
-report/ticket/clock and old assertions/deadlines/production/pump/reader/waker/
-ProcessTree/environment/framework/SDK/WIT/deps/pins/workflows/frontends/frames/
-schemas/goldens/trace remain intact. Guards/docs in progress; no inferred root
-fix, public exec/usage/settlement/callables/P2g/live/default-on/release, model/
-installed gadget/user config/env/SDK mutation, agents/goals or blocked-provider
-work. See [the owned-stack scope and validation](docs/owned-child-stack-capture.md).
-
-
-Owned-stack experiment completed: ONE newly owned pre-kill child trace succeeded
-(exit0/no signal,1.127321s,859 bytes) with a single `_dyld_start + 0` frame and
-no binary-image description; symbol-lookup warning is retained. It is a perturbed
-loader-entry userspace observation, not kernel wait cause/exec/EOF/usage proof or
-a root fix. Original off1630/4/8 remains FAILED, gadgets1777/0/10 passes; all8 new
-guards and original environment/auth cases pass, warnings0. The initial free
-marker filtered two rustdoc cases: a targeted unmarked doc-only companion restores
-exact combined inventory, NOT a claim of first-command full doctest coverage.
-Future authorized markers use a nonmatching --skip VALUE; metadata-only unit/doc
-lists prove no actual case exclusion. No unchanged broad retry/second sampler/old
-PID lookup/assertion/deadline/launcher/permission workaround; #138 OPEN. See
-[the complete owned-stack evidence](docs/owned-child-stack-capture.md).
+Config, MCP, route and HTTP/WS auth tests preserve their original assertions
+using immutable child environments and per-router state. See
+[environment-test isolation](docs/test-environment-isolation.md) for the maintained contract.

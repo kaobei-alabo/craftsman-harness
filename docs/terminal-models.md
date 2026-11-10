@@ -117,8 +117,8 @@ before path/config inspection. No user config or real model account is used.
 
 Full local/all-four/every-step/both-mode hosted checks still gate merge, followed
 by independent merged-main validation before local fast-forwards. Tests do not
-measure live quality, billing or OS containment. Inherited shell issue #138,
-remaining recovery/diagnostic/native-console gates, public `craftsman exec`,
+measure live quality, billing or OS containment. Remaining
+recovery/diagnostic/native-console gates, public `craftsman exec`,
 gadget-default and binary/image publication gates remain separate.
 
 The full native local modes pass with stable runtime/test hashes: core

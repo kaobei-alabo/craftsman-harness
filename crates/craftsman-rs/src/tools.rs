@@ -18,8 +18,6 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 
 #[cfg(test)]
-mod observations;
-#[cfg(test)]
 pub(crate) mod owned_cancellation_tests;
 
 pub const GATED_TOOLS: &[&str] = &["execute", "write_file", "edit_file"];
@@ -180,8 +178,6 @@ pub struct ShellRunner {
     root: PathBuf,
     settings: ShellSettings,
     headless: Option<crate::exec::shell::Shell>,
-    #[cfg(test)]
-    legacy_observations: Option<observations::Owner>,
 }
 
 impl ShellRunner {
@@ -190,8 +186,6 @@ impl ShellRunner {
             root,
             settings,
             headless: None,
-            #[cfg(test)]
-            legacy_observations: Some(observations::Owner::new()),
         }
     }
 
@@ -202,16 +196,7 @@ impl ShellRunner {
             root: scope.prepared().workspace().to_path_buf(),
             settings: scope.prepared().shell().clone(),
             headless: Some(crate::exec::shell::Shell::from_scope(scope)),
-            #[cfg(test)]
-            legacy_observations: None,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn observation_view_for_tests(&self) -> Option<crate::exec::shell::ObservationView> {
-        self.headless
-            .as_ref()
-            .map(|shell| shell.observation_view_for_tests())
     }
 
     pub fn settings(&self) -> &ShellSettings {
@@ -235,22 +220,11 @@ impl ShellRunner {
         let limit = Duration::from_secs(self.settings.call_timeout_secs(timeout_arg));
         let started = std::time::Instant::now();
         let cancellation = craftsman_harness::TurnCancellation::current();
-        #[cfg(not(test))]
         let result = execute_impl_core(
             cmd,
             &self.root,
             &self.settings,
             limit,
-            cancellation.as_ref(),
-        )
-        .await;
-        #[cfg(test)]
-        let result = execute_impl_core(
-            cmd,
-            &self.root,
-            &self.settings,
-            limit,
-            self.legacy_observations.as_ref(),
             cancellation.as_ref(),
         )
         .await;
@@ -301,19 +275,6 @@ impl ShellRunner {
             Err(outcome.content)
         } else {
             Ok(outcome.content)
-        }
-    }
-}
-
-// Only the original assertion-panic teardown emits this owner's fixed report.
-// No global panic hook, normal-frontend sink, native lookup or new IO work.
-#[cfg(test)]
-impl Drop for ShellRunner {
-    fn drop(&mut self) {
-        if std::thread::panicking()
-            && let Some(owner) = &self.legacy_observations
-        {
-            eprintln!("{}", owner.report());
         }
     }
 }
@@ -428,31 +389,18 @@ pub(crate) async fn execute_impl(
     limit: Duration,
 ) -> Result<ExecRaw, ExecFailure> {
     let cancellation = craftsman_harness::TurnCancellation::current();
-    execute_impl_core(
-        cmd,
-        cwd,
-        settings,
-        limit,
-        #[cfg(test)]
-        None,
-        cancellation.as_ref(),
-    )
-    .await
+    execute_impl_core(cmd, cwd, settings, limit, cancellation.as_ref()).await
 }
 
-// Shared original executor. The optional observer exists only in test builds;
-// both direct calls and the real runner still use the same ProcessTree/pump.
+// Shared executor for direct shell calls and the agent-bound runner.
 async fn execute_impl_core(
     cmd: &str,
     cwd: &Path,
     settings: &ShellSettings,
     limit: Duration,
-    #[cfg(test)] owner: Option<&observations::Owner>,
     cancellation: Option<&craftsman_harness::TurnCancellation>,
 ) -> Result<ExecRaw, ExecFailure> {
     let started = tokio::time::Instant::now();
-    #[cfg(test)]
-    let observation = owner.and_then(|owner| owner.begin(started, limit));
     let deadline = started + limit;
     if cancellation.is_some_and(|turn| turn.is_cancelled()) {
         return Err(ExecFailure::Cancelled { partial: None });
@@ -463,18 +411,8 @@ async fn execute_impl_core(
     }
     let mut tree = crate::platform_os::ProcessTree::spawn_shell(cmd, cwd, &options)
         .map_err(ExecFailure::Spawn)?;
-    #[cfg(test)]
-    if let Some(call) = &observation {
-        call.spawned(tree.id());
-    }
     let stdout = tree.take_stdout().expect("piped");
     let stderr = tree.take_stderr().expect("piped");
-    #[cfg(test)]
-    let stdout =
-        observations::Reader::new(stdout, observation.clone(), observations::Stream::Stdout);
-    #[cfg(test)]
-    let stderr =
-        observations::Reader::new(stderr, observation.clone(), observations::Stream::Stderr);
 
     let (out, err, read_limit) = match settings.output_format {
         OutputFormat::Legacy => (
@@ -501,10 +439,6 @@ async fn execute_impl_core(
     };
     tokio::pin!(readers);
 
-    #[cfg(test)]
-    if let Some(call) = &observation {
-        call.readers_enter();
-    }
     let mut cancelled = false;
     let readers_result = match cancellation {
         Some(turn) => tokio::select! {
@@ -514,16 +448,8 @@ async fn execute_impl_core(
         },
         None => Some(tokio::time::timeout_at(deadline, &mut readers).await),
     };
-    #[cfg(test)]
-    if let Some(call) = &observation {
-        call.readers_return(readers_result.as_ref().is_some_and(|result| result.is_ok()));
-    }
     let status = match readers_result {
         Some(Ok(_)) => {
-            #[cfg(test)]
-            if let Some(call) = &observation {
-                call.wait_enter();
-            }
             let result = match cancellation {
                 Some(turn) => tokio::select! {
                     biased;
@@ -532,10 +458,6 @@ async fn execute_impl_core(
                 },
                 None => tokio::time::timeout_at(deadline, tree.wait()).await.ok(),
             };
-            #[cfg(test)]
-            if let Some(call) = &observation {
-                call.wait_return(&result);
-            }
             result
         }
         Some(Err(_)) | None => None,
@@ -545,43 +467,17 @@ async fn execute_impl_core(
         Err(poisoned) => poisoned.into_inner().snapshot(),
     };
     match status {
-        Some(status) => {
-            #[cfg(test)]
-            if let Some(call) = &observation {
-                call.returned(false);
-            }
-            Ok(ExecRaw {
-                stdout: take(&out),
-                stderr: take(&err),
-                exit_code: status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1),
-                duration: started.elapsed(),
-            })
-        }
+        Some(status) => Ok(ExecRaw {
+            stdout: take(&out),
+            stderr: take(&err),
+            exit_code: status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1),
+            duration: started.elapsed(),
+        }),
         None => {
-            #[cfg(test)]
-            if let Some(call) = &observation {
-                call.before_stop(tree.id());
-            }
             tree.kill_tree().await;
-            #[cfg(test)]
-            if let Some(call) = &observation {
-                call.stop_return();
-            }
             if cancelled || settings.output_format == OutputFormat::HeadTail {
-                #[cfg(test)]
-                if let Some(call) = &observation {
-                    call.drain_enter();
-                }
                 let drain_result = tokio::time::timeout(DRAIN_AFTER_KILL, &mut readers).await;
-                #[cfg(test)]
-                if let Some(call) = &observation {
-                    call.drain_return(drain_result.is_ok());
-                }
                 let _ = drain_result;
-            }
-            #[cfg(test)]
-            if let Some(call) = &observation {
-                call.returned(!cancelled);
             }
             // Legacy does not read the partial output (today's text drops it).
             let partial = Box::new(ExecRaw {
@@ -948,6 +844,42 @@ mod tests {
         assert!(details.contains("src/main.rs"));
         assert!(details.contains("--- before"));
         assert!(details.contains("+++ after"));
+    }
+
+    #[tokio::test]
+    async fn actual_legacy_zero_byte_timeout_retains_typed_metadata() {
+        use crate::shell::ShellSettings;
+        use crate::tools::ShellRunner;
+        use craftsman_harness::ToolErrorKind;
+        use serde_json::json;
+        use std::path::PathBuf;
+
+        // This fixture deliberately has NO startup/readiness/output claim.
+        // Unix uses only a shell builtin, so no ungrouped grandchild can leak.
+        #[cfg(unix)]
+        let command = "while :; do :; done";
+        #[cfg(windows)]
+        let command = "[System.Threading.Thread]::Sleep(60000)";
+        let runner = ShellRunner::new(
+            PathBuf::from("."),
+            ShellSettings::from_value(Some(
+                &json!({"timeout_secs": 2, "output_format": "head_tail"}),
+            )),
+        );
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(30), runner.run_outcome(command, None))
+                .await
+                .expect("one real call returns within the unchanged outer bound");
+        assert!(outcome.is_error);
+        assert_eq!(outcome.meta.error_kind, Some(ToolErrorKind::Timeout));
+        assert_eq!(outcome.meta.bytes, Some(0));
+        assert_eq!(outcome.meta.exit_code, None);
+        assert!(outcome.meta.duration.unwrap() >= Duration::from_secs(2));
+        assert!(!outcome.meta.truncated);
+        assert_eq!(
+            outcome.content,
+            "Error: command timed out after 2s and was stopped. It printed nothing before the timeout."
+        );
     }
 
     #[tokio::test]

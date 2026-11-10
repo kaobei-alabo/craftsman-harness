@@ -33,8 +33,8 @@ reliability and self-built gadgets as the current production priority on Novembe
   configuration and environment names; do not reintroduce the former identity.
 - Gadget discovery is already deterministic. Do not add repeated model-driven
   gadget-list calls to solve discovery.
-- The local macOS shell problem, **issue #138, is deferred, not fixed**. The user
-  chose to continue independent work. That choice does not waive failing checks.
+- Temporary shell-investigation instrumentation has been retired. Maintain the
+  actual native behavior tests and preserve failed historical evidence (section 6).
 - The proposed **private `--max-rounds` argument adapter** is now implemented
   through the existing shared request meter. See
   [request-budget arguments](docs/request-budget-arguments.md) for its contract
@@ -250,49 +250,23 @@ failure; exact final allowed response; next-call refusal without another inner
 request; role sums; real approval dominance; no later registered-tool dispatch
 when a child/compaction catches a budget error; and no invented/refunded history.
 
-## 6. Deferred local shell issue #138
+## 6. Historical local shell investigation
 
-**Do not describe this as fixed or restart privileged tracing by default.**
+Former issue **#138** concerned intermittent local macOS full-suite stalls:
+an actual child shell existed, but tests saw no output or ready signal before
+their normal deadlines. At the November 5 deferral, the retained feature-off
+run was **1632 passed / 2 failed / 8 ignored**. The failures covered normal
+shell output and stopping a running shell after a filesystem approval refusal.
+A single owned userspace sample observed `_dyld_start + 0` without identifying
+the kernel wait cause. Earlier four-failure runs and the final two-failure run
+remain historical failures, rather than a current repository issue.
 
-Latest retained complete local feature-off run on November 5:
-**1632 passed / 2 failed / 8 ignored**, exit **101**, **824.26 seconds**, no compiler
-warnings. It included temporary local probe preparation; the probe was removed
-and source restored afterwards. These are historical results, **not** a fresh
-run of this handover commit.
-
-The two failures were:
-
-```text
-agent::filesystem_tests::same_typed_filesystem_failure_interrupts_an_actually_started_scoped_shell
-agent::shell_tests::actual_scoped_shell_poll_progress_retains_reader_return_then_wait_and_original_output
-```
-
-Earlier complete runs repeatedly had four failures. Two later passes, focused
-passes, or a gadget-mode pass are not evidence that the root issue is fixed.
-
-One authorized userspace sample captured `_dyld_start + 0` in a newly owned child.
-That is a perturbed loader-entry observation, **not a kernel wait reason**.
-A separately approved kernel trace **never started**: authentication eventually
-succeeded, but the private helper handoff failed first. A later helper correction
-was built, not executed. The user then chose to defer this investigation.
-
-At deferral, temporary `kernel_probe.rs` and its hooks were removed; all **252
-tracked Rust files** matched the main baseline. Owned private handoffs were
-cancelled. Never look up/kill historical PIDs, reuse cancelled capture contexts,
-send `SIGCONT`, disable security, guess lost wakeups, relax assertions/timeouts,
-or substitute warmed passes for failed full-run evidence.
-
-Read [owned-child-stack-capture.md](docs/owned-child-stack-capture.md) for the
-merged experiment. Later deferral/authentication notes remain uncommitted in a
-separate worktree (section 9), so that main document may still show an earlier
-dated state. Local evidence lives under `~/.codex/evidence/craftsman-harness/`;
-`deferred-local-shell-20261105T112455Z/DEFERRED.json` records the deferral/source
-restoration. Sealed evidence stays read-only. Do not copy raw logs, secrets or
-historical process identifiers into public docs.
-
-Independent private request-budget work can proceed. Any future investigation
-needs renewed explicit scope and fresh owned-child evidence; deferral is not a
-check waiver or public-feature approval.
+On November 11 the owner requested removal of the temporary test-only
+recorders, native snapshots, sampling hooks and their dedicated docs. Actual
+output, timeout, invalid-byte and approval-stop behavior checks remain.
+Retiring instrumentation does not establish a root-cause fix. Git history and
+private evidence under `~/.codex/evidence/craftsman-harness/` preserve the original
+records; do not mutate sealed evidence or inspect historical PIDs.
 
 ## 7. Guardrails that must survive the next change
 
@@ -383,7 +357,7 @@ on public exec merely because the private request-argument adapter passes.
   `~/.codex/worktrees/7752/ethereal-wood-9c2e4ab1`, branch
   `fix/macos-owned-launch-stall`, based on the same source baseline.
 - Its uncommitted files are `AGENTS.md`, `README.md`, `docs/headless-mode.md`,
-  `docs/owned-child-stack-capture.md` and `docs/runtime-status.md`. They hold local
+  legacy diagnostic notes and `docs/runtime-status.md`. They held local
   investigation/deferral notes, **not a Rust implementation**. They were preserved,
   not silently included in this commit. Review them separately before carrying
   any updates into a later change.

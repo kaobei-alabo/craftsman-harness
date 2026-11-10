@@ -92,7 +92,7 @@ return before configuration or terminal inspection.
 Full local and all-four hosted verification remain required before merge, with
 independent final-main verification before local fast-forwards. Keep failed
 source checks and the first PTY ABI/state failures separate from later results.
-The inherited shell investigation remains unresolved. SDK/WIT, dependency pins,
+SDK/WIT, dependency pins,
 schemas, protocol-v4/ACP frames and goldens remain unchanged. Live task/gadget
 quality, crash diagnostics, native containment and durable recovery still need
 their separate validation. Binary and container publication remains disabled.

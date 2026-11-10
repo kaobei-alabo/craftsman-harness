@@ -94,7 +94,7 @@ secret mutation or change to branch-protection requirements is performed here.
 
 ## Implementation and validation boundaries
 
-The name change does not expose `craftsman exec`, fix OPEN #138, settle usage,
+The name change does not expose `craftsman exec`, settle usage,
 enable callable headless gadgets or approve P2g/live/default-on/release work.
 The pinned Rust/Wasmtime versions, dependency versions/features, permission
 rules, provider control, native-query ceilings and all old test deadlines stay
@@ -117,7 +117,7 @@ checksums/features, native limits and original corpus data are preserved.
 
 The first renamed full local runs remain **FAILED**: feature-off1585 passed /
 6 failed /7 ignored; gadgets1728 /6 /9. Five native shell cases reproduced the
-open #138 class, and one exact expected environment-lookup order reflected the
+then-observed local macOS shell discrepancy, and one exact expected environment-lookup order reflected the
 previous identity's collation. Only that two-name expectation was transposed
 to the current lexicographic order; the production capture/no-scan behavior
 and every lookup/count assertion remain intact. Its focused test passes in
@@ -132,5 +132,5 @@ matches the verified PR tree, and both canonical live checkouts were advanced to
 it without mutating user data/history or frozen/blocked worktrees. Final source
 scan remains364 tracked files/zero previous-brand content or path occurrences.
 No CI retry/dispatch occurred. This completes the identity-source validation gate,
-NOT OPEN #138, usage/settlement/public exec/callables/P2g/live/default-on/release or
+NOT usage/settlement/public exec/callables/P2g/live/default-on/release or
 the externally configured publishing prerequisites above.
