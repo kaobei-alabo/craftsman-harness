@@ -657,6 +657,9 @@ GenerateContent and OpenAI-compatible Chat Completions. Models live under each
 provider's `models` map, keyed by the actual API ID; `/model provider/model-id`
 selects the connection and its saved settings while retaining the conversation.
 See [provider models](docs/provider-models.md) and the [complete placeholder config](examples/config/multi-provider.json).
+`/setup` and `craftsman setup` edit one configured connection through the
+[provider setup flow](docs/provider-setup.md), retaining its catalog, other
+connections and the conversation. Flat configs keep their platform/direct setup.
 
 Without named providers, the legacy chat route is the endpoint named by `base_url`
 and `api_key` (`https://api.openai.com/v1` when `base_url` is empty). The

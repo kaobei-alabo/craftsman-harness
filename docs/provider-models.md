@@ -29,6 +29,13 @@ or silently switch to another endpoint/model when a request fails.
 
 ## Terminal selection
 
+`/setup` and `craftsman setup` offer a picker for configured connections, then
+edit that connection's endpoint/key and actual API model ID. The complete
+candidate is validated before saving; failed saves keep the current session.
+Other connections and model settings survive, and reconfiguration retains the
+conversation without replay. See [provider setup](provider-setup.md). Flat
+configurations retain the legacy platform/direct setup.
+
 ```text
 /model
 /model openai/YOUR_GPT_MODEL_ID

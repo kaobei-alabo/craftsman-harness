@@ -9,6 +9,7 @@ mod commands;
 mod input;
 mod modals;
 mod model_commands;
+mod provider_setup;
 mod render;
 mod session_bridge;
 mod shutdown;

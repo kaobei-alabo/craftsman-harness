@@ -47,6 +47,12 @@ reviewed inventory and warning signatures intact. The next
 `/compact` reported success before saving its replacement checkpoint. Fresh
 validation of this change remains separate from provider evidence.
 
+The same continuation adds [provider-aware setup](provider-setup.md): named
+connections are edited and selected as a complete validated candidate, keeping
+other providers/model settings and the existing conversation. Failed saves
+retain the current session. This fixes setup writing ignored flat connection
+fields and an invalid unqualified model selection.
+
 ## Build and use the gadget workflow
 
 Use the exact **Rust 1.99.1** toolchain in `rust-toolchain.toml`. The application

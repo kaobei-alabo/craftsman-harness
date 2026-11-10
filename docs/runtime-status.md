@@ -22,6 +22,13 @@
 > actual return; reopening never retries tools or compaction. See
 > [terminal compaction](terminal-compaction.md).
 
+> **Provider-aware setup (November 10):** `/setup` and `craftsman setup` edit a
+> configured named connection instead of writing ignored flat fields and an
+> invalid model selection. Candidates validate before save; failures retain the
+> current config/session. Other connections/settings and committed conversation
+> survive the existing no-replay rebuild. Keys stay masked and oversized paste
+> is refused whole. See [provider setup](provider-setup.md).
+
 > **New ownership and implementation:** `kaobei-alabo/craftsman-harness`
 > starts with a fresh source-only Git history. The new private
 > [request-budget arguments](request-budget-arguments.md) select `--max-rounds`

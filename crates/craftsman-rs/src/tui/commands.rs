@@ -263,7 +263,7 @@ pub(super) async fn handle_slash(
     let mut parts = line.split_whitespace();
     let command = parts.next().unwrap_or_default();
     match command {
-        "/setup" => show_setup_modal(app),
+        "/setup" => super::provider_setup::show(cfg, app),
         "/help" => {
             let mut text = help_text(app);
             let extension_commands = crate::extensions::help_section_in_cwd(cfg);
@@ -1000,6 +1000,9 @@ pub(super) fn action_status(action: &AppAction) -> Option<String> {
         AppAction::Skill(BrowserAction::Remove(id)) => Some(format!("removing skill {id}…")),
         AppAction::SetupPlatform { .. } => Some("connecting to the platform…".to_string()),
         AppAction::SetupDirect { model, .. } => Some(format!("configuring direct model {model}…")),
+        AppAction::SaveProviderSetup { provider, .. } => {
+            Some(format!("configuring provider {provider}…"))
+        }
         _ => None,
     }
 }
@@ -1120,6 +1123,17 @@ pub(super) async fn handle_app_action(
                 Err(error) => app.push(format!("could not load thread {id}: {error}")),
             }
         }
+        AppAction::EditProvider(provider) => super::provider_setup::edit(cfg, &provider, app),
+        AppAction::SaveProviderSetup {
+            provider,
+            base_url,
+            api_key,
+            model,
+        } => {
+            super::provider_setup::save(
+                &provider, base_url, api_key, model, cfg, slot, approval, app,
+            );
+        }
         AppAction::SetupPlatform { url, token } => {
             handle_setup_platform(url, token, cfg, slot, approval, app).await;
         }
@@ -1187,6 +1201,11 @@ async fn handle_setup_platform(
     approval: &Arc<Mutex<ApprovalState>>,
     app: &mut App,
 ) {
+    if !cfg.providers.is_empty() {
+        app.push_error("Choose a named provider with /setup before changing its connection.");
+        super::provider_setup::show(cfg, app);
+        return;
+    }
     let normalized = match crate::platform_rest::normalize_platform_url(&url) {
         Ok(url) => url,
         Err(error) => {
@@ -1251,6 +1270,11 @@ async fn handle_setup_direct(
     approval: &Arc<Mutex<ApprovalState>>,
     app: &mut App,
 ) {
+    if !cfg.providers.is_empty() {
+        app.push_error("Choose a named provider with /setup before changing its connection.");
+        super::provider_setup::show(cfg, app);
+        return;
+    }
     cfg.base_url = base_url.trim_end_matches('/').to_string();
     cfg.api_key = api_key;
     cfg.model = Some(model.clone());
