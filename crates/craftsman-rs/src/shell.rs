@@ -179,6 +179,11 @@ impl ShellSettings {
     pub fn from_config(cfg: &Config) -> Self {
         let mut settings = Self::from_value(cfg.extra.get("shell"));
         let mut sources = vec![cfg.api_key.clone(), cfg.platform.api_token.clone()];
+        sources.extend(
+            cfg.providers
+                .values()
+                .map(|provider| provider.api_key.clone()),
+        );
         for server in &cfg.mcp_servers {
             for field in ["headers", "env"] {
                 if let Some(map) = server.get(field).and_then(Value::as_object) {

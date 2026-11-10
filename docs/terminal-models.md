@@ -1,5 +1,12 @@
 # Terminal model catalog and reasoning effort
 
+Named connections now use the [provider-owned nested catalog](provider-models.md):
+`providers.NAME.models` is keyed by actual API IDs and `/model NAME/MODEL_ID`
+selects its endpoint and saved settings. The legacy single-route example below
+remains supported when no named providers are configured. Native Responses,
+Claude and Gemini continuation data has its own bounded app-layer checkpoint
+middleware; portable conversation transfer retains the contracts below.
+
 The terminal selects models and reasoning effort while retaining the current
 conversation. `/model` combines the configured provider's OpenAI-compatible
 `GET /models` response, explicit `model_catalog` entries, `model_profiles` keys

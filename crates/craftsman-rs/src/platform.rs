@@ -7,6 +7,128 @@
 use crate::config::Config;
 use serde_json::Value;
 
+#[cfg(test)]
+#[path = "platform/provider_tests.rs"]
+mod provider_tests;
+
+/// The parent future owns every bounded discovery request directly. Cancelling
+/// it drops all request futures inline; no detached application task survives.
+pub async fn list_provider_models(
+    cfg: &Config,
+) -> (Vec<crate::model_controls::CatalogModel>, bool) {
+    use futures_util::StreamExt;
+    if crate::provider_config::validate(cfg).is_err() {
+        return (Vec::new(), false);
+    }
+    let mut requests = futures_util::stream::iter(
+        cfg.providers
+            .clone()
+            .into_iter()
+            .map(|(name, provider)| async move { discover_provider(&name, &provider).await }),
+    )
+    .buffer_unordered(16);
+    let mut models = Vec::new();
+    let mut all_available = true;
+    while let Some(result) = requests.next().await {
+        match result {
+            Ok(discovered) if models.len().saturating_add(discovered.len()) <= 512 => {
+                models.extend(discovered)
+            }
+            _ => all_available = false,
+        }
+    }
+    (models, all_available)
+}
+
+async fn discover_provider(
+    name: &str,
+    provider: &crate::provider_config::Provider,
+) -> Result<Vec<crate::model_controls::CatalogModel>, ()> {
+    use crate::provider_config::Protocol;
+    use futures_util::StreamExt;
+    let key = crate::config::expand_env_placeholders(&provider.api_key).map_err(|_| ())?;
+    if key.starts_with("REPLACE_WITH_") {
+        return Err(());
+    }
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| ())?;
+    let builder = http.get(format!(
+        "{}/models",
+        crate::provider_config::endpoint(provider).trim_end_matches('/')
+    ));
+    let builder = match provider.protocol {
+        Protocol::AnthropicMessages => builder
+            .header("x-api-key", key)
+            .header("anthropic-version", "2026-10-21"),
+        Protocol::GeminiGenerateContent => builder.header("x-goog-api-key", key),
+        _ => builder.bearer_auth(key),
+    };
+    let response = builder.send().await.map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Err(());
+    }
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| ())?;
+        if bytes.len().saturating_add(chunk.len()) > 1_048_576 {
+            return Err(());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let records = value[if provider.protocol == Protocol::GeminiGenerateContent {
+        "models"
+    } else {
+        "data"
+    }]
+    .as_array()
+    .ok_or(())?;
+    if records.len() > 512 {
+        return Err(());
+    }
+    let mut models = std::collections::BTreeMap::new();
+    for record in records {
+        if record["capabilities"]["tool_calling"] == false
+            || record["capabilities"]["streaming"] == false
+        {
+            continue;
+        }
+        if provider.protocol == Protocol::GeminiGenerateContent {
+            if let Some(methods) = record["supportedGenerationMethods"].as_array() {
+                if !methods.iter().any(|method| method == "generateContent") {
+                    continue;
+                }
+            }
+        }
+        let (id, label) = if provider.protocol == Protocol::GeminiGenerateContent {
+            let id = record["name"].as_str().ok_or(())?;
+            (
+                id.strip_prefix("models/").unwrap_or(id),
+                record["displayName"].as_str().unwrap_or_default(),
+            )
+        } else {
+            (
+                record["id"].as_str().ok_or(())?,
+                record["display_name"].as_str().unwrap_or_default(),
+            )
+        };
+        let mut model = crate::model_controls::CatalogModel::named(format!("{name}/{id}"));
+        model.label = label.into();
+        if let Some(efforts) = record.get("reasoning_efforts") {
+            model.reasoning_efforts = serde_json::from_value(efforts.clone()).map_err(|_| ())?;
+        }
+        model.validate().map_err(|_| ())?;
+        if models.insert(model.id.clone(), model).is_some() {
+            return Err(());
+        }
+    }
+    Ok(models.into_values().collect())
+}
+
 /// Fetch model ids for the active chat route: a plain OpenAI-style
 /// `GET {base}/models` with the resolved bearer. The platform's `llm` app is
 /// reached exactly the same way — it exposes `/apps/llm/api/v1/models`, an

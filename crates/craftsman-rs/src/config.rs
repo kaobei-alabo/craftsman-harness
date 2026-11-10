@@ -109,6 +109,12 @@ pub struct Config {
     pub model: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "crate::provider_config::unique_map"
+    )]
+    pub providers: BTreeMap<String, crate::provider_config::Provider>,
     #[serde(default = "default_agent")]
     pub agent: String,
 
@@ -143,6 +149,7 @@ impl Default for Config {
             api_key: String::new(),
             model: None,
             default_model: None,
+            providers: BTreeMap::new(),
             agent: default_agent(),
             platform: PlatformConfig::default(),
             locale: default_locale(),
@@ -269,8 +276,14 @@ impl Config {
             return Ok(None);
         }
         let raw = std::fs::read_to_string(&path)?;
-        let cfg: Config = serde_json::from_str(&raw)
-            .map_err(|e| anyhow::anyhow!("could not parse {}: {e}", path.display()))?;
+        let cfg: Config = serde_json::from_str(&raw).map_err(|e| {
+            anyhow::anyhow!(
+                "could not parse {}: invalid configuration at line {}, column {}",
+                path.display(),
+                e.line(),
+                e.column()
+            )
+        })?;
         Ok(Some(cfg))
     }
 
@@ -450,6 +463,15 @@ impl Config {
     /// `model_profiles.<model>.context_window` — the config fallback for the
     /// compaction token-trigger (platform metadata is no longer fetched).
     pub fn model_context_window(&self, model: &str) -> Option<u64> {
+        if !self.providers.is_empty() {
+            return crate::provider_config::selection(self, model)
+                .ok()?
+                .entry?
+                .settings
+                .get("context_window")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|window| *window > 0);
+        }
         self.model_profile(model)
             .get("context_window")
             .and_then(serde_json::Value::as_u64)

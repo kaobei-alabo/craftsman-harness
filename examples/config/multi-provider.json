@@ -1,0 +1,72 @@
+{
+  "model": "openai/YOUR_GPT_MODEL_ID",
+  "providers": {
+    "openai": {
+      "protocol": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "REPLACE_WITH_OPENAI_API_KEY",
+      "models": {
+        "YOUR_GPT_MODEL_ID": {
+          "label": "GPT coding model",
+          "reasoning_controls": {
+            "type": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "settings": {
+            "reasoning": {
+              "type": "effort",
+              "value": "medium"
+            }
+          }
+        }
+      }
+    },
+    "anthropic": {
+      "protocol": "anthropic_messages",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key": "REPLACE_WITH_ANTHROPIC_API_KEY",
+      "models": {
+        "YOUR_CLAUDE_MODEL_ID": {
+          "label": "Claude coding model",
+          "settings": {
+            "reasoning": null
+          }
+        }
+      }
+    },
+    "google": {
+      "protocol": "gemini_generate_content",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "api_key": "REPLACE_WITH_GEMINI_API_KEY",
+      "models": {
+        "YOUR_GEMINI_MODEL_ID": {
+          "label": "Gemini coding model",
+          "settings": {
+            "reasoning": null
+          }
+        }
+      }
+    },
+    "custom": {
+      "protocol": "openai_chat_completions",
+      "base_url": "https://YOUR_COMPATIBLE_HOST/v1",
+      "api_key": "REPLACE_WITH_COMPATIBLE_API_KEY",
+      "models": {
+        "YOUR_COMPATIBLE_MODEL_ID": {
+          "label": "Custom coding model",
+          "settings": {
+            "reasoning": null
+          }
+        }
+      }
+    }
+  },
+  "permission_mode": "manual",
+  "gadgets": {
+    "enabled": true
+  }
+}

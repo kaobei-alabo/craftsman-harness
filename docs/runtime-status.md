@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 6, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 10, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -14,7 +14,7 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
-> **New ownership and implementation:** `yumingchangsabodota/craftsman-harness`
+> **New ownership and implementation:** `kaobei-alabo/craftsman-harness`
 > starts with a fresh source-only Git history. The new private
 > [request-budget arguments](request-budget-arguments.md) select `--max-rounds`
 > before preparation and use the shared main/delegate/compaction meter. Default
@@ -79,6 +79,18 @@
 > substitution. See `windows-shell-fixtures.md` for the distinct original evidence.
 
 ## Complete identity migration — November 4, 2026
+
+The November 10 [provider/catalog implementation](provider-models.md) adds named
+connections and models nested under each provider, using actual API IDs instead
+of aliases. Explicit protocols select Responses, Claude Messages, Gemini
+GenerateContent or the existing compatible client. Nested effort/budget settings
+and provider-qualified selections retain conversation and durable metadata;
+opaque/signed continuation data stays bound to its connection identity. Scripted
+HTTP and real terminal-builder/file/SQLite tests exercise all four protocols,
+cancelled requests and no-replay switching. Full local and hosted verification
+are recorded separately; live quality, public exec, containment and publishing
+gates remain open. Organization-owned main 42629991063 independently verifies the
+earlier terminal model controls across all four jobs/every step/both native modes.
 
 The November 4 canonical repository was `trend-mgai/craftsman-harness`. The source rebrand
 also changes CLI/crate/config/environment/ACP/WIT/schema/image and file names

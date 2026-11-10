@@ -738,6 +738,15 @@ Re-run with --force only if overwriting those newer changes is intended.",
         "/effort" => match (parts.next(), parts.next()) {
             (None, None) => super::model_commands::show_effort_picker(cfg, app),
             (Some(value), None) => {
+                if !cfg.providers.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    match value.parse::<u32>() {
+                        Ok(budget) => super::model_commands::select_budget(
+                            cfg, None, budget, slot, approval, app,
+                        ),
+                        Err(_) => app.push_error("Thinking token budget exceeds its limit."),
+                    }
+                    return false;
+                }
                 let selection = (|| -> Result<crate::model_controls::ModelSelection, String> {
                     let effort = if value == "default" {
                         None
@@ -1014,6 +1023,9 @@ pub(super) async fn handle_app_action(
                 approval,
                 app,
             );
+        }
+        AppAction::SelectModelBudget { model, budget } => {
+            super::model_commands::select_budget(cfg, Some(&model), budget, slot, approval, app);
         }
         AppAction::SelectVoiceModel(model) => {
             select_voice_model(&model, cfg, app);

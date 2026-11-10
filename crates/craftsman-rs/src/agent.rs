@@ -220,6 +220,23 @@ impl ModelProvider for StreamingLlmProvider {
         if let Some(round_sink) = &self.round_sink {
             round_sink();
         }
+        if let Some(native) = &self.client.native {
+            let response = native
+                .complete(&req, |text| (self.sink)(text))
+                .await
+                .map_err(|error| AgentError::Model(error.to_string()))?;
+            let mut usage = self.usage.lock().unwrap();
+            let input = usage
+                .0
+                .checked_add(response.usage.input_tokens)
+                .ok_or_else(|| AgentError::Model("Model input usage overflow.".into()))?;
+            let output = usage
+                .1
+                .checked_add(response.usage.output_tokens)
+                .ok_or_else(|| AgentError::Model("Model output usage overflow.".into()))?;
+            *usage = (input, output);
+            return Ok(response);
+        }
         let messages = to_llm_messages(&req.system, &req.messages);
         let tools = to_openai_tools(&req.tools);
         let turn = self
@@ -1171,18 +1188,45 @@ async fn build_session_with_profile(
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
-    let model = cfg.model.clone()?;
-    let route = match construction.prepared() {
-        Some(prepared) => prepared.credentials().route().clone(),
-        None => match crate::route::resolve_chat_endpoint(cfg).await {
-            Ok(route) => route,
+    let selected_model = cfg.model.clone()?;
+    let configured_provider = !cfg.providers.is_empty();
+    if configured_provider && construction.prepared().is_some() {
+        if let Some(sink) = &extras.activity_sink {
+            sink(
+                "Configured provider transports are not available in the private prepared runtime.",
+            );
+        }
+        return None;
+    }
+    let mut protocol = crate::provider_config::Protocol::OpenaiChatCompletions;
+    let mut model = selected_model.clone();
+    let route = if configured_provider {
+        match crate::provider_config::resolve(cfg).await {
+            Ok((route, resolved_protocol, model_id)) => {
+                protocol = resolved_protocol;
+                model = model_id;
+                route
+            }
             Err(error) => {
-                if verbose {
-                    println!("route resolution failed: {error}");
+                if let Some(sink) = &extras.activity_sink {
+                    sink(&error);
                 }
                 return None;
             }
-        },
+        }
+    } else {
+        match construction.prepared() {
+            Some(prepared) => prepared.credentials().route().clone(),
+            None => match crate::route::resolve_chat_endpoint(cfg).await {
+                Ok(route) => route,
+                Err(error) => {
+                    if verbose {
+                        println!("route resolution failed: {error}");
+                    }
+                    return None;
+                }
+            },
+        }
     };
     let resolved_profiles = crate::harness_profiles::resolve(cfg, &route, &model);
     let harness_profile = match construction.gate() {
@@ -1194,13 +1238,19 @@ async fn build_session_with_profile(
     // Per-model overrides from `model_profiles` are the caller layer and win
     // over built-in provider defaults. `model_kwargs` remains accepted as a
     // session-wide escape hatch and wins over the selected model profile.
-    let mut caller_model_kwargs: BTreeMap<String, Value> = cfg.model_profile(&model);
+    let mut caller_model_kwargs: BTreeMap<String, Value> = if configured_provider {
+        BTreeMap::new()
+    } else {
+        cfg.model_profile(&model)
+    };
     if let Some(values) = cfg.extra.get("model_kwargs").and_then(Value::as_object) {
-        caller_model_kwargs.extend(
-            values
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone())),
-        );
+        if !configured_provider {
+            caller_model_kwargs.extend(
+                values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone())),
+            );
+        }
     }
     let profile_spec = resolved_profiles.provider.as_ref().map_or_else(
         || resolved_profiles.model_id.clone(),
@@ -1221,8 +1271,12 @@ async fn build_session_with_profile(
     };
     // Explicit terminal controls are separate from catalog metadata and win
     // over caller kwargs. Private/frozen/legacy construction stays unchanged.
-    if construction.prepared().is_none() && extras.cancellation_session.is_some() {
-        if let Err(error) = crate::model_controls::apply(cfg, &model, &mut provider_options) {
+    if configured_provider
+        || construction.prepared().is_none() && extras.cancellation_session.is_some()
+    {
+        if let Err(error) =
+            crate::model_controls::apply(cfg, &selected_model, &mut provider_options)
+        {
             if let Some(sink) = &extras.activity_sink {
                 sink(&error);
             }
@@ -1262,6 +1316,31 @@ async fn build_session_with_profile(
         }
     }
     let usage = Arc::new(Mutex::new((0u64, 0u64)));
+    let mut native_history = None;
+    let make_client = || {
+        if !configured_provider {
+            return Some(LlmClient::new_with_options(
+                &route.base_url,
+                &route.api_key,
+                &model,
+                &provider_options,
+            ));
+        }
+        LlmClient::configured(
+            &route.base_url,
+            &route.api_key,
+            &model,
+            protocol,
+            &selected_model,
+            &provider_options,
+        )
+        .map_err(|_| {
+            if let Some(sink) = &extras.activity_sink {
+                sink("Configured model client could not be initialized.");
+            }
+        })
+        .ok()
+    };
     let provider: Arc<dyn ModelProvider> = match construction.provider_scope(
         &model,
         &provider_options,
@@ -1274,18 +1353,17 @@ async fn build_session_with_profile(
             crate::exec::meter::Role::Main,
             extras.output_closed.clone(),
         )?,
-        None => Arc::new(StreamingLlmProvider {
-            client: LlmClient::new_with_options(
-                &route.base_url,
-                &route.api_key,
-                &model,
-                &provider_options,
-            ),
-            usage: usage.clone(),
-            sink: main_sink,
-            round_sink: extras.round_sink.clone(),
-            status_sink: extras.activity_sink.clone(),
-        }),
+        None => {
+            let client = make_client()?;
+            native_history = client.native.as_ref().map(|native| native.history.clone());
+            Arc::new(StreamingLlmProvider {
+                client,
+                usage: usage.clone(),
+                sink: main_sink,
+                round_sink: extras.round_sink.clone(),
+                status_sink: extras.activity_sink.clone(),
+            })
+        }
     };
     let provider = if construction.prepared().is_none() {
         crate::oneshot_io::checked_provider(provider, extras.output_closed.clone())
@@ -1589,12 +1667,7 @@ async fn build_session_with_profile(
             extras.output_closed.clone(),
         )?,
         None => Arc::new(StreamingLlmProvider {
-            client: LlmClient::new_with_options(
-                &route.base_url,
-                &route.api_key,
-                &model,
-                &provider_options,
-            ),
+            client: make_client()?,
             usage: sub_usage,
             sink: child_sink.clone(),
             round_sink: None,
@@ -1727,12 +1800,7 @@ async fn build_session_with_profile(
             extras.output_closed.clone(),
         )?,
         None => Arc::new(StreamingLlmProvider {
-            client: LlmClient::new_with_options(
-                &route.base_url,
-                &route.api_key,
-                &model,
-                &provider_options,
-            ),
+            client: make_client()?,
             usage: compact_usage,
             sink: child_sink,
             round_sink: None,
@@ -1749,7 +1817,7 @@ async fn build_session_with_profile(
     // message-count fallback. Platform metadata is no longer fetched (see
     // docs/platform-token-refactor.md). See `CompactionTrigger`'s docs for
     // the tail-selection difference between the two modes.
-    let compaction_trigger = match cfg.model_context_window(&model) {
+    let compaction_trigger = match cfg.model_context_window(&selected_model) {
         Some(cw) => CompactionTrigger::Tokens {
             token_counter: Arc::new(crate::token_counter::TiktokenCounter::new()),
             #[allow(clippy::cast_precision_loss)]
@@ -1865,6 +1933,11 @@ async fn build_session_with_profile(
         )));
     }
 
+    if let Some(history) = native_history {
+        // Installed after profile filtering; native continuation data cannot be
+        // disabled while its provider is selected. No model/tool work in hooks.
+        middleware.insert(0, history as Arc<dyn AgentMiddleware>);
+    }
     let mut builder = Agent::builder(provider)
         .name("main")
         .durable_turn_checkpoints(
@@ -1935,13 +2008,27 @@ async fn build_session_with_profile(
         lsp,
         mcp_errors,
         route_source: route.source.to_string(),
-        provider_profile_mode: resolved_profiles.provider_profile_mode,
-        model_provider: resolved_profiles.provider,
+        provider_profile_mode: if configured_provider {
+            "configured".into()
+        } else {
+            resolved_profiles.provider_profile_mode
+        },
+        model_provider: if configured_provider {
+            selected_model
+                .split_once('/')
+                .map(|(name, _)| name.to_owned())
+        } else {
+            resolved_profiles.provider
+        },
         profile_model_id: resolved_profiles.model_id,
         harness_preset: resolved_profiles.harness_preset,
         harness_profile: resolved_profiles.harness.active_key,
         harness_profile_layers: resolved_profiles.harness.layers,
-        provider_profile: resolved_profiles.provider_profile.active_key,
+        provider_profile: if configured_provider {
+            Some("configured".into())
+        } else {
+            resolved_profiles.provider_profile.active_key
+        },
     })
 }
 
