@@ -35,7 +35,11 @@
 > permissions, EOF and model transfer. [The audit](acp-compatibility-audit.md)
 > preserves original failures; [ACP behavior](acp.md) records supported paths,
 > intentional golden diffs and cooperative/native limits. All-four hosted and
-> independent-main verification remain separate delivery gates.
+> independent-main verification remain separate delivery gates. The first hosted
+> Ubuntu job failed package-repository DNS and skipped required default/core
+> steps; its gadget pass is separate evidence. CI now selects kernel.org's HTTPS
+> Ubuntu package endpoint while retaining signing keys, suites and package/test
+> requirements; fresh all-four verification remains required.
 
 > **Durable manual compaction (November 10):** the owned terminal saves its
 > original state before `/compact` sampling and its replacement before success.

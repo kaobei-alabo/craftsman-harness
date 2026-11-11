@@ -86,7 +86,11 @@ permissions, MCP, replay, EOF and model transfer. [ACP behavior](acp.md) describ
 the interface and limits. Two ACP golden recordings have explicit reviewed
 identity/cancellation diffs; bridge/model/schema/SDK/native limits are unchanged.
 Full local native modes, all four hosted jobs and independent-main proof remain
-separate delivery gates. No paid calls or publication are enabled.
+separate delivery gates. The first hosted Ubuntu job failed APT repository DNS and
+skipped mandatory default/core steps; its gadget pass does not clear that
+failure. CI now selects the HTTPS Ubuntu package endpoint hosted by kernel.org without changing
+package requirements, suites/signing keys, runners or tests; the audit retains
+the original failure. No paid calls or publication are enabled.
 
 The owner retired the `serve` and `desktop-serve` commands and their custom
 WebSocket v2/v4 implementations on November 11. External clients use `acp-serve`

@@ -74,7 +74,11 @@ jobs:
       - name: Install Linux voice build prerequisites
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          # Use kernel.org's HTTPS Ubuntu package endpoint instead of the runner's
+          # dynamically selected Azure package service. Preserve suites, components
+          # and Signed-By in the Ubuntu 24.04 deb822 source file.
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update --error-on=any
           sudo apt-get install -y libasound2-dev pkg-config cmake clang
       - name: Check the default build, including voice and gadgets
         run: GGML_NATIVE=OFF cargo check --locked --workspace

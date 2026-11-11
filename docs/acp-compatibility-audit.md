@@ -161,3 +161,24 @@ normal completion path. No major-version/capability change or bridge-golden
 change is hidden by re-recording. The final native/full-mode/hosted verification
 and independent-main records remain distinct from the original failures and
 intermediate probe results.
+
+
+### Hosted Linux prerequisite correction
+
+[Run 43050231571](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43050231571)
+at `fe55e809b752fecbaddd4c1b69e761982beb3eb6` failed Ubuntu's prerequisite step:
+APT could not resolve `azure.archive.ubuntu.com` and exited 100 while fetching
+CMake/ALSA/compiler packages. The default build, core tests and intermediate
+contract/provenance checks were skipped. The independently executed gadget mode
+passed, but does not substitute for those omitted steps. That failed job/raw log
+is retained; an unchanged retry is not treated as delivery proof.
+
+The narrow CI correction replaces only the runner-selected package URI in
+Ubuntu 24.04's deb822 source file with the HTTPS Ubuntu package endpoint hosted by kernel.org, keeping
+suites/components/signing keys and all four required package names. APT update
+now fails on any index error rather than continuing with stale metadata. Runner
+labels, toolchain, actions, test bodies/assertions, time limits, job/step
+conditions and required contexts are unchanged. Ubuntu archive/security hostnames also failed local DNS resolution; the
+selected kernel.org endpoint returned HTTP 200 for noble-security metadata.
+This local observation does not substitute for successful runner setup. Fresh
+all-four/every-step/both-mode validation is required after this correction and again on merged main.

@@ -62,3 +62,6 @@ scripts/verify.sh:Verification requires Python 3.11  # interpreter prerequisite 
 README.md:Python 3.11+ interpreter  # documents the verification interpreter prerequisite
 AGENTS.md:Python 3.11+ interpreter  # documents the verification interpreter prerequisite
 docs/production-readiness.md:Python 3.11+ interpreter  # documents the verification interpreter prerequisite
+
+# --- Ubuntu package network URI in CI, unrelated to project lineage ---
+.github/workflows/ci.yml:mirror+file:/etc/apt/apt-mirrors.txt  # APT network URI selecting the hosted runner package service
