@@ -5,7 +5,7 @@ JSON-RPC 2.0 on stdin/stdout. `craftsman acp-bridge --port 8080 -- craftsman
 acp-serve` carries the same frames over WebSocket and exposes the existing
 health/statistics endpoints. The retired `serve` and `desktop-serve` commands
 are not restored. The [compatibility audit](acp-compatibility-audit.md) records
-the original failures, pinned upstream schema and subsequent validation.
+the original failures, pinned official schema and subsequent validation.
 
 ## Sessions and directories
 
