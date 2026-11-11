@@ -87,25 +87,6 @@ impl VoiceError {
     }
 }
 
-pub struct RemoteVoiceRuntime;
-impl RemoteVoiceRuntime {
-    pub fn new(_cfg: &Config) -> Self {
-        Self
-    }
-    pub async fn reconfigure(&self, _config: VoiceConfig) {}
-    pub async fn transcribe_pcm16(
-        &self,
-        _samples: Vec<i16>,
-        _sample_rate: u32,
-        _events: mpsc::UnboundedSender<VoiceEvent>,
-        _abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<String, VoiceError> {
-        Err(VoiceError::EngineFailed(
-            "voice input is not available in this build".into(),
-        ))
-    }
-}
-
 pub struct VoiceController;
 impl VoiceController {
     pub fn spawn(_config: VoiceConfig, _events: mpsc::UnboundedSender<VoiceEvent>) -> Self {
@@ -128,12 +109,7 @@ pub struct ModelSpec {
     pub bytes: u64,
     pub sha256: &'static str,
 }
-pub fn model_specs() -> impl Iterator<Item = ModelSpec> {
-    std::iter::empty()
-}
-pub const fn available() -> bool {
-    false
-}
+
 pub fn canonical_model_name(_name: &str) -> Option<&'static str> {
     None
 }

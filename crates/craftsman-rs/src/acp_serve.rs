@@ -34,7 +34,6 @@ use crate::agent::{
 use crate::checkpoints::LibsqlCheckpointer;
 use crate::config::Config;
 use crate::hitl::ApprovalState;
-use crate::serve::history_values;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -584,6 +583,21 @@ pub fn extract_session_id(params: &Value) -> Result<String, String> {
 }
 
 /// `_meta.craftsman.threadId`, the client's own conversation id when it has one.
+pub(crate) fn history_values(messages: &[craftsman_harness::Msg]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            craftsman_harness::Msg::User { content } if !content.is_empty() => {
+                Some(json!({"role": "user", "content": content}))
+            }
+            craftsman_harness::Msg::Assistant { content, .. } if !content.is_empty() => {
+                Some(json!({"role": "assistant", "content": content}))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn requested_thread_id(params: &Value) -> Option<String> {
     params
         .get("_meta")

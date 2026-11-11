@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExecutionProfile {
-    /// User-owned local CLI/TUI/desktop execution.
+    /// User-owned local CLI/TUI/ACP execution.
     Local,
     /// Per-user isolated workspace pod execution.
     Workspace,

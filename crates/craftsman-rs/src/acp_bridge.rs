@@ -14,11 +14,11 @@
 //! lifetime. Reconnecting clients recover context with ACP `session/load`, not
 //! by keeping a child alive across disconnects.
 //!
-//! The HTTP surface matches `craftsman serve` because the platform depends on it:
+//! The bridge retains the HTTP surface the platform depends on:
 //! `/healthz` (StatefulSet readiness probe) and `/stats` (the controller's disk
 //! poll). Both are served by the bridge process itself, not by the harness.
 
-use crate::serve::{PROXY_HEADER, authorized, dir_used_bytes, disk_usage, home_dir};
+use crate::bridge_support::{PROXY_HEADER, authorized, dir_used_bytes, disk_usage, home_dir};
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade};
@@ -40,7 +40,7 @@ use tokio::process::Command;
 const USER_HEADER: &str = "x-craftsman-workspace-user";
 const TENANT_HEADER: &str = "x-craftsman-workspace-tenant";
 
-/// 60s cache for the `/stats` home walk, matching `craftsman serve`.
+/// 60s cache for the `/stats` home walk, retained for controller polling.
 const HOME_CACHE_TTL_SECS: u64 = 60;
 
 /// How long a child gets to exit after its stdin closes before it is killed.
@@ -111,7 +111,7 @@ async fn healthz(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-/// Same payload shape as `craftsman serve`'s `/stats`: the controller reads only
+/// Retained `/stats` payload shape: the controller reads only
 /// the `home` block (see the addon's `pod_stats.rs`).
 async fn stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if !authorized(&headers) {
@@ -503,7 +503,7 @@ mod tests {
         }
     }
 
-    // The proxy-secret gate is `serve::authorized`, covered by that module's
+    // The proxy-secret gate is `bridge_support::authorized`, covered by its
     // test; mutating the shared env from a second test would race it.
 
     #[test]

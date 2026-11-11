@@ -14,6 +14,20 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **ACP transport consolidation (November 11):** the owner retired `serve` and
+> `desktop-serve`, their custom v2/v4 implementations, desktop-only tests/golden
+> and uploaded-PCM voice runtime. ACP retains its existing methods, messages,
+> A2UI resource blocks and bridge HTTP/auth behavior through extracted helpers.
+> Terminal voice/setup/editing and stored user data remain. Legacy clients must
+> migrate their messages to ACP; this is not automatic replacement for every desktop feature or a new
+> OS-isolation guarantee. Retained ACP goldens are unchanged.
+> Cleaned local verification passes all nine checks, warning-free: core
+> 1882/0/17 and gadgets 2038/0/20. Exactly 51 old inventory entries are retired
+> or moved and six moved/new entries appear per mode; unrelated coverage remains.
+> All 17 retained voice unit tests pass in the default build. First compilation
+> and warning-rejected records remain separate; fresh all-four hosted and
+> independent main checks still gate delivery.
+
 > **Durable manual compaction (November 10):** the owned terminal saves its
 > original state before `/compact` sampling and its replacement before success.
 > Active turns/pending approvals refuse; cancellation and concurrent message
@@ -97,15 +111,6 @@
 > core 1947/0/13 and gadgets 2103/0/16, with no warnings and all original cases
 > retained. Hosted and independent main checks remain separate from PR #5.
 
-> **Desktop reconnect correction (November 6):** the required Ubuntu gadget suite
-> exposed the original idle reconnect assertion on PR #2. An actual connection
-> owner now stays held through old-reader cancellation/detach cleanup, with one
-> bounded handoff wait and an explicit Close/writer-stop path. A live peer remains
-> exclusive and original turn context persists until real completion. This changes
-> lifecycle ordering, with no protocol-v4/schema/golden/native-limit change.
-> [Desktop connections](desktop-connections.md) keeps the failing and corrected
-> validation records separate; all four corrected-head checks still gate merge.
-
 > **Current shell maintenance:** the November2 post-merge main run `41398538418`
 > failed one feature-off Windows partial-output test, despite an informational
 > overall success and a later green gadget-host step. A narrow Windows fixture
@@ -169,7 +174,7 @@ separately. Hosted and independent main verification remain separate.
 | `craftsman` TUI | Streaming conversation, steering/queue, owned cancellation/terminal restoration, HITL, host/web tools, required per-tool checkpoints, recovery warnings, memory/LSP/skills, opt-in gadgets | Host tools are not an OS sandbox; escaping/uninterruptible work, concurrent owners, remaining recovery and live task/console-event quality need evaluation |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
-| `serve`, `desktop-serve`, `acp-serve`, `acp-bridge` | Existing transports/adapters remain supported | Desktop v4 is frozen; ACP stays standard with declared Craftsman extensions; no new headless/gadget opt-in is inferred |
+| `acp-serve`, `acp-bridge` | Retained ACP stdio server and WebSocket relay with HTTP health/stats | Existing ACP frames/extensions, proxy authentication and resource limits remain; custom v2/v4 servers are retired |
 | `service-agent` | Request-scoped virtual resources and explicitly selected public-web tools | No real filesystem, native shell, local DB/memory/LSP/project discovery |
 | `craftsman exec` | **Not exposed** | Accepted contract plus partial private implementation, not a runnable command |
 

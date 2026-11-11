@@ -150,14 +150,6 @@ pub fn model_names() -> impl Iterator<Item = &'static str> {
     MODELS.iter().map(|model| model.name)
 }
 
-pub fn model_specs() -> impl Iterator<Item = ModelSpec> {
-    MODELS.iter().copied()
-}
-
-pub const fn available() -> bool {
-    true
-}
-
 pub fn canonical_model_name(name: &str) -> Option<&'static str> {
     let normalized = name.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -406,91 +398,6 @@ enum SessionCommand {
 enum SessionOutcome {
     Success,
     Failed,
-}
-
-pub struct RemoteVoiceRuntime {
-    config: Mutex<VoiceConfig>,
-    engine_cache: Arc<Mutex<Option<Arc<WhisperEngine>>>>,
-}
-
-impl RemoteVoiceRuntime {
-    pub fn new(cfg: &Config) -> Self {
-        Self {
-            config: Mutex::new(VoiceConfig::from_config(cfg)),
-            engine_cache: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub async fn reconfigure(&self, config: VoiceConfig) {
-        let mut current = self.config.lock().await;
-        let engine_changed = current.engine != config.engine
-            || current.model != config.model
-            || current.partial_transcripts != config.partial_transcripts;
-        *current = config;
-        drop(current);
-        if engine_changed {
-            *self.engine_cache.lock().await = None;
-        }
-    }
-
-    pub async fn transcribe_pcm16(
-        &self,
-        samples: Vec<i16>,
-        sample_rate: u32,
-        events: mpsc::UnboundedSender<VoiceEvent>,
-        abort: Arc<AtomicBool>,
-    ) -> Result<String, VoiceError> {
-        let config = self.config.lock().await.clone();
-        if !config.enabled {
-            return Err(VoiceError::EngineFailed(
-                "voice input is disabled in Craftsman configuration".into(),
-            ));
-        }
-        if samples.is_empty() || sample_rate == 0 {
-            return Err(VoiceError::NoAudioCaptured);
-        }
-        let input = samples
-            .into_iter()
-            .map(|sample| f32::from(sample) / 32768.0)
-            .collect::<Vec<_>>();
-        let mut audio = if sample_rate == SAMPLE_RATE as u32 {
-            input
-        } else {
-            let mut output = Vec::with_capacity(
-                input
-                    .len()
-                    .saturating_mul(SAMPLE_RATE)
-                    .checked_div(sample_rate as usize)
-                    .unwrap_or_default(),
-            );
-            LinearResampler::new(sample_rate).process(&input, &mut output);
-            output
-        };
-        if audio.len() < MIN_EXPLICIT_AUDIO_SAMPLES {
-            return Err(VoiceError::NoAudioCaptured);
-        }
-        if abort.load(Ordering::Relaxed) {
-            return Err(VoiceError::EngineFailed(
-                "voice transcription cancelled".into(),
-            ));
-        }
-        let _ = events.send(VoiceEvent::State(VoiceState::Initializing));
-        let engine = get_engine(&config, &events, &self.engine_cache)
-            .await
-            .map_err(|error| VoiceError::EngineFailed(error.to_string()))?;
-        normalize_transcription_audio(&mut audio);
-        let _ = events.send(VoiceEvent::State(VoiceState::Finalizing));
-        let transcript = engine
-            .transcribe_with_abort(&audio, config.language.as_deref(), abort)
-            .await
-            .map_err(|error| VoiceError::EngineFailed(error.to_string()))?;
-        let text = transcript.text.trim().to_string();
-        if text.is_empty() {
-            return Err(VoiceError::NoSpeechDetected);
-        }
-        let _ = events.send(VoiceEvent::State(VoiceState::Idle));
-        Ok(text)
-    }
 }
 
 pub struct VoiceController {
@@ -1516,68 +1423,6 @@ pub fn dictated_unit_count(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn remote_voice_rejects_empty_or_short_pcm_without_loading_a_model() {
-        let runtime = RemoteVoiceRuntime::new(&Config::default());
-        let (events, _receiver) = mpsc::unbounded_channel();
-        assert!(matches!(
-            runtime
-                .transcribe_pcm16(
-                    Vec::new(),
-                    SAMPLE_RATE as u32,
-                    events.clone(),
-                    Arc::new(AtomicBool::new(false)),
-                )
-                .await,
-            Err(VoiceError::NoAudioCaptured)
-        ));
-        assert!(matches!(
-            runtime
-                .transcribe_pcm16(
-                    vec![0; MIN_EXPLICIT_AUDIO_SAMPLES - 1],
-                    SAMPLE_RATE as u32,
-                    events,
-                    Arc::new(AtomicBool::new(false)),
-                )
-                .await,
-            Err(VoiceError::NoAudioCaptured)
-        ));
-        let (events, _receiver) = mpsc::unbounded_channel();
-        let abort = Arc::new(AtomicBool::new(true));
-        assert!(matches!(
-            runtime
-                .transcribe_pcm16(
-                    vec![1; MIN_EXPLICIT_AUDIO_SAMPLES],
-                    SAMPLE_RATE as u32,
-                    events,
-                    abort,
-                )
-                .await,
-            Err(VoiceError::EngineFailed(message)) if message.contains("cancelled")
-        ));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires the downloaded large Whisper model"]
-    async fn remote_voice_transcribes_the_pcm_fixture_with_local_whisper() {
-        let samples = include_bytes!("data/voice-benchmark.pcm")
-            .chunks_exact(2)
-            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
-            .collect::<Vec<_>>();
-        let runtime = RemoteVoiceRuntime::new(&Config::default());
-        let (events, _receiver) = mpsc::unbounded_channel();
-        let text = runtime
-            .transcribe_pcm16(
-                samples,
-                SAMPLE_RATE as u32,
-                events,
-                Arc::new(AtomicBool::new(false)),
-            )
-            .await
-            .expect("local Whisper transcription");
-        assert!(!text.trim().is_empty());
-    }
 
     #[tokio::test]
     async fn controller_shutdown_completes_without_starting_native_resources() {

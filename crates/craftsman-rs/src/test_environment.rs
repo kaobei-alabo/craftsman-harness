@@ -63,9 +63,9 @@ impl Case {
             ),
             Self::McpStdio => (&[("CRAFTSMAN_STDIO_TEST_KEY", "sk-9")], &[]),
             Self::Route => (&[("CRAFTSMAN_ROUTE_TEST_KEY", "tok-1")], &[]),
-            Self::ProxyPresent => (&[(crate::serve::PROXY_SECRET_ENV, "s3cret")], &[]),
-            Self::ProxyAbsent => (&[], &[crate::serve::PROXY_SECRET_ENV]),
-            Self::ProxyEmpty => (&[(crate::serve::PROXY_SECRET_ENV, "")], &[]),
+            Self::ProxyPresent => (&[(crate::bridge_support::PROXY_SECRET_ENV, "s3cret")], &[]),
+            Self::ProxyAbsent => (&[], &[crate::bridge_support::PROXY_SECRET_ENV]),
+            Self::ProxyEmpty => (&[(crate::bridge_support::PROXY_SECRET_ENV, "")], &[]),
         }
     }
     fn configured(self) -> bool {
@@ -89,9 +89,9 @@ impl Case {
                     .expect("isolated route fixture runtime")
                     .block_on(crate::route::route_environment_fixture_for_tests());
             }
-            Self::ProxyPresent => crate::serve::proxy_environment_fixture_for_tests(true),
+            Self::ProxyPresent => crate::bridge_support::proxy_environment_fixture_for_tests(true),
             Self::ProxyAbsent | Self::ProxyEmpty => {
-                crate::serve::proxy_environment_fixture_for_tests(false)
+                crate::bridge_support::proxy_environment_fixture_for_tests(false)
             }
         }
     }

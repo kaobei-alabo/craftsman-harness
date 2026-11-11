@@ -1,5 +1,10 @@
 # The instrumented baseline (R0)
 
+> **Transport retirement (November 11):** references to `serve.rs`,
+> `desktop_serve.rs` and their command/protocol surfaces below are historical.
+> The owner removed those servers; ACP stdio and its WebSocket bridge remain.
+> This does not change the retained token, provider, trace or attribution contracts.
+
 > **Status:** P0 deliverable · plan references: sections 5.9 and 7.2 (P0) of `docs/craftsman-harness-plan.md` · trace format: `docs/trace-schema-v1.md` and `docs/schemas/` on branch `p0/trace-schema` (commit `3181aaf` or later; the copies are identical from `bd8b175` on). `crates/craftsman-rs/tests/data/trace-v1.schema.json` and `trace-v1.vectors.json` here are byte-identical copies of `docs/schemas/trace-v1.schema.json` and `trace-v1.vectors.json` at that commit. They are read only by tests, so updating them does not change the binary.
 > **History:** this document and the build replace the first R0 (head `5ec8e3f`, binary `7cddd696…`), which three independent reviews found to need changes before it could be frozen. Those reviews and what was done about each finding are summarised in section 8.
 

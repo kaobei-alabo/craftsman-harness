@@ -5,7 +5,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("config", include_str!("../src/config.rs")),
     ("mcp", include_str!("../src/mcp.rs")),
     ("route", include_str!("../src/route.rs")),
-    ("serve", include_str!("../src/serve.rs")),
+    ("bridge_support", include_str!("../src/bridge_support.rs")),
     (
         "test_environment",
         include_str!("../src/test_environment.rs"),
@@ -41,13 +41,14 @@ fn native_environment_helper_is_marker_gated_before_environment_or_original_asse
 }
 
 #[test]
-fn router_secret_fixture_and_environment_helper_are_absent_from_normal_frontend_modules() {
+fn proxy_environment_helper_is_cfgtest_only_and_auth_reads_the_original_environment() {
     let main = normalized_source(include_str!("../src/main.rs"));
     assert!(main.contains("#[cfg(test)]\nmod test_environment;"));
-    let serve = normalized_source(include_str!("../src/serve.rs"));
-    assert!(serve.contains("#[cfg(test)]\n    proxy_fixture:"));
-    assert!(serve.contains("#[cfg(test)]\n        proxy_fixture: None"));
-    assert!(serve.contains("authorized_from_secret(headers, std::env::var_os(PROXY_SECRET_ENV))"));
+    let support = normalized_source(include_str!("../src/bridge_support.rs"));
+    assert!(support.contains("#[cfg(test)]\npub(crate) fn proxy_environment_fixture_for_tests"));
+    assert!(
+        support.contains("authorized_from_secret(headers, std::env::var_os(PROXY_SECRET_ENV))")
+    );
 }
 
 fn normalized_source(source: &str) -> String {

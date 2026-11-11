@@ -1,5 +1,11 @@
 # Craftsman Harness: plan, design and diagrams
 
+> **Later transport decision (November 11):** the owner retired the custom
+> `serve` and `desktop-serve` commands/implementations in favor of retained
+> `acp-serve` and `acp-bridge`. Baseline diagrams, Appendix A and dated evidence
+> below describe their original snapshot. Current runtime status supersedes the
+> older keep-compiling/desktop-v4 rules for those retired transports only.
+
 > **Identity migration (November 4, 2026):** names/paths in this document use
 > current Craftsman identifiers. Historical dates, hashes, counts, accepted
 > semantics and failure outcomes remain original evidence, not a new run or
@@ -1625,9 +1631,12 @@ default, and are not claimed by the mock-model test.
 | Plugins deprecated, then the plugin loader removed | G2 | a warning for one release, then removed | `craftsman gadgets migrate` converts each manifest; none after removal |
 | MSRV 1.95 for the default build (wasmtime) | G1 | on | `--no-default-features` builds on 1.85 |
 
-**Deferred modules**
+**Retained integration modules**
 
-`serve`, `desktop-serve`, `acp-serve`, `acp-bridge` and `service-agent` keep compiling and their existing tests keep passing (the P1 rename touches their test modules mechanically). `desktop-serve` (protocol v4) is frozen: P6a adapters translate new events into the existing frames and add none. New agent-facing capabilities ride the ACP profile (`_meta.craftsman.*` or `_craftsman/*`). `service-agent` builds its own minimal agent and does not use `build_session_ext`.
+`acp-serve`, `acp-bridge` and the restricted `service-agent` remain. The owner
+retired `serve` and `desktop-serve` on November 11. New agent-facing capabilities
+ride declared ACP extensions; this removal adds none. Historical baseline and
+Appendix A references to the custom servers retain their dated meaning.
 
 ## 9. Metrics
 

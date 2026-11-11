@@ -12,9 +12,9 @@ mod agent;
 mod agents;
 mod ask_user;
 mod backend_fs;
+mod bridge_support;
 mod checkpoints;
 mod config;
-mod desktop_serve;
 mod execution_profile;
 // Private P2a foundations; do not route a CLI command until all boundaries exist.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -47,7 +47,6 @@ mod plugins;
 mod prompt;
 mod provider_config;
 mod route;
-mod serve;
 mod service_agent;
 mod shell;
 mod shell_output;
@@ -130,23 +129,6 @@ enum Cmd {
     },
     /// Open the guided first-run setup flow.
     Setup,
-    /// Run the agent as a WS chat server for the platform workspace
-    /// (protocol v2; see serve.rs).
-    Serve {
-        #[arg(long, default_value = "0.0.0.0")]
-        host: String,
-        /// Port (CRAFTSMAN_SERVE_PORT env overrides).
-        #[arg(long, default_value_t = 8080)]
-        port: u16,
-    },
-    /// Run the agent for the local desktop application with interactive
-    /// approval and ask-user frames over a duplex WebSocket protocol.
-    DesktopServe {
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        #[arg(long, default_value_t = 8081)]
-        port: u16,
-    },
     /// Run the agent as an Agent Client Protocol (ACP) server over stdio.
     AcpServe {
         /// Permission behavior: plan, accept-edits, manual, bypass-permissions, or auto.
@@ -209,8 +191,6 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             .await
             .map(|code| std::process::ExitCode::from(code as u8));
         }
-        Some(Cmd::Serve { host, port }) => serve::run(cfg, &host, port).await,
-        Some(Cmd::DesktopServe { host, port }) => desktop_serve::run(cfg, &host, port).await,
         Some(Cmd::AcpServe { permission_mode }) => {
             if let Some(mode) = permission_mode.as_deref().and_then(PermissionMode::parse) {
                 cfg.permission_mode = mode;
@@ -400,5 +380,44 @@ fn one_shot_output_failure(kind: std::io::ErrorKind) -> anyhow::Result<()> {
         Ok(())
     } else {
         anyhow::bail!("could not write one-shot output to stdout")
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn retired_websocket_server_commands_are_rejected_before_dispatch() {
+        for command in ["serve", "desktop-serve"] {
+            let error = Cli::try_parse_from(["craftsman", command, "--port", "8080"])
+                .err()
+                .expect("retired command must not enter configuration or session construction");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        }
+    }
+
+    #[test]
+    fn acp_stdio_and_bridge_commands_preserve_their_arguments() {
+        let cli =
+            Cli::try_parse_from(["craftsman", "acp-serve", "--permission-mode", "manual"]).unwrap();
+        assert!(
+            matches!(cli.command, Some(Cmd::AcpServe { permission_mode: Some(mode) }) if mode == "manual")
+        );
+        let cli = Cli::try_parse_from([
+            "craftsman",
+            "acp-bridge",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080",
+            "--",
+            "craftsman",
+            "acp-serve",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.command, Some(Cmd::AcpBridge { host, port: 8080, harness }) if host == "127.0.0.1" && harness == ["craftsman", "acp-serve"])
+        );
     }
 }

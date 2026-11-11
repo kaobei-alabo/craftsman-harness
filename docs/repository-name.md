@@ -68,7 +68,8 @@ and documentation labels do not make a new binary its original producer.
 Clients consuming custom ACP methods, WIT components, schemas, release assets
 or image pins must migrate their identifiers together. Standard ACP framing
 remains standard and custom extensions stay declared at initialization.
-Desktop protocol v4 gains no new frame shapes. The new schema namespace has
+The legacy desktop-v4 server was later retired; retained ACP frames keep their
+existing contract. The new schema namespace has
 v1 layouts/semantics, but it is not wire-compatible with a prior namespace.
 Previously built components require a rebuild for the current WIT package;
 no cached component, hash or grant is relabelled into approval.

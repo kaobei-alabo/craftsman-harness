@@ -362,40 +362,6 @@ impl WsRpc {
         }
     }
 
-    /// Like [`WsRpc::recv_until`], but a frame for which `unexpected` returns
-    /// text fails the test at once with that text and the frame. For a frame
-    /// the golden does not hold at all (an `operation_error` in the middle of
-    /// a turn), so that the test does not wait out a timeout for a frame that
-    /// the server has just explained it will never send.
-    pub async fn recv_until_or_fail(
-        &mut self,
-        waiting_for: &str,
-        mut done: impl FnMut(&Value) -> bool,
-        unexpected: impl Fn(&Value) -> Option<&'static str>,
-    ) -> Value {
-        loop {
-            let frame = self.recv(waiting_for).await;
-            if done(&frame) {
-                return frame;
-            }
-            if let Some(why) = unexpected(&frame) {
-                self.fail(&format!("while waiting for {waiting_for}: {why}: {frame}"));
-            }
-        }
-    }
-
-    /// `frame`'s string at JSON pointer `pointer`, which the test needs for
-    /// its next request; fails the test at once, naming the frame, if it is
-    /// missing or not a string.
-    pub fn str_field(&self, frame: &Value, pointer: &str) -> String {
-        string_field_of(frame, pointer).unwrap_or_else(|reason| self.fail(&reason))
-    }
-
-    /// Fail the test, with the transcript so far and the server's stderr.
-    pub fn fail_with(&self, what: &str) -> ! {
-        self.fail(what)
-    }
-
     pub async fn close(mut self) {
         let _ = tokio::time::timeout(STEP_TIMEOUT, self.socket.close(None)).await;
     }
