@@ -221,10 +221,9 @@ craftsman --session THREAD_ID    # resume a persisted conversation
 craftsman -m "one-shot prompt"
 craftsman --no-mouse             # optional terminal-native selection mode
 craftsman setup                  # guided first-run configuration (LLM + platform)
-craftsman desktop-serve --host 127.0.0.1 --port 8081
 craftsman service-agent --request request.json  # restricted shared-runtime turn
 craftsman acp-serve              # Agent Client Protocol server over stdio
-craftsman acp-bridge --port 8080 -- <harness>  # WebSocket to stdio ACP bridge
+craftsman acp-bridge --port 8080  # WebSocket to this binary's stdio ACP server
 craftsman-rs --version           # legacy compatibility command
 ```
 
@@ -237,18 +236,18 @@ workspace inbox. See `docs/platform-token-refactor.md`.
 
 ### Execution profiles
 
-Craftsman CLI currently exposes three security/capability profiles. The private
+The retained CLI modes use local or restricted service-agent capabilities. The private
 headless construction profile is test-only, not another runnable CLI surface.
 Filesystem authority does not imply OS containment:
 
 | Profile | Commands | Filesystem | Shell | Session storage |
 |---|---|---|---|---|
-| `local` | `craftsman`, `craftsman -m`, `desktop-serve`, `acp-serve` | Real user filesystem | HITL-controlled native shell; no Craftsman OS sandbox | Local `~/.craftsman` |
-| `workspace` | `craftsman serve` | Deployment-selected workspace/PVC | Native shell; isolation depends on the external deployment policy | Workspace HOME/PVC |
+| `local` | `craftsman`, `craftsman -m`, `acp-serve` | Real user filesystem | HITL-controlled native shell; no Craftsman OS sandbox | Local `~/.craftsman` |
 | `service-agent` | `craftsman service-agent` | Scoped virtual files plus selected public-web tools | Unavailable | Supplied/owned by the external runtime |
 
-`acp-bridge` is a transport front door, not a separate filesystem profile. Desktop
-protocol v4 is frozen; ACP uses standard frames and declared Craftsman extensions.
+`acp-bridge` is a transport front door, not a separate filesystem profile.
+Deployment isolation remains external policy. ACP uses standard frames and
+declared Craftsman extensions; the custom v2/v4 WebSocket servers are retired.
 Legacy `-m` now denies non-TTY approval reads without blocking, silences child/
 compaction deltas and stops quietly on a broken stdout pipe. It still honors
 legacy user-config permissions and local storage; these fixes do not supply the
@@ -435,43 +434,16 @@ definition, references, hover, document symbols, and workspace symbol search.
 Successful `write_file`/`edit_file` calls also request bounded post-edit
 diagnostics when a matching server is available.
 
-`desktop-serve` is the local desktop bridge. Unlike the pod-oriented `serve`
-mode, it preserves the normal HITL boundary and exposes token, activity,
-permission, `ask_user`, A2UI, state snapshots, structured tool activity, setup, conversations,
-workspace checkpoints, tasks, and diagnostics over protocol v4. A launcher can set
-`CRAFTSMAN_DESKTOP_TOKEN` and connect with `?token=...` for loopback authentication.
+External clients use `craftsman acp-serve` over newline-delimited JSON-RPC on
+stdin/stdout, or `craftsman acp-bridge` to carry the same ACP messages over
+WebSocket. The bridge retains `/chat`, `/healthz` and authenticated `/stats` with
+its existing proxy-secret and identity-header behavior.
 
-Conversations have global identities independent of their execution directory.
-Each persisted thread may carry an ordered `project_contexts` list with zero,
-one, or many canonical project directories. `set_thread_contexts` updates that
-metadata without replacing the thread or transcript; the first path is the
-primary project for relative tools, LSP, diffs, and file checkpoints, while
-additional projects are available by absolute path and are included in the
-agent's system context. `switch_thread` restores both history and project context
-without restarting the process, port, token, or WebSocket. Heavy provider/LSP
-state remains lazy until the next real turn.
-
-The older additive `workspace_switch` operation remains accepted for compatible
-clients and is translated to a single project context, but current desktop
-clients do not use project paths as conversation keys.
-
-`desktop-serve` binds its loopback listener before refreshing credentials or
-building any configured agent session. Headless initialization performs no
-provider call and creates no project runtime. Its first snapshot can therefore
-report `initializing: true` while the local bridge is already connected, then
-become ready without touching `config.json`. Provider discovery and the
-project-aware agent runtime is created only when a real chat request needs
-them. Automatically selected models remain in memory; only explicit user
-configuration writes model/provider settings. A provider error is reported only
-when the real turn fails.
-
-Desktop conversation catalogs are paginated at the SQL layer. `list_threads`
-and `list_all_threads` accept `offset`/`limit` and return `next_offset`/
-`has_more`; desktop fetches small pages as the sidebar needs them. Every row is
-an ordinary conversation and includes its ordered project-context metadata.
-Catalog and history reads remain local and available without a provider session.
-Changing project context preserves message checkpoints and discards only
-filesystem rewind snapshots whose paths belonged to the previous context.
+The owner retired `serve` and `desktop-serve` on November 11. Clients using their
+custom v2/v4 messages must migrate to ACP; changing the port alone is insufficient.
+This removal adds no ACP methods or features. Local setup, editing, task controls
+and microphone voice input remain available through the terminal; server-uploaded
+PCM transcription and desktop-v4 operations are no longer exposed.
 
 ## Features
 
@@ -500,10 +472,6 @@ filesystem rewind snapshots whose paths belonged to the previous context.
   and checkpoint sequence. `/effort` or `/model --reasoning=high` selects the
   current model's reasoning effort. See [terminal models](docs/terminal-models.md)
   for config, compatibility and cancellation behavior.
-- Desktop connections retain one owner through disconnect cleanup. A closing
-  client can hand off to a reconnect; a live client still rejects a second peer.
-  Reader/writer cleanup keeps protocol v4 frames unchanged. See
-  [desktop connections](docs/desktop-connections.md).
 - Tool-calling agent loop on the `craftsman-harness` middleware framework, with
   the host tools `execute`, `read_file`, `write_file`, `edit_file`, `ls`,
   `glob` and `grep` (`tools.rs`, adapted to the framework's `Backend` trait by
@@ -872,8 +840,7 @@ crates/craftsman-rs/src/
     commands.rs    slash commands, help, and submission routing
     session_bridge.rs agent events, approvals, hydration, and notifications
     terminal.rs    terminal guard, SafeBackend, and clipboard
-  desktop_serve.rs desktop protocol-v4 bridge with HITL and conversations
-  serve.rs         pod-oriented WebSocket protocol-v2 server
+  bridge_support.rs shared ACP proxy authentication and host disk facts
   agent.rs         provider bridge and shared frontend/private-headless construction
   token_counter.rs local tokenizer used by token-budget compaction
   checkpoints.rs   durable conversation/checkpoint store
@@ -937,15 +904,6 @@ crates/craftsman-rs/tests/headless_contract.rs / headless_contract/admission.rs
 crates/craftsman-gadget/ / craftsman-gadget-macros/
                   independent gadget authoring SDK/WIT and macros
 ```
-
-### Desktop voice protocol
-
-`craftsman desktop-serve` exposes the same local voice controller to desktop
-protocol-v4 clients through `get_voice_status`, `voice_start`, `voice_stop`,
-`voice_cancel_segment`, `voice_cancel`, `set_voice_model`, and
-`set_voice_enabled`. Progress, microphone level, partial/final transcript, and
-error events are emitted as typed `voice_event` frames bound to the WebSocket
-generation that started capture. Disconnect cancels active microphone capture.
 
 ## Local WASM gadgets
 

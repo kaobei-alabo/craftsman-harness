@@ -78,24 +78,12 @@ impl LibsqlCheckpointer {
         Self::open_at_for_workspace(path, workspace).await
     }
 
-    /// Read the local conversation index across workspaces without claiming
-    /// legacy rows or building an agent session. Desktop uses this lightweight
-    /// catalog to present one unified list of general and project conversations.
-    pub async fn list_all_local_threads_page(
-        offset: usize,
-        limit: usize,
-    ) -> Result<(Vec<ThreadInfo>, bool), String> {
-        let path = crate::threads_db::path()
-            .await
-            .map_err(|error| error.to_string())?;
-        Self::list_all_threads_page_at(path, offset, limit).await
-    }
-
     #[cfg(test)]
     async fn list_all_threads_at(path: std::path::PathBuf) -> Result<Vec<ThreadInfo>, String> {
         Ok(Self::list_all_threads_page_at(path, 0, usize::MAX).await?.0)
     }
 
+    #[cfg(test)]
     pub(crate) async fn list_all_threads_page_at(
         path: std::path::PathBuf,
         offset: usize,
@@ -441,6 +429,7 @@ impl LibsqlCheckpointer {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn rename_thread_global(
         &self,
         thread_id: &str,
@@ -469,6 +458,7 @@ impl LibsqlCheckpointer {
     /// Replace the ordered project directories attached to a conversation.
     /// Message checkpoints remain conversation-owned. File checkpoints are
     /// discarded because their paths were captured against the old context.
+    #[cfg(test)]
     pub async fn set_thread_project_contexts(
         &self,
         thread_id: &str,
@@ -531,65 +521,12 @@ impl LibsqlCheckpointer {
         Ok(normalized)
     }
 
-    pub async fn project_contexts(&self, thread_id: &str) -> Result<Vec<String>, AgentError> {
-        Self::project_contexts_at(&self.conn, thread_id)
-            .await
-            .map_err(state_err)
-    }
-
-    pub async fn copy_thread_project_contexts(
-        &self,
-        source_thread_id: &str,
-        target_thread_id: &str,
-        default_workspace: &str,
-    ) -> Result<Vec<String>, AgentError> {
-        let contexts = self.project_contexts(source_thread_id).await?;
-        self.set_thread_project_contexts(target_thread_id, &contexts, default_workspace)
-            .await
-    }
-
-    pub async fn delete_thread_global(&self, thread_id: &str) -> Result<(), AgentError> {
-        let transaction = self.conn.transaction().await.map_err(state_err)?;
-        let changed = transaction
-            .execute(
-                "DELETE FROM threads WHERE id = ?1",
-                libsql::params![thread_id],
-            )
-            .await
-            .map_err(state_err)?;
-        if changed == 0 {
-            return Err(AgentError::State(format!("thread not found: {thread_id}")));
-        }
-        transaction
-            .execute(
-                "DELETE FROM workspace_checkpoints WHERE thread_id = ?1",
-                libsql::params![thread_id],
-            )
-            .await
-            .map_err(state_err)?;
-        transaction
-            .execute(
-                "DELETE FROM checkpoints WHERE thread_id = ?1",
-                libsql::params![thread_id],
-            )
-            .await
-            .map_err(state_err)?;
-        transaction
-            .execute(
-                "DELETE FROM thread_project_contexts WHERE thread_id = ?1",
-                libsql::params![thread_id],
-            )
-            .await
-            .map_err(state_err)?;
-        transaction.commit().await.map_err(state_err)?;
-        Ok(())
-    }
-
     /// Fetch only the latest persisted [`AgentState`] for export or preview.
     ///
     /// Unlike [`Checkpointer::load_latest`], this intentionally omits sequence
     /// and suspension metadata so callers do not need to depend on framework
     /// resume details.
+    #[cfg(test)]
     pub async fn latest_state_global(
         &self,
         thread_id: &str,
@@ -636,6 +573,7 @@ impl LibsqlCheckpointer {
             .map_err(state_err)
     }
 
+    #[cfg(test)]
     pub async fn thread_info(&self, thread_id: &str) -> Result<Option<ThreadInfo>, AgentError> {
         let mut rows = self
             .conn
@@ -667,6 +605,7 @@ impl LibsqlCheckpointer {
         Ok(Some(thread))
     }
 
+    #[cfg(test)]
     pub async fn list_threads_page(
         &self,
         offset: usize,

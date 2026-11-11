@@ -1,4 +1,4 @@
-//! A2UI (Agent-to-UI) support for `craftsman-rs serve`.
+//! Transport-agnostic A2UI (Agent-to-UI) support used by ACP.
 //!
 //! A2UI (https://a2ui.org, spec v0.9) is a declarative, transport-agnostic
 //! protocol: the agent streams flat JSON messages — `createSurface` →
@@ -12,11 +12,10 @@
 //!   (`data/a2ui_v0_9_schema.json`); valid ones are pushed onto the current
 //!   turn's frame channel as `{"type":"a2ui","messages":[…]}`, invalid ones
 //!   bounce back to the LLM as a tool error (self-repair).
-//! * [`FrameSlot`] — the per-turn frame sink. serve.rs installs a channel
+//! * [`FrameSlot`] — the per-turn frame sink. the ACP frontend installs a channel
 //!   sender for the duration of each turn; the tool (running inside the
 //!   agent's tool loop) pushes frames through it mid-turn for progressive
-//!   rendering. One slot per session, no cross-turn races: serve serializes
-//!   turns.
+//!   rendering. The frontend owns the per-session slot and turn ordering.
 //! * [`SYSTEM_PROMPT_SUFFIX`] — the prompt block teaching the agent when and
 //!   how to emit A2UI via the tool (the frontend renders with the same
 //!   vendored basic catalog).
@@ -101,28 +100,13 @@ pub fn validate_messages(messages: &Value) -> Vec<String> {
 }
 
 /// The `render_ui` tool: validate and forward A2UI frames to the client.
-type FrameSink = Arc<dyn Fn(Value) -> bool + Send + Sync>;
-
-enum RenderTarget {
-    Slot(FrameSlot),
-    Sink(FrameSink),
-}
-
 pub struct RenderUiTool {
-    target: RenderTarget,
+    slot: FrameSlot,
 }
 
 impl RenderUiTool {
     pub fn new(slot: FrameSlot) -> Self {
-        Self {
-            target: RenderTarget::Slot(slot),
-        }
-    }
-
-    pub fn new_with_sink(sink: FrameSink) -> Self {
-        Self {
-            target: RenderTarget::Sink(sink),
-        }
+        Self { slot }
     }
 }
 
@@ -163,15 +147,12 @@ impl Tool for RenderUiTool {
             )));
         }
         let frame = json!({"type": "a2ui", "messages": messages});
-        let sent = match &self.target {
-            RenderTarget::Slot(slot) => {
-                let slot = slot.lock().unwrap();
-                match &*slot {
-                    Some(tx) => tx.send(frame).is_ok(),
-                    None => false,
-                }
+        let sent = {
+            let slot = self.slot.lock().unwrap();
+            match &*slot {
+                Some(tx) => tx.send(frame).is_ok(),
+                None => false,
             }
-            RenderTarget::Sink(sink) => sink(frame),
         };
         if !sent {
             return Ok(ToolOutcome::ok(

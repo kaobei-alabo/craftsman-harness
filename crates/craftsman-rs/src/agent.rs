@@ -148,7 +148,7 @@ impl Session {
 // ---------------------------------------------------------------------------
 
 /// Where a provider's live content deltas go. The terminal modes stream to
-/// stdout; `craftsman-rs serve` routes them onto the WS frame channel instead.
+/// stdout; ACP routes them onto its outbound frame channel instead.
 pub type TokenSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Activity lines emitted around tool calls. The TUI supplies a channel-backed
@@ -204,7 +204,7 @@ pub fn stdout_sink() -> TokenSink {
 
 /// Bridges the framework's `ModelProvider` to the existing streaming SSE
 /// client. Content deltas go to `sink` live (stdout in the terminal modes,
-/// the WS frame channel in serve); token usage accumulates for `/tokens`.
+/// the outbound frame channel in ACP); token usage accumulates for `/tokens`.
 pub struct StreamingLlmProvider {
     pub client: LlmClient,
     pub usage: Arc<Mutex<(u64, u64)>>,
@@ -736,7 +736,7 @@ pub struct SessionExtras {
     #[cfg(feature = "gadgets")]
     pub trust_workspace: bool,
     /// Where the MAIN agent's content deltas go. `None` = stdout (terminal).
-    /// When set (serve), the subagent/compaction providers go SILENT instead
+    /// When set by a frontend, the subagent/compaction providers go SILENT instead
     /// of printing to stdout — their internal chatter is not part of the wire
     /// protocol and would only pollute the pod log.
     pub token_sink: Option<TokenSink>,
@@ -754,9 +754,9 @@ pub struct SessionExtras {
     pub approval_prompt: Option<ApprovalPrompt>,
     /// Optional UI-driven `ask_user` prompt.
     pub ask_user_prompt: Option<AskUserPrompt>,
-    /// Additional tools registered on the main agent (serve adds `render_ui`).
+    /// Additional tools registered on the main agent (ACP adds `render_ui`).
     pub extra_tools: Vec<Arc<dyn craftsman_harness::Tool>>,
-    /// Explicit workspace root for desktop sessions. Terminal callers leave
+    /// Explicit workspace root for client-selected sessions. Terminal callers leave
     /// this unset and retain current-directory behavior.
     pub workspace_root: Option<PathBuf>,
 }
@@ -1986,7 +1986,7 @@ async fn build_session_with_profile(
         None => ask_user,
     });
 
-    // Host-supplied extensions (serve wires the a2ui `render_ui` tool). Kept
+    // Host-supplied extensions (ACP wires the a2ui `render_ui` tool). Kept
     // generic so this builder never grows mode-specific logic.
     for t in extras.extra_tools {
         builder = builder.tool(t);

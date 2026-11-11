@@ -1,5 +1,10 @@
 # Platform personal-API-token refactor — removing SDK login from `craftsman-rs`
 
+> **Transport retirement (November 11):** references to `serve.rs`,
+> `desktop_serve.rs` and their command/protocol surfaces below are historical.
+> The owner removed those servers; ACP stdio and its WebSocket bridge remain.
+> This does not change the retained token, provider, trace or attribution contracts.
+
 **Status:** IMPLEMENTED (Phases 1 and 2 landed; bearer-semantics verification
 pending a minted key, §9.2)
 Date: 2026-10-16 · Owner: `craftsman-harness` · Target release: next minor (breaking)

@@ -25,8 +25,8 @@ baselines and target diagrams do not describe completed features. Public
 its broad configured permissions are not an unattended isolation contract.
 
 The owner selected **terminal reliability and self-built gadgets** as the current
-production priority on November 6. The dialog-cancellation and desktop-reconnect
-changes improve those supported frontends. Future unattended headless work keeps
+production priority on November 6. The dialog-cancellation changes improve the terminal.
+The former desktop WebSocket transport has been retired in favor of ACP. Future unattended headless work keeps
 its separate accepted contracts and implementation gates.
 
 The merged [terminal model controls](terminal-models.md) change addresses a model
@@ -76,6 +76,32 @@ warning audit rejected one newly unused Windows test-only PID accessor warning
 per mode. The accessor is restricted to its remaining Unix test callers; this
 does not change production process handling or native bounds. Fresh corrected
 source verification remains distinct from that first run.
+
+## Retained external protocol: ACP
+
+The owner retired the `serve` and `desktop-serve` commands and their custom
+WebSocket v2/v4 implementations on November 11. External clients use `acp-serve`
+(stdio ACP) or `acp-bridge` (WebSocket relay of the same ACP JSON-RPC plus the
+existing HTTP health/stats surface). Existing authentication, identity headers,
+permission/cancellation/session behavior and ACP frame goldens are preserved.
+
+Retired clients must migrate their message contract to ACP. Terminal setup,
+editing, task controls and microphone voice remain; uploaded browser PCM and
+custom desktop workspace/configuration/voice operations are removed, without
+adding replacement ACP extensions. User config, threads, memories, checkpoints,
+SQL layout and native shell limits remain intact. Database compatibility helpers
+still used by fixture tests are retained under cfg(test); unused desktop catalog
+and A2UI-sink APIs are removed from runtime code. Validation must inventory the
+retired server tests separately and retain all ACP and unrelated native coverage.
+
+Cleaned `scripts/verify.sh` passes all nine checks without warnings: core
+1882/0/17 and gadgets 2038/0/20. Exact differences are 51 retired/moved old entries
+and six moved/new entries per local mode; all unrelated named/ignored/doctest
+entries and all retained ACP golden bytes remain. The default build's 17 retained
+voice tests also pass without starting microphone capture or loading a model.
+The first compile/helper errors and the first full run's unused-helper warnings
+remain separate from these corrected results. Fresh platform and independent
+merged-main verification remain required.
 
 ## Build and use the gadget workflow
 
@@ -168,7 +194,7 @@ workflow input bypasses the hold.
 | Request-budget hosted CI | Passed on PR #1 head `d3a9b9a`: all four jobs/every expected step and both full modes; details below |
 | Request-budget merge | PR #1 merged normally at `774a5d5`; independent main-run verification is separate from the PR result |
 | Terminal prompt cancellation | Local corrected `0745e6e` verification passed: core 1887/0/10 and gadgets 2042/0/12, all nine new cases, all checks and no compiler warnings; hosted checks remain separate |
-| Desktop reconnect correction | Corrected local `4c83934` passed all steps, core 1895/0/10 and gadgets 2050/0/12, all 17 new terminal/desktop cases and no compiler warnings; original failed hosted row remains separate |
+| Historical retired desktop reconnect correction | Corrected local `4c83934` passed all steps, core 1895/0/10 and gadgets 2050/0/12, all 17 new terminal/desktop cases and no compiler warnings; original failed hosted row remains separate |
 
 The first complete run at `96c3a4d` retained **1877 passed / 1 failed / 10 ignored**
 in core mode and **2032 passed / 1 failed / 12 ignored** with gadgets, with no

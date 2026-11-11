@@ -1,5 +1,10 @@
 # XM-10 — `craftsman-rs` autonomous task capability
 
+> **Transport retirement (November 11):** references to `serve.rs`,
+> `desktop_serve.rs` and their command/protocol surfaces below are historical.
+> The owner removed those servers; ACP stdio and its WebSocket bridge remain.
+> This does not change the retained token, provider, trace or attribution contracts.
+
 **Ticket:** XM-10 (`CROSS_MODULE_REGISTER.md`) — InferenceaaS "Agent-as-a-Service".
 **Question:** Can the embedded `craftsman-rs` runtime take a **single task intent**
 (e.g. "build me a small website") and autonomously drive it to a concrete

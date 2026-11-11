@@ -19,7 +19,7 @@
 //!
 //! # Where this runs
 //!
-//! The workspace pod's entrypoint is the ACP bridge, not `craftsman serve`:
+//! The workspace pod's entrypoint is the ACP bridge:
 //!
 //! ```text
 //! craftsman-rs acp-bridge --host 0.0.0.0 --port 8080 \
@@ -372,7 +372,7 @@ impl AcpConn {
             "id": ID_SESSION_NEW,
             "method": "session/new",
             "params": {
-                "cwd": crate::serve::home_dir().to_string_lossy(),
+                "cwd": crate::bridge_support::home_dir().to_string_lossy(),
                 "mcpServers": [],
                 "_meta": { "craftsman": { "threadId": thread_for(message) } },
             },

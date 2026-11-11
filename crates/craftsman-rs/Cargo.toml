@@ -71,8 +71,7 @@ libsql = { version = "0.10", default-features = false, features = ["core"] }
 # the dep_guard test forbids adding a tokenizer to craftsman-harness itself.
 tiktoken-rs = "0.12"
 
-# `craftsman serve` — the WS front-door the platform workspace dials (protocol
-# v2; keep in lockstep with the frontend kit's contract.ts).
+# ACP bridge HTTP health/stats endpoints and WebSocket-to-stdio relay.
 axum = { version = "0.8", features = ["ws"] }
 # A2UI v0.9 message validation against the vendored spec bundle
 # (src/data/a2ui_v0_9_schema.json) — invalid payloads bounce back to the LLM
