@@ -190,6 +190,11 @@ pub enum ApprovalPromptResult {
 /// state mutex is deliberately not passed or held while this callback waits.
 pub type ApprovalPrompt = Arc<dyn Fn(&str, &str, &str) -> ApprovalPromptResult + Send + Sync>;
 
+/// App-only correlated approval callback. Other frontends retain their existing
+/// three-argument callback; ACP receives the actual framework tool invocation.
+pub type CallApprovalPrompt =
+    Arc<dyn Fn(&craftsman_harness::ToolCall, &str, &str) -> ApprovalPromptResult + Send + Sync>;
+
 /// Interactive answer callback for the `ask_user` tool.
 pub type AskUserPrompt = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -725,8 +730,8 @@ impl Tool for McpFrameworkTool {
 pub struct SessionExtras {
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
-    /// TUI turn-scope opt-in. Legacy/private/frozen frontends leave this false.
-    /// Native tools observe the stop while retaining their cleanup ownership.
+    /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
+    /// Other legacy/private/frozen frontends leave this false.
     pub interrupt_model_on_cancel: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
@@ -752,6 +757,10 @@ pub struct SessionExtras {
     pub tool_activity_sink: Option<ToolActivitySink>,
     /// Optional UI-driven approval prompt.
     pub approval_prompt: Option<ApprovalPrompt>,
+    /// Optional approval callback carrying the actual invocation (ACP).
+    pub call_approval_prompt: Option<CallApprovalPrompt>,
+    /// Correlated invocation/permission/result callbacks selected only by ACP.
+    pub delegated_tool_callbacks: Option<(CallApprovalPrompt, ToolActivitySink)>,
     /// Optional UI-driven `ask_user` prompt.
     pub ask_user_prompt: Option<AskUserPrompt>,
     /// Additional tools registered on the main agent (ACP adds `render_ui`).
@@ -1712,11 +1721,12 @@ async fn build_session_with_profile(
             tools: if construction.gate().is_some() {
                 subagent_tools // Already wrapped with the SAME immutable invocation gate.
             } else {
-                crate::subagent_gate::SubagentGate::wrap_all_at(
+                crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
                     subagent_tools,
                     &approval,
                     extras.approval_prompt.clone(),
                     &cwd,
+                    extras.delegated_tool_callbacks.clone(),
                 )
             },
             model: Some(sub_provider.clone()),
@@ -1753,11 +1763,12 @@ async fn build_session_with_profile(
         let tools = if construction.gate().is_some() {
             tools
         } else {
-            crate::subagent_gate::SubagentGate::wrap_all_at(
+            crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
                 tools,
                 &approval,
                 extras.approval_prompt.clone(),
                 &cwd,
+                extras.delegated_tool_callbacks.clone(),
             )
         };
         let subagent_prompt = match construction.prepared() {
@@ -1923,14 +1934,17 @@ async fn build_session_with_profile(
             .map(|mw| gate.wrap_middleware(mw))
             .collect();
     } else {
-        middleware.push(Arc::new(ApprovalMiddleware::new_at(
-            approval,
-            activity_to_stderr,
-            extras.activity_sink.clone(),
-            extras.tool_activity_sink.clone(),
-            extras.approval_prompt.clone(),
-            cwd,
-        )));
+        middleware.push(Arc::new(
+            ApprovalMiddleware::new_at(
+                approval,
+                activity_to_stderr,
+                extras.activity_sink.clone(),
+                extras.tool_activity_sink.clone(),
+                extras.approval_prompt.clone(),
+                cwd,
+            )
+            .with_call_prompt(extras.call_approval_prompt.clone()),
+        ));
     }
 
     if let Some(history) = native_history {

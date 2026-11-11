@@ -11,7 +11,8 @@
 //! in `GATED_TOOLS`).
 
 use crate::agent::{
-    ActivitySink, ApprovalPrompt, ApprovalPromptResult, ToolActivityEvent, ToolActivitySink,
+    ActivitySink, ApprovalPrompt, ApprovalPromptResult, CallApprovalPrompt, ToolActivityEvent,
+    ToolActivitySink,
 };
 use crate::hitl::{ApprovalState, Decision, ToolPermission, prompt_decision, rejection_result};
 use crate::tools::summarize_call;
@@ -28,6 +29,7 @@ pub struct ApprovalMiddleware {
     activity_sink: Option<ActivitySink>,
     tool_activity_sink: Option<ToolActivitySink>,
     approval_prompt: Option<ApprovalPrompt>,
+    call_approval_prompt: Option<CallApprovalPrompt>,
     workspace_root: PathBuf,
 }
 
@@ -66,7 +68,13 @@ impl ApprovalMiddleware {
             tool_activity_sink,
             approval_prompt,
             workspace_root,
+            call_approval_prompt: None,
         }
+    }
+
+    pub fn with_call_prompt(mut self, prompt: Option<CallApprovalPrompt>) -> Self {
+        self.call_approval_prompt = prompt;
+        self
     }
 
     fn emit(&self, line: &str) {
@@ -101,6 +109,21 @@ impl ApprovalMiddleware {
             ToolPermission::Allow => return None,
             ToolPermission::Deny(reason) => return Some(Decision::Reject(reason)),
             ToolPermission::Prompt => {}
+        }
+        if let Some(prompt) = &self.call_approval_prompt {
+            return Some(match prompt(call, summary, details) {
+                ApprovalPromptResult::Approve => Decision::Approve,
+                ApprovalPromptResult::ApproveAlways => {
+                    let mut approval = self.approval.lock().unwrap();
+                    if crate::tools::NETWORK_TOOLS.contains(&call.name.as_str()) {
+                        approval.auto_approve_network = true;
+                    } else {
+                        approval.auto_approve = true;
+                    }
+                    Decision::Approve
+                }
+                ApprovalPromptResult::Reject(feedback) => Decision::Reject(feedback),
+            });
         }
         Some(match &self.approval_prompt {
             Some(prompt) => match prompt(&call.name, summary, details) {

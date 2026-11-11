@@ -116,6 +116,14 @@
         "id": 3,
         "jsonrpc": "2.0",
         "result": {
+          "_meta": {
+            "craftsman": {
+              "usage": {
+                "inputTokens": 0,
+                "outputTokens": 0
+              }
+            }
+          },
           "stopReason": "cancelled"
         }
       }

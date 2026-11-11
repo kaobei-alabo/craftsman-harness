@@ -11,10 +11,12 @@
 //! continues that exact tool call after approval. Headless runs without an
 //! approval channel remain fail-closed and return guidance instead of blocking.
 
-use crate::agent::{ApprovalPrompt, ApprovalPromptResult};
+use crate::agent::{
+    ApprovalPrompt, ApprovalPromptResult, CallApprovalPrompt, ToolActivityEvent, ToolActivitySink,
+};
 use crate::hitl::{ApprovalState, ToolPermission, rejection_result};
 use async_trait::async_trait;
-use craftsman_harness::{AgentError, Tool, ToolCtx, ToolDef, ToolOutcome};
+use craftsman_harness::{AgentError, Tool, ToolCall, ToolCtx, ToolDef, ToolOutcome};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -24,6 +26,7 @@ pub struct SubagentGate {
     approval: Arc<Mutex<ApprovalState>>,
     approval_prompt: Option<ApprovalPrompt>,
     workspace_root: PathBuf,
+    correlated: Option<(CallApprovalPrompt, ToolActivitySink)>,
 }
 
 impl SubagentGate {
@@ -39,23 +42,40 @@ impl SubagentGate {
         Self::wrap_all_at(tools, approval, approval_prompt, &workspace)
     }
 
+    #[cfg(test)]
     pub fn wrap_all_at(
         tools: Vec<Arc<dyn Tool>>,
         approval: &Arc<Mutex<ApprovalState>>,
         approval_prompt: Option<ApprovalPrompt>,
         workspace_root: &Path,
     ) -> Vec<Arc<dyn Tool>> {
+        Self::wrap_all_at_correlated(tools, approval, approval_prompt, workspace_root, None)
+    }
+
+    /// ACP assigns a presentation identity at the actual delegated invocation,
+    /// including allowed/read-only tools, without changing framework ToolCtx.
+    pub fn wrap_all_at_correlated(
+        tools: Vec<Arc<dyn Tool>>,
+        approval: &Arc<Mutex<ApprovalState>>,
+        approval_prompt: Option<ApprovalPrompt>,
+        workspace_root: &Path,
+        correlated: Option<(CallApprovalPrompt, ToolActivitySink)>,
+    ) -> Vec<Arc<dyn Tool>> {
         use crate::tools::{GATED_TOOLS, NETWORK_TOOLS};
         tools
             .into_iter()
             .map(|t| {
                 let name = t.def().name;
-                if GATED_TOOLS.contains(&name.as_str()) || NETWORK_TOOLS.contains(&name.as_str()) {
+                if correlated.is_some()
+                    || GATED_TOOLS.contains(&name.as_str())
+                    || NETWORK_TOOLS.contains(&name.as_str())
+                {
                     Arc::new(SubagentGate {
                         inner: t,
                         approval: approval.clone(),
                         approval_prompt: approval_prompt.clone(),
                         workspace_root: workspace_root.to_path_buf(),
+                        correlated: correlated.clone(),
                     }) as Arc<dyn Tool>
                 } else {
                     t
@@ -72,6 +92,48 @@ impl Tool for SubagentGate {
     }
 
     async fn call(&self, args: Value, ctx: &mut ToolCtx<'_>) -> Result<ToolOutcome, AgentError> {
+        let Some((_, sink)) = &self.correlated else {
+            return self.call_gated(args, ctx, None).await;
+        };
+        // Different specs own different wrappers. The shared process counter
+        // prevents identity reuse across specs and concurrent child runs.
+        static DELEGATED_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let call = ToolCall {
+            id: format!(
+                "delegated-{}",
+                DELEGATED_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
+            name: self.inner.def().name,
+            args: args.clone(),
+        };
+        sink(ToolActivityEvent::Started {
+            call_id: call.id.clone(),
+            tool: call.name.clone(),
+            summary: crate::tools::summarize_call(&call.name, &args),
+            details: crate::tools::approval_details_at(&call.name, &args, &self.workspace_root),
+        });
+        let result = self.call_gated(args, ctx, Some(&call)).await;
+        let (content, is_error) = match &result {
+            Ok(outcome) => (outcome.content.clone(), outcome.is_error),
+            Err(error) => (error.to_string(), true),
+        };
+        sink(ToolActivityEvent::Finished {
+            call_id: call.id,
+            tool: call.name,
+            content,
+            is_error,
+        });
+        result
+    }
+}
+
+impl SubagentGate {
+    async fn call_gated(
+        &self,
+        args: Value,
+        ctx: &mut ToolCtx<'_>,
+        call: Option<&ToolCall>,
+    ) -> Result<ToolOutcome, AgentError> {
         let name = self.inner.def().name;
         // Same decision the main gate makes — auto_approve, the network
         // switch, and the shell allow-list all apply. Lock scope is
@@ -81,14 +143,21 @@ impl Tool for SubagentGate {
             ToolPermission::Allow => self.inner.call(args, ctx).await,
             ToolPermission::Deny(reason) => Ok(ToolOutcome::err(reason)),
             ToolPermission::Prompt => {
-                let Some(prompt) = &self.approval_prompt else {
+                if self.approval_prompt.is_none() && self.correlated.is_none() {
                     return Ok(ToolOutcome::err(format!(
                         "'{name}' requires user approval, but this delegated run has no interactive approval channel. Do this step directly or use an explicit permission mode."
                     )));
-                };
+                }
                 let summary = crate::tools::summarize_call(&name, &args);
                 let details = crate::tools::approval_details_at(&name, &args, &self.workspace_root);
-                match prompt(&name, &summary, &details) {
+                let decision = if let (Some((prompt, _)), Some(call)) = (&self.correlated, call) {
+                    prompt(call, &summary, &details)
+                } else if let Some(prompt) = &self.approval_prompt {
+                    prompt(&name, &summary, &details)
+                } else {
+                    ApprovalPromptResult::Reject("no correlated approval channel".into())
+                };
+                match decision {
                     ApprovalPromptResult::Approve => self.inner.call(args, ctx).await,
                     ApprovalPromptResult::ApproveAlways => {
                         {
