@@ -39,6 +39,7 @@ run_check core-build cargo check --locked --no-default-features --workspace
 run_check default-build env GGML_NATIVE=OFF cargo check --locked --workspace
 run_check exec-contract "$verification_python" -I docs/schemas/check_exec.py --self-test
 run_check benchmark-driver "$verification_python" -B scripts/test-benchmark-gadgets.py
+run_check ci-cache-contract "$verification_python" -I -B scripts/test-ci-cargo-cache.py
 run_check provenance ./scripts/check-lineage.sh
 run_check core-tests cargo test --locked --no-default-features --workspace --no-fail-fast -- --test-threads=4
 run_check gadget-tests cargo test --locked --no-default-features --features craftsman-rs/gadgets --workspace --no-fail-fast -- --test-threads=4

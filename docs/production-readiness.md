@@ -79,6 +79,19 @@ source verification remains distinct from that first run.
 
 ## Retained external protocol: ACP
 
+The [stable-v1 compatibility audit](acp-compatibility-audit.md) preserves the
+original failures. The corrected adapter passes the same 39 local strict-client
+checks; seven additional native regressions cover effects, isolation,
+permissions, MCP, replay, EOF and model transfer. [ACP behavior](acp.md) describes
+the interface and limits. Two ACP golden recordings have explicit reviewed
+identity/cancellation diffs; bridge/model/schema/SDK/native limits are unchanged.
+Full local native modes, all four hosted jobs and independent-main proof remain
+separate delivery gates. The first hosted Ubuntu job failed APT repository DNS and
+skipped mandatory default/core steps; its gadget pass does not clear that
+failure. CI now selects the HTTPS Ubuntu package endpoint hosted by kernel.org without changing
+package requirements, suites/signing keys, runners or tests; the audit retains
+the original failure. No paid calls or publication are enabled.
+
 The owner retired the `serve` and `desktop-serve` commands and their custom
 WebSocket v2/v4 implementations on November 11. External clients use `acp-serve`
 (stdio ACP) or `acp-bridge` (WebSocket relay of the same ACP JSON-RPC plus the
@@ -171,6 +184,17 @@ private repository because its current account plan requires GitHub Pro for
 branch protection. No privacy or billing setting was changed. CI failures fail
 the run, but server-side required-check enforcement is not configured.
 These are new repository rules; old macOS 14 check labels describe past evidence.
+
+The owner approved lighter draft-PR checks and Cargo dependency caching on
+November 12. Drafts run formatting/cache/workflow contracts; promotion to ready
+starts the full matrix, as do ready-PR updates, main pushes and manual runs.
+The existing final-head and independent-main requirements remain. Compiled
+dependency caches are capped at 2 GiB per platform, exclude workspace binaries
+and guest fixtures, and are saved only by successful main platform jobs. The cache
+helper passed an actual offline Cargo reuse/rebuild probe and contract tests;
+hosted cache behavior/timing still require live runner verification. See
+[CI validation and cost controls](ci.md). Account billing still blocks hosted
+startup; no billing/privacy setting or publication policy was changed.
 
 At the owner's November 6 request, `.github/workflows/release.yml`,
 `service-agent-image.yml` and `publish-workspace-images.yml` were disabled in

@@ -17,6 +17,8 @@ name: ci
 on:
   pull_request:
     branches: [main]
+    # Draft edits are cheap; promotion must start fresh full validation.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_dispatch: {}
@@ -44,8 +46,16 @@ jobs:
           cargo --version
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Test CI cache and workflow contracts
+        run: python -I -B scripts/test-ci-cargo-cache.py
   test:
     name: test (${{ matrix.os }})
+    # A skipped draft job is never final validation. Ready PRs/main/manual
+    # runs retain all three platforms and every original mandatory step.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft != true }}
     # All supported platforms are required; a Windows failure fails this run.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -74,8 +84,28 @@ jobs:
       - name: Install Linux voice build prerequisites
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          # Use kernel.org's HTTPS Ubuntu package endpoint instead of the runner's
+          # dynamically selected Azure package service. Preserve suites, components
+          # and Signed-By in the Ubuntu 24.04 deb822 source file.
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update --error-on=any
           sudo apt-get install -y libasound2-dev pkg-config cmake clang
+      - name: Restore Cargo dependency cache
+        id: cargo-cache
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            target/ci-dependency-cache
+          key: cargo-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', '**/Cargo.lock', '**/Cargo.toml', '.cargo/config', '.cargo/config.toml', '.github/workflows/ci.yml', 'scripts/ci-cargo-cache.py') }}
+      - name: Apply cached Cargo dependencies
+        continue-on-error: true
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/cargo-cache-metadata.json"
+          python -I -B scripts/ci-cargo-cache.py restore --metadata "$RUNNER_TEMP/cargo-cache-metadata.json"
       - name: Check the default build, including voice and gadgets
         run: GGML_NATIVE=OFF cargo check --locked --workspace
       - name: Test benchmark driver contracts (no network or model calls)
@@ -102,3 +132,19 @@ jobs:
         # golden passes its own test, and only a person reading the diff of
         # the golden stands between a protocol change and a green build.
         run: git diff --exit-code -- crates/craftsman-rs/tests/golden
+      - name: Stage Cargo dependency cache
+        id: stage-cache
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        run: python -I -B scripts/ci-cargo-cache.py stage --metadata "$RUNNER_TEMP/cargo-cache-metadata.json"
+      - name: Save Cargo dependency cache
+        if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.stage-cache.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            target/ci-dependency-cache
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

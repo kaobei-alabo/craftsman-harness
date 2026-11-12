@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `initialize` | client → agent | negotiates `protocolVersion` + `agentCapabilities` |
 //! | `session/new` | client → agent | requires `cwd`; returns the agent-chosen `sessionId` |
-//! | `session/load` | client → agent | replays the conversation, then returns `null` |
+//! | `session/load` | client → agent | replays the conversation, then returns an object |
 //! | `session/prompt` | client → agent | streams `session/update`, returns a `stopReason` |
 //! | `session/cancel` | client → agent | notification; the pending prompt returns `cancelled` |
 //! | `session/request_permission` | agent → client | `options[].optionId` / `outcome.optionId` |
@@ -28,14 +28,14 @@
 
 use crate::a2ui::{FrameSlot, RenderUiTool, SYSTEM_PROMPT_SUFFIX};
 use crate::agent::{
-    self, ApprovalPrompt, ApprovalPromptResult, AskUserPrompt, Session, SessionExtras, TokenSink,
-    ToolActivityEvent, ToolActivitySink,
+    self, ApprovalPromptResult, AskUserPrompt, CallApprovalPrompt, Session, SessionExtras,
+    TokenSink, ToolActivityEvent, ToolActivitySink,
 };
 use crate::checkpoints::LibsqlCheckpointer;
 use crate::config::Config;
 use crate::hitl::ApprovalState;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -65,151 +65,209 @@ const OPTION_REJECT: &str = "reject-once";
 /// Outbound channel to the stdout writer task.
 pub type OutboundTx = tokio::sync::mpsc::UnboundedSender<Value>;
 
-/// The prompt turn currently running, kept so `session/cancel` can end it.
+struct PendingPermission {
+    session_id: String,
+    sender: std::sync::mpsc::Sender<ApprovalPromptResult>,
+}
+struct PendingQuestion {
+    session_id: String,
+    sender: std::sync::mpsc::Sender<Option<String>>,
+}
+
+/// One session owns its runtime, directory, configuration and output slot.
+struct AcpSession {
+    runtime: Session,
+    cfg: Config,
+    cwd: PathBuf,
+    frame_slot: FrameSlot,
+    prompts_open: Arc<Mutex<bool>>,
+    approval: Arc<Mutex<ApprovalState>>,
+}
+
 struct InFlightPrompt {
     session_id: String,
     prompt_id: Value,
-    abort_handle: tokio::task::AbortHandle,
+    agent: craftsman_harness::Agent,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    prompts_open: Arc<Mutex<bool>>,
 }
 
-/// Everything the stdio loop needs between messages.
+const MAX_SESSIONS: usize = 64;
+
 pub struct AcpServerState {
     pub cfg: Config,
-    pub approval: Arc<Mutex<ApprovalState>>,
     pub outbound_tx: OutboundTx,
-    /// Server-initiated requests waiting for a client response, by request id.
-    pub pending_permissions:
-        Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<ApprovalPromptResult>>>>,
-    pub pending_questions: Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Option<String>>>>>,
-    pub current_session_id: Arc<Mutex<String>>,
-    pub frame_slot: FrameSlot,
-    pub session: Option<Session>,
-    pub workspace_root: Option<PathBuf>,
+    pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
+    pending_questions: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+    sessions: HashMap<String, AcpSession>,
+    current_session_id: Option<String>,
     in_flight_prompt: Arc<Mutex<Option<InFlightPrompt>>>,
+    turn_tasks: Vec<tokio::task::JoinHandle<()>>,
     req_counter: Arc<AtomicU64>,
+    initialized: bool,
 }
 
 impl AcpServerState {
-    pub fn new(
-        cfg: Config,
-        outbound_tx: OutboundTx,
-        workspace_root: Option<PathBuf>,
-    ) -> AcpServerState {
-        let approval = Arc::new(Mutex::new(
-            ApprovalState {
-                mode: cfg.permission_mode,
-                auto_approve: cfg.auto_approve,
-                auto_approve_network: cfg.auto_approve_web(),
-                shell_allow_list: cfg.shell_allow_list.clone(),
-            }
-            .with_env_allow_list(),
-        ));
-
-        AcpServerState {
+    pub fn new(cfg: Config, outbound_tx: OutboundTx, _workspace_root: Option<PathBuf>) -> Self {
+        Self {
             cfg,
-            approval,
             outbound_tx,
             pending_permissions: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
-            current_session_id: Arc::new(Mutex::new(String::new())),
-            frame_slot: Arc::new(Mutex::new(None)),
-            session: None,
-            workspace_root,
+            sessions: HashMap::new(),
+            current_session_id: None,
             in_flight_prompt: Arc::new(Mutex::new(None)),
+            turn_tasks: Vec::new(),
             req_counter: Arc::new(AtomicU64::new(1)),
+            initialized: false,
         }
     }
 
-    /// Build the agent session, or switch it to `session_id`'s thread.
-    ///
-    /// # Errors
-    /// Returns `Err` when no session can be built (typically no model
-    /// configured) or the requested thread cannot be loaded.
-    pub async fn ensure_session(&mut self, session_id: Option<String>) -> Result<(), String> {
-        if self.session.is_none() {
-            let built = build_acp_session(self, session_id.clone()).await;
-            let Some(session) = built else {
-                return Err("no agent session (is a model configured?)".into());
-            };
-            *self.current_session_id.lock().unwrap() = session.thread_id.clone();
-            self.session = Some(session);
-            return Ok(());
+    fn busy(&self) -> bool {
+        self.in_flight_prompt.lock().unwrap().is_some()
+    }
+
+    fn current(&self) -> Option<&AcpSession> {
+        self.current_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.get(id))
+    }
+
+    async fn create_session(
+        &mut self,
+        id: String,
+        cwd: PathBuf,
+        cfg: Config,
+    ) -> Result<(), String> {
+        if self.sessions.contains_key(&id) {
+            return Err("session already exists; use session/load".into());
         }
-        let Some(target) = session_id else {
-            return Ok(());
-        };
-        let Some(session) = self.session.as_mut() else {
-            return Ok(());
-        };
-        if session.thread_id == target {
-            return Ok(());
+        if self.sessions.len() >= MAX_SESSIONS {
+            return Err("session limit reached".into());
         }
-        match session.load_thread(&target).await {
-            Ok(true) => {}
-            // Unknown thread: adopt the id and start it empty, which is what a
-            // client that generated its own conversation id expects.
-            Ok(false) => {
-                session.set_thread_id(target.clone());
-                *session.agent.state.lock().unwrap() = Default::default();
+        let built = build_acp_session(self, &id, &cwd, &cfg, None)
+            .await
+            .ok_or("could not initialize the requested agent session")?;
+        if let Some(cp) = &built.runtime.checkpointer {
+            use craftsman_harness::Checkpointer;
+            match cp.load_latest(&id).await {
+                Ok(None) => {}
+                Ok(Some(_)) => {
+                    built.runtime.lsp.shutdown().await;
+                    return Err("session already saved; use session/load".into());
+                }
+                Err(_) => {
+                    built.runtime.lsp.shutdown().await;
+                    return Err("could not check session identity".into());
+                }
             }
-            Err(e) => return Err(format!("could not load session {target}: {e}")),
         }
-        *self.current_session_id.lock().unwrap() = target;
+        if built.runtime.mcp_errors.iter().any(|(name, _)| {
+            cfg.mcp_servers
+                .iter()
+                .any(|s| s.get("name").and_then(Value::as_str) == Some(name))
+        }) {
+            built.runtime.lsp.shutdown().await;
+            return Err("session MCP server could not connect".into());
+        }
+        self.sessions.insert(id.clone(), built);
+        self.current_session_id = Some(id);
         Ok(())
     }
 
-    /// Messages of the live thread, in ACP replay order.
-    fn live_history(&self) -> Vec<Value> {
-        let Some(session) = self.session.as_ref() else {
-            return Vec::new();
+    async fn load_session(&mut self, id: &str, cwd: PathBuf, cfg: Config) -> Result<(), String> {
+        if let Some(session) = self.sessions.get(id) {
+            if session.cfg.mcp_servers != cfg.mcp_servers {
+                return Err("session MCP configuration does not match".into());
+            }
+            if session.cwd != cwd {
+                return Err("session working directory does not match".into());
+            }
+            self.current_session_id = Some(id.to_owned());
+            return Ok(());
+        }
+        if self.sessions.len() >= MAX_SESSIONS {
+            return Err("session limit reached".into());
+        }
+        let mut built = build_acp_session(self, id, &cwd, &cfg, None)
+            .await
+            .ok_or("could not initialize the requested agent session")?;
+        if !built.runtime.mcp_errors.is_empty() {
+            built.runtime.lsp.shutdown().await;
+            return Err("session MCP server could not connect".into());
+        }
+        let loaded = match built.runtime.load_thread(id).await {
+            Ok(loaded) => loaded,
+            Err(_) => {
+                built.runtime.lsp.shutdown().await;
+                return Err("could not load session".into());
+            }
         };
-        let messages = session.agent.state.lock().unwrap().messages.clone();
-        history_values(&messages)
+        if !loaded {
+            built.runtime.lsp.shutdown().await;
+            return Err("session not found".into());
+        }
+        self.sessions.insert(id.to_owned(), built);
+        self.current_session_id = Some(id.to_owned());
+        Ok(())
     }
 
-    /// End the running turn: release every per-turn resource, unblock anything
-    /// waiting on the client, then abort the task and answer its prompt.
-    ///
-    /// The order matters. A turn blocked inside an approval or ask-user wait is
-    /// parked on a blocking thread, where `abort()` has no effect until the next
-    /// await point — so the waiters are resolved *first*.
+    /// Request a real cooperative stop before releasing any UI waiter. The
+    /// owning turn emits its final response after actual completion and drain.
     pub fn cancel_in_flight(&self) -> bool {
-        let in_flight = self.in_flight_prompt.lock().unwrap().take();
-
-        // Stop the A2UI forwarder by dropping the frame sender.
-        *self.frame_slot.lock().unwrap() = None;
-
-        let permissions: Vec<_> = self
-            .pending_permissions
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, waiter)| waiter)
-            .collect();
-        for waiter in permissions {
-            let _ = waiter.send(ApprovalPromptResult::Reject("turn cancelled".into()));
-        }
-        let questions: Vec<_> = self
-            .pending_questions
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, waiter)| waiter)
-            .collect();
-        for waiter in questions {
-            let _ = waiter.send(None);
-        }
-
-        let Some(prompt) = in_flight else {
+        let active = self.in_flight_prompt.lock().unwrap();
+        let Some(prompt) = active.as_ref() else {
             return false;
         };
-        prompt.abort_handle.abort();
-        respond(
-            &self.outbound_tx,
-            prompt.prompt_id,
-            json!({ "stopReason": "cancelled" }),
-        );
+        prompt.cancelled.store(true, Ordering::Release);
+        prompt.agent.request_cancel();
+        *prompt.prompts_open.lock().unwrap() = false;
+        let sid = prompt.session_id.clone();
+        drop(active);
+        self.reject_waiters(Some(&sid));
         true
+    }
+
+    fn reject_waiters(&self, session_id: Option<&str>) {
+        self.pending_permissions
+            .lock()
+            .unwrap()
+            .retain(|_, waiter| {
+                if session_id.is_none_or(|sid| sid == waiter.session_id) {
+                    let _ = waiter
+                        .sender
+                        .send(ApprovalPromptResult::Reject("turn cancelled".into()));
+                    false
+                } else {
+                    true
+                }
+            });
+        self.pending_questions.lock().unwrap().retain(|_, waiter| {
+            if session_id.is_none_or(|sid| sid == waiter.session_id) {
+                let _ = waiter.sender.send(None);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    async fn close(&mut self) {
+        self.cancel_in_flight();
+        for session in self.sessions.values() {
+            *session.prompts_open.lock().unwrap() = false;
+            session.runtime.agent.request_cancel();
+        }
+        self.reject_waiters(None);
+        for task in self.turn_tasks.drain(..) {
+            let _ = task.await;
+        }
+        for session in self.sessions.values() {
+            for task in session.runtime.registry.take_background_joins() {
+                let _ = task.await;
+            }
+            session.runtime.lsp.shutdown().await;
+        }
     }
 }
 
@@ -262,14 +320,34 @@ fn tool_kind(tool: &str) -> &'static str {
 // ── Session construction ────────────────────────────────────────────────────
 
 /// Build a session whose sinks emit ACP `session/update` notifications.
-async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -> Option<Session> {
-    let messages = Arc::new(AtomicU64::new(1));
+async fn build_acp_session(
+    state: &AcpServerState,
+    session_id: &str,
+    cwd: &PathBuf,
+    cfg: &Config,
+    previous_approval: Option<Arc<Mutex<ApprovalState>>>,
+) -> Option<AcpSession> {
+    let messages = Arc::new(AtomicU64::new(0));
+    let prompts_open = Arc::new(Mutex::new(false));
+    let tool_ids = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let frame_slot: FrameSlot = Arc::new(Mutex::new(None));
+    let approval = previous_approval.unwrap_or_else(|| {
+        Arc::new(Mutex::new(
+            ApprovalState {
+                mode: cfg.permission_mode,
+                auto_approve: cfg.auto_approve,
+                auto_approve_network: cfg.auto_approve_web(),
+                shell_allow_list: cfg.shell_allow_list.clone(),
+            }
+            .with_env_allow_list(),
+        ))
+    });
 
     let tx = state.outbound_tx.clone();
-    let sid = state.current_session_id.clone();
+    let sid = session_id.to_owned();
     let message_ids = messages.clone();
     let token_sink: TokenSink = Arc::new(move |token: &str| {
-        let session_id = sid.lock().unwrap().clone();
+        let session_id = sid.clone();
         session_update(
             &tx,
             &session_id,
@@ -282,9 +360,9 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
     });
 
     let tx = state.outbound_tx.clone();
-    let sid = state.current_session_id.clone();
+    let sid = session_id.to_owned();
     let tool_activity_sink: ToolActivitySink = Arc::new(move |event: ToolActivityEvent| {
-        let session_id = sid.lock().unwrap().clone();
+        let session_id = sid.clone();
         let update = match event {
             ToolActivityEvent::Started {
                 call_id,
@@ -335,16 +413,51 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
         session_update(&tx, &session_id, update);
     });
 
+    let main_tool_sink: ToolActivitySink = {
+        let sink = tool_activity_sink.clone();
+        let ids = tool_ids.clone();
+        let counter = state.req_counter.clone();
+        Arc::new(move |mut event| {
+            match &mut event {
+                ToolActivityEvent::Started { call_id, .. } => {
+                    let presentation = format!("tool-{}", counter.fetch_add(1, Ordering::Relaxed));
+                    ids.lock()
+                        .unwrap()
+                        .insert(call_id.clone(), presentation.clone());
+                    *call_id = presentation;
+                }
+                ToolActivityEvent::Finished { call_id, .. } => {
+                    if let Some(presentation) = ids.lock().unwrap().remove(call_id) {
+                        *call_id = presentation;
+                    }
+                }
+            }
+            sink(event);
+        })
+    };
+
     let tx = state.outbound_tx.clone();
-    let sid = state.current_session_id.clone();
+    let sid = session_id.to_owned();
     let pending = state.pending_permissions.clone();
     let counter = state.req_counter.clone();
-    let approval_prompt: ApprovalPrompt = Arc::new(
-        move |tool: &str, summary: &str, details: &str| {
+    let permission_open = prompts_open.clone();
+    let call_approval_prompt: CallApprovalPrompt = Arc::new(
+        move |call: &craftsman_harness::ToolCall, summary: &str, details: &str| {
+            let open = permission_open.lock().unwrap();
+            if !*open {
+                return ApprovalPromptResult::Reject("turn cancelled or inactive".into());
+            }
+            let tool = call.name.as_str();
             let req_id = format!("perm-{}", counter.fetch_add(1, Ordering::Relaxed));
-            let session_id = sid.lock().unwrap().clone();
+            let session_id = sid.clone();
             let (waiter_tx, waiter_rx) = std::sync::mpsc::channel();
-            pending.lock().unwrap().insert(req_id.clone(), waiter_tx);
+            pending.lock().unwrap().insert(
+                req_id.clone(),
+                PendingPermission {
+                    session_id: session_id.clone(),
+                    sender: waiter_tx,
+                },
+            );
 
             let raw_input = serde_json::from_str::<Value>(details)
                 .ok()
@@ -357,7 +470,7 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
                 "params": {
                     "sessionId": session_id,
                     "toolCall": {
-                        "toolCallId": req_id,
+                        "toolCallId": call.id,
                         "title": if summary.trim().is_empty() { tool } else { summary },
                         "kind": tool_kind(tool),
                         "status": "pending",
@@ -375,6 +488,7 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
                 pending.lock().unwrap().remove(&req_id);
                 return ApprovalPromptResult::Reject("client disconnected".into());
             }
+            drop(open);
             // Blocking wait: the client's response, or `cancel_in_flight`
             // draining the map, wakes this up.
             tokio::task::block_in_place(|| waiter_rx.recv())
@@ -383,14 +497,25 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
     );
 
     let tx = state.outbound_tx.clone();
-    let sid = state.current_session_id.clone();
+    let sid = session_id.to_owned();
     let pending = state.pending_questions.clone();
     let counter = state.req_counter.clone();
+    let question_open = prompts_open.clone();
     let ask_user_prompt: AskUserPrompt = Arc::new(move |question: &str| {
+        let open = question_open.lock().unwrap();
+        if !*open {
+            return None;
+        }
         let req_id = format!("ask-{}", counter.fetch_add(1, Ordering::Relaxed));
-        let session_id = sid.lock().unwrap().clone();
+        let session_id = sid.clone();
         let (waiter_tx, waiter_rx) = std::sync::mpsc::channel();
-        pending.lock().unwrap().insert(req_id.clone(), waiter_tx);
+        pending.lock().unwrap().insert(
+            req_id.clone(),
+            PendingQuestion {
+                session_id: session_id.clone(),
+                sender: waiter_tx,
+            },
+        );
 
         // ACP has no ask-user method; this is the documented Craftsman extension.
         // A client that does not implement it returns an error, which parses to
@@ -405,6 +530,7 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
             pending.lock().unwrap().remove(&req_id);
             return None;
         }
+        drop(open);
         tokio::task::block_in_place(|| waiter_rx.recv())
             .ok()
             .flatten()
@@ -412,33 +538,61 @@ async fn build_acp_session(state: &AcpServerState, session_id: Option<String>) -
 
     let extras = SessionExtras {
         token_sink: Some(token_sink),
-        tool_activity_sink: Some(tool_activity_sink),
-        approval_prompt: Some(approval_prompt),
+        tool_activity_sink: Some(main_tool_sink),
+        call_approval_prompt: Some({
+            let prompt = call_approval_prompt.clone();
+            Arc::new(move |call, summary, details| {
+                let Some(id) = tool_ids.lock().unwrap().get(&call.id).cloned() else {
+                    return ApprovalPromptResult::Reject(
+                        "tool invocation is not registered".into(),
+                    );
+                };
+                let mut presented = call.clone();
+                presented.id = id;
+                prompt(&presented, summary, details)
+            })
+        }),
+        delegated_tool_callbacks: Some((call_approval_prompt, tool_activity_sink)),
         ask_user_prompt: Some(ask_user_prompt),
-        extra_tools: vec![Arc::new(RenderUiTool::new(state.frame_slot.clone()))],
-        workspace_root: state.workspace_root.clone(),
+        extra_tools: vec![Arc::new(RenderUiTool::new(frame_slot.clone()))],
+        workspace_root: Some(cwd.clone()),
+        interrupt_model_on_cancel: true,
+        round_sink: Some({
+            let messages = messages.clone();
+            let counter = state.req_counter.clone();
+            Arc::new(move || {
+                messages.store(counter.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+            })
+        }),
         ..SessionExtras::default()
     };
 
-    agent::build_session_ext(
-        &state.cfg,
-        state.approval.clone(),
+    let runtime = agent::build_session_ext(
+        cfg,
+        approval.clone(),
         SYSTEM_PROMPT_SUFFIX,
         // Activity goes to stderr: stdout carries JSON-RPC only.
         true,
         false,
-        session_id,
+        Some(session_id.to_owned()),
         extras,
     )
-    .await
+    .await?;
+    Some(AcpSession {
+        runtime,
+        cfg: cfg.clone(),
+        cwd: cwd.clone(),
+        frame_slot,
+        prompts_open,
+        approval,
+    })
 }
 
 // ── Parameter / response parsing ────────────────────────────────────────────
 
 /// Map an ACP `RequestPermissionOutcome` to the agent's approval result.
 ///
-/// Spec shape first (`result.outcome`), then tolerated legacy shapes so a
-/// hand-written client or an older Craftsman UI still works.
+/// Only a standard selected outcome carrying an offered option can approve.
 pub fn parse_approval_result(msg: &Value) -> ApprovalPromptResult {
     if let Some(error) = msg.get("error") {
         let reason = error
@@ -460,44 +614,15 @@ pub fn parse_approval_result(msg: &Value) -> ApprovalPromptResult {
         };
     }
 
-    // Tolerated non-spec shapes.
-    if let Some(approved) = result.as_bool() {
-        return if approved {
-            ApprovalPromptResult::Approve
-        } else {
-            ApprovalPromptResult::Reject(String::new())
-        };
-    }
-    if let Some(option) = result.as_str() {
-        return decision_for_option(option);
-    }
-    if let Some(option) = result.get("optionId").and_then(Value::as_str) {
-        return decision_for_option(option);
-    }
-    if let Some(decision) = result.get("decision").and_then(Value::as_str) {
-        let reason = result
-            .get("feedback")
-            .or_else(|| result.get("reason"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        return match decision_for_option(decision) {
-            ApprovalPromptResult::Reject(_) => ApprovalPromptResult::Reject(reason.to_string()),
-            other => other,
-        };
-    }
     ApprovalPromptResult::Reject(String::new())
 }
 
-/// `allow`/`approve` grants, `always` makes it sticky, anything else rejects.
+/// Only exact offered option IDs grant permission; unknown values fail closed.
 fn decision_for_option(option: &str) -> ApprovalPromptResult {
-    let option = option.to_ascii_lowercase();
-    let granted = option.starts_with("allow") || option.starts_with("approve");
-    if granted && option.contains("always") {
-        ApprovalPromptResult::ApproveAlways
-    } else if granted {
-        ApprovalPromptResult::Approve
-    } else {
-        ApprovalPromptResult::Reject(String::new())
+    match option {
+        OPTION_ALLOW_ONCE => ApprovalPromptResult::Approve,
+        OPTION_ALLOW_ALWAYS => ApprovalPromptResult::ApproveAlways,
+        _ => ApprovalPromptResult::Reject(String::new()),
     }
 }
 
@@ -578,43 +703,202 @@ pub fn extract_session_id(params: &Value) -> Result<String, String> {
         .get("sessionId")
         .or_else(|| params.get("session_id"))
         .and_then(Value::as_str)
+        .filter(|id| safe_session_id(id))
         .map(str::to_owned)
-        .ok_or_else(|| "missing 'sessionId'".into())
+        .ok_or_else(|| "invalid or missing 'sessionId'".into())
 }
 
 /// `_meta.craftsman.threadId`, the client's own conversation id when it has one.
-pub(crate) fn history_values(messages: &[craftsman_harness::Msg]) -> Vec<Value> {
-    messages
-        .iter()
-        .filter_map(|message| match message {
-            craftsman_harness::Msg::User { content } if !content.is_empty() => {
-                Some(json!({"role": "user", "content": content}))
+fn replay_history(tx: &OutboundTx, sid: &str, messages: &[craftsman_harness::Msg]) {
+    use craftsman_harness::Msg;
+    let mut calls: HashMap<String, String> = HashMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        match message {
+            Msg::User { content } | Msg::Assistant { content, .. } if !content.is_empty() => {
+                let kind = if matches!(message, Msg::User { .. }) {
+                    "user_message_chunk"
+                } else {
+                    "agent_message_chunk"
+                };
+                session_update(
+                    tx,
+                    sid,
+                    json!({"sessionUpdate":kind,"messageId":format!("replay-message-{index}"),"content":text_block(content)}),
+                );
             }
-            craftsman_harness::Msg::Assistant { content, .. } if !content.is_empty() => {
-                Some(json!({"role": "assistant", "content": content}))
+            _ => {}
+        }
+        match message {
+            Msg::Assistant { tool_calls, .. } => {
+                for (part, call) in tool_calls.iter().enumerate() {
+                    let id = format!("replay-tool-{index}-{part}");
+                    calls.insert(call.id.clone(), id.clone());
+                    session_update(
+                        tx,
+                        sid,
+                        json!({"sessionUpdate":"tool_call","toolCallId":id,"title":call.name,"kind":tool_kind(&call.name),"status":"pending","rawInput":call.args}),
+                    );
+                }
             }
-            _ => None,
-        })
-        .collect()
+            Msg::Tool {
+                tool_call_id,
+                content,
+                is_error,
+            } => {
+                if let Some(id) = calls.remove(tool_call_id) {
+                    session_update(
+                        tx,
+                        sid,
+                        json!({"sessionUpdate":"tool_call_update","toolCallId":id,"status":if *is_error {"failed"} else {"completed"},"content":[{"type":"content","content":text_block(content)}]}),
+                    );
+                } else {
+                    session_update(
+                        tx,
+                        sid,
+                        json!({"sessionUpdate":"agent_message_chunk","messageId":format!("replay-orphan-{index}"),"content":text_block(content),"_meta":{"craftsman":{"orphanedToolResult":true}}}),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
-fn requested_thread_id(params: &Value) -> Option<String> {
-    params
-        .get("_meta")
-        .and_then(|meta| meta.get("craftsman"))
-        .and_then(|craftsman| craftsman.get("threadId"))
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_owned)
+fn safe_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id != "."
+        && id != ".."
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
-/// The version to run at: the client's, capped at what this agent implements.
+fn requested_thread_id(params: &Value) -> Result<Option<String>, String> {
+    let Some(value) = params.pointer("/_meta/craftsman/threadId") else {
+        return Ok(None);
+    };
+    let id = value
+        .as_str()
+        .filter(|id| safe_session_id(id))
+        .ok_or("invalid threadId")?;
+    Ok(Some(id.to_owned()))
+}
+
+/// This adapter implements v1 only; an unsupported client version negotiates v1.
 fn negotiate_protocol_version(params: &Value) -> u64 {
     let requested = params
         .get("protocolVersion")
         .and_then(Value::as_u64)
         .unwrap_or(u64::from(ACP_PROTOCOL_VERSION));
-    requested.min(u64::from(ACP_PROTOCOL_VERSION))
+    if requested == u64::from(ACP_PROTOCOL_VERSION) {
+        requested
+    } else {
+        u64::from(ACP_PROTOCOL_VERSION)
+    }
+}
+
+/// Validate client-owned session inputs before filesystem/config/session work.
+fn session_inputs(base: &Config, params: &Value) -> Result<(PathBuf, Config), String> {
+    let cwd = params
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .ok_or("missing absolute 'cwd'")?;
+    let path = PathBuf::from(cwd);
+    if !path.is_absolute() {
+        return Err("'cwd' must be absolute".into());
+    }
+    let cwd = path
+        .canonicalize()
+        .map_err(|_| "session working directory is unavailable")?;
+    if !cwd.is_dir() {
+        return Err("'cwd' must name a directory".into());
+    }
+    let servers = params
+        .get("mcpServers")
+        .and_then(Value::as_array)
+        .ok_or("missing 'mcpServers' array")?;
+    if servers.len() > 64 {
+        return Err("too many session MCP servers".into());
+    }
+    if params
+        .get("additionalDirectories")
+        .is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|dirs| !dirs.is_empty()))
+    {
+        return Err("additional session directories are not supported".into());
+    }
+    if params.get("systemPrompt").is_some_and(|v| !v.is_null()) {
+        return Err("client system prompts are not supported".into());
+    }
+    let mut cfg = base.clone();
+    let mut names: HashSet<String> = cfg
+        .mcp_servers
+        .iter()
+        .filter_map(|v| v.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    for server in servers {
+        if server
+            .get("type")
+            .is_some_and(|v| v.as_str() != Some("stdio"))
+            || server.get("url").is_some()
+        {
+            return Err("only standard stdio session MCP servers are supported".into());
+        }
+        let name = server
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .ok_or("MCP server needs a name")?;
+        if !names.insert(name.to_owned()) {
+            return Err("duplicate MCP server name".into());
+        }
+        let command = server
+            .get("command")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+            .ok_or("only standard stdio session MCP servers are supported")?;
+        let args = server
+            .get("args")
+            .and_then(Value::as_array)
+            .ok_or("MCP server needs an args array")?;
+        if args.iter().any(|v| !v.is_string()) {
+            return Err("MCP args must be strings".into());
+        }
+        let env = server
+            .get("env")
+            .and_then(Value::as_array)
+            .ok_or("MCP server needs an env array")?;
+        let mut values = serde_json::Map::new();
+        for item in env {
+            let key = item
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+                .ok_or("MCP env needs a name")?;
+            let value = item
+                .get("value")
+                .and_then(Value::as_str)
+                .ok_or("MCP env values must be strings")?;
+            if value.contains("${") {
+                return Err("session MCP env values must be literal".into());
+            }
+            if values
+                .insert(key.into(), Value::String(value.into()))
+                .is_some()
+            {
+                return Err("duplicate MCP env name".into());
+            }
+        }
+        cfg.mcp_servers.push(
+            json!({"name":name,"transport":"stdio","command":command,"args":args,"env":values,"_craftsman_cwd":cwd}),
+        );
+    }
+    Ok((cwd, cfg))
+}
+
+fn valid_rpc_id(id: &Value) -> bool {
+    id.is_null() || id.is_string() || id.as_i64().is_some() || id.as_u64().is_some()
 }
 
 // ── Message dispatch ────────────────────────────────────────────────────────
@@ -623,24 +907,56 @@ fn negotiate_protocol_version(params: &Value) -> u64 {
 #[allow(clippy::too_many_lines)] // one match arm per protocol method reads better than 12 indirections
 pub async fn handle_message(state: &mut AcpServerState, msg: Value) {
     let id_opt = msg.get("id").cloned();
+    if !msg.is_object()
+        || msg.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || id_opt.as_ref().is_some_and(|id| !valid_rpc_id(id))
+        || msg.get("method").is_some_and(|method| !method.is_string())
+    {
+        respond_error(
+            &state.outbound_tx,
+            id_opt.filter(valid_rpc_id).unwrap_or(Value::Null),
+            -32600,
+            "invalid request",
+        );
+        return;
+    }
     let method_opt = msg.get("method").and_then(Value::as_str);
-
-    // A frame with an id but no method is a response to something we sent.
     if method_opt.is_none() {
         if let Some(id) = &id_opt {
-            resolve_pending_response(state, id, &msg);
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                resolve_pending_response(state, id, &msg);
+            } else {
+                respond_error(&state.outbound_tx, Value::Null, -32600, "invalid request");
+            }
         }
-        // Anything else (unknown or expired id) is ignored, as JSON-RPC
-        // requires — a response is never itself answered.
+        if id_opt.is_none() {
+            respond_error(&state.outbound_tx, Value::Null, -32600, "invalid request");
+        }
         return;
     }
     let Some(method) = method_opt else { return };
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
     let tx = state.outbound_tx.clone();
+    if msg.get("params").is_some_and(|v| !v.is_object()) {
+        if let Some(id) = id_opt {
+            respond_error(&tx, id, -32602, "params must be an object");
+        }
+        return;
+    }
 
     match method {
         "initialize" => {
             let Some(id) = id_opt else { return };
+            let Some(version) = params
+                .get("protocolVersion")
+                .and_then(Value::as_u64)
+                .filter(|v| *v <= 65535)
+            else {
+                respond_error(&tx, id, -32602, "invalid protocolVersion");
+                return;
+            };
+            state.initialized = true;
+            let _ = version;
             respond(
                 &tx,
                 id,
@@ -671,91 +987,92 @@ pub async fn handle_message(state: &mut AcpServerState, msg: Value) {
             );
         }
 
-        // The client picks the conversation with `_meta.craftsman.threadId`; without
-        // it the agent mints one. `cwd`/`mcpServers` are accepted and ignored:
-        // the pod's working directory and MCP wiring are platform-owned.
         "session/new" => {
             let Some(id) = id_opt else { return };
-            let session_id =
-                requested_thread_id(&params).unwrap_or_else(LibsqlCheckpointer::new_thread_id);
-            if let Err(e) = state.ensure_session(Some(session_id.clone())).await {
+            if !state.initialized {
+                respond_error(&tx, id, -32600, "initialize first");
+                return;
+            }
+            if state.busy() {
+                respond_error(&tx, id, -32001, "a prompt is active");
+                return;
+            }
+            let (cwd, cfg) = match session_inputs(&state.cfg, &params) {
+                Ok(v) => v,
+                Err(e) => return respond_error(&tx, id, -32602, &e),
+            };
+            let session_id = match requested_thread_id(&params) {
+                Ok(id) => id.unwrap_or_else(LibsqlCheckpointer::new_thread_id),
+                Err(e) => return respond_error(&tx, id, -32602, &e),
+            };
+            if let Err(e) = state.create_session(session_id.clone(), cwd, cfg).await {
                 respond_error(&tx, id, -32603, &e);
                 return;
             }
-            *state.current_session_id.lock().unwrap() = session_id.clone();
             respond(
                 &tx,
                 id,
-                json!({
-                    "sessionId": session_id,
-                    "_meta": { "craftsman": { "threadId": session_id } },
-                }),
+                json!({"sessionId":session_id,"_meta":{"craftsman":{"threadId":session_id}}}),
             );
         }
-
-        // Replay the conversation as `session/update` notifications, then
-        // return `null` — the spec's resume contract.
         "session/load" => {
             let Some(id) = id_opt else { return };
+            if !state.initialized {
+                respond_error(&tx, id, -32600, "initialize first");
+                return;
+            }
+            if state.busy() {
+                respond_error(&tx, id, -32001, "a prompt is active");
+                return;
+            }
             let session_id = match extract_session_id(&params) {
-                Ok(session_id) => session_id,
+                Ok(v) if !v.is_empty() => v,
+                _ => return respond_error(&tx, id, -32602, "invalid sessionId"),
+            };
+            let (cwd, cfg) = match session_inputs(&state.cfg, &params) {
+                Ok(v) => v,
                 Err(e) => return respond_error(&tx, id, -32602, &e),
             };
-            if let Err(e) = state.ensure_session(Some(session_id.clone())).await {
+            if let Err(e) = state.load_session(&session_id, cwd, cfg).await {
                 respond_error(&tx, id, -32603, &e);
                 return;
             }
-            *state.current_session_id.lock().unwrap() = session_id.clone();
-
-            for (index, message) in state.live_history().iter().enumerate() {
-                let role = message.get("role").and_then(Value::as_str).unwrap_or("");
-                let content = message.get("content").and_then(Value::as_str).unwrap_or("");
-                let kind = match role {
-                    "user" => "user_message_chunk",
-                    "assistant" => "agent_message_chunk",
-                    _ => continue,
-                };
-                session_update(
-                    &tx,
-                    &session_id,
-                    json!({
-                        "sessionUpdate": kind,
-                        "messageId": format!("replay-{index}"),
-                        "content": text_block(content),
-                    }),
-                );
-            }
-            respond(&tx, id, Value::Null);
+            let runtime = &state.sessions[&session_id].runtime;
+            replay_history(
+                &tx,
+                &session_id,
+                &runtime.agent.state.lock().unwrap().messages,
+            );
+            respond(&tx, id, json!({}));
         }
-
         "session/prompt" => {
             let Some(id) = id_opt else { return };
-            let session_id = match extract_session_id(&params) {
-                Ok(session_id) => session_id,
-                Err(e) => return respond_error(&tx, id, -32602, &e),
-            };
-            let prompt_text = match extract_prompt_text(&params) {
-                Ok(text) => text,
-                Err(e) => return respond_error(&tx, id, -32602, &e),
-            };
-            if let Err(e) = state.ensure_session(Some(session_id.clone())).await {
-                respond_error(&tx, id, -32603, &e);
+            if !state.initialized {
+                respond_error(&tx, id, -32600, "initialize first");
                 return;
             }
-            // A second prompt supersedes the first; the client sees its
-            // `cancelled` stop reason before this turn starts streaming.
-            state.cancel_in_flight();
-            *state.current_session_id.lock().unwrap() = session_id.clone();
+            if state.busy() {
+                respond_error(&tx, id, -32001, "a prompt is active");
+                return;
+            }
+            let session_id = match extract_session_id(&params) {
+                Ok(v) => v,
+                Err(e) => return respond_error(&tx, id, -32602, &e),
+            };
+            if !state.sessions.contains_key(&session_id) {
+                respond_error(&tx, id, -32602, "unknown sessionId");
+                return;
+            }
+            let prompt_text = match extract_prompt_text(&params) {
+                Ok(v) => v,
+                Err(e) => return respond_error(&tx, id, -32602, &e),
+            };
+            state.current_session_id = Some(session_id.clone());
             start_prompt_turn(state, id, session_id, prompt_text);
         }
 
-        // Notification: no response, and the pending prompt answers `cancelled`.
         "session/cancel" => {
-            let target = params
-                .get("sessionId")
-                .or_else(|| params.get("session_id"))
-                .and_then(Value::as_str);
-            let matches_target = target.is_none_or(|target| {
+            let matches_target = extract_session_id(&params).is_ok_and(|target| {
                 state
                     .in_flight_prompt
                     .lock()
@@ -770,6 +1087,20 @@ pub async fn handle_message(state: &mut AcpServerState, msg: Value) {
 
         "_craftsman/session/set_model" => {
             let Some(id) = id_opt else { return };
+            if state.busy() {
+                respond_error(&tx, id, -32001, "a prompt is active");
+                return;
+            }
+            if !state.initialized {
+                return respond_error(&tx, id, -32600, "initialize first");
+            }
+            if params.get("sessionId").is_some() {
+                let sid = match extract_session_id(&params) {
+                    Ok(sid) if state.sessions.contains_key(&sid) => sid,
+                    _ => return respond_error(&tx, id, -32602, "unknown sessionId"),
+                };
+                state.current_session_id = Some(sid);
+            }
             let model = params
                 .get("modelId")
                 .or_else(|| params.get("model"))
@@ -789,7 +1120,6 @@ pub async fn handle_message(state: &mut AcpServerState, msg: Value) {
 
         "_craftsman/session/list" => {
             let Some(id) = id_opt else { return };
-            let _ = state.ensure_session(None).await;
             respond(&tx, id, json!({ "sessions": list_sessions(state).await }));
         }
 
@@ -813,11 +1143,11 @@ fn resolve_pending_response(state: &AcpServerState, id: &Value, msg: &Value) {
         _ => return,
     };
     if let Some(waiter) = state.pending_permissions.lock().unwrap().remove(&key) {
-        let _ = waiter.send(parse_approval_result(msg));
+        let _ = waiter.sender.send(parse_approval_result(msg));
         return;
     }
     if let Some(waiter) = state.pending_questions.lock().unwrap().remove(&key) {
-        let _ = waiter.send(parse_question_result(msg));
+        let _ = waiter.sender.send(parse_question_result(msg));
     }
 }
 
@@ -828,15 +1158,24 @@ fn start_prompt_turn(
     session_id: String,
     prompt_text: String,
 ) {
+    let Some(session) = state.sessions.get(&session_id) else {
+        respond_error(&state.outbound_tx, prompt_id, -32602, "unknown sessionId");
+        return;
+    };
+    let agent = session.runtime.agent.clone();
+    let usage = session.runtime.usage.clone();
+    let usage_before = *usage.lock().unwrap();
+    let frame_slot = session.frame_slot.clone();
+    let prompts_open = session.prompts_open.clone();
+    *prompts_open.lock().unwrap() = true;
     let tx = state.outbound_tx.clone();
-
-    // A2UI frames arrive on a channel while the turn runs; forward each as an
-    // ACP resource content block.
+    let in_flight = state.in_flight_prompt.clone();
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (a2ui_tx, mut a2ui_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
-    *state.frame_slot.lock().unwrap() = Some(a2ui_tx);
+    *frame_slot.lock().unwrap() = Some(a2ui_tx);
     let a2ui_task = {
         let tx = tx.clone();
-        let session_id = session_id.clone();
+        let sid = session_id.clone();
         tokio::spawn(async move {
             while let Some(frame) = a2ui_rx.recv().await {
                 let Some(messages) = frame.get("messages") else {
@@ -847,128 +1186,133 @@ fn start_prompt_turn(
                 };
                 session_update(
                     &tx,
-                    &session_id,
+                    &sid,
                     json!({
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {
-                            "type": "resource",
-                            "resource": {
-                                "uri": "craftsman:a2ui",
-                                "mimeType": A2UI_MIME_TYPE,
-                                "text": payload,
-                            },
-                        },
-                        "_meta": { "craftsman": { "a2ui": true } },
+                        "sessionUpdate":"agent_message_chunk",
+                        "content":{"type":"resource","resource":{"uri":"craftsman:a2ui","mimeType":A2UI_MIME_TYPE,"text":payload}},
+                        "_meta":{"craftsman":{"a2ui":true}}
                     }),
                 );
             }
         })
     };
-
-    let Some(session) = state.session.as_ref() else {
-        respond_error(&tx, prompt_id, -32603, "no agent session");
-        return;
-    };
-    let agent = session.agent.clone();
-    let usage = session.usage.clone();
-    let usage_before = *usage.lock().unwrap();
-    let frame_slot = state.frame_slot.clone();
-    let in_flight = state.in_flight_prompt.clone();
-    let turn_prompt_id = prompt_id.clone();
-
-    let turn = tokio::spawn(async move {
-        let outcome = agent.run_turn(&prompt_text).await;
-
-        // Releasing the slot ends the forwarder, so the last A2UI frame is
-        // always flushed before the prompt response.
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+    *state.in_flight_prompt.lock().unwrap() = Some(InFlightPrompt {
+        session_id: session_id.clone(),
+        prompt_id: prompt_id.clone(),
+        agent: agent.clone(),
+        cancelled: cancelled.clone(),
+        prompts_open: prompts_open.clone(),
+    });
+    let task = tokio::spawn(async move {
+        let _ = start_rx.await;
+        let outcome = if cancelled.load(Ordering::Acquire) {
+            None
+        } else {
+            Some(agent.run_turn(&prompt_text).await)
+        };
+        *prompts_open.lock().unwrap() = false;
         *frame_slot.lock().unwrap() = None;
         let _ = a2ui_task.await;
-        let _ = in_flight.lock().unwrap().take();
-
         let usage_after = *usage.lock().unwrap();
-        let input = usage_after.0.saturating_sub(usage_before.0);
-        let output = usage_after.1.saturating_sub(usage_before.1);
-        let craftsman_meta = json!({
-            "usage": {
-                "inputTokens": input,
-                "outputTokens": output,
-            }
-        });
-        // Per-model pricing metadata is no longer fetched (see
-        // docs/platform-token-refactor.md); costUsd is simply omitted.
-
-        // ACP carries no usage field on the prompt result, so it rides `_meta`.
-        let stop_reason = match outcome {
-            Ok(
-                craftsman_harness::TurnResult::Done(_)
-                | craftsman_harness::TurnResult::Suspended(_),
-            ) => "end_turn",
-            Err(craftsman_harness::AgentError::MaxRounds(_)) => {
-                agent::rollback_dangling_user(&agent);
-                "max_turn_requests"
-            }
-            Err(e) => {
-                agent::rollback_dangling_user(&agent);
-                respond_error(&tx, turn_prompt_id, -32603, &format!("agent error: {e}"));
-                return;
+        let mut active = in_flight.lock().unwrap();
+        let is_cancelled = cancelled.load(Ordering::Acquire);
+        let reason = if is_cancelled {
+            "cancelled"
+        } else {
+            match outcome {
+                Some(Ok(
+                    craftsman_harness::TurnResult::Done(_)
+                    | craftsman_harness::TurnResult::Suspended(_),
+                )) => "end_turn",
+                Some(Err(craftsman_harness::AgentError::MaxRounds(_))) => {
+                    agent::rollback_dangling_user(&agent);
+                    "max_turn_requests"
+                }
+                Some(Err(_)) | None => {
+                    agent::rollback_dangling_user(&agent);
+                    respond_error(&tx, prompt_id.clone(), -32603, "agent turn failed");
+                    if active.as_ref().is_some_and(|p| p.prompt_id == prompt_id) {
+                        active.take();
+                    }
+                    return;
+                }
             }
         };
         respond(
             &tx,
-            turn_prompt_id,
-            json!({ "stopReason": stop_reason, "_meta": { "craftsman": craftsman_meta } }),
+            prompt_id.clone(),
+            json!({"stopReason":reason,"_meta":{"craftsman":{"usage":{
+                "inputTokens":usage_after.0.saturating_sub(usage_before.0),"outputTokens":usage_after.1.saturating_sub(usage_before.1)
+            }}}}),
         );
+        if active.as_ref().is_some_and(|p| p.prompt_id == prompt_id) {
+            active.take();
+        }
     });
-
-    *state.in_flight_prompt.lock().unwrap() = Some(InFlightPrompt {
-        session_id,
-        prompt_id,
-        abort_handle: turn.abort_handle(),
-    });
+    state.turn_tasks.retain(|task| !task.is_finished());
+    state.turn_tasks.push(task);
+    let _ = start_tx.send(());
 }
 
 /// Switch the configured model, rebuilding the session on the same thread.
 /// Rolls back to the previous model when the rebuild fails.
 async fn set_model(state: &mut AcpServerState, model: String) -> Result<(), String> {
-    let previous = state.cfg.model.clone();
-    if previous.as_deref() == Some(model.as_str()) {
+    let id = state
+        .current_session_id
+        .clone()
+        .ok_or("no selected session")?;
+    let entry = state.sessions.get(&id).ok_or("unknown session")?;
+    if entry
+        .runtime
+        .registry
+        .details()
+        .iter()
+        .any(|task| task.status == craftsman_harness::AgentStatus::Running)
+    {
+        return Err("wait for session background tasks before changing model".into());
+    }
+    if entry.cfg.model.as_deref() == Some(&model) {
         return Ok(());
     }
-    let thread = state.session.as_ref().map(|s| s.thread_id.clone());
-
-    state.cfg.model = Some(model);
-    let _ = state.cfg.save();
-    if let Some(rebuilt) = build_acp_session(state, thread.clone()).await {
-        state.session = Some(rebuilt);
-        return Ok(());
+    let mut cfg = entry.cfg.clone();
+    cfg.model = Some(model);
+    let cwd = entry.cwd.clone();
+    let approval = entry.approval.clone();
+    let mut rebuilt = build_acp_session(state, &id, &cwd, &cfg, Some(approval))
+        .await
+        .ok_or("agent rebuild failed for that model")?;
+    if !rebuilt.runtime.mcp_errors.is_empty() {
+        rebuilt.runtime.lsp.shutdown().await;
+        return Err("session MCP server could not reconnect".into());
     }
-
-    state.cfg.model = previous;
-    let _ = state.cfg.save();
-    state.session = build_acp_session(state, thread).await;
-    Err("agent rebuild failed for that model".into())
+    let previous = &state.sessions[&id].runtime;
+    previous.agent.request_cancel();
+    for task in previous.registry.take_background_joins() {
+        let _ = task.await;
+    }
+    previous.lsp.shutdown().await;
+    if let Err(error) = rebuilt.runtime.agent.inherit_conversation(&previous.agent) {
+        rebuilt.runtime.lsp.shutdown().await;
+        return Err(error.to_string());
+    }
+    *rebuilt.runtime.usage.lock().unwrap() = *previous.usage.lock().unwrap();
+    rebuilt.runtime.set_thread_id(id.clone());
+    state.sessions.insert(id, rebuilt);
+    Ok(())
 }
 
-/// Conversations this harness has persisted locally.
 async fn list_sessions(state: &AcpServerState) -> Vec<Value> {
     use craftsman_harness::Checkpointer;
-    let Some(checkpointer) = state.session.as_ref().and_then(|s| s.checkpointer.as_ref()) else {
+    let Some(checkpointer) = state
+        .current()
+        .and_then(|s| s.runtime.checkpointer.as_ref())
+    else {
         return Vec::new();
     };
-    checkpointer
-        .list_threads()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|thread| {
-            json!({
-                "sessionId": thread.id,
-                "title": thread.title,
-                "createdAt": thread.created,
-                "updatedAt": thread.updated,
-            })
-        })
-        .collect()
+    checkpointer.list_threads().await.unwrap_or_default().into_iter().map(|thread| json!({
+        "sessionId":thread.id,"title":thread.title,"createdAt":thread.created,"updatedAt":thread.updated
+    })).collect()
 }
 
 // ── Transport ───────────────────────────────────────────────────────────────
@@ -1020,10 +1364,24 @@ where
         }
     }
 
-    state.cancel_in_flight();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let close = tokio::time::timeout_at(deadline, state.close()).await;
     drop(state);
     drop(outbound_tx);
-    let _ = writer_task.await;
+    if close.is_err() {
+        writer_task.abort();
+        let _ = writer_task.await;
+        anyhow::bail!("ACP shutdown timed out; work may still be completing");
+    }
+    let mut writer_task = writer_task;
+    if tokio::time::timeout_at(deadline, &mut writer_task)
+        .await
+        .is_err()
+    {
+        writer_task.abort();
+        let _ = writer_task.await;
+        anyhow::bail!("ACP output drain timed out; final frames may be undelivered");
+    }
     Ok(())
 }
 
@@ -1076,6 +1434,19 @@ mod tests {
                 lines: tokio::io::BufReader::new(reader).lines(),
                 server,
             }
+        }
+
+        async fn initialize(&mut self) {
+            self.send(json!({"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":1}})).await;
+            assert_eq!(self.next().await["result"]["protocolVersion"], 1);
+        }
+
+        async fn new_session(&mut self, prefix: &str, cwd: &std::path::Path) -> String {
+            let id = format!("{prefix}-{}", LibsqlCheckpointer::new_thread_id());
+            self.initialize().await;
+            self.send(json!({"jsonrpc":"2.0","id":"new","method":"session/new","params":{"cwd":cwd,"mcpServers":[],"_meta":{"craftsman":{"threadId":id}}}})).await;
+            assert_eq!(self.next().await["result"]["sessionId"], id);
+            id
         }
 
         async fn send(&mut self, msg: Value) {
@@ -1191,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_outcomes_follow_the_spec_then_tolerate_legacy_shapes() {
+    fn permission_outcomes_require_a_standard_offered_selection() {
         // Spec shape.
         assert_eq!(
             parse_approval_result(
@@ -1216,18 +1587,18 @@ mod tests {
             ApprovalPromptResult::Reject("turn cancelled".into())
         );
 
-        // Tolerated shapes.
+        // Legacy loose shapes must not grant permission.
         assert_eq!(
             parse_approval_result(&json!({"result": true})),
-            ApprovalPromptResult::Approve
+            ApprovalPromptResult::Reject(String::new())
         );
         assert_eq!(
             parse_approval_result(&json!({"result": "approve_always"})),
-            ApprovalPromptResult::ApproveAlways
+            ApprovalPromptResult::Reject(String::new())
         );
         assert_eq!(
             parse_approval_result(&json!({"result": {"decision": "reject", "feedback": "unsafe"}})),
-            ApprovalPromptResult::Reject("unsafe".into())
+            ApprovalPromptResult::Reject(String::new())
         );
         assert_eq!(
             parse_approval_result(&json!({"error": {"message": "denied by policy"}})),
@@ -1280,21 +1651,24 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn session_new_honours_the_client_thread_id_then_streams_a_turn() {
         let model = mock_model(TextResponder).await;
+        let sid = format!("thread-42-{}", LibsqlCheckpointer::new_thread_id());
+        let dir = tempfile::tempdir().unwrap();
         let mut harness = Harness::start(model_cfg(model.uri(), true), None);
+        harness.initialize().await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 1, "method": "session/new",
                 "params": {
-                    "cwd": "/home/worker",
+                    "cwd": dir.path(),
                     "mcpServers": [],
-                    "_meta": { "craftsman": { "threadId": "thread-42" } },
+                    "_meta": { "craftsman": { "threadId": sid } },
                 },
             }))
             .await;
         let created = harness.next().await;
         assert_eq!(
-            created["result"]["sessionId"], "thread-42",
+            created["result"]["sessionId"], sid,
             "the client's conversation id must be adopted, not discarded"
         );
 
@@ -1302,7 +1676,7 @@ mod tests {
             .send(json!({
                 "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
                 "params": {
-                    "sessionId": "thread-42",
+                    "sessionId": sid,
                     "prompt": [{"type": "text", "text": "Say hello"}],
                 },
             }))
@@ -1329,28 +1703,31 @@ mod tests {
         assert!(
             notifications
                 .iter()
-                .all(|msg| msg["params"]["sessionId"] == "thread-42")
+                .all(|msg| msg["params"]["sessionId"] == sid)
         );
         harness.finish().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn session_load_replays_the_conversation_then_returns_null() {
+    async fn session_load_replays_the_conversation_then_returns_an_object() {
         let model = mock_model(TextResponder).await;
+        let sid = format!("thread-load-{}", LibsqlCheckpointer::new_thread_id());
+        let dir = tempfile::tempdir().unwrap();
         let mut harness = Harness::start(model_cfg(model.uri(), true), None);
+        harness.initialize().await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 1, "method": "session/new",
-                "params": { "cwd": "/home/worker", "mcpServers": [],
-                            "_meta": { "craftsman": { "threadId": "thread-load" } } },
+                "params": { "cwd": dir.path(), "mcpServers": [],
+                            "_meta": { "craftsman": { "threadId": sid } } },
             }))
             .await;
         harness.next().await;
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
-                "params": { "sessionId": "thread-load", "prompt": [{"type": "text", "text": "remember me"}] },
+                "params": { "sessionId": sid, "prompt": [{"type": "text", "text": "remember me"}] },
             }))
             .await;
         harness.until_response(json!(2)).await;
@@ -1358,12 +1735,15 @@ mod tests {
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 3, "method": "session/load",
-                "params": { "sessionId": "thread-load", "cwd": "/home/worker", "mcpServers": [] },
+                "params": { "sessionId": sid, "cwd": dir.path(), "mcpServers": [] },
             }))
             .await;
         let (response, replay) = harness.until_response(json!(3)).await;
 
-        assert!(response["result"].is_null(), "session/load returns null");
+        assert!(
+            response["result"].is_object(),
+            "session/load returns an object"
+        );
         let kinds: Vec<&str> = replay
             .iter()
             .filter_map(|msg| msg["params"]["update"]["sessionUpdate"].as_str())
@@ -1408,11 +1788,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut harness =
             Harness::start(model_cfg(model.uri(), true), Some(dir.path().to_path_buf()));
+        let sid = harness.new_session("tool-session", dir.path()).await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 1, "method": "session/prompt",
-                "params": { "sessionId": "tool-session", "prompt": [{"type": "text", "text": "write test.txt"}] },
+                "params": { "sessionId": sid, "prompt": [{"type": "text", "text": "write test.txt"}] },
             }))
             .await;
         let (_response, notifications) = harness.until_response(json!(1)).await;
@@ -1440,11 +1821,12 @@ mod tests {
         let mut cfg = model_cfg(model.uri(), false);
         cfg.permission_mode = crate::config::PermissionMode::Manual;
         let mut harness = Harness::start(cfg, Some(dir.path().to_path_buf()));
+        let sid = harness.new_session("hitl", dir.path()).await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 100, "method": "session/prompt",
-                "params": { "sessionId": "hitl", "prompt": [{"type": "text", "text": "write test.txt"}] },
+                "params": { "sessionId": sid, "prompt": [{"type": "text", "text": "write test.txt"}] },
             }))
             .await;
 
@@ -1519,12 +1901,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a2ui_surfaces_ride_a_resource_content_block() {
         let model = mock_model(A2uiResponder).await;
+        let dir = tempfile::tempdir().unwrap();
         let mut harness = Harness::start(model_cfg(model.uri(), true), None);
+        let sid = harness.new_session("a2ui", dir.path()).await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 200, "method": "session/prompt",
-                "params": { "sessionId": "a2ui", "prompt": [{"type": "text", "text": "show ui"}] },
+                "params": { "sessionId": sid, "prompt": [{"type": "text", "text": "show ui"}] },
             }))
             .await;
         let (_response, notifications) = harness.until_response(json!(200)).await;
@@ -1561,12 +1945,14 @@ mod tests {
             )
             .mount(&server)
             .await;
+        let dir = tempfile::tempdir().unwrap();
         let mut harness = Harness::start(model_cfg(server.uri(), true), None);
+        let sid = harness.new_session("cancel-me", dir.path()).await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 50, "method": "session/prompt",
-                "params": { "sessionId": "cancel-me", "prompt": [{"type": "text", "text": "work slowly"}] },
+                "params": { "sessionId": sid, "prompt": [{"type": "text", "text": "work slowly"}] },
             }))
             .await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1574,7 +1960,7 @@ mod tests {
         harness
             .send(json!({
                 "jsonrpc": "2.0", "method": "session/cancel",
-                "params": { "sessionId": "cancel-me" },
+                "params": { "sessionId": sid },
             }))
             .await;
 
@@ -1590,11 +1976,12 @@ mod tests {
         let mut cfg = model_cfg(model.uri(), false);
         cfg.permission_mode = crate::config::PermissionMode::Manual;
         let mut harness = Harness::start(cfg, Some(dir.path().to_path_buf()));
+        let sid = harness.new_session("cancel-hitl", dir.path()).await;
 
         harness
             .send(json!({
                 "jsonrpc": "2.0", "id": 70, "method": "session/prompt",
-                "params": { "sessionId": "cancel-hitl", "prompt": [{"type": "text", "text": "write test.txt"}] },
+                "params": { "sessionId": sid, "prompt": [{"type": "text", "text": "write test.txt"}] },
             }))
             .await;
         loop {
@@ -1608,7 +1995,7 @@ mod tests {
         harness
             .send(json!({
                 "jsonrpc": "2.0", "method": "session/cancel",
-                "params": { "sessionId": "cancel-hitl" },
+                "params": { "sessionId": sid },
             }))
             .await;
 

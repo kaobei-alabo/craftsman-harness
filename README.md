@@ -23,6 +23,18 @@ remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented
 capability/approval boundaries. Run `./scripts/verify.sh` for both complete test
 modes and the default build; it selects an installed Python 3.11+ interpreter.
 
+[CI cost controls](docs/ci.md) keep draft PRs on formatting and small contract
+checks, with the full platform matrix triggered when a PR is marked ready and
+on main. Selective Cargo dependency caches preserve fresh workspace and gadget
+fixture builds; full current-head validation remains required before merge.
+
+The [ACP compatibility audit](docs/acp-compatibility-audit.md) preserves the
+original stable-v1 failures and subsequent repair evidence. The corrected
+adapter passes the same 39 local strict-client checks, with native regressions
+for session directories/identity, exact permissions, MCP wiring, replay and
+cancellation ordering. [ACP behavior and limits](docs/acp.md) describes the
+implemented interface; full hosted/native validation remains a separate gate.
+
 Native shell regression tests check actual stdout/stderr, exit and timeout
 metadata, invalid UTF-8 refusal and stopping a running command after an approval
 failure. Temporary test-only shell investigation instrumentation has been retired.
@@ -840,6 +852,7 @@ crates/craftsman-rs/src/
     commands.rs    slash commands, help, and submission routing
     session_bridge.rs agent events, approvals, hydration, and notifications
     terminal.rs    terminal guard, SafeBackend, and clipboard
+  acp_serve.rs     standard ACP sessions, permissions, replay and completion
   bridge_support.rs shared ACP proxy authentication and host disk facts
   agent.rs         provider bridge and shared frontend/private-headless construction
   token_counter.rs local tokenizer used by token-budget compaction

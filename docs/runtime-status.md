@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 11, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 12, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -13,6 +13,16 @@
 > private bounded token reservations are implemented (`token-reservations.md`).
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
+
+> **CI cost controls (November 12):** the owner approved light draft checks and
+> selective Cargo dependency caching. Ready PRs, main and manual runs retain the
+> full four-context/default-build/both-native-mode gate. Cache keys bind platform,
+> architecture, toolchain and lock/manifests; successful main platform jobs alone save
+> bounded dependency artifacts. Workspace binaries and gadget fixtures are not
+> cached. Contract tests and an actual offline Cargo cache round-trip passed;
+> hosted reuse/timing remain unverified while account billing blocks startup.
+> See [CI validation and cost controls](ci.md). No runtime/SDK/WIT/pin/native-limit
+> or publication setting changes follow from these optimizations.
 
 > **ACP transport consolidation (November 11):** the owner retired `serve` and
 > `desktop-serve`, their custom v2/v4 implementations, desktop-only tests/golden
@@ -27,6 +37,19 @@
 > All 17 retained voice unit tests pass in the default build. First compilation
 > and warning-rejected records remain separate; fresh all-four hosted and
 > independent main checks still gate delivery.
+
+> **ACP compatibility repairs (November 11):** the original strict stable-v1
+> audit found session, permission, MCP, replay/identity and completion defects.
+> The corrected source-built adapter passes the same 39 local checks. Seven
+> additional native regressions test real effects, SQLite reopen, delegated
+> permissions, EOF and model transfer. [The audit](acp-compatibility-audit.md)
+> preserves original failures; [ACP behavior](acp.md) records supported paths,
+> intentional golden diffs and cooperative/native limits. All-four hosted and
+> independent-main verification remain separate delivery gates. The first hosted
+> Ubuntu job failed package-repository DNS and skipped required default/core
+> steps; its gadget pass is separate evidence. CI now selects kernel.org's HTTPS
+> Ubuntu package endpoint while retaining signing keys, suites and package/test
+> requirements; fresh all-four verification remains required.
 
 > **Durable manual compaction (November 10):** the owned terminal saves its
 > original state before `/compact` sampling and its replacement before success.
@@ -174,7 +197,7 @@ separately. Hosted and independent main verification remain separate.
 | `craftsman` TUI | Streaming conversation, steering/queue, owned cancellation/terminal restoration, HITL, host/web tools, required per-tool checkpoints, recovery warnings, memory/LSP/skills, opt-in gadgets | Host tools are not an OS sandbox; escaping/uninterruptible work, concurrent owners, remaining recovery and live task/console-event quality need evaluation |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
-| `acp-serve`, `acp-bridge` | Retained ACP stdio server and WebSocket relay with HTTP health/stats | Existing ACP frames/extensions, proxy authentication and resource limits remain; custom v2/v4 servers are retired |
+| `acp-serve`, `acp-bridge` | Retained ACP stdio server and WebSocket relay with HTTP health/stats | Standard v1 session/permission/replay corrections; existing extensions, proxy authentication and native limits; custom v2/v4 servers are retired |
 | `service-agent` | Request-scoped virtual resources and explicitly selected public-web tools | No real filesystem, native shell, local DB/memory/LSP/project discovery |
 | `craftsman exec` | **Not exposed** | Accepted contract plus partial private implementation, not a runnable command |
 

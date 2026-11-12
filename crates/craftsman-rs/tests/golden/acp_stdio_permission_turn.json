@@ -133,14 +133,14 @@
             "sessionUpdate": "tool_call",
             "status": "in_progress",
             "title": "✏️  write_file › golden.txt",
-            "toolCallId": "call_1"
+            "toolCallId": "tool-2"
           }
         }
       }
     },
     {
       "recv": {
-        "id": "perm-1",
+        "id": "perm-3",
         "jsonrpc": "2.0",
         "method": "session/request_permission",
         "params": {
@@ -174,14 +174,14 @@
             },
             "status": "pending",
             "title": "✏️  write_file › golden.txt",
-            "toolCallId": "perm-1"
+            "toolCallId": "tool-2"
           }
         }
       }
     },
     {
       "send": {
-        "id": "perm-1",
+        "id": "perm-3",
         "jsonrpc": "2.0",
         "result": {
           "outcome": {
@@ -214,7 +214,7 @@
             ],
             "sessionUpdate": "tool_call_update",
             "status": "completed",
-            "toolCallId": "call_1"
+            "toolCallId": "tool-2"
           }
         }
       }
@@ -230,7 +230,7 @@
               "text": "Created ",
               "type": "text"
             },
-            "messageId": "msg-1",
+            "messageId": "msg-4",
             "sessionUpdate": "agent_message_chunk"
           }
         }
@@ -247,7 +247,7 @@
               "text": "golden.txt.",
               "type": "text"
             },
-            "messageId": "msg-1",
+            "messageId": "msg-4",
             "sessionUpdate": "agent_message_chunk"
           }
         }

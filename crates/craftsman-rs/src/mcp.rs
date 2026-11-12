@@ -59,6 +59,7 @@ impl StdioProc {
         command: &str,
         args: &[String],
         env: &[(String, String)],
+        cwd: Option<&std::path::Path>,
     ) -> anyhow::Result<StdioProc> {
         let mut cmd = tokio::process::Command::new(command);
         cmd.args(args)
@@ -69,6 +70,9 @@ impl StdioProc {
             .stderr(std::process::Stdio::null())
             // The client drops with the session; the child must not outlive it.
             .kill_on_drop(true);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         for (key, value) in env {
             cmd.env(key, value);
         }
@@ -139,6 +143,8 @@ enum Transport {
         command: String,
         args: Vec<String>,
         env: Vec<(String, String)>,
+        /// Explicit ACP session directory; absent for existing config entries.
+        cwd: Option<std::path::PathBuf>,
         /// Spawned lazily on the first request, so a bad `command` surfaces
         /// as a per-server error instead of failing config parsing.
         proc: tokio::sync::Mutex<Option<StdioProc>>,
@@ -219,6 +225,10 @@ impl McpClient {
                         command: command.to_string(),
                         args,
                         env,
+                        cwd: entry
+                            .get("_craftsman_cwd")
+                            .and_then(Value::as_str)
+                            .map(std::path::PathBuf::from),
                         proc: tokio::sync::Mutex::new(None),
                     }),
                 ))
@@ -304,6 +314,7 @@ impl McpClient {
                 command,
                 args,
                 env,
+                cwd,
                 proc,
             } => {
                 let body = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
@@ -312,7 +323,7 @@ impl McpClient {
                 // surfaces as a per-server error instead of a crash.
                 let spawned = match guard.as_mut() {
                     Some(proc) => proc,
-                    None => guard.insert(StdioProc::spawn(command, args, env)?),
+                    None => guard.insert(StdioProc::spawn(command, args, env, cwd.as_deref())?),
                 };
                 spawned.round_trip(&body, id).await
             }
@@ -545,6 +556,7 @@ mod tests {
             args,
             env,
             proc,
+            cwd,
         } = &client.transport
         else {
             panic!("expected stdio transport");
@@ -555,6 +567,7 @@ mod tests {
             &vec!["-y".to_string(), "@upstash/context7-mcp".to_string()]
         );
         assert_eq!(env, &vec![("API_KEY".to_string(), "k".to_string())]);
+        assert!(cwd.is_none());
         assert!(proc.blocking_lock().is_none(), "spawn is lazy");
     }
 
@@ -809,6 +822,7 @@ mod tests {
             command: "sh".into(),
             args: vec![script.to_string_lossy().into_owned()],
             env: vec![("FAKE_MCP_TEST_ENV".to_string(), "plumbed".to_string())],
+            cwd: None,
             proc: tokio::sync::Mutex::new(None),
         });
         client.discover().await.expect("stdio discover");
