@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 11, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 12, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -13,6 +13,16 @@
 > private bounded token reservations are implemented (`token-reservations.md`).
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
+
+> **CI cost controls (November 12):** the owner approved light draft checks and
+> selective Cargo dependency caching. Ready PRs, main and manual runs retain the
+> full four-context/default-build/both-native-mode gate. Cache keys bind platform,
+> architecture, toolchain and lock/manifests; successful main runs alone save
+> bounded dependency artifacts. Workspace binaries and gadget fixtures are not
+> cached. Contract tests and an actual offline Cargo cache round-trip passed;
+> hosted reuse/timing remain unverified while account billing blocks startup.
+> See [CI validation and cost controls](ci.md). No runtime/SDK/WIT/pin/native-limit
+> or publication setting changes follow from these optimizations.
 
 > **ACP transport consolidation (November 11):** the owner retired `serve` and
 > `desktop-serve`, their custom v2/v4 implementations, desktop-only tests/golden

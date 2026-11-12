@@ -185,6 +185,17 @@ branch protection. No privacy or billing setting was changed. CI failures fail
 the run, but server-side required-check enforcement is not configured.
 These are new repository rules; old macOS 14 check labels describe past evidence.
 
+The owner approved lighter draft-PR checks and Cargo dependency caching on
+November 12. Drafts run formatting/cache/workflow contracts; promotion to ready
+starts the full matrix, as do ready-PR updates, main pushes and manual runs.
+The existing final-head and independent-main requirements remain. Compiled
+dependency caches are capped at 2 GiB per platform, exclude workspace binaries
+and guest fixtures, and are saved only by successful main pushes. The cache
+helper passed an actual offline Cargo reuse/rebuild probe and contract tests;
+hosted cache behavior/timing still require live runner verification. See
+[CI validation and cost controls](ci.md). Account billing still blocks hosted
+startup; no billing/privacy setting or publication policy was changed.
+
 At the owner's November 6 request, `.github/workflows/release.yml`,
 `service-agent-image.yml` and `publish-workspace-images.yml` were disabled in
 GitHub and removed from source. This holds tag releases, manual binary artifacts

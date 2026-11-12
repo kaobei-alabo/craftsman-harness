@@ -23,6 +23,11 @@ remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented
 capability/approval boundaries. Run `./scripts/verify.sh` for both complete test
 modes and the default build; it selects an installed Python 3.11+ interpreter.
 
+[CI cost controls](docs/ci.md) keep draft PRs on formatting and small contract
+checks, with the full platform matrix triggered when a PR is marked ready and
+on main. Selective Cargo dependency caches preserve fresh workspace and gadget
+fixture builds; full current-head validation remains required before merge.
+
 The [ACP compatibility audit](docs/acp-compatibility-audit.md) preserves the
 original stable-v1 failures and subsequent repair evidence. The corrected
 adapter passes the same 39 local strict-client checks, with native regressions
