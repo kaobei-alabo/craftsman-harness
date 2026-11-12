@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 12, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 13, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -13,6 +13,15 @@
 > private bounded token reservations are implemented (`token-reservations.md`).
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
+
+> **Live starter gadgets (November 13):** the user authorized importing their
+> existing GPT/Claude connections and running actual authoring tests. Four pure
+> gadgets were built and invoked by real `gpt-6.1-sol` / Claude Fable 5.2 sessions;
+> all 30 independent cases and installed-copy checks passed. Native operations
+> used approve-once replies and guest calls used reviewed ephemeral grants;
+> manual permissions/live shell limits stayed intact. This does not establish
+> universal model quality, OS containment or a public headless runtime. The
+> obsolete platform example is removed. See [the live evaluation](live-gadget-evaluation.md).
 
 > **CI cost controls (November 12):** the owner approved light draft checks and
 > selective Cargo dependency caching. Ready PRs, main and manual runs retain the

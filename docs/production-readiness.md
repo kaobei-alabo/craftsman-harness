@@ -118,6 +118,15 @@ merged-main verification remain required.
 
 ## Build and use the gadget workflow
 
+The user-authorized [live starter evaluation](live-gadget-evaluation.md) on
+November 13 completed four actual agent build sessions and four fresh use
+sessions, split between `gpt-6.1-sol` and Claude Fable 5.2 on Bedrock. All 30
+independent cases passed, including invalid-input/overflow refusals. The reviewed
+pure gadgets were installed create-only with ephemeral invocation grants; global
+manual permissions and live shell limits were preserved. This is specific live
+task evidence, distinct from scripted tests and general production/containment
+claims. The former platform example is retired because its service is unavailable.
+
 Use the exact **Rust 1.99.1** toolchain in `rust-toolchain.toml`. The application
 now declares the tested 1.99 compiler floor instead of the inherited 1.85 claim;
 the standalone framework/SDK/macros retain their separate 1.85 declarations.
