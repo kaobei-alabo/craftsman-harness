@@ -190,7 +190,7 @@ November 12. Drafts run formatting/cache/workflow contracts; promotion to ready
 starts the full matrix, as do ready-PR updates, main pushes and manual runs.
 The existing final-head and independent-main requirements remain. Compiled
 dependency caches are capped at 2 GiB per platform, exclude workspace binaries
-and guest fixtures, and are saved only by successful main pushes. The cache
+and guest fixtures, and are saved only by successful main platform jobs. The cache
 helper passed an actual offline Cargo reuse/rebuild probe and contract tests;
 hosted cache behavior/timing still require live runner verification. See
 [CI validation and cost controls](ci.md). Account billing still blocks hosted

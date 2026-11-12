@@ -17,7 +17,7 @@
 > **CI cost controls (November 12):** the owner approved light draft checks and
 > selective Cargo dependency caching. Ready PRs, main and manual runs retain the
 > full four-context/default-build/both-native-mode gate. Cache keys bind platform,
-> architecture, toolchain and lock/manifests; successful main runs alone save
+> architecture, toolchain and lock/manifests; successful main platform jobs alone save
 > bounded dependency artifacts. Workspace binaries and gadget fixtures are not
 > cached. Contract tests and an actual offline Cargo cache round-trip passed;
 > hosted reuse/timing remain unverified while account billing blocks startup.

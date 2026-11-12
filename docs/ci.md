@@ -47,7 +47,7 @@ and credentials. The compiled artifacts are capped at **2 GiB per platform**;
 complete files beyond the cap are skipped. Registry downloads are cached
 separately. This avoids archiving an accumulated whole `target` directory.
 
-Only successful pushes to main can stage and save a new cache. PRs restore
+Only successful main platform jobs can stage and save a new cache. PRs restore
 trusted main caches but do not save caches; this limits storage churn and
 prevents a PR from supplying build artifacts to main. Cache misses or optional
 cache failures fall back to compilation. An exact hit is not saved again.
