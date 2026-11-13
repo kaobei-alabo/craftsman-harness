@@ -17,6 +17,11 @@ are historical evidence. The `craftsman` CLI, `craftsman-*` Cargo packages,
 See [the identity migration notes](docs/repository-name.md) for existing-data
 handling and the earlier namespace change.
 
+The project's original work is licensed under the [MIT License](LICENSE),
+including commercial use, modification and redistribution with the copyright
+and license notice retained. Third-party material keeps its existing licenses
+and attribution; see [NOTICE](NOTICE) and the [attribution review](docs/oss-review.md).
+
 Start with [production readiness](docs/production-readiness.md) for the current
 overview, build/setup steps, self-built gadget workflow, validation record and
 remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented

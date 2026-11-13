@@ -16,7 +16,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
 | Process lifecycle | Bounded shell capture and owned cancellation, scoped TUI Unix groups/Windows Job Objects, signal shutdown; native behavior regression checks | Validate native containment and exceptional cleanup |
-| Distribution | Authenticated new repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled and workflows removed | Explicit owner approval before restoring publication, plan-supported branch protection and licensing/distribution decisions |
+| Distribution | MIT license for the project's original work; authenticated repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled | Explicit owner approval before restoring publication, plan-supported branch protection and remaining provenance/distribution review |
 
 The roadmap in [craftsman-harness-plan.md](craftsman-harness-plan.md) includes
 future events, recovery, editing, context and containment work. Its historical

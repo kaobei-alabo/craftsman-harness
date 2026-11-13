@@ -14,6 +14,14 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **MIT license decision (November 13):** the owner selected MIT for the project's
+> original work. A root `LICENSE` and application package metadata now match the
+> existing MIT declarations of the framework, gadget SDK and macros. Commercial
+> use is permitted without a project royalty; notices must be retained. Existing
+> third-party licenses/attribution and unresolved provenance review remain
+> separate. Repository visibility and binary/container publication policies are
+> unchanged by this license decision.
+
 > **Live starter gadgets (November 13):** the user authorized importing their
 > existing GPT/Claude connections and running actual authoring tests. Four pure
 > gadgets were built and invoked by real `gpt-6.1-sol` / Claude Fable 5.2 sessions;
