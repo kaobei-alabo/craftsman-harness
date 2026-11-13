@@ -732,6 +732,8 @@ pub struct SessionExtras {
     /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
     /// Other legacy/private/frozen frontends leave this false.
     pub interrupt_model_on_cancel: bool,
+    /// Explicit TUI/ACP memory-guidance opt-in; legacy/private/frozen defaults stay false.
+    pub task_focused_memory: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
     pub local_gadgets: bool,
@@ -1869,10 +1871,15 @@ async fn build_session_with_profile(
         // Preserve the exact legacy order (memory precedes compaction).
         middleware.insert(
             2,
-            Arc::new(MemoryMiddleware::new(
-                backend.clone(),
-                vec!["/memories/AGENTS.md".into()],
-            )),
+            Arc::new({
+                let memory =
+                    MemoryMiddleware::new(backend.clone(), vec!["/memories/AGENTS.md".into()]);
+                if extras.task_focused_memory {
+                    memory.task_focused()
+                } else {
+                    memory
+                }
+            }),
         );
     }
     if let Some(workspace) = &workspace_checkpoints {
@@ -2210,3 +2217,7 @@ mod token_reservation_tests;
 #[cfg(test)]
 #[path = "agent_admission_receipt_tests.rs"]
 mod admission_receipt_tests;
+
+#[cfg(test)]
+#[path = "agent_memory_tests.rs"]
+mod memory_tests;

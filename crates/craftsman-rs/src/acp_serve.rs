@@ -557,6 +557,7 @@ async fn build_acp_session(
         extra_tools: vec![Arc::new(RenderUiTool::new(frame_slot.clone()))],
         workspace_root: Some(cwd.clone()),
         interrupt_model_on_cancel: true,
+        task_focused_memory: true,
         round_sink: Some({
             let messages = messages.clone();
             let counter = state.req_counter.clone();

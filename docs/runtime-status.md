@@ -21,6 +21,15 @@
 > rendering still passes through SafeBackend. Theme changes do not alter
 > model requests, permissions, recovery, native cleanup or dependency contracts.
 
+> **Coding-quality work (November 14):** a 30-task corpus and external local
+> Docker/ACP runner provide held-out grading, a separate credential/budget
+> gateway and source snapshots. The initial live cycle selects GPT-6.1 Sol
+> under a confirmed $25 cap. TUI/ACP explicitly select task-focused memory
+> guidance; legacy/private/frozen policies remain. Native tests and live coding
+> results are independent; comparison evidence is still being collected.
+> See `coding-evaluation.md` and `terminal-memory.md`. Public exec, headless
+> gadget registration, native containment and publication gates remain separate.
+
 > **CI prerequisites (November 14):** Linux APT setup selects IPv4 and three
 > bounded transport retries after merged-main package downloads failed on an
 > unavailable IPv6 route. Incomplete indexes still fail; all four jobs, default

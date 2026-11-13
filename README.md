@@ -79,6 +79,7 @@ when the client needs WebSocket transport.
 [Local state and connections](docs/connections.md) ·
 [ACP integration](docs/acp.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
+[Coding evaluations](docs/coding-evaluation.md) ·
 [Development and validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
