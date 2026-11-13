@@ -1,13 +1,7 @@
-//! Chat-endpoint route resolution.
-//!
-//! There is exactly one route now: the direct OpenAI-compatible endpoint
-//! (`cfg.base_url` + `cfg.api_key`, defaulting to OpenAI's standard base).
-//! The platform's LLM app is just another OpenAI-compatible provider — point
-//! `base_url` at `{platform}/apps/llm/api/v1` and put the platform API token
-//! in `api_key` (see `docs/platform-token-refactor.md`). `${ENV_VAR}`
-//! placeholders in `api_key` are expanded here, so a single environment
-//! variable can back the LLM key, the MCP bearer header, and
-//! `platform.api_token` at once.
+//! Legacy direct OpenAI-compatible endpoint resolution.
+//! `base_url` and `api_key` declare the connection; a configured OpenAI key
+//! may use the standard API base. `${ENV_VAR}` references are explicit config.
+//! Named provider connections use provider_config instead.
 
 use crate::config::{Config, expand_env_placeholders};
 

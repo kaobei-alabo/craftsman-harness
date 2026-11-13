@@ -342,6 +342,10 @@ pub async fn run(cfg: Config, request_path: Option<&Path>) -> anyhow::Result<()>
     let raw = read_request(request_path)?;
     let request: ServiceAgentRequest = serde_json::from_str(&raw)?;
     validate_request(&request)?;
+    anyhow::ensure!(
+        cfg.has_model_connection(),
+        "No model connection configured. Set an endpoint and API key in config.json."
+    );
 
     let model = cfg
         .model
@@ -426,7 +430,9 @@ pub async fn run(cfg: Config, request_path: Option<&Path>) -> anyhow::Result<()>
         .iter()
         .any(|tool| tool == "web_search")
     {
-        builder = builder.tool(Arc::new(crate::web_tools::WebSearchTool::public_default()));
+        builder = builder.tool(Arc::new(crate::web_tools::WebSearchTool::public_default(
+            &cfg,
+        )));
     }
 
     let agent = builder.build();

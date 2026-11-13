@@ -36,7 +36,7 @@ checkpoint. Native response items remain bound to their original credential,
 endpoint, protocol and model identity. Changing a key or model preserves
 portable results while keeping old signed/opaque items with their old identity.
 
-Flat configurations retain their original platform/direct setup. Stale legacy
+Flat configurations offer direct endpoint/key/model setup. Stale legacy
 setup actions cannot overwrite a named provider selection; they reopen the
 connection picker. Framework/prepared runtimes, SDK/WIT, storage layout and
 retention, dependency pins, native cleanup, frozen protocol/schema/goldens and

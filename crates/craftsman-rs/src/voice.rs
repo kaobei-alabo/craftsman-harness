@@ -42,6 +42,7 @@ const MODEL_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resol
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceConfig {
     pub enabled: bool,
+    pub allow_model_download: bool,
     pub engine: String,
     pub model: String,
     pub language: Option<String>,
@@ -67,6 +68,10 @@ impl VoiceConfig {
             (!value.eq_ignore_ascii_case("auto")).then_some(value.to_ascii_lowercase())
         });
         Self {
+            allow_model_download: cfg
+                .voice_setting("allow_model_download")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
             enabled: cfg
                 .voice_setting("enabled")
                 .and_then(serde_json::Value::as_bool)
@@ -543,8 +548,18 @@ async fn controller_loop(
 async fn ensure_model(
     spec: ModelSpec,
     events: &mpsc::UnboundedSender<VoiceEvent>,
+    allow_model_download: bool,
 ) -> anyhow::Result<PathBuf> {
     let dir = config::config_dir().join("models");
+    ensure_model_in(&dir, spec, events, allow_model_download).await
+}
+
+async fn ensure_model_in(
+    dir: &Path,
+    spec: ModelSpec,
+    events: &mpsc::UnboundedSender<VoiceEvent>,
+    allow_model_download: bool,
+) -> anyhow::Result<PathBuf> {
     tokio::fs::create_dir_all(&dir).await?;
     let final_path = dir.join(spec.filename);
     if tokio::fs::metadata(&final_path)
@@ -572,6 +587,10 @@ async fn ensure_model(
         }
         let _ = tokio::fs::remove_file(&partial_path).await;
     }
+    anyhow::ensure!(
+        allow_model_download,
+        "The local voice model is missing. Set voice.allow_model_download to true in config.json to download it."
+    );
     let mut offset = tokio::fs::metadata(&partial_path)
         .await
         .map(|metadata| metadata.len().min(spec.bytes))
@@ -677,7 +696,7 @@ async fn get_engine(
     }
     let spec = model_spec(&config.model)
         .ok_or_else(|| anyhow::anyhow!("unknown voice model {}", config.model))?;
-    let path = ensure_model(spec, events).await?;
+    let path = ensure_model(spec, events, config.allow_model_download).await?;
     let _ = events.send(VoiceEvent::State(VoiceState::Initializing));
     let engine = Arc::new(WhisperEngine::load(path, config.partial_transcripts).await?);
     *guard = Some(engine.clone());
@@ -1423,6 +1442,41 @@ pub fn dictated_unit_count(text: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cached_voice_models_work_offline_and_missing_models_require_configured_downloads() {
+        let root = tempfile::tempdir().unwrap();
+        let spec = ModelSpec {
+            name: "fixture",
+            filename: "fixture.bin",
+            bytes: 4,
+            sha256: "unused-for-an-existing-cache",
+        };
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let missing = tokio::time::timeout(
+            Duration::from_secs(1),
+            ensure_model_in(root.path(), spec, &events, false),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert!(missing.to_string().contains("voice.allow_model_download"));
+        assert!(receiver.try_recv().is_err());
+        let cached = root.path().join(spec.filename);
+        std::fs::write(&cached, b"data").unwrap();
+        assert_eq!(
+            ensure_model_in(root.path(), spec, &events, false)
+                .await
+                .unwrap(),
+            cached
+        );
+        assert_eq!(std::fs::read(cached).unwrap(), b"data");
+        assert!(!VoiceConfig::from_config(&Config::default()).allow_model_download);
+        let configured =
+            serde_json::from_value(serde_json::json!({"voice":{"allow_model_download":true}}))
+                .unwrap();
+        assert!(VoiceConfig::from_config(&configured).allow_model_download);
+    }
 
     #[tokio::test]
     async fn controller_shutdown_completes_without_starting_native_resources() {

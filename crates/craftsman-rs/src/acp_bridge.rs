@@ -14,7 +14,7 @@
 //! lifetime. Reconnecting clients recover context with ACP `session/load`, not
 //! by keeping a child alive across disconnects.
 //!
-//! The bridge retains the HTTP surface the platform depends on:
+//! The bridge retains its client-facing HTTP surface:
 //! `/healthz` (StatefulSet readiness probe) and `/stats` (the controller's disk
 //! poll). Both are served by the bridge process itself, not by the harness.
 
@@ -34,9 +34,9 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-/// Identity headers the platform's WS proxy asserts on the pod dial. They are
+/// Identity headers a configured WS proxy asserts on the pod dial. They are
 /// forwarded to the harness as env so a multi-tenant harness can attribute the
-/// session; the browser never sets them (the platform terminates its JWT).
+/// session; the browser never sets them (the proxy terminates its JWT).
 const USER_HEADER: &str = "x-craftsman-workspace-user";
 const TENANT_HEADER: &str = "x-craftsman-workspace-tenant";
 
@@ -318,10 +318,7 @@ async fn close_with(ws: WebSocket, code: u16, reason: &str) {
 
 /// Entrypoint for `craftsman acp-bridge`.
 ///
-/// Besides the HTTP/WS surface this also owns the workspace inbox poller: the
-/// bridge is the pod's only long-lived process, so the scheduled/offline
-/// message worker has to hang off it. The poller spawns its own harness child
-/// per message rather than sharing one with a browser session.
+/// The bridge accepts client connections and starts their configured harness.
 pub async fn run(host: &str, port: u16, harness: Harness) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind((host, port)).await?;
     eprintln!(
@@ -329,7 +326,6 @@ pub async fn run(host: &str, port: u16, harness: Harness) -> anyhow::Result<()> 
         harness.command,
         harness.args.join(" ")
     );
-    let _poller = crate::inbox_poller::spawn(Arc::new(harness.clone()));
     axum::serve(listener, build_router(harness)).await?;
     Ok(())
 }

@@ -96,53 +96,80 @@ fn apply_selection(
     slot.rebuild(cfg, approval.clone());
 }
 
-pub(super) fn show_model_catalog(app: &mut App, models: Vec<CatalogModel>, current: Option<&str>) {
+pub(super) fn show_model_catalog(
+    app: &mut App,
+    models: Vec<CatalogModel>,
+    current: Option<&str>,
+    group_providers: bool,
+) {
     if models.is_empty() {
         app.push("No models reported. Use /model MODEL or configure model_catalog.");
         return;
     }
-    let mut selected = 0;
+    let mut selected = None;
     let mut items = Vec::new();
+    let mut groups = std::collections::BTreeMap::<String, Vec<CatalogModel>>::new();
     for model in models {
-        if current == Some(model.id.as_str()) {
-            selected = items.len();
-        }
-        let label = if model.label.is_empty() {
-            model.id.clone()
+        let group = if group_providers {
+            model
+                .id
+                .split_once('/')
+                .map(|(provider, _)| provider)
+                .unwrap_or("")
         } else {
-            model.label.clone()
+            ""
         };
-        items.push(SelectionItem {
-            label: label.clone(),
-            detail: format!(
-                "{}{}",
-                model.id,
-                if current == Some(model.id.as_str()) {
-                    " · current"
-                } else {
-                    ""
-                }
-            ),
-            enter_action: Some(AppAction::SelectModel(model.id.clone())),
-            delete_action: None,
-        });
-        for effort in model.reasoning_efforts {
+        groups.entry(group.to_string()).or_default().push(model);
+    }
+    for (group, models) in groups {
+        if !group.is_empty() {
             items.push(SelectionItem {
-                label: format!("{label} · {}", effort.as_str()),
-                detail: format!("{} · reasoning effort", model.id),
-                enter_action: Some(AppAction::SelectModelEffort {
-                    model: model.id.clone(),
-                    effort: Some(effort),
-                }),
+                label: format!("▾ {group}"),
+                detail: String::new(),
+                enter_action: None,
+                delete_action: None,
+            });
+        }
+        for model in models {
+            if current == Some(model.id.as_str()) {
+                selected = Some(items.len());
+            }
+            let label = if model.label.is_empty() {
+                model.id.clone()
+            } else {
+                model.label.clone()
+            };
+            items.push(SelectionItem {
+                label: if group.is_empty() {
+                    label
+                } else {
+                    format!("  {label}")
+                },
+                detail: format!(
+                    "{}{}",
+                    model.id,
+                    if current == Some(model.id.as_str()) {
+                        " · current"
+                    } else {
+                        ""
+                    }
+                ),
+                enter_action: Some(AppAction::ChooseModel(model)),
                 delete_action: None,
             });
         }
     }
+    let selected = selected.unwrap_or_else(|| {
+        items
+            .iter()
+            .position(|item| item.enter_action.is_some())
+            .unwrap_or(0)
+    });
     app.modal = Some(Modal::Selection(SelectionModal {
-        title: "Select model and reasoning effort".into(),
+        title: "Model catalog · choose a model".into(),
         items,
         selected,
-        hint: "↑/↓ select · Enter apply · Esc close · /model MODEL --reasoning=high".into(),
+        hint: "↑/↓ choose model · Enter choose effort next · Esc cancel".into(),
     }));
     app.dirty = true;
 }
@@ -152,6 +179,26 @@ pub(super) fn show_effort_picker(cfg: &Config, app: &mut App) {
         app.push_error("No model selected. Use /model MODEL first.");
         return;
     };
+    let models = match crate::model_controls::configured_catalog(cfg) {
+        Ok(models) => models,
+        Err(error) => {
+            app.push_error(error);
+            return;
+        }
+    };
+    let chosen = models
+        .into_iter()
+        .find(|entry| &entry.id == model)
+        .unwrap_or_else(|| CatalogModel::named(model.clone()));
+    show_model_effort_picker(cfg, app, chosen);
+}
+
+pub(super) fn show_model_effort_picker(cfg: &Config, app: &mut App, chosen_model: CatalogModel) {
+    if let Err(error) = chosen_model.validate() {
+        app.push_error(error);
+        return;
+    }
+    let model = &chosen_model.id;
     if !cfg.providers.is_empty() {
         if let Ok(chosen) = crate::provider_config::selection(cfg, model) {
             if let Some(crate::provider_config::ReasoningControls::Budget { min, max }) = chosen
@@ -187,10 +234,18 @@ pub(super) fn show_effort_picker(cfg: &Config, app: &mut App) {
                         delete_action: None,
                     });
                 }
+                let current_budget = chosen
+                    .entry
+                    .and_then(|entry| crate::provider_config::reasoning(entry).ok())
+                    .flatten();
+                let selected = items.iter().position(|item| matches!(
+                    (&item.enter_action, current_budget),
+                    (Some(AppAction::SelectModelBudget { budget, .. }), Some(crate::provider_config::Reasoning::Budget(value))) if *budget == value
+                )).unwrap_or(0);
                 app.modal = Some(Modal::Selection(SelectionModal {
-                    title: "Thinking token budget".into(),
+                    title: format!("Thinking token budget · {model}"),
                     items,
-                    selected: 0,
+                    selected,
                     hint: "↑/↓ select · Enter apply · Esc close · /effort TOKENS".into(),
                 }));
                 app.dirty = true;
@@ -198,28 +253,20 @@ pub(super) fn show_effort_picker(cfg: &Config, app: &mut App) {
             }
         }
     }
-    let models = match crate::model_controls::configured_catalog(cfg) {
-        Ok(models) => models,
-        Err(error) => {
-            app.push_error(error);
-            return;
-        }
-    };
-    let declared = models
-        .iter()
-        .find(|entry| &entry.id == model)
-        .map(|entry| entry.reasoning_efforts.clone())
-        .unwrap_or_default();
+    let declared = chosen_model.reasoning_efforts;
     let known = !declared.is_empty();
     let efforts = if known {
         declared
     } else {
         ReasoningEffort::ALL.to_vec()
     };
-    let current = crate::model_controls::display_effort(cfg).unwrap_or_else(|| "default".into());
+    let current = crate::model_controls::selected_effort(cfg, model)
+        .ok()
+        .flatten()
+        .flatten();
     let mut items = vec![SelectionItem {
         label: "Provider default".into(),
-        detail: "Omit the reasoning_effort parameter".into(),
+        detail: "Use this model's provider defaults".into(),
         enter_action: Some(AppAction::SelectModelEffort {
             model: model.clone(),
             effort: None,
@@ -228,7 +275,7 @@ pub(super) fn show_effort_picker(cfg: &Config, app: &mut App) {
     }];
     let mut selected = 0;
     for effort in efforts {
-        if current == effort.as_str() {
+        if current == Some(effort) {
             selected = items.len();
         }
         items.push(SelectionItem {

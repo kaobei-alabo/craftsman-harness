@@ -7,7 +7,7 @@
 //! `erase_when_done=True`.
 //!
 //! Used by the approval gate (`hitl.rs`) and the skills browser
-//! (`skills_browser.rs`). It returns the
+//! (the TUI skill menu). It returns the
 //! chosen index or `None` when cancelled or when there's no TTY (callers keep
 //! their plain-text fallback for that case).
 //!

@@ -3,15 +3,13 @@
 //! transports, both configured as ordinary `mcp_servers` entries:
 //!
 //! - `streamable_http` (default): JSON-RPC over HTTP POST, responses as
-//!   JSON or a one-event SSE body. The platform's `/mcp` is just another
-//!   such server (add it with the API token as a bearer header).
+//!   JSON or a one-event SSE body. Endpoints and headers come from config.
 //! - `stdio`: JSON-RPC over a child process's stdin/stdout
 //!   (`{"transport": "stdio", "command": …, "args": […], "env": {…}}`),
 //!   newline-delimited JSON, one message per line.
 //!
 //! The legacy initialize/session era is not implemented on either
-//! transport (deprecated platform-side as of 2027-07-28; see
-//! `docs/platform-token-refactor.md` §4.6) — a legacy-era server fails with
+//! transport — a legacy-era server fails with
 //! a clear per-server error instead of a silent skip. Per-server failures
 //! surface as a message instead of crashing the session.
 

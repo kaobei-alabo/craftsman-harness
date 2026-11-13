@@ -1,19 +1,7 @@
-//! Craftsman's `~/.craftsman/config.json`.
-//!
-//! The file can hold legacy keys this struct does not model (the retired
-//! Python client wrote keys like `langfuse_*`), so unknown fields are
-//! preserved round-trip via `extra`. Secrets (`api_key`, the platform API
-//! token) are never logged or printed (craftsman-harness rule #7).
-//!
-//! Platform access is headless and token-configured (see
-//! `docs/platform-token-refactor.md`): the platform's LLM endpoint is a
-//! stock OpenAI-compatible provider (`base_url` + `api_key`), the platform's
-//! `/mcp` is an ordinary `mcp_servers` entry, and `platform.api_token` is
-//! the single credential for harness-facing REST (skills) and the workspace
-//! inbox. `${ENV_VAR}` placeholders are supported in `api_key` and MCP
-//! header values. Legacy login-era fields (`auth_token`, `refresh_token`, …)
-//! are no longer modeled; on-disk leftovers round-trip through `extra` and
-//! trigger a one-time migration notice.
+//! Local configuration and explicitly declared model/MCP/search connections.
+//! Unknown and retired login fields are preserved as compatibility data.
+//! Credentials are never printed; placeholders expand only in configured
+//! API keys and MCP headers. Retired platform fields enable no service.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -88,13 +76,11 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PlatformConfig {
-    /// Platform root URL (normalized). Feeds the skills REST client and the
-    /// workspace inbox poller — never the LLM route (that's `base_url`).
+    /// Retired connection data, retained only for file compatibility and
+    /// protected legacy credential capture. No runtime service consumes it.
     #[serde(default)]
     pub base_url: String,
-    /// Personal platform API token (secret — never logged). Static: expiry
-    /// and rotation are handled on the platform side (`auth` app
-    /// `api-keys/rotate`). Falls back to `$CRAFTSMAN_PLATFORM_TOKEN` when empty.
+    /// Retired secret; preserved and never displayed.
     #[serde(default)]
     pub api_token: String,
 }
@@ -118,7 +104,7 @@ pub struct Config {
     #[serde(default = "default_agent")]
     pub agent: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "PlatformConfig::is_empty")]
     pub platform: PlatformConfig,
     #[serde(default = "default_locale")]
     pub locale: String,
@@ -140,6 +126,12 @@ pub struct Config {
     /// BTreeMap keeps the on-disk order stable across round-trips.
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl PlatformConfig {
+    fn is_empty(&self) -> bool {
+        self.base_url.is_empty() && self.api_token.is_empty()
+    }
 }
 
 impl Default for Config {
@@ -215,12 +207,6 @@ pub fn config_dir() -> PathBuf {
 
 pub fn config_path() -> PathBuf {
     config_dir().join("config.json")
-}
-
-/// The shared skills directory (`~/.craftsman/skills`), where platform-installed
-/// skills live.
-pub fn skills_dir() -> PathBuf {
-    config_dir().join("skills")
 }
 
 #[cfg(unix)]
@@ -425,10 +411,15 @@ impl Config {
             .unwrap_or(false)
     }
 
-    /// The resolved platform API token: the configured value when present,
-    /// otherwise `$CRAFTSMAN_PLATFORM_TOKEN`. `${ENV_VAR}` placeholders inside
-    /// the configured value are expanded. Empty result ⇒ platform features
-    /// (skills, inbox) are simply unconfigured.
+    /// A declared model connection, including the standard API for an
+    /// explicitly configured legacy key. Catalog browsing alone is local.
+    pub fn has_model_connection(&self) -> bool {
+        !self.providers.is_empty() || !self.base_url.is_empty() || !self.api_key.is_empty()
+    }
+
+    /// Test-only compatibility for the original credential fixture. Runtime
+    /// connections do not read the retired token or its environment fallback.
+    #[cfg(test)]
     pub fn platform_api_token(&self) -> String {
         if self.platform.api_token.trim().is_empty() {
             return std::env::var("CRAFTSMAN_PLATFORM_TOKEN")
@@ -439,8 +430,8 @@ impl Config {
         expand_env_placeholders(&self.platform.api_token).unwrap_or_default()
     }
 
-    /// True when both platform coordinates are configured (REST features and
-    /// the inbox poller engage).
+    /// Test-only legacy configuration predicate; enables no runtime feature.
+    #[cfg(test)]
     pub fn platform_configured(&self) -> bool {
         !self.platform.base_url.is_empty() && !self.platform_api_token().is_empty()
     }

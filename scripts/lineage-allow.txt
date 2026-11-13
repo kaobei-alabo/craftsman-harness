@@ -40,7 +40,6 @@ crates/craftsman-rs/src/threads_db.rs:SchemaKind::Python  # legacy-database migr
 crates/craftsman-rs/src/threads_db.rs:    Python,  # legacy-database migration: the SchemaKind variant declaration
 
 # --- config round-trip of legacy keys (compatibility code) ---
-crates/craftsman-rs/src/config.rs://! Python client wrote keys like `langfuse_*`)  # legacy config keys: says which client wrote the keys the struct round-trips
 
 # --- Python the interpreter, not lineage ---
 scripts/gen-fixtures-v040.py:Python  # the fixture generator is a Python script; names interpreter versions

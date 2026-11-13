@@ -1149,9 +1149,8 @@ pub async fn run(
     if cfg.has_legacy_credentials() {
         // One-time migration notice (printed once per launch, not per turn).
         eprintln!(
-            "note: login-era fields found in config.json; they are ignored now. Set \
-             platform.api_token (or $CRAFTSMAN_PLATFORM_TOKEN) and point base_url at the \
-             platform's OpenAI-compatible endpoint."
+            "note: legacy login fields in config.json are ignored. Configure a model \
+             connection with an endpoint and API key."
         );
     }
     if auto_approve || cfg.auto_approve {
@@ -1206,10 +1205,10 @@ pub async fn run(
     }
     if force_setup {
         super::provider_setup::show(&cfg, &mut app);
-    } else if cfg.model.is_none() && cfg.platform.base_url.is_empty() && cfg.base_url.is_empty() {
+    } else if !cfg.has_model_connection() {
         app.push_kind(
             TranscriptKind::Hint,
-            "Setup required · run /setup to connect a platform or direct model endpoint",
+            "Setup required · run /setup to configure a model connection",
         );
     }
     if let Some(thread_id) = resume_thread {

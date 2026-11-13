@@ -4,8 +4,7 @@ use super::app::{App, TranscriptKind};
 use super::input::{VoiceRequest, request_voice_cancel, request_voice_start};
 use super::modals::{
     AppAction, EditorModal, Modal, SelectionItem, SelectionModal, show_harness_modal,
-    show_mode_modal, show_queue_modal, show_setup_modal, show_skills_modal, show_tasks_modal,
-    show_voice_model_modal,
+    show_mode_modal, show_queue_modal, show_skills_modal, show_tasks_modal, show_voice_model_modal,
 };
 use super::render::{auth_status, server_status};
 use super::session_bridge::{AgentSlot, UiEvent, hydrate_transcript, state_as_markdown};
@@ -13,11 +12,10 @@ use crate::agent::{self, Session};
 use crate::checkpoints::LibsqlCheckpointer;
 use crate::config::Config;
 use crate::hitl::ApprovalState;
-use crate::route::resolve_chat_endpoint;
 use craftsman_harness::Checkpointer;
 use std::sync::{Arc, Mutex};
 
-const HELP: &str = "Commands\n  /setup      guided platform or direct-provider setup\n  /help       show this help\n  /model      list models; /model <name> [--reasoning=level] selects\n  /effort     choose model reasoning effort\n  /mode       choose permissions; Shift-Tab cycles modes\n  /status     show route, model, mode, token, and task status\n  /doctor     diagnose local configuration and connectivity state\n  /agents     list agents; /agents <name> selects/creates\n  /skills     list installed/platform skills\n  /gadgets    list local gadgets, capabilities, and approval status\n  /mcp        list MCP servers and tools\n  /lsp        show/restart language servers; /lsp restart <name>\n  /config     show current config\n  /harness    choose or inspect the harness profile\n  /clear      start a fresh conversation\n  /compact    summarize older messages\n  /session    list/resume sessions; supports rename/delete/export\n  /queue      inspect or remove queued follow-ups\n  /tokens     show token usage\n  /tasks      open the subagent task drawer\n  /memories   list long-term memory files\n  /diff       show staged, unstaged, and untracked workspace changes\n  /checkpoints list per-turn workspace file checkpoints\n  /rewind     restore files; /rewind [checkpoint-id] [--force]\n  /copy       copy the latest Craftsman answer\n  /editor     open a large multiline prompt editor\n  /version    print version\n  /voice      dictate by voice (Ctrl+G)\n  /quit       exit (also /exit)\nInline: !cmd runs a shell command. Ctrl-C stops a running turn.
+const HELP: &str = "Commands\n  /setup      configure model endpoint and API key\n  /help       show this help\n  /model      choose model then effort; /model --refresh discovers configured providers\n  /effort     choose model reasoning effort\n  /mode       choose permissions; Shift-Tab cycles modes\n  /status     show route, model, mode, token, and task status\n  /doctor     diagnose local configuration and connectivity state\n  /agents     list agents; /agents <name> selects/creates\n  /skills     list local skills\n  /gadgets    list local gadgets, capabilities, and approval status\n  /mcp        list MCP servers and tools\n  /lsp        show/restart language servers; /lsp restart <name>\n  /config     show current config\n  /harness    choose or inspect the harness profile\n  /clear      start a fresh conversation\n  /compact    summarize older messages\n  /session    list/resume sessions; supports rename/delete/export\n  /queue      inspect or remove queued follow-ups\n  /tokens     show token usage\n  /tasks      open the subagent task drawer\n  /memories   list long-term memory files\n  /diff       show staged, unstaged, and untracked workspace changes\n  /checkpoints list per-turn workspace file checkpoints\n  /rewind     restore files; /rewind [checkpoint-id] [--force]\n  /copy       copy the latest Craftsman answer\n  /editor     open a large multiline prompt editor\n  /version    print version\n  /voice      dictate by voice (Ctrl+G)\n  /quit       exit (also /exit)\nInline: !cmd runs a shell command. Ctrl-C stops a running turn.
 Navigation: ↑/↓ prompt/history · trackpad/mouse or PgUp/PgDn chat · click tool/task rows or Ctrl-O to expand.";
 
 pub(super) const SLASH_COMMANDS: &[(&str, &str)] = &[
@@ -210,30 +208,16 @@ fn doctor_text(cfg: &Config, session: Option<&Session>) -> String {
         Some(model) => format!("✓ model: {model}"),
         None => "✗ model: not selected (run /setup)".to_string(),
     });
-    rows.push(
-        if cfg.platform.base_url.is_empty() && cfg.base_url.is_empty() {
-            "✗ route: no endpoint configured".to_string()
-        } else if let Some(session) = session {
-            format!("✓ route: {}", session.route_source)
-        } else {
-            "… route: starting".to_string()
-        },
-    );
-    if !cfg.platform.base_url.is_empty() {
-        rows.push(if !cfg.platform_configured() {
-            "✗ platform: no API token configured".to_string()
-        } else {
-            format!("✓ platform: {} (api-token)", cfg.platform.base_url)
-        });
-    }
-    if !cfg.base_url.is_empty() {
-        rows.push(format!("✓ direct endpoint: {}", cfg.base_url));
-        rows.push(if cfg.api_key.is_empty() {
-            "! direct API key: empty".to_string()
-        } else {
-            "✓ direct API key: configured".to_string()
-        });
-    }
+    rows.push(if !cfg.has_model_connection() {
+        "✗ route: no endpoint configured".to_string()
+    } else if let Some(session) = session {
+        format!("✓ route: {}", session.route_source)
+    } else {
+        "… route: starting".to_string()
+    });
+    let (endpoint, key_status) = super::render::connection_details(cfg);
+    rows.push(format!("model endpoint: {endpoint}"));
+    rows.push(format!("model credential: {key_status}"));
     if let Some(session) = session {
         rows.push(if session.checkpointer.is_some() {
             "✓ session persistence".to_string()
@@ -533,10 +517,16 @@ Re-run with --force only if overwriting those newer changes is intended.",
                 Err(error) => app.push(format!("could not create agent {name}: {error}")),
             }
         }
-        "/skills" => match load_skill_statuses(cfg).await {
-            Ok(statuses) if statuses.is_empty() => app.push("(no skills available)"),
-            Ok(statuses) => show_skills_modal(app, statuses),
-            Err(error) => app.push(format!("could not load skills: {error}")),
+        "/skills" => match std::env::current_dir() {
+            Ok(cwd) => {
+                let skills = crate::skills::discover_at(&cfg.agent, &cwd);
+                if skills.is_empty() {
+                    app.push("(no local skills found)");
+                } else {
+                    show_skills_modal(app, skills);
+                }
+            }
+            Err(_) => app.push_error("Could not determine the workspace for local skills."),
         },
         "/gadgets" => {
             #[cfg(feature = "gadgets")]
@@ -722,10 +712,22 @@ Re-run with --force only if overwriting those newer changes is intended.",
         "/model" => {
             let tokens: Vec<_> = parts.collect();
             if tokens.is_empty() {
+                match crate::model_controls::configured_catalog(cfg) {
+                    Ok(models) => super::model_commands::show_model_catalog(
+                        app,
+                        models,
+                        cfg.model.as_deref(),
+                        !cfg.providers.is_empty(),
+                    ),
+                    Err(error) => app.push_error(error),
+                }
+                return false;
+            }
+            if tokens == ["--refresh"] {
                 app.running = true;
                 app.cancel_requested = false;
                 app.operation_cancellation = Some(slot.fetch_model_catalog(cfg.clone()));
-                app.push("Loading provider and configured model catalog…");
+                app.push("Refreshing the configured model connections…");
                 return false;
             }
             match crate::model_controls::parse_selection(tokens.into_iter()) {
@@ -993,12 +995,7 @@ async fn handle_session_command(args: Vec<&str>, slot: &mut AgentSlot, app: &mut
 }
 
 pub(super) fn action_status(action: &AppAction) -> Option<String> {
-    use crate::skills_browser::BrowserAction;
     match action {
-        AppAction::Skill(BrowserAction::Install(id)) => Some(format!("installing skill {id}…")),
-        AppAction::Skill(BrowserAction::Update(id)) => Some(format!("updating skill {id}…")),
-        AppAction::Skill(BrowserAction::Remove(id)) => Some(format!("removing skill {id}…")),
-        AppAction::SetupPlatform { .. } => Some("connecting to the platform…".to_string()),
         AppAction::SetupDirect { model, .. } => Some(format!("configuring direct model {model}…")),
         AppAction::SaveProviderSetup { provider, .. } => {
             Some(format!("configuring provider {provider}…"))
@@ -1015,6 +1012,10 @@ pub(super) async fn handle_app_action(
     app: &mut App,
 ) {
     match action {
+        AppAction::ChooseModel(model) => {
+            super::model_commands::show_model_effort_picker(cfg, app, model);
+        }
+        #[cfg(test)]
         AppAction::SelectModel(model) => {
             super::model_commands::select_model(
                 cfg,
@@ -1134,9 +1135,6 @@ pub(super) async fn handle_app_action(
                 &provider, base_url, api_key, model, cfg, slot, approval, app,
             );
         }
-        AppAction::SetupPlatform { url, token } => {
-            handle_setup_platform(url, token, cfg, slot, approval, app).await;
-        }
         AppAction::SetupDirect {
             base_url,
             api_key,
@@ -1144,121 +1142,7 @@ pub(super) async fn handle_app_action(
         } => {
             handle_setup_direct(base_url, api_key, model, cfg, slot, approval, app).await;
         }
-        AppAction::Skill(action) => {
-            use crate::skills_browser::BrowserAction;
-            let result = match &action {
-                BrowserAction::Install(id) => {
-                    match crate::platform_skills::SkillsClient::connect(cfg).await {
-                        Ok(client) => crate::platform_skills::install_skill(&client, id)
-                            .await
-                            .map(|marker| format!("installed {} v{}", marker.name, marker.version)),
-                        Err(error) => Err(error),
-                    }
-                }
-                BrowserAction::Update(id) => {
-                    match crate::platform_skills::SkillsClient::connect(cfg).await {
-                        Ok(client) => {
-                            crate::platform_skills::update_skill(&client, id)
-                                .await
-                                .map(|marker| {
-                                    format!("updated {} to v{}", marker.name, marker.version)
-                                })
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
-                BrowserAction::Remove(id) => {
-                    if crate::platform_skills::remove_skill(id) {
-                        Ok(format!("removed {id}"))
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "refused to remove {id}: not platform-installed"
-                        ))
-                    }
-                }
-            };
-            match result {
-                Ok(message) => {
-                    app.push(message);
-                    slot.rebuild(cfg, approval.clone());
-                }
-                Err(error) => app.push(format!("skill action failed: {error}")),
-            }
-            match load_skill_statuses(cfg).await {
-                Ok(statuses) if !statuses.is_empty() => show_skills_modal(app, statuses),
-                Ok(_) => {}
-                Err(error) => app.push(format!("could not refresh skills: {error}")),
-            }
-        }
     }
-}
-
-async fn handle_setup_platform(
-    url: String,
-    token: String,
-    cfg: &mut Config,
-    slot: &mut AgentSlot,
-    approval: &Arc<Mutex<ApprovalState>>,
-    app: &mut App,
-) {
-    if !cfg.providers.is_empty() {
-        app.push_error("Choose a named provider with /setup before changing its connection.");
-        super::provider_setup::show(cfg, app);
-        return;
-    }
-    let normalized = match crate::platform_rest::normalize_platform_url(&url) {
-        Ok(url) => url,
-        Err(error) => {
-            app.push_error(format!("Invalid platform URL: {error}"));
-            show_setup_modal(app);
-            return;
-        }
-    };
-    if token.trim().is_empty() {
-        app.push_error("An API token is required; mint one on the platform (auth → API keys)");
-        show_setup_modal(app);
-        return;
-    }
-    // Headless token configuration (docs/platform-token-refactor.md): the
-    // platform block holds the credential for skills REST, and the LLM route
-    // is the derived OpenAI-compatible endpoint.
-    cfg.platform.base_url = normalized.clone();
-    cfg.platform.api_token = token.trim().to_string();
-    cfg.base_url = format!("{}/apps/llm/api/v1", normalized.trim_end_matches('/'));
-    cfg.api_key = token.trim().to_string();
-    let _ = cfg.save();
-    let route = match resolve_chat_endpoint(cfg).await {
-        Ok(route) => route,
-        Err(error) => {
-            app.push_error(format!("Platform configuration failed: {error}"));
-            show_setup_modal(app);
-            return;
-        }
-    };
-    match crate::platform::list_models(cfg, &route).await {
-        Ok(models) if !models.is_empty() => {
-            app.push(format!("Platform connected: {normalized}"));
-            app.modal = Some(Modal::Selection(SelectionModal {
-                title: "Choose your default model".to_string(),
-                items: models
-                    .into_iter()
-                    .map(|model| SelectionItem {
-                        label: model.clone(),
-                        detail: String::new(),
-                        enter_action: Some(AppAction::SelectModel(model)),
-                        delete_action: None,
-                    })
-                    .collect(),
-                selected: 0,
-                hint: "↑/↓ select · Enter finish setup · Esc close".to_string(),
-            }));
-        }
-        Ok(_) => app.push("Platform configured, but no models were reported. Use /model <name>."),
-        Err(error) => app.push_error(format!(
-            "Platform configured, but model discovery failed: {error}"
-        )),
-    }
-    slot.rebuild(cfg, approval.clone());
 }
 
 async fn handle_setup_direct(
@@ -1275,49 +1159,31 @@ async fn handle_setup_direct(
         super::provider_setup::show(cfg, app);
         return;
     }
-    cfg.base_url = base_url.trim_end_matches('/').to_string();
-    cfg.api_key = api_key;
-    cfg.model = Some(model.clone());
-    cfg.platform = crate::config::PlatformConfig::default();
-    match cfg.save() {
+    let valid_endpoint = reqwest::Url::parse(&base_url).ok().is_some_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && base_url.len() <= 4096
+    });
+    if !valid_endpoint || crate::model_controls::validate_model_id(&model).is_err() {
+        app.push_error("Enter an HTTP(S) endpoint and a valid API model ID.");
+        return;
+    }
+    let mut candidate = cfg.clone();
+    candidate.base_url = base_url.trim_end_matches('/').to_string();
+    candidate.api_key = api_key;
+    candidate.model = Some(model);
+    match candidate.save() {
         Ok(()) => {
-            let route = match resolve_chat_endpoint(cfg).await {
-                Ok(route) => route,
-                Err(error) => {
-                    app.push_error(format!("Invalid direct configuration: {error}"));
-                    return;
-                }
-            };
-            match crate::platform::list_models(cfg, &route).await {
-                Ok(models) if models.iter().any(|candidate| candidate == &model) => app.push(
-                    format!("Direct endpoint verified; model {model} is available"),
-                ),
-                Ok(models) if !models.is_empty() => app.push(format!(
-                    "Direct endpoint returned {} models; {model} was not listed",
-                    models.len()
-                )),
-                Ok(_) => app.push(format!("Direct provider configured with model {model}")),
-                Err(error) => app.push_error(format!(
-                    "Configuration saved, but endpoint verification failed: {error}"
-                )),
-            }
+            *cfg = candidate;
+            app.push("Model connection configured. Use /model to choose its effort.");
             slot.rebuild(cfg, approval.clone());
         }
         Err(error) => app.push_error(format!("Could not save setup: {error}")),
     }
-}
-
-async fn load_skill_statuses(
-    cfg: &Config,
-) -> anyhow::Result<Vec<crate::platform_skills::SkillStatus>> {
-    use crate::platform_skills::{SkillsClient, compute_status, installed_platform_skills};
-    let installed = installed_platform_skills();
-    let platform = match SkillsClient::connect(cfg).await {
-        Ok(client) => client.list().await?,
-        Err(error) if installed.is_empty() => return Err(error),
-        Err(_) => Vec::new(),
-    };
-    Ok(compute_status(&installed, &platform))
 }
 
 fn select_voice_model(name: &str, cfg: &mut Config, app: &mut App) {
@@ -1363,25 +1229,17 @@ pub(super) fn display_submission(line: &str) -> String {
 }
 
 fn config_text(cfg: &Config, session: Option<&Session>) -> String {
+    let (endpoint, key_status) = super::render::connection_details(cfg);
     format!(
-        "agent:   {}\nmodel:   {}\nharness: {}\npreset:  {}\nparallel agents: {}\nendpoint: {}\nplatform: {}",
+        "agent:   {}\nmodel:   {}\nharness: {}\npreset:  {}\nparallel agents: {}\nendpoint: {}\nAPI key: {}\nMCP servers: {}\nstorage: local",
         cfg.agent,
         cfg.model.as_deref().unwrap_or("(none — run /model)"),
         session.map_or("(resolving)", |session| session.harness_profile.as_str()),
         crate::harness_profiles::configured_harness_preset(cfg).id,
         cfg.effective_max_parallel_agents(),
-        if cfg.base_url.is_empty() {
-            "(not configured — run /setup)"
-        } else {
-            &cfg.base_url
-        },
-        if cfg.platform.base_url.is_empty() {
-            "(not configured)".to_string()
-        } else if cfg.platform_configured() {
-            format!("{} (api-token)", cfg.platform.base_url)
-        } else {
-            format!("{} (no api token)", cfg.platform.base_url)
-        }
+        endpoint,
+        key_status,
+        cfg.mcp_servers.len(),
     )
 }
 

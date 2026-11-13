@@ -306,11 +306,12 @@ fn provider_model_picker_and_budget_choices_are_scoped_to_the_current_model() {
     );
     assert!(cfg.providers["claude"].models["m"].settings["reasoning"].is_null());
     let models = crate::model_controls::configured_catalog(&cfg).unwrap();
-    show_model_catalog(&mut app, models, Some("claude/m"));
+    show_model_catalog(&mut app, models, Some("claude/m"), true);
     let Some(Modal::Selection(picker)) = &app.modal else {
         panic!("missing model picker")
     };
     assert!(
-        matches!(&picker.items[0].enter_action,Some(AppAction::SelectModel(id))if id=="claude/m")
+        matches!(&picker.items[1].enter_action,Some(AppAction::ChooseModel(model))if model.id=="claude/m")
     );
+    assert!(picker.items[0].enter_action.is_none());
 }
