@@ -59,7 +59,6 @@ AGENTS.md:NOTICE (interim attribution for text inherited from deepagents and Lan
 scripts/benchmark-gadgets.py:Python 3.11+  # names the interpreter minimum for the standard-library benchmark driver
 scripts/test-benchmark-gadgets.py:Python standard library  # describes the benchmark driver's dependency-free contract tests
 scripts/verify.sh:Verification requires Python 3.11  # interpreter prerequisite for tomllib, not project lineage
-docs/archive/readme-2026-11-13.md:Python 3.11+ interpreter  # archived verification interpreter prerequisite from the former README
 AGENTS.md:Python 3.11+ interpreter  # documents the verification interpreter prerequisite
 docs/production-readiness.md:Python 3.11+ interpreter  # documents the verification interpreter prerequisite
 

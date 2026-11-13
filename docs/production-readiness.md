@@ -171,11 +171,9 @@ See [gadgets.md](gadgets.md) for the host contracts and project scopes.
 
 ## Verification entry point and CI
 
-The README is a concise product introduction. The former detailed configuration,
-implementation notes and layout are preserved in the
-[November 13 README archive](archive/readme-2026-11-13.md); its dated/retired claims
-remain historical. Current architecture and limits are in
-[runtime-status.md](runtime-status.md) and the feature docs.
+The README is a concise product introduction. Current configuration,
+architecture and limits are in [runtime-status.md](runtime-status.md) and the
+feature docs.
 
 The owner made the MIT repository public on November 13. Main
 [run 43367914846, attempt 2](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43367914846)
