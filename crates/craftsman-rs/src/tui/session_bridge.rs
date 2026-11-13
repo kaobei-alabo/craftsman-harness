@@ -101,6 +101,7 @@ impl UiBridge {
         let ask_tx = self.tx.clone();
         SessionExtras {
             interrupt_model_on_cancel: true,
+            task_focused_memory: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             round_sink: Some(Arc::new(move || {

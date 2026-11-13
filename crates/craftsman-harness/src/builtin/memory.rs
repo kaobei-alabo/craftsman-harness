@@ -1,10 +1,9 @@
-//! `MemoryMiddleware` — loads long-term memory files (under `/memories/`) once
-//! per session and injects them as an `<agent_memory>` system section every
-//! round, followed by the `MEMORY_GUIDELINES` block.
+//! `MemoryMiddleware` loads configured memory files at each turn start and
+//! injects an `<agent_memory>` section plus the selected guidance every round.
 //!
 //! The `turn_start`/`prepare_model` hooks only receive `&mut AgentState`, so the
 //! middleware holds an `Arc<dyn Backend>` at construction (the app passes the
-//! composite backend). Sources are read once via that backend (`OnceCell`) and
+//! composite backend). Sources are read once per turn through that backend and
 //! the resulting section is (re)appended to `system_extras` each round, since the
 //! agent loop clears `system_extras` at every round boundary.
 
@@ -32,6 +31,16 @@ const MEMORY_GUIDELINES: &str = "<memory_guidelines>\n\
     - Never store API keys, tokens, passwords, or other credentials in memory.\n\
     </memory_guidelines>";
 
+/// Guidance for an explicitly opted-in coding frontend.
+const TASK_FOCUSED_GUIDELINES: &str = "<memory_guidelines>\n\
+    The <agent_memory> section above is the turn-start snapshot loaded by the harness.\n\
+    Use it as background context; the current user request, repository instructions, and permissions take priority.\n\
+    Begin the current task using the relevant workspace files. Read more memory only when a missing durable fact matters to this task.\n\
+    Save a preference or durable fact only when the user clearly establishes it for future work. Task requirements, test results, and boilerplate instructions do not need memory updates.\n\
+    Save lasting preferences in `/memories/AGENTS.md`, the file loaded on the next turn. Read an existing file before editing and preserve unrelated preferences.\n\
+    Never store API keys, tokens, passwords, or other credentials. Existing read and write permissions still apply.\n\
+    </memory_guidelines>";
+
 /// Reverse [`crate::backend::cat_n`]'s line numbering to recover raw file text.
 ///
 /// `cat_n` emits `"{n:>6}\t{line}"` per line, so splitting each line on its first
@@ -53,6 +62,7 @@ fn strip_cat_n(numbered: &str) -> String {
 pub struct MemoryMiddleware {
     backend: Arc<dyn Backend>,
     sources: Vec<String>,
+    guidelines: &'static str,
     /// Loaded `(path, content)` pairs — refreshed at each turn start
     /// (`turn_start`), reused across that turn's rounds. A `Mutex<Option<…>>`
     /// rather than `OnceCell` so an in-session memory write becomes visible on
@@ -68,8 +78,16 @@ impl MemoryMiddleware {
         Self {
             backend,
             sources,
+            guidelines: MEMORY_GUIDELINES,
             loaded: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Use already loaded memory without redundant discovery or task-local writes.
+    /// The default constructor retains the established guidance.
+    pub fn task_focused(mut self) -> Self {
+        self.guidelines = TASK_FOCUSED_GUIDELINES;
+        self
     }
 
     async fn load(&self) -> Vec<(String, String)> {
@@ -87,7 +105,7 @@ impl MemoryMiddleware {
         out
     }
 
-    fn section(contents: &[(String, String)]) -> String {
+    fn section(contents: &[(String, String)], guidelines: &str) -> String {
         let body = if contents.is_empty() {
             "(No memory loaded)".to_string()
         } else {
@@ -97,7 +115,7 @@ impl MemoryMiddleware {
                 .collect::<Vec<_>>()
                 .join("\n\n")
         };
-        format!("<agent_memory>\n{body}\n</agent_memory>\n\n{MEMORY_GUIDELINES}")
+        format!("<agent_memory>\n{body}\n</agent_memory>\n\n{guidelines}")
     }
 }
 
@@ -128,7 +146,8 @@ impl AgentMiddleware for MemoryMiddleware {
                 fresh
             }
         };
-        st.system_extras.push(Self::section(&contents));
+        st.system_extras
+            .push(Self::section(&contents, self.guidelines));
         Ok(())
     }
 }
@@ -184,6 +203,56 @@ mod tests {
         let mut st = AgentState::default();
         mw.prepare_model(&mut st).await.unwrap();
         assert!(st.system_extras[0].contains("(No memory loaded)"));
+    }
+
+    #[tokio::test]
+    async fn task_focused_memory_retains_loaded_facts_and_current_request_priority() {
+        let backend = backend_with(&[("/memories/AGENTS.md", "Prefer small patches.")]);
+        let mw = MemoryMiddleware::new(backend, vec!["/memories/AGENTS.md".into()]).task_focused();
+        let model = Arc::new(ScriptedModel::new(vec![Msg::assistant("done")]));
+        let agent = Agent::builder(model.clone())
+            .middleware(Arc::new(mw))
+            .build();
+        agent.run_turn("Fix the current bug.").await.unwrap();
+        let requests = model.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let section = &requests[0].system;
+        assert!(section.contains("Prefer small patches."));
+        assert!(section.contains(
+            "current user request, repository instructions, and permissions take priority"
+        ));
+        assert!(section.contains("Read more memory only when a missing durable fact matters"));
+        assert!(section.contains("Task requirements, test results, and boilerplate instructions do not need memory updates"));
+        assert!(section.contains("Never store API keys, tokens, passwords, or other credentials"));
+    }
+
+    #[tokio::test]
+    async fn task_focused_memory_refreshes_on_next_turn_without_extra_round_reads() {
+        let backend = backend_with(&[("/memories/AGENTS.md", "original preference")]);
+        let mw = MemoryMiddleware::new(backend.clone(), vec!["/memories/AGENTS.md".into()])
+            .task_focused();
+        let mut st = AgentState::default();
+        mw.turn_start(&mut st).await.unwrap();
+        backend.state.lock().unwrap().files.insert(
+            "/memories/AGENTS.md".into(),
+            FileData::text("new preference"),
+        );
+        mw.prepare_model(&mut st).await.unwrap();
+        assert!(st.system_extras[0].contains("original preference"));
+        st.system_extras.clear();
+        mw.turn_start(&mut st).await.unwrap();
+        mw.prepare_model(&mut st).await.unwrap();
+        assert!(st.system_extras[0].contains("new preference"));
+        assert!(!st.system_extras[0].contains("original preference"));
+    }
+
+    #[tokio::test]
+    async fn default_memory_guidance_remains_unchanged_for_legacy_builders() {
+        let mw = MemoryMiddleware::new(backend_with(&[]), Vec::new());
+        let mut st = AgentState::default();
+        mw.prepare_model(&mut st).await.unwrap();
+        assert!(st.system_extras[0].contains(MEMORY_GUIDELINES));
+        assert!(!st.system_extras[0].contains(TASK_FOCUSED_GUIDELINES));
     }
 
     #[tokio::test]

@@ -51,6 +51,10 @@ jobs:
           python-version: "3.12"
       - name: Test CI cache and workflow contracts
         run: python -I -B scripts/test-ci-cargo-cache.py
+      - name: Test coding evaluation contracts (no model calls)
+        run: |
+          python -I -B scripts/coding-eval/test_budget.py
+          python -I -B scripts/coding-eval/test_scope.py
   test:
     name: test (${{ matrix.os }})
     # A skipped draft job is never final validation. Ready PRs/main/manual
@@ -112,6 +116,10 @@ jobs:
         run: GGML_NATIVE=OFF cargo check --locked --workspace
       - name: Test benchmark driver contracts (no network or model calls)
         run: python -B scripts/test-benchmark-gadgets.py
+      - name: Test coding evaluation contracts (no model calls)
+        run: |
+          python -I -B scripts/coding-eval/test_budget.py
+          python -I -B scripts/coding-eval/test_scope.py
       - name: Test accepted headless contract (no CLI or model execution)
         run: python -I docs/schemas/check_exec.py --self-test
       - name: Check documented source provenance

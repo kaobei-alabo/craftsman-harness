@@ -1,0 +1,663 @@
+{
+  "version": 4,
+  "tasks": [
+    {
+      "id": "py-page-boundaries",
+      "language": "python",
+      "category": "bug",
+      "prompt": "Fix page(items, offset, limit): offset and limit must be nonnegative integers (booleans are invalid), limit counts items, and a zero limit returns an empty list. Keep the input unchanged. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "def page(items, offset, limit):\n    return items[offset:limit]\n",
+        "test_public.py": "from toolkit import page\nassert page([1,2,3],0,2) == [1,2]\n",
+        "README.md": "# Mini toolkit\n\nFix page(items, offset, limit): offset and limit must be nonnegative integers (booleans are invalid), limit counts items, and a zero limit returns an empty list. Keep the input unchanged.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "def page(items, offset, limit):\n    if type(offset) is not int or type(limit) is not int or offset < 0 or limit < 0:\n        raise ValueError('invalid pagination')\n    return list(items[offset:offset + limit])\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import toolkit as t\nimport unittest\nclass Cases(unittest.TestCase):\n    def test_offsets(self):\n        original = list(range(7))\n        for offset, limit, expected in [(2,3,[2,3,4]),(0,0,[]),(5,7,[5,6]),(8,2,[]),(3,0,[])]:\n            with self.subTest(offset=offset, limit=limit): self.assertEqual(t.page(original,offset,limit),expected)\n        self.assertEqual(original,list(range(7)))\n    def test_validation(self):\n        for offset, limit in [(-1,2),(1,-2),(True,2),(0,False),(1.5,3),(0,'3')]:\n            with self.subTest(offset=offset,limit=limit), self.assertRaises((ValueError,TypeError)): t.page([1,2],offset,limit)\nunittest.main()\n"
+    },
+    {
+      "id": "py-expiring-cache",
+      "language": "python",
+      "category": "bug",
+      "prompt": "Fix Cache so an entry expires when now() reaches its expiry, cached None is returned as a real hit, and ttl <= 0 is rejected with ValueError. Preserve clock injection and the caller-supplied missing default. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "class Cache:\n    def __init__(self, now): self.now, self.data = now, {}\n    def set(self, key, value, ttl): self.data[key] = (value, self.now() + ttl)\n    def get(self, key, default=None):\n        value, expires = self.data.get(key, (None, 0))\n        return value or default if self.now() <= expires else default\n",
+        "test_public.py": "from toolkit import Cache\nc=Cache(lambda:0)\nc.set('x','ok',1)\nassert c.get('x') == 'ok'\n",
+        "README.md": "# Mini toolkit\n\nFix Cache so an entry expires when now() reaches its expiry, cached None is returned as a real hit, and ttl <= 0 is rejected with ValueError. Preserve clock injection and the caller-supplied missing default.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "class Cache:\n    def __init__(self, now): self.now, self.data = now, {}\n    def set(self, key, value, ttl):\n        if ttl <= 0: raise ValueError('ttl must be positive')\n        self.data[key] = (value, self.now() + ttl)\n    def get(self, key, default=None):\n        record = self.data.get(key)\n        if record is None: return default\n        value, expires = record\n        if self.now() >= expires:\n            del self.data[key]\n            return default\n        return value\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import toolkit as t\nimport unittest\nclass Cases(unittest.TestCase):\n    def test_falsey_and_expiration(self):\n        clock=[10]; c=t.Cache(lambda:clock[0]); sentinel=object()\n        for value in [None,0,False,'',[],{}]:\n            with self.subTest(value=value):\n                c.set('k',value,2); self.assertIs(c.get('k',sentinel),value)\n        clock[0]=12; self.assertIs(c.get('k',sentinel),sentinel)\n        self.assertIs(c.get('never',sentinel),sentinel)\n    def test_replacement_and_validation(self):\n        c=t.Cache(lambda:0); c.set('x','old',2); c.set('x','new',4); self.assertEqual(c.get('x'),'new')\n        for ttl in [0,-1]:\n            with self.subTest(ttl=ttl), self.assertRaises(ValueError): c.set('x','bad',ttl)\n        self.assertEqual(c.get('x'),'new')\nunittest.main()\n"
+    },
+    {
+      "id": "js-event-dispatch",
+      "language": "javascript",
+      "category": "bug",
+      "prompt": "Fix Emitter dispatch when listeners unsubscribe or subscribe during emit. Dispatch must use the listeners present at the beginning, in registration order; the returned unsubscribe function must be idempotent. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "class Emitter {\n  constructor() { this.listeners = []; }\n  on(fn) { this.listeners.push(fn); return () => this.listeners.splice(this.listeners.indexOf(fn), 1); }\n  emit(value) { for (const fn of this.listeners) fn(value); }\n}\nmodule.exports = { Emitter };\n",
+        "test.cjs": "const {Emitter}=require('./lib.cjs'); const assert=require('node:assert/strict');const e=new Emitter(),x=[];e.on(v=>x.push(v));e.emit(3);assert.deepEqual(x,[3]);\n",
+        "README.md": "# Mini toolkit\n\nFix Emitter dispatch when listeners unsubscribe or subscribe during emit. Dispatch must use the listeners present at the beginning, in registration order; the returned unsubscribe function must be idempotent.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "class Emitter {\n  constructor() { this.listeners = []; }\n  on(fn) {\n    const entry = {fn}; this.listeners.push(entry);\n    let active = true;\n    return () => { if (!active) return; active = false; const i = this.listeners.indexOf(entry); if (i >= 0) this.listeners.splice(i, 1); };\n  }\n  emit(value) { for (const entry of [...this.listeners]) entry.fn(value); }\n}\nmodule.exports = { Emitter };\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const assert = require('node:assert/strict');\nconst {Emitter} = require('/workspace/lib.cjs');\nconst e = new Emitter(), seen=[];\nlet off;\noff=e.on(v=>{seen.push('a'+v);off();e.on(x=>seen.push('new'+x));});\nconst offb=e.on(v=>seen.push('b'+v));\ne.emit(1); assert.deepEqual(seen,['a1','b1']); off();\ne.emit(2); assert.deepEqual(seen,['a1','b1','b2','new2']);\noffb();offb();e.emit(3);assert.equal(seen.at(-1),'new3');\nconst d = new Emitter(), twice=[]; const same=()=>twice.push(1);\nconst first=d.on(same);d.on(same);first();d.emit();assert.deepEqual(twice,[1]);\n"
+    },
+    {
+      "id": "js-retry-attempts",
+      "language": "javascript",
+      "category": "bug",
+      "prompt": "Fix retry(fn, {attempts, delay, sleep}) so attempts is a positive integer counting the first attempt, delay doubles between retries, and errors with retryable === false stop immediately. Never sleep after the final attempt. Invalid attempts must raise RangeError. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "async function retry(fn, {attempts=3,delay=10,sleep=ms=>new Promise(r=>setTimeout(r,ms))}={}) {\n  for(let i=0;i<=attempts;i++) { try { return await fn(); } catch(err) { await sleep(delay); if(i===attempts) throw err; } }\n}\nmodule.exports={retry};\n",
+        "test.cjs": "const {retry}=require('./lib.cjs');retry(()=>5).then(v=>require('node:assert/strict').equal(v,5));\n",
+        "README.md": "# Mini toolkit\n\nFix retry(fn, {attempts, delay, sleep}) so attempts is a positive integer counting the first attempt, delay doubles between retries, and errors with retryable === false stop immediately. Never sleep after the final attempt. Invalid attempts must raise RangeError.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "async function retry(fn, {attempts=3,delay=10,sleep=ms=>new Promise(r=>setTimeout(r,ms))}={}) {\n  if(!Number.isInteger(attempts)||attempts<1) throw new RangeError('invalid attempts');\n  for(let i=0;i<attempts;i++) {\n    try { return await fn(); } catch(err) {\n      if(err.retryable===false || i+1===attempts) throw err;\n      await sleep(delay*2**i);\n    }\n  }\n}\nmodule.exports={retry};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const assert=require('node:assert/strict');const {retry}=require('/workspace/lib.cjs');\n(async()=>{\n  let n=0,delays=[];const error=new Error('x');\n  await assert.rejects(retry(()=>{n++;throw error},{attempts:3,delay:7,sleep:async ms=>delays.push(ms)}),e=>e===error);\n  assert.equal(n,3);assert.deepEqual(delays,[7,14]);\n  n=0;delays=[];assert.equal(await retry(()=>{if(++n<3)throw error;return 9},{attempts:3,delay:1,sleep:async ms=>delays.push(ms)}),9);\n  assert.deepEqual(delays,[1,2]);\n  const permanent=Object.assign(new Error('p'),{retryable:false});n=0;\n  await assert.rejects(retry(()=>{n++;throw permanent},{sleep:async()=>assert.fail('slept')}),e=>e===permanent);assert.equal(n,1);\n  for(const attempts of [0,-1,1.2,'2',true]) await assert.rejects(retry(()=>1,{attempts}),RangeError);\n})().catch(e=>{console.error(e);process.exitCode=1});\n"
+    },
+    {
+      "id": "rs-character-clip",
+      "language": "rust",
+      "category": "bug",
+      "prompt": "Fix clip(text, maximum) to keep at most maximum Unicode scalar values, without panicking or corrupting UTF-8. A zero maximum returns the empty string; do not change its borrowed return type. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn clip(text: &str, maximum: usize) -> &str { &text[..text.len().min(maximum)] }\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn ascii() { assert_eq!(mini_toolkit::clip(\"abc\",2),\"ab\"); }\n",
+        "README.md": "# Mini toolkit\n\nFix clip(text, maximum) to keep at most maximum Unicode scalar values, without panicking or corrupting UTF-8. A zero maximum returns the empty string; do not change its borrowed return type.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn clip(text: &str, maximum: usize) -> &str {\n    match text.char_indices().nth(maximum) { Some((i,_)) => &text[..i], None => text }\n}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::clip;\n#[test] fn scalar_boundaries() { for (s,n,want) in [(\"é漢🙂x\",0,\"\"),(\"é漢🙂x\",1,\"é\"),(\"é漢🙂x\",3,\"é漢🙂\"),(\"abc\",8,\"abc\"),(\"\",1,\"\")] {assert_eq!(clip(s,n),want);} }\n#[test] fn combining_marks() { assert_eq!(clip(\"e\\u{301}x\",2),\"e\\u{301}\"); assert_eq!(clip(\"é\",usize::MAX),\"é\"); }\n"
+    },
+    {
+      "id": "rs-inclusive-range",
+      "language": "rust",
+      "category": "bug",
+      "prompt": "Fix parse_range for inclusive unsigned ranges written start..end. Permit surrounding whitespace, reject reversed ranges and malformed input, and return None for an end that cannot be converted to an exclusive end without overflow. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn parse_range(s: &str) -> Option<std::ops::Range<u64>> {\n    let (a,b)=s.split_once(\"..\").unwrap();\n    Some(a.parse::<u64>().unwrap()..b.parse::<u64>().unwrap())\n}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn present() { assert!(mini_toolkit::parse_range(\"1..4\").is_some()); }\n",
+        "README.md": "# Mini toolkit\n\nFix parse_range for inclusive unsigned ranges written start..end. Permit surrounding whitespace, reject reversed ranges and malformed input, and return None for an end that cannot be converted to an exclusive end without overflow.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn parse_range(s: &str) -> Option<std::ops::Range<u64>> {\n    let (a,b)=s.trim().split_once(\"..\")?;\n    let start=a.trim().parse::<u64>().ok()?;\n    let end=b.trim().parse::<u64>().ok()?;\n    if start>end { return None; }\n    Some(start..end.checked_add(1)?)\n}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::parse_range;\n#[test] fn endpoints() {assert_eq!(parse_range(\"2..4\"),Some(2..5));assert_eq!(parse_range(\" 0 .. 0 \"),Some(0..1));}\n#[test] fn invalid() {for s in [\"\", \"4\", \"3..2\", \"x..4\", \"1..2..3\", \"-1..3\", \"0..18446744073709551615\"] {assert_eq!(parse_range(s),None,\"{s}\");}}\n"
+    },
+    {
+      "id": "py-config-merge",
+      "language": "python",
+      "category": "feature",
+      "prompt": "Implement merge_config(base, override). Recursively merge dictionaries; replace lists/scalars including explicit None. Return a deep independent copy and keep both input values unchanged. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "def merge_config(base, override):\n    raise NotImplementedError(\"merge_config\")\n",
+        "test_public.py": "import toolkit\nassert callable(toolkit.merge_config)\n",
+        "README.md": "# Mini toolkit\n\nImplement merge_config(base, override). Recursively merge dictionaries; replace lists/scalars including explicit None. Return a deep independent copy and keep both input values unchanged.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "from copy import deepcopy\ndef merge_config(base, override):\n    if not isinstance(base,dict) or not isinstance(override,dict): return deepcopy(override)\n    result=deepcopy(base)\n    for key,value in override.items():\n        result[key]=merge_config(base[key],value) if key in base else deepcopy(value)\n    return result\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import toolkit as t\nimport unittest\nclass Cases(unittest.TestCase):\n    def test_layers(self):\n        a={'db':{'host':'local','ports':[1]},'flag':True};b={'db':{'ports':[2],'key':None},'flag':None}\n        r=t.merge_config(a,b);self.assertEqual(r,{'db':{'host':'local','ports':[2],'key':None},'flag':None})\n        r['db']['ports'].append(3);self.assertEqual(a['db']['ports'],[1]);self.assertEqual(b['db']['ports'],[2])\n    def test_replacements(self):\n        for a,b,want in [(1,{'x':2},{'x':2}),({'x':1},None,None),([1],[2],[2]),({}, {'x':{'a':[]}}, {'x':{'a':[]}})]:\n            with self.subTest(a=a,b=b):self.assertEqual(t.merge_config(a,b),want)\nunittest.main()\n"
+    },
+    {
+      "id": "py-dependency-plan",
+      "language": "python",
+      "category": "feature",
+      "prompt": "Implement plan(dependencies) for a dictionary mapping node names to prerequisite names. Include prerequisites absent as keys, output a deterministic topological order by choosing the lexicographically smallest currently ready node, and raise ValueError for cycles. Do not mutate the input. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "def plan(dependencies):\n    raise NotImplementedError(\"plan\")\n",
+        "test_public.py": "import toolkit\nassert callable(toolkit.plan)\n",
+        "README.md": "# Mini toolkit\n\nImplement plan(dependencies) for a dictionary mapping node names to prerequisite names. Include prerequisites absent as keys, output a deterministic topological order by choosing the lexicographically smallest currently ready node, and raise ValueError for cycles. Do not mutate the input.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "import heapq\ndef plan(dependencies):\n    needs={key:set(value) for key,value in dependencies.items()}\n    for value in list(needs.values()):\n        for key in value: needs.setdefault(key,set())\n    ready=[key for key,value in needs.items() if not value];heapq.heapify(ready);result=[]\n    while ready:\n        key=heapq.heappop(ready);result.append(key)\n        for target,value in needs.items():\n            if key in value:\n                value.remove(key)\n                if not value:heapq.heappush(ready,target)\n    if len(result)!=len(needs):raise ValueError('cycle')\n    return result\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import toolkit as t\nimport unittest\nclass Cases(unittest.TestCase):\n    def test_order(self):\n        graph={'d':['b','c'],'c':['a'],'b':['a'],'z':[]}\n        self.assertEqual(t.plan(graph),['a','b','c','d','z']);self.assertEqual(graph['d'],['b','c'])\n        self.assertEqual(t.plan({'b':['a','a']}),['a','b']);self.assertEqual(t.plan({}),[])\n        self.assertEqual(t.plan({'b':[],'a':[]}),['a','b'])\n    def test_cycles(self):\n        for graph in [{'a':['a']},{'a':['b'],'b':['a']},{'x':[],'a':['b'],'b':['a']}]:\n            with self.subTest(graph=graph), self.assertRaises(ValueError):t.plan(graph)\nunittest.main()\n"
+    },
+    {
+      "id": "js-bounded-map",
+      "language": "javascript",
+      "category": "feature",
+      "prompt": "Implement async mapLimit(items, limit, fn): bound active calls to the positive integer limit, preserve input order in the result, propagate errors, and support empty input. Invalid limits must raise RangeError. Do not use external dependencies. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "async function mapLimit(items, limit, fn) { throw new Error(\"not implemented\"); }\nmodule.exports={mapLimit};\n",
+        "test.cjs": "const assert=require('node:assert/strict');assert.equal(typeof require('./lib.cjs').mapLimit,'function');\n",
+        "README.md": "# Mini toolkit\n\nImplement async mapLimit(items, limit, fn): bound active calls to the positive integer limit, preserve input order in the result, propagate errors, and support empty input. Invalid limits must raise RangeError. Do not use external dependencies.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "async function mapLimit(items, limit, fn) {\n  if(!Number.isInteger(limit)||limit<1) throw new RangeError('invalid limit');\n  const result=new Array(items.length);let next=0;\n  async function worker(){while(next<items.length){const i=next++;result[i]=await fn(items[i],i);}}\n  await Promise.all(Array.from({length:Math.min(limit,items.length)},worker));return result;\n}\nmodule.exports={mapLimit};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const assert=require('node:assert/strict');const {mapLimit}=require('/workspace/lib.cjs');\n(async()=>{\n  let active=0,peak=0;const input=[5,4,3,2,1];\n  const result=await mapLimit(input,2,async(x,i)=>{peak=Math.max(peak,++active);await new Promise(r=>setTimeout(r,x));active--;return x+i;});\n  assert.deepEqual(result,[5,5,5,5,5]);assert(peak<=2&&peak>0);assert.deepEqual(input,[5,4,3,2,1]);\n  assert.deepEqual(await mapLimit([],1,()=>assert.fail()),[]);\n  for(const limit of [0,-1,1.5,true,'2'])await assert.rejects(mapLimit([1],limit,x=>x),RangeError);\n  await assert.rejects(mapLimit([1],1,()=>{throw new Error('boom')}),/boom/);\n  assert.deepEqual(await mapLimit([1,2],4,x=>x*3),[3,6]);\n})().catch(e=>{console.error(e);process.exitCode=1});\n"
+    },
+    {
+      "id": "js-json-line-chunks",
+      "language": "javascript",
+      "category": "feature",
+      "prompt": "Implement JsonLines with push(textChunk) returning all completed parsed JSON lines and finish() returning an array containing the remaining final value, or an empty array when none remains. Repeated finish calls return an empty array. Support CRLF, empty lines and chunk boundaries; invalid complete JSON must throw SyntaxError. finish is idempotent and push after finish must throw. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "class JsonLines {push(chunk){throw new Error(\"not implemented\");} finish(){throw new Error(\"not implemented\");}}\nmodule.exports={JsonLines};\n",
+        "test.cjs": "const assert=require('node:assert/strict');assert.equal(typeof require('./lib.cjs').JsonLines,'function');\n",
+        "README.md": "# Mini toolkit\n\nImplement JsonLines with push(textChunk) returning all completed parsed JSON lines and finish() returning an array containing the remaining final value, or an empty array when none remains. Repeated finish calls return an empty array. Support CRLF, empty lines and chunk boundaries; invalid complete JSON must throw SyntaxError. finish is idempotent and push after finish must throw.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "class JsonLines {\n  constructor(){this.pending='';this.closed=false;}\n  push(chunk){\n    if(this.closed)throw new Error('closed');this.pending+=chunk;const result=[];\n    while(this.pending.includes('\\n')){const i=this.pending.indexOf('\\n');const line=this.pending.slice(0,i).trim();this.pending=this.pending.slice(i+1);if(line)result.push(JSON.parse(line));}\n    return result;\n  }\n  finish(){if(this.closed)return [];this.closed=true;const line=this.pending.trim();this.pending='';return line?[JSON.parse(line)]:[];}\n}\nmodule.exports={JsonLines};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const assert=require('node:assert/strict');const {JsonLines}=require('/workspace/lib.cjs');\nconst p=new JsonLines();assert.deepEqual(p.push('{\"a\":'),[]);assert.deepEqual(p.push('1}\\r\\n\\n[2'),[{a:1}]);assert.deepEqual(p.push(',3]\\nfalse'),[[2,3]]);assert.deepEqual(p.finish(),[false]);assert.deepEqual(p.finish(),[]);assert.throws(()=>p.push('1'));\nconst q=new JsonLines();assert.deepEqual(q.push('\"漢🙂\"\\nnull\\n0\\n'),['漢🙂',null,0]);assert.deepEqual(q.finish(),[]);\nassert.throws(()=>new JsonLines().push('oops\\n'),SyntaxError);const r=new JsonLines();r.push('{');assert.throws(()=>r.finish(),SyntaxError);\n"
+    },
+    {
+      "id": "rs-version-order",
+      "language": "rust",
+      "category": "feature",
+      "prompt": "Implement version_cmp(a,b) -> Option<Ordering> for versions with exactly three unsigned decimal components and an optional dot-separated prerelease. Release sorts after prerelease; numeric prerelease identifiers sort numerically before nonnumeric ones. Reject leading zeros in numeric components/identifiers, empty parts and characters outside ASCII alphanumeric/hyphen. Ignore no extra suffixes. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn version_cmp(_a: &str, _b: &str) -> Option<std::cmp::Ordering> { None }\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn api() { let _=mini_toolkit::version_cmp(\"1.0.0\",\"1.0.0\"); }\n",
+        "README.md": "# Mini toolkit\n\nImplement version_cmp(a,b) -> Option<Ordering> for versions with exactly three unsigned decimal components and an optional dot-separated prerelease. Release sorts after prerelease; numeric prerelease identifiers sort numerically before nonnumeric ones. Reject leading zeros in numeric components/identifiers, empty parts and characters outside ASCII alphanumeric/hyphen. Ignore no extra suffixes.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "use std::cmp::Ordering;\nfn parts(s:&str)->Option<(Vec<u64>,Option<Vec<&str>>)>{\n  let (core,pre)=match s.split_once('-'){Some((a,b))=>(a,Some(b)),None=>(s,None)};\n  let nums:Option<Vec<u64>>=core.split('.').map(|x|{if x.is_empty()||!x.bytes().all(|b|b.is_ascii_digit())||(x.len()>1&&x.starts_with('0')){None}else{x.parse().ok()}}).collect();\n  let nums=nums?;if nums.len()!=3{return None;}\n  let ids=if let Some(p)=pre{let v:Vec<_>=p.split('.').collect();for id in &v{if id.is_empty()||!id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-')|| (id.bytes().all(|b|b.is_ascii_digit())&&id.len()>1&&id.starts_with('0')){return None;}}Some(v)}else{None};\n  Some((nums,ids))\n}\npub fn version_cmp(a:&str,b:&str)->Option<Ordering>{\n  let (an,ap)=parts(a)?;let (bn,bp)=parts(b)?;let core=an.cmp(&bn);if core!=Ordering::Equal{return Some(core);}\n  Some(match(ap,bp){(None,None)=>Ordering::Equal,(None,Some(_))=>Ordering::Greater,(Some(_),None)=>Ordering::Less,(Some(a),Some(b))=>{\n    let mut order=Ordering::Equal;for(x,y)in a.iter().zip(&b){let xn=x.bytes().all(|c|c.is_ascii_digit());let yn=y.bytes().all(|c|c.is_ascii_digit());order=match(xn,yn){(true,true)=>x.len().cmp(&y.len()).then_with(||x.cmp(y)),(true,false)=>Ordering::Less,(false,true)=>Ordering::Greater,(false,false)=>x.cmp(y)};if order!=Ordering::Equal{break;}}if order==Ordering::Equal{a.len().cmp(&b.len())}else{order}\n  }})\n}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::version_cmp; use std::cmp::Ordering::*;\n#[test] fn ordering(){for(a,b,o)in [(\"1.10.0\",\"1.2.9\",Greater),(\"1.0.0-alpha\",\"1.0.0\",Less),(\"1.0.0-2\",\"1.0.0-10\",Less),(\"1.0.0-1\",\"1.0.0-a\",Less),(\"1.0.0-a\",\"1.0.0-a.1\",Less),(\"1.0.0\",\"1.0.0\",Equal)]{assert_eq!(version_cmp(a,b),Some(o));}}\n#[test] fn validation(){for s in [\"1.2\",\"01.2.3\",\"1.2.3-\",\"1.2.3-a..b\",\"1.2.3-01\",\"1.2.3+x\",\"1.2.3-漢\"]{assert_eq!(version_cmp(s,\"1.0.0\"),None,\"{s}\");}}\n"
+    },
+    {
+      "id": "rs-stock-transfer",
+      "language": "rust",
+      "category": "feature",
+      "prompt": "Implement transfer(stock, from, to, amount) -> Result<(), String> using BTreeMap<String,u64>. Reject a missing source, insufficient stock and destination overflow. A self-transfer is a no-op after validating source and quantity. Errors must leave the entire map unchanged; create a missing destination on success. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn transfer(_stock:&mut std::collections::BTreeMap<String,u64>,_from:&str,_to:&str,_amount:u64)->Result<(),String>{Err(\"not implemented\".into())}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn api() { let _=mini_toolkit::transfer(&mut std::collections::BTreeMap::new(),\"a\",\"b\",1); }\n",
+        "README.md": "# Mini toolkit\n\nImplement transfer(stock, from, to, amount) -> Result<(), String> using BTreeMap<String,u64>. Reject a missing source, insufficient stock and destination overflow. A self-transfer is a no-op after validating source and quantity. Errors must leave the entire map unchanged; create a missing destination on success.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn transfer(stock:&mut std::collections::BTreeMap<String,u64>,from:&str,to:&str,amount:u64)->Result<(),String>{\n  let source=*stock.get(from).ok_or(\"missing source\")?;\n  let remaining=source.checked_sub(amount).ok_or(\"insufficient stock\")?;\n  if from==to{return Ok(());}\n  let target=stock.get(to).copied().unwrap_or(0).checked_add(amount).ok_or(\"overflow\")?;\n  stock.insert(from.into(),remaining);stock.insert(to.into(),target);Ok(())\n}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use std::collections::BTreeMap;use mini_toolkit::transfer;\n#[test] fn success(){let mut s=BTreeMap::from([(\"a\".into(),5)]);transfer(&mut s,\"a\",\"b\",2).unwrap();assert_eq!(s[\"a\"],3);assert_eq!(s[\"b\"],2);transfer(&mut s,\"a\",\"a\",3).unwrap();assert_eq!(s[\"a\"],3);}\n#[test] fn atomic_errors(){for(from,to,n)in [(\"missing\",\"b\",1),(\"a\",\"b\",6),(\"a\",\"huge\",1),(\"a\",\"a\",6)]{let mut s=BTreeMap::from([(\"a\".into(),5),(\"huge\".into(),u64::MAX)]);let before=s.clone();assert!(transfer(&mut s,from,to,n).is_err());assert_eq!(s,before);}}\n"
+    },
+    {
+      "id": "py-normalization-refactor",
+      "language": "python",
+      "category": "refactor",
+      "prompt": "Unify slug and filename normalization behind a new normalize(text, separator=\"-\") function. Lowercase ASCII alphanumerics, replace each run of other characters with the separator, trim separators, and keep legacy slug(text) and filename(text) outputs unchanged. Separator must be one ASCII punctuation character; invalid separators raise ValueError. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "import re\ndef slug(text): return re.sub('[^a-z0-9]+','-',text.lower()).strip('-')\ndef filename(text): return re.sub('[^a-z0-9]+','_',text.lower()).strip('_')\n",
+        "test_public.py": "from toolkit import slug,filename\nassert slug('A B')=='a-b'\nassert filename('A B')=='a_b'\n",
+        "README.md": "# Mini toolkit\n\nUnify slug and filename normalization behind a new normalize(text, separator=\"-\") function. Lowercase ASCII alphanumerics, replace each run of other characters with the separator, trim separators, and keep legacy slug(text) and filename(text) outputs unchanged. Separator must be one ASCII punctuation character; invalid separators raise ValueError.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "import re\nimport string\ndef normalize(text, separator='-'):\n    if len(separator)!=1 or separator not in string.punctuation:raise ValueError('invalid separator')\n    return re.sub('[^a-z0-9]+',lambda _:separator,text.lower()).strip(separator)\ndef slug(text): return normalize(text,'-')\ndef filename(text): return normalize(text,'_')\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import unittest,toolkit as t\nclass Cases(unittest.TestCase):\n    def test_legacy(self):\n        for text,a,b in [(' Hello, WORLD! ','hello-world','hello_world'),('漢 ABC 🙂 12','abc-12','abc_12'),('!!!','',''),('A__B','a-b','a_b')]:\n            with self.subTest(text=text):self.assertEqual(t.slug(text),a);self.assertEqual(t.filename(text),b)\n    def test_shared_api(self):\n        self.assertEqual(t.normalize(' A / B ','.'),'a.b');self.assertEqual(t.normalize('abc'),'abc')\n        for separator in ['', 'ab', 'x', 'é']:\n            with self.subTest(separator=separator),self.assertRaises(ValueError):t.normalize('a b',separator)\nunittest.main()\n"
+    },
+    {
+      "id": "py-money-refactor",
+      "language": "python",
+      "category": "refactor",
+      "prompt": "Introduce quote(items, tax=\"0\", discount=\"0\") as the common money calculation for retail_total and discounted_total. Use Decimal, apply discount before tax, round the final total once to two decimals using ROUND_HALF_UP, reject negative prices and discount/tax outside 0..1. Retain both wrapper signatures. Invalid money inputs raise ValueError. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "from decimal import Decimal, ROUND_HALF_UP\ndef retail_total(items,tax='0'):\n    return (sum(map(Decimal,items),Decimal(0))*(1+Decimal(tax))).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)\ndef discounted_total(items,discount='0'):\n    return (sum(map(Decimal,items),Decimal(0))*(1-Decimal(discount))).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)\n",
+        "test_public.py": "from toolkit import retail_total,discounted_total\nassert str(retail_total(['10']))=='10.00'\nassert str(discounted_total(['10'],'0.5'))=='5.00'\n",
+        "README.md": "# Mini toolkit\n\nIntroduce quote(items, tax=\"0\", discount=\"0\") as the common money calculation for retail_total and discounted_total. Use Decimal, apply discount before tax, round the final total once to two decimals using ROUND_HALF_UP, reject negative prices and discount/tax outside 0..1. Retain both wrapper signatures. Invalid money inputs raise ValueError.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "from decimal import Decimal, ROUND_HALF_UP\ndef quote(items,tax='0',discount='0'):\n    prices=list(map(Decimal,items));tax,discount=Decimal(tax),Decimal(discount)\n    if any(not p.is_finite() or p<0 for p in prices) or not tax.is_finite() or not discount.is_finite() or not 0<=tax<=1 or not 0<=discount<=1:raise ValueError('invalid money')\n    return (sum(prices,Decimal(0))*(1-discount)*(1+tax)).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)\ndef retail_total(items,tax='0'):return quote(items,tax=tax)\ndef discounted_total(items,discount='0'):return quote(items,discount=discount)\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "from decimal import Decimal\nimport unittest,toolkit as t\nclass Cases(unittest.TestCase):\n    def test_wrappers(self):\n        self.assertEqual(t.retail_total(['0.10','0.20'],'0.10'),Decimal('0.33'));self.assertEqual(t.discounted_total(['10'],'0.25'),Decimal('7.50'))\n    def test_shared_calculation(self):\n        self.assertEqual(t.quote(['10'],'0.2','0.1'),Decimal('10.80'));self.assertEqual(t.quote(['0.005','0.005']),Decimal('0.01'));self.assertEqual(t.quote([]),Decimal('0.00'))\n    def test_invalid(self):\n        for prices,tax,discount in [(['-1'],'0','0'),(['NaN'],'0','0'),(['1'],'1.1','0'),(['1'],'0','-0.1')]:\n            with self.subTest(prices=prices),self.assertRaises(ValueError):t.quote(prices,tax,discount)\nunittest.main()\n"
+    },
+    {
+      "id": "js-url-refactor",
+      "language": "javascript",
+      "category": "refactor",
+      "prompt": "Refactor pathOf and hostOf to share a new parseUrl(value, base) API returning {path, host, query}. Use standard URL semantics, preserve pathname case and escaping, return query without the leading ?, and reject non-http(s) URLs with TypeError. Existing wrappers still take one absolute URL. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "function pathOf(value){return new URL(value).pathname;}\nfunction hostOf(value){return new URL(value).host;}\nmodule.exports={pathOf,hostOf};\n",
+        "test.cjs": "const t=require('./lib.cjs');const a=require('node:assert/strict');a.equal(t.pathOf('https://example.org/a'),'/a');a.equal(t.hostOf('https://example.org/a'),'example.org');\n",
+        "README.md": "# Mini toolkit\n\nRefactor pathOf and hostOf to share a new parseUrl(value, base) API returning {path, host, query}. Use standard URL semantics, preserve pathname case and escaping, return query without the leading ?, and reject non-http(s) URLs with TypeError. Existing wrappers still take one absolute URL.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "function parseUrl(value,base){const u=new URL(value,base);if(!['http:','https:'].includes(u.protocol))throw new TypeError('unsupported protocol');return {path:u.pathname,host:u.host,query:u.search.slice(1)};}\nfunction pathOf(value){return parseUrl(value).path;}\nfunction hostOf(value){return parseUrl(value).host;}\nmodule.exports={pathOf,hostOf,parseUrl};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const assert=require('node:assert/strict');const t=require('/workspace/lib.cjs');\nassert.deepEqual(t.parseUrl('../A%20B?x=1#frag','https://Example.org:8443/root/leaf'),{path:'/A%20B',host:'example.org:8443',query:'x=1'});\nassert.equal(t.pathOf('https://example.org/X'),'/X');assert.equal(t.hostOf('http://example.org:80'), 'example.org');\nassert.throws(()=>t.parseUrl('file:///tmp/x'),TypeError);assert.throws(()=>t.pathOf('not a URL'));\nassert.deepEqual(t.parseUrl('https://example.org'),{path:'/',host:'example.org',query:''});\n"
+    },
+    {
+      "id": "js-ledger-refactor",
+      "language": "javascript",
+      "category": "refactor",
+      "prompt": "Replace duplicate ledger calculations with summarize(entries), returning {balance, credits, debits}. Entries have an integer cents field; zero is neither credit nor debit. Preserve balance and credits wrappers, reject non-safe-integer cents and totals, and never mutate entries. Invalid cents or totals raise RangeError. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "function balance(entries){return entries.reduce((n,e)=>n+e.cents,0);}\nfunction credits(entries){return entries.filter(e=>e.cents>0).length;}\nmodule.exports={balance,credits};\n",
+        "test.cjs": "const t=require('./lib.cjs');const a=require('node:assert/strict');a.equal(t.balance([{cents:3},{cents:-1}]),2);a.equal(t.credits([{cents:0},{cents:1}]),1);\n",
+        "README.md": "# Mini toolkit\n\nReplace duplicate ledger calculations with summarize(entries), returning {balance, credits, debits}. Entries have an integer cents field; zero is neither credit nor debit. Preserve balance and credits wrappers, reject non-safe-integer cents and totals, and never mutate entries. Invalid cents or totals raise RangeError.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "function summarize(entries){let balance=0,credits=0,debits=0;for(const e of entries){if(!Number.isSafeInteger(e.cents))throw new RangeError('invalid cents');balance+=e.cents;if(!Number.isSafeInteger(balance))throw new RangeError('overflow');if(e.cents>0)credits++;else if(e.cents<0)debits++;}return {balance,credits,debits};}\nfunction balance(entries){return summarize(entries).balance;}\nfunction credits(entries){return summarize(entries).credits;}\nmodule.exports={balance,credits,summarize};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const a=require('node:assert/strict');const t=require('/workspace/lib.cjs');\nconst entries=[{cents:100},{cents:-30},{cents:0},{cents:20}];a.deepEqual(t.summarize(entries),{balance:90,credits:2,debits:1});a.equal(t.balance(entries),90);a.equal(t.credits(entries),2);a.equal(entries[0].cents,100);\na.deepEqual(t.summarize([]),{balance:0,credits:0,debits:0});\nfor(const cents of [NaN,Infinity,1.5,'1',true])a.throws(()=>t.summarize([{cents}]),RangeError);\na.throws(()=>t.balance([{cents:Number.MAX_SAFE_INTEGER},{cents:1}]),RangeError);\n"
+    },
+    {
+      "id": "rs-word-normalization",
+      "language": "rust",
+      "category": "refactor",
+      "prompt": "Unify label and search_key normalization through a public normalize(text, separator: char) -> String. Lowercase Unicode characters, collapse every whitespace run to the separator and trim surrounding whitespace. Keep label using spaces and search_key using hyphens. Preserve non-whitespace punctuation. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn label(s:&str)->String{s.split_whitespace().collect::<Vec<_>>().join(\" \").to_lowercase()}\npub fn search_key(s:&str)->String{s.split_whitespace().collect::<Vec<_>>().join(\"-\").to_lowercase()}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn legacy(){assert_eq!(mini_toolkit::label(\"A B\"),\"a b\");}\n",
+        "README.md": "# Mini toolkit\n\nUnify label and search_key normalization through a public normalize(text, separator: char) -> String. Lowercase Unicode characters, collapse every whitespace run to the separator and trim surrounding whitespace. Keep label using spaces and search_key using hyphens. Preserve non-whitespace punctuation.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn normalize(s:&str,separator:char)->String{s.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>().join(&separator.to_string())}\npub fn label(s:&str)->String{normalize(s,' ')}\npub fn search_key(s:&str)->String{normalize(s,'-')}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::{normalize,label,search_key};\n#[test] fn legacy(){assert_eq!(label(\"  A\\tB\\nC \"),\"a b c\");assert_eq!(search_key(\"  A\\tB\\nC \"),\"a-b-c\");}\n#[test] fn unicode(){assert_eq!(normalize(\" É\\u{a0}漢 🙂 \",'_'),\"é_漢_🙂\");assert_eq!(normalize(\"\",'/'),\"\");assert_eq!(normalize(\" A! B? \",'/'),\"a!/b?\");}\n"
+    },
+    {
+      "id": "rs-histogram-refactor",
+      "language": "rust",
+      "category": "refactor",
+      "prompt": "Introduce histogram(&[&str]) -> BTreeMap<&str,usize> as the common borrowed counting engine. Retain unique_count and occurrences wrappers, add all repeated entries, preserve case and empty-string keys, and do not clone input strings. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn unique_count(values:&[&str])->usize{values.iter().collect::<std::collections::BTreeSet<_>>().len()}\npub fn occurrences(values:&[&str],key:&str)->usize{values.iter().filter(|v|**v==key).count()}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn old_api(){assert_eq!(mini_toolkit::unique_count(&[\"a\",\"a\"]),1);}\n",
+        "README.md": "# Mini toolkit\n\nIntroduce histogram(&[&str]) -> BTreeMap<&str,usize> as the common borrowed counting engine. Retain unique_count and occurrences wrappers, add all repeated entries, preserve case and empty-string keys, and do not clone input strings.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn histogram<'a>(values:&[&'a str])->std::collections::BTreeMap<&'a str,usize>{let mut counts=std::collections::BTreeMap::new();for value in values{*counts.entry(*value).or_insert(0)+=1;}counts}\npub fn unique_count(values:&[&str])->usize{histogram(values).len()}\npub fn occurrences(values:&[&str],key:&str)->usize{histogram(values).get(key).copied().unwrap_or(0)}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::{histogram,unique_count,occurrences};use std::collections::BTreeMap;\n#[test] fn counts(){let values=[\"a\",\"b\",\"a\",\"\",\"A\",\"\"];assert_eq!(histogram(&values),BTreeMap::from([(\"\",2),(\"A\",1),(\"a\",2),(\"b\",1)]));assert_eq!(unique_count(&values),4);assert_eq!(occurrences(&values,\"missing\"),0);assert_eq!(occurrences(&values,\"a\"),2);}\n#[test] fn borrowed(){let owned=String::from(\"owned\");let values=[owned.as_str(),owned.as_str()];let h=histogram(&values);assert_eq!(h.keys().next().unwrap().as_ptr(),owned.as_ptr());assert!(histogram(&[]).is_empty());}\n"
+    },
+    {
+      "id": "py-decimal-csv",
+      "language": "python",
+      "category": "failing-tests",
+      "prompt": "Repair totals(text) to parse CSV with an id,amount header, including quoted fields and an optional BOM. Return (row_count, exact Decimal sum as a string), skip blank rows, and reject missing/nonfinite amounts or missing amount headers with ValueError. The current public decimal test fails. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "def totals(text):\n    rows=text.strip().splitlines()[1:]\n    return len(rows),str(sum(float(row.split(',')[1]) for row in rows))\n",
+        "test_public.py": "from toolkit import totals\nassert totals('id,amount\\nx,0.1\\ny,0.2\\n')==(2,'0.3')\n",
+        "README.md": "# Mini toolkit\n\nRepair totals(text) to parse CSV with an id,amount header, including quoted fields and an optional BOM. Return (row_count, exact Decimal sum as a string), skip blank rows, and reject missing/nonfinite amounts or missing amount headers with ValueError. The current public decimal test fails.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "import csv,io\nfrom decimal import Decimal,InvalidOperation\ndef totals(text):\n    reader=csv.DictReader(io.StringIO(text.lstrip('\\ufeff')))\n    if not reader.fieldnames or 'amount' not in reader.fieldnames:raise ValueError('missing amount header')\n    total=Decimal(0);count=0\n    for row in reader:\n        try:value=Decimal(row.get('amount',''))\n        except (InvalidOperation,TypeError):raise ValueError('invalid amount') from None\n        if not value.is_finite():raise ValueError('invalid amount')\n        total+=value;count+=1\n    return count,str(total)\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import unittest,toolkit as t\nclass Cases(unittest.TestCase):\n    def test_csv(self):\n        self.assertEqual(t.totals('\\ufeffid,amount\\r\\n\"a,b\",0.10\\r\\n\\r\\nc,0.20\\r\\n'),(2,'0.30'))\n        self.assertEqual(t.totals('id,amount\\na,-2\\nb,5\\n'),(2,'3'));self.assertEqual(t.totals('id,amount\\n'),(0,'0'))\n    def test_invalid(self):\n        for text in ['id,value\\nx,1\\n','id,amount\\nx,NaN\\n','id,amount\\nx,Infinity\\n','id,amount\\nx\\n','id,amount\\nx,no\\n']:\n            with self.subTest(text=text),self.assertRaises(ValueError):t.totals(text)\nunittest.main()\n"
+    },
+    {
+      "id": "py-sqlite-upsert",
+      "language": "python",
+      "category": "failing-tests",
+      "prompt": "Repair store(conn, rows) for the existing inventory(id TEXT PRIMARY KEY, quantity INTEGER) table. Upsert existing IDs without deleting/recreating rows. Validate nonnegative integer quantities (exclude bool) and make the entire batch atomic on failure. Last duplicate ID in a valid batch wins. Invalid quantities raise ValueError. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "toolkit.py": "def store(conn,rows):\n    for key,quantity in rows:conn.execute('INSERT INTO inventory VALUES (?,?)',(key,quantity))\n    conn.commit()\n",
+        "test_public.py": "import sqlite3\nfrom toolkit import store\nc=sqlite3.connect(':memory:');c.execute('CREATE TABLE inventory(id TEXT PRIMARY KEY,quantity INTEGER)');store(c,[('a',1)]);store(c,[('a',2)]);assert c.execute('SELECT quantity FROM inventory').fetchone()==(2,)\n",
+        "README.md": "# Mini toolkit\n\nRepair store(conn, rows) for the existing inventory(id TEXT PRIMARY KEY, quantity INTEGER) table. Upsert existing IDs without deleting/recreating rows. Validate nonnegative integer quantities (exclude bool) and make the entire batch atomic on failure. Last duplicate ID in a valid batch wins. Invalid quantities raise ValueError.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "def store(conn,rows):\n    rows=list(rows)\n    if any(type(q) is not int or q<0 for _,q in rows):raise ValueError('invalid quantity')\n    with conn:\n        for key,quantity in rows:conn.execute('INSERT INTO inventory VALUES (?,?) ON CONFLICT(id) DO UPDATE SET quantity=excluded.quantity',(key,quantity))\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import sqlite3,unittest,toolkit as t\nclass Cases(unittest.TestCase):\n    def setUp(self):\n        self.db=sqlite3.connect(':memory:');self.db.execute('CREATE TABLE inventory(id TEXT PRIMARY KEY,quantity INTEGER)');t.store(self.db,[('a',2)])\n    def tearDown(self):self.db.close()\n    def test_upsert(self):\n        before=self.db.execute('SELECT rowid FROM inventory WHERE id=\"a\"').fetchone();t.store(self.db,[('a',3),('b',1),('a',7)])\n        self.assertEqual(self.db.execute('SELECT rowid,quantity FROM inventory WHERE id=\"a\"').fetchone(),(before[0],7))\n    def test_atomic(self):\n        for q in [-1,True,1.2]:\n            with self.subTest(q=q):\n                with self.assertRaises(ValueError):t.store(self.db,[('a',99),('bad',q)])\n                self.assertEqual(self.db.execute('SELECT id,quantity FROM inventory ORDER BY id').fetchall(),[('a',2)])\nunittest.main()\n"
+    },
+    {
+      "id": "js-utc-day",
+      "language": "javascript",
+      "category": "failing-tests",
+      "prompt": "Fix utcDay(milliseconds) to return the integer UTC day index relative to 1970-01-01, including times before the epoch. Reject nonfinite or non-number inputs with TypeError. Avoid local time-zone and daylight-saving behavior. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "function utcDay(ms){return Math.trunc(ms/86400000);}\nmodule.exports={utcDay};\n",
+        "test.cjs": "require('node:assert/strict').equal(require('./lib.cjs').utcDay(-1),-1);\n",
+        "README.md": "# Mini toolkit\n\nFix utcDay(milliseconds) to return the integer UTC day index relative to 1970-01-01, including times before the epoch. Reject nonfinite or non-number inputs with TypeError. Avoid local time-zone and daylight-saving behavior.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "function utcDay(ms){if(typeof ms!==\"number\"||!Number.isFinite(ms))throw new TypeError(\"invalid timestamp\");return Math.floor(ms/86400000);}\nmodule.exports={utcDay};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const a=require('node:assert/strict');const {utcDay}=require('/workspace/lib.cjs');\nfor(const [ms,want] of [[0,0],[86399999,0],[86400000,1],[-1,-1],[-86400000,-1],[-86400001,-2],[Date.UTC(2024,1,29),19782]])a.equal(utcDay(ms),want);\nfor(const ms of [NaN,Infinity,-Infinity,'0',null,true])a.throws(()=>utcDay(ms),TypeError);\n"
+    },
+    {
+      "id": "js-stable-cache-key",
+      "language": "javascript",
+      "category": "failing-tests",
+      "prompt": "Fix cacheKey(value) so recursively reordered object keys have the same JSON key, array order is significant, primitives retain their types, and cycles throw TypeError. Repeated non-cyclic object references must remain valid; undefined values, unsupported bigint inputs, NaN and infinities must throw TypeError; nonfinite numbers must not collapse to null. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "lib.cjs": "function cacheKey(value){return JSON.stringify(value);}\nmodule.exports={cacheKey};\n",
+        "test.cjs": "const a=require('node:assert/strict'),t=require('./lib.cjs');a.equal(t.cacheKey({a:1,b:2}),t.cacheKey({b:2,a:1}));\n",
+        "README.md": "# Mini toolkit\n\nFix cacheKey(value) so recursively reordered object keys have the same JSON key, array order is significant, primitives retain their types, and cycles throw TypeError. Repeated non-cyclic object references must remain valid; undefined values, unsupported bigint inputs, NaN and infinities must throw TypeError; nonfinite numbers must not collapse to null.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "function cacheKey(value){\n  const ancestors=new Set();\n  function visit(v){\n    if(v===null||typeof v==='string'||typeof v==='boolean'||(typeof v==='number'&&Number.isFinite(v)))return v;\n    if(typeof v!=='object')throw new TypeError('unsupported value');\n    if(ancestors.has(v))throw new TypeError('cycle');ancestors.add(v);\n    const result=Array.isArray(v)?v.map(visit):Object.fromEntries(Object.keys(v).sort().map(k=>[k,visit(v[k])]));ancestors.delete(v);return result;\n  }\n  return JSON.stringify(visit(value));\n}\nmodule.exports={cacheKey};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const a=require('node:assert/strict');const {cacheKey}=require('/workspace/lib.cjs');\na.equal(cacheKey({b:{y:2,x:1},a:[3,2]}),cacheKey({a:[3,2],b:{x:1,y:2}}));a.notEqual(cacheKey([1,2]),cacheKey([2,1]));a.notEqual(cacheKey(null),cacheKey('null'));\nconst shared={x:1};a.equal(cacheKey([shared,shared]),'[{\"x\":1},{\"x\":1}]');const cycle={};cycle.self=cycle;a.throws(()=>cacheKey(cycle),TypeError);\nfor(const x of [undefined,1n,NaN,Infinity,{x:undefined}])a.throws(()=>cacheKey(x),TypeError);\n"
+    },
+    {
+      "id": "rs-stable-dedup",
+      "language": "rust",
+      "category": "failing-tests",
+      "prompt": "Fix dedup(values) to return all first occurrences in original order, removing nonadjacent duplicates. Preserve borrowed strings, case sensitivity and empty-string values. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn dedup<'a>(values:&[&'a str])->Vec<&'a str>{let mut out=values.to_vec();out.dedup();out}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn failing(){assert_eq!(mini_toolkit::dedup(&[\"a\",\"b\",\"a\"]),vec![\"a\",\"b\"]);}\n",
+        "README.md": "# Mini toolkit\n\nFix dedup(values) to return all first occurrences in original order, removing nonadjacent duplicates. Preserve borrowed strings, case sensitivity and empty-string values.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn dedup<'a>(values:&[&'a str])->Vec<&'a str>{let mut seen=std::collections::HashSet::new();values.iter().copied().filter(|v|seen.insert(*v)).collect()}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::dedup;\n#[test] fn repeated(){assert_eq!(dedup(&[\"a\",\"b\",\"a\",\"\",\"B\",\"\",\"b\"]),vec![\"a\",\"b\",\"\",\"B\"]);assert!(dedup(&[]).is_empty());}\n#[test] fn lifetime(){let s=String::from(\"é\");let result=dedup(&[s.as_str(),\"x\",s.as_str()]);assert_eq!(result[0].as_ptr(),s.as_ptr());assert_eq!(result.len(),2);}\n"
+    },
+    {
+      "id": "rs-newline-repair",
+      "language": "rust",
+      "category": "failing-tests",
+      "prompt": "Repair normalize_newlines(text) to convert only CRLF pairs into LF. Preserve lone carriage returns, all Unicode text and whether there is a final newline. The current public test loses a lone carriage return. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/lib.rs": "pub fn normalize_newlines(text:&str)->String{text.replace('\\r',\"\")}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn lone_cr(){assert_eq!(mini_toolkit::normalize_newlines(\"a\\rb\"),\"a\\rb\");}\n",
+        "README.md": "# Mini toolkit\n\nRepair normalize_newlines(text) to convert only CRLF pairs into LF. Preserve lone carriage returns, all Unicode text and whether there is a final newline. The current public test loses a lone carriage return.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "pub fn normalize_newlines(text:&str)->String{text.replace(\"\\r\\n\",\"\\n\")}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::normalize_newlines;\n#[test] fn combinations(){for(s,want)in [(\"a\\r\\nb\\r\\n\",\"a\\nb\\n\"),(\"a\\rb\",\"a\\rb\"),(\"\\r\\r\\n\",\"\\r\\n\"),(\"漢🙂\\r\\nx\",\"漢🙂\\nx\"),(\"\\n\",\"\\n\"),(\"\",\"\")]{assert_eq!(normalize_newlines(s),want);}}\n#[test] fn no_final_newline(){assert_eq!(normalize_newlines(\"a\\r\\nb\"),\"a\\nb\");}\n"
+    },
+    {
+      "id": "py-dry-run-wiring",
+      "language": "python",
+      "category": "multi-file",
+      "prompt": "Wire the dry_run option through configuration, execute() and cli.py. Default false must write the requested text; explicit true must return {\"preview\": text} without writing; an actual write returns {\"written\": true}. Reject non-boolean dry_run values with ValueError. CLI accepts one JSON config argument and prints its result as JSON; errors go to stderr with exit 2. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "settings.py": "def load(config):\n    return {'dry_run':config.get('dry_run') or True}\n",
+        "cli.py": "import sys,json\nfrom toolkit import execute\ntry:print(execute(json.loads(sys.argv[1]),sys.argv[2],sys.argv[3]))\nexcept Exception as e:print(str(e));sys.exit(1)\n",
+        "toolkit.py": "from settings import load\ndef execute(config,path,text):\n    options=load(config)\n    if options['dry_run']:return {'preview':text}\n    from pathlib import Path\n    Path(path).write_text(text)\n    return {'written':True}\n",
+        "test_public.py": "from toolkit import execute\nassert callable(execute)\n",
+        "README.md": "# Mini toolkit\n\nWire the dry_run option through configuration, execute() and cli.py. Default false must write the requested text; explicit true must return {\"preview\": text} without writing; an actual write returns {\"written\": true}. Reject non-boolean dry_run values with ValueError. CLI accepts one JSON config argument and prints its result as JSON; errors go to stderr with exit 2.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "from settings import load\ndef execute(config,path,text):\n    options=load(config)\n    if options['dry_run']:return {'preview':text}\n    from pathlib import Path\n    Path(path).write_text(text)\n    return {'written':True}\n",
+        "settings.py": "def load(config):\n    value=config.get('dry_run',False)\n    if type(value) is not bool:raise ValueError('dry_run must be boolean')\n    return {'dry_run':value}\n",
+        "cli.py": "import sys,json\nfrom toolkit import execute\ntry:print(json.dumps(execute(json.loads(sys.argv[1]),sys.argv[2],sys.argv[3])))\nexcept Exception as e:print(str(e),file=sys.stderr);sys.exit(2)\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import unittest,tempfile,json,subprocess,sys\nfrom pathlib import Path\nimport toolkit as t\nclass Cases(unittest.TestCase):\n    def test_wiring(self):\n        with tempfile.TemporaryDirectory() as d:\n            p=Path(d)/'out';self.assertEqual(t.execute({'dry_run':True},p,'preview'),{'preview':'preview'});self.assertFalse(p.exists())\n            self.assertEqual(t.execute({},p,'actual'),{'written':True});self.assertEqual(p.read_text(),'actual')\n            t.execute({'dry_run':False},p,'again');self.assertEqual(p.read_text(),'again')\n    def test_cli_and_validation(self):\n        with tempfile.TemporaryDirectory() as d:\n            p=Path(d)/'out';r=subprocess.run([sys.executable,'cli.py',json.dumps({'dry_run':True}),str(p),'hi'],capture_output=True,text=True)\n            self.assertEqual(r.returncode,0);self.assertEqual(json.loads(r.stdout),{'preview':'hi'});self.assertFalse(p.exists())\n        for value in ['false',1,None]:\n            with self.subTest(value=value),self.assertRaises(ValueError):t.execute({'dry_run':value},'/tmp/not-used','x')\nunittest.main()\n"
+    },
+    {
+      "id": "py-create-only-export",
+      "language": "python",
+      "category": "multi-file",
+      "prompt": "Repair the JSON-lines export path across toolkit.py and writer.py. export_rows(path, rows, overwrite=False) must reject an existing destination by default, produce one JSON value per line, validate serialization before touching the destination, and atomically replace it only with explicit overwrite=True. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "writer.py": "import json\ndef save(path,rows):\n    with open(path,'w') as output:\n        for row in rows:output.write(json.dumps(row)+'\\n')\n",
+        "toolkit.py": "from writer import save\ndef export_rows(path,rows,overwrite=False):return save(path,rows)\n",
+        "test_public.py": "from toolkit import export_rows\nassert callable(export_rows)\n",
+        "README.md": "# Mini toolkit\n\nRepair the JSON-lines export path across toolkit.py and writer.py. export_rows(path, rows, overwrite=False) must reject an existing destination by default, produce one JSON value per line, validate serialization before touching the destination, and atomically replace it only with explicit overwrite=True.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "toolkit.py": "from writer import save\ndef export_rows(path,rows,overwrite=False):return save(path,rows,overwrite=overwrite)\n",
+        "writer.py": "import json,os,tempfile\nfrom pathlib import Path\ndef save(path,rows,overwrite=False):\n    data=''.join(json.dumps(row,ensure_ascii=False)+'\\n' for row in rows);path=Path(path)\n    if not overwrite:\n        with path.open('x') as output:output.write(data)\n        return\n    fd,name=tempfile.mkstemp(dir=path.parent,prefix='.export-')\n    try:\n        with os.fdopen(fd,'w') as output:output.write(data)\n        os.replace(name,path)\n    finally:\n        if os.path.exists(name):os.unlink(name)\n"
+      },
+      "public_command": [
+        "python3",
+        "-B",
+        "test_public.py"
+      ],
+      "held_out": "import unittest,tempfile,json\nfrom pathlib import Path\nimport toolkit as t\nclass Cases(unittest.TestCase):\n    def test_create_and_replace(self):\n        with tempfile.TemporaryDirectory() as d:\n            p=Path(d)/'out';t.export_rows(p,[{'name':'漢'},2]);self.assertEqual([json.loads(x) for x in p.read_text().splitlines()],[{'name':'漢'},2])\n            before=p.read_bytes()\n            with self.assertRaises(FileExistsError):t.export_rows(p,[3])\n            self.assertEqual(p.read_bytes(),before);t.export_rows(p,[4],overwrite=True);self.assertEqual(p.read_text(),'4\\n')\n    def test_no_partial_write(self):\n        with tempfile.TemporaryDirectory() as d:\n            p=Path(d)/'out';p.write_text('original')\n            with self.assertRaises(TypeError):t.export_rows(p,[1,object()],overwrite=True)\n            self.assertEqual(p.read_text(),'original');self.assertEqual(list(Path(d).iterdir()),[p])\nunittest.main()\n"
+    },
+    {
+      "id": "js-timeout-wiring",
+      "language": "javascript",
+      "category": "multi-file",
+      "prompt": "Wire a timeoutMs option through settings.cjs and options() in lib.cjs. Default to 1000 ms; accept positive integers through 60000 inclusive and reject other values with RangeError. Return {timeoutMs, retries:0} without unit conversion or network calls. Preserve explicit values rather than using truthy fallback. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "settings.cjs": "function load(config){return {timeout:config.timeoutMs||1000};}module.exports={load};\n",
+        "lib.cjs": "const {load}=require('./settings.cjs');function options(config){return {timeoutMs:load(config).timeout,retries:0};}module.exports={options};\n",
+        "test.cjs": "require('node:assert/strict').equal(require('./lib.cjs').options({}).retries,0);\n",
+        "README.md": "# Mini toolkit\n\nWire a timeoutMs option through settings.cjs and options() in lib.cjs. Default to 1000 ms; accept positive integers through 60000 inclusive and reject other values with RangeError. Return {timeoutMs, retries:0} without unit conversion or network calls. Preserve explicit values rather than using truthy fallback.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "const {load}=require('./settings.cjs');function options(config){return {timeoutMs:load(config).timeoutMs,retries:0};}module.exports={options};\n",
+        "settings.cjs": "function load(config){const value=config.timeoutMs===undefined?1000:config.timeoutMs;if(!Number.isInteger(value)||value<1||value>60000)throw new RangeError('invalid timeout');return {timeoutMs:value};}module.exports={load};\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const a=require('node:assert/strict');const {options}=require('/workspace/lib.cjs');const {load}=require('/workspace/settings.cjs');\na.deepEqual(options({}),{timeoutMs:1000,retries:0});for(const n of [1,1234,60000]){a.deepEqual(options({timeoutMs:n}),{timeoutMs:n,retries:0});}\nfor(const n of [0,-1,60001,1.5,'1000',null,true])a.throws(()=>options({timeoutMs:n}),RangeError);\n"
+    },
+    {
+      "id": "js-json-cli-errors",
+      "language": "javascript",
+      "category": "multi-file",
+      "prompt": "Add deterministic object-key ordering to encode(value), including nested objects while preserving arrays. Wire cli.cjs to print encoded JSON plus a newline, and report invalid JSON input on stderr with exit 2 and empty stdout. Preserve Unicode and primitive types. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "sort.cjs": "function sortValue(v){return v;}module.exports={sortValue};\n",
+        "cli.cjs": "const {encode}=require('./lib.cjs');try{console.log(encode(JSON.parse(process.argv[2])));}catch(e){console.log(e.message);process.exitCode=1;}\n",
+        "lib.cjs": "const {sortValue}=require('./sort.cjs');function encode(v){return JSON.stringify(sortValue(v));}module.exports={encode};\n",
+        "test.cjs": "require('node:assert/strict').equal(require('./lib.cjs').encode([1,2]),'[1,2]');\n",
+        "README.md": "# Mini toolkit\n\nAdd deterministic object-key ordering to encode(value), including nested objects while preserving arrays. Wire cli.cjs to print encoded JSON plus a newline, and report invalid JSON input on stderr with exit 2 and empty stdout. Preserve Unicode and primitive types.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "lib.cjs": "const {sortValue}=require('./sort.cjs');function encode(v){return JSON.stringify(sortValue(v));}module.exports={encode};\n",
+        "sort.cjs": "function sortValue(v){if(Array.isArray(v))return v.map(sortValue);if(v!==null&&typeof v==='object')return Object.fromEntries(Object.keys(v).sort().map(k=>[k,sortValue(v[k])]));return v;}module.exports={sortValue};\n",
+        "cli.cjs": "const {encode}=require('./lib.cjs');try{console.log(encode(JSON.parse(process.argv[2])));}catch(e){console.error(e.message);process.exitCode=2;}\n"
+      },
+      "public_command": [
+        "node",
+        "test.cjs"
+      ],
+      "held_out": "const a=require('node:assert/strict'),{spawnSync}=require('node:child_process');const {encode}=require('/workspace/lib.cjs');\na.equal(encode({z:1,a:{y:2,x:'漢'}}),'{\"a\":{\"x\":\"漢\",\"y\":2},\"z\":1}');a.equal(encode([2,1]),'[2,1]');\nlet r=spawnSync(process.execPath,['cli.cjs','{\"b\":2,\"a\":1}'],{encoding:'utf8'});a.equal(r.status,0);a.equal(r.stdout,'{\"a\":1,\"b\":2}\\n');a.equal(r.stderr,'');\nr=spawnSync(process.execPath,['cli.cjs','{bad'],{encoding:'utf8'});a.equal(r.status,2);a.equal(r.stdout,'');a(r.stderr.length>0);\n"
+    },
+    {
+      "id": "rs-timeout-config",
+      "language": "rust",
+      "category": "multi-file",
+      "prompt": "Finish timeout argument wiring across lib.rs and settings.rs. cli_config(&[&str]) returns (timeout_ms, verbose). Default to 5 seconds; --timeout takes a decimal integer 1..60 seconds, --verbose is a flag. Reject missing/duplicate/unknown arguments and convert seconds to milliseconds exactly once. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/settings.rs": "pub fn load(_args:&[&str])->Result<(u64,bool),String>{Ok((5,false))}",
+        "src/lib.rs": "mod settings;pub fn cli_config(args:&[&str])->Result<(u64,bool),String>{let (seconds,verbose)=settings::load(args)?;Ok((seconds,verbose))}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn callable(){assert!(mini_toolkit::cli_config(&[]).is_ok());}\n",
+        "README.md": "# Mini toolkit\n\nFinish timeout argument wiring across lib.rs and settings.rs. cli_config(&[&str]) returns (timeout_ms, verbose). Default to 5 seconds; --timeout takes a decimal integer 1..60 seconds, --verbose is a flag. Reject missing/duplicate/unknown arguments and convert seconds to milliseconds exactly once.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "mod settings;pub fn cli_config(args:&[&str])->Result<(u64,bool),String>{let (seconds,verbose)=settings::load(args)?;Ok((seconds*1000,verbose))}\n",
+        "src/settings.rs": "pub fn load(args:&[&str])->Result<(u64,bool),String>{let(mut timeout,mut verbose,mut seen,mut i)=(5,false,false,0);while i<args.len(){match args[i]{\"--verbose\" if !verbose=>verbose=true,\"--timeout\" if !seen=>{i+=1;let raw=*args.get(i).ok_or(\"missing timeout\")?;if !raw.bytes().all(|b|b.is_ascii_digit())||raw.is_empty(){return Err(\"invalid timeout\".into());}timeout=raw.parse().map_err(|_|\"invalid timeout\")?;if !(1..=60).contains(&timeout){return Err(\"invalid timeout\".into());}seen=true;},_=>return Err(\"invalid argument\".into())}i+=1;}Ok((timeout,verbose))}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::cli_config;\n#[test] fn values(){assert_eq!(cli_config(&[]).unwrap(),(5000,false));assert_eq!(cli_config(&[\"--verbose\",\"--timeout\",\"60\"]).unwrap(),(60000,true));assert_eq!(cli_config(&[\"--timeout\",\"1\"]).unwrap(),(1000,false));}\n#[test] fn invalid(){for args in [vec![\"--timeout\"],vec![\"--timeout\",\"0\"],vec![\"--timeout\",\"61\"],vec![\"--timeout\",\"x\"],vec![\"--unknown\"],vec![\"--verbose\",\"--verbose\"],vec![\"--timeout\",\"1\",\"--timeout\",\"2\"]]{assert!(cli_config(&args).is_err(),\"{args:?}\");}}\n"
+    },
+    {
+      "id": "rs-report-skips",
+      "language": "rust",
+      "category": "multi-file",
+      "prompt": "Add skipped-test accounting across the existing Report model and JSON renderer. Keep Report::new(passed,failed), add skip() to increment skipped, and expose counts() -> (u64,u64,u64). render() must emit {\"passed\":N,\"failed\":N,\"skipped\":N} with all three actual counts. Preserve existing constructor behavior. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "files": {
+        "src/model.rs": "pub struct Report{pub passed:u64,pub failed:u64}impl Report{pub fn new(passed:u64,failed:u64)->Self{Self{passed,failed}}}",
+        "src/render.rs": "use crate::Report;pub fn json(r:&Report)->String{format!(\"{{\\\"passed\\\":{},\\\"failed\\\":{}}}\",r.passed,r.failed)}",
+        "src/lib.rs": "mod model;mod render;pub use model::Report;impl Report{pub fn render(&self)->String{render::json(self)}}\n",
+        "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "tests/public.rs": "#[test] fn constructor(){assert!(mini_toolkit::Report::new(2,1).render().contains(\"passed\"));}\n",
+        "README.md": "# Mini toolkit\n\nAdd skipped-test accounting across the existing Report model and JSON renderer. Keep Report::new(passed,failed), add skip() to increment skipped, and expose counts() -> (u64,u64,u64). render() must emit {\"passed\":N,\"failed\":N,\"skipped\":N} with all three actual counts. Preserve existing constructor behavior.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        ".gitignore": "target/\n__pycache__/\n"
+      },
+      "reference": {
+        "src/lib.rs": "mod model;mod render;pub use model::Report;impl Report{pub fn render(&self)->String{render::json(self)}}\n",
+        "src/model.rs": "pub struct Report{pub passed:u64,pub failed:u64,pub skipped:u64}impl Report{pub fn new(passed:u64,failed:u64)->Self{Self{passed,failed,skipped:0}}pub fn skip(&mut self){self.skipped+=1;}pub fn counts(&self)->(u64,u64,u64){(self.passed,self.failed,self.skipped)}}\n",
+        "src/render.rs": "use crate::Report;pub fn json(r:&Report)->String{format!(\"{{\\\"passed\\\":{},\\\"failed\\\":{},\\\"skipped\\\":{}}}\",r.passed,r.failed,r.skipped)}\n"
+      },
+      "public_command": [
+        "cargo",
+        "test",
+        "--offline",
+        "--quiet"
+      ],
+      "held_out": "use mini_toolkit::Report;\n#[test] fn accounting(){let mut r=Report::new(3,1);assert_eq!(r.counts(),(3,1,0));r.skip();r.skip();assert_eq!(r.counts(),(3,1,2));assert_eq!(r.render(),\"{\\\"passed\\\":3,\\\"failed\\\":1,\\\"skipped\\\":2}\");}\n#[test] fn empty(){assert_eq!(Report::new(0,0).render(),\"{\\\"passed\\\":0,\\\"failed\\\":0,\\\"skipped\\\":0}\");}\n"
+    }
+  ]
+}
