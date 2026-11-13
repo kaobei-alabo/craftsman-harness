@@ -88,7 +88,9 @@ jobs:
           # dynamically selected Azure package service. Preserve suites, components
           # and Signed-By in the Ubuntu 24.04 deb822 source file.
           sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
-          sudo apt-get update --error-on=any
+          # Hosted runners may have no IPv6 route; retry transient index fetches
+          # while still refusing an incomplete package index.
+          sudo apt-get update --error-on=any -o Acquire::ForceIPv4=true -o Acquire::Retries=3
           sudo apt-get install -y libasound2-dev pkg-config cmake clang
       - name: Restore Cargo dependency cache
         id: cargo-cache

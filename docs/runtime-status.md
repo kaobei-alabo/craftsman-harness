@@ -21,6 +21,12 @@
 > rendering still passes through SafeBackend. Theme changes do not alter
 > model requests, permissions, recovery, native cleanup or dependency contracts.
 
+> **CI prerequisites (November 14):** Linux APT setup selects IPv4 and three
+> bounded transport retries after merged-main package downloads failed on an
+> unavailable IPv6 route. Incomplete indexes still fail; all four jobs, default
+> voice/gadget build and both full native modes remain required. Passing native
+> suites do not waive a failed setup step; see `ci.md`.
+
 > **Local services and model menus (November 13):** `/model` reads the configured
 > catalog, groups models by provider, then asks for the chosen model's effort or
 > budget. The final selection saves/applies both without replay; opening/cancelling
