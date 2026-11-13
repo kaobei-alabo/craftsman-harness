@@ -9,7 +9,8 @@ import sys
 def run(bootstrap):
     selected=next(iter(bootstrap['config']['providers'].values()));model='gpt-6.1-sol'
     settings=selected['models'][model].get('settings',{})
-    effort=settings.get('reasoning',{}).get('value','medium')
+    reasoning=settings.get('reasoning')
+    effort=reasoning.get('value','medium') if isinstance(reasoning,dict) else 'medium'
     conf=Path('/home/eval/.codex');conf.mkdir(parents=True,exist_ok=True)
     # No host auth, plugins, hooks or connections are copied into this task.
     text='\n'.join([

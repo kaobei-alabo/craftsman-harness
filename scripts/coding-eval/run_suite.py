@@ -138,6 +138,7 @@ def run(args):
         docker('network','create','--internal',network)
         if args.synthetic:
             docker('run','--detach','--name','craftsman-eval-fixture-'+nonce,'--network',network,'--network-alias','fixture','--read-only',
+                   '--env','CRAFTSMAN_FIXTURE_ARM='+args.arm,
                    '--mount',f'type=bind,src={driver},dst=/runner,readonly','--entrypoint','python3',args.image,'-I','/runner/fixture_provider.py')
         docker('run','--detach','--name',gateway,'--network','bridge','--read-only','--cap-drop','ALL','--security-opt','no-new-privileges','--pids-limit','128','--memory','256m',
                '--user',f'{os.getuid()}:{os.getgid()}','--mount',f'type=bind,src={driver},dst=/runner,readonly','--mount',f'type=bind,src={ledger_dir},dst=/ledger',
@@ -205,6 +206,8 @@ def run(args):
         try:docker('rm','--force',gateway,timeout=15)
         except subprocess.CalledProcessError:pass
         if args.synthetic:
+            try:(output/'fixture-log.jsonl').write_text(docker('logs','craftsman-eval-fixture-'+nonce,timeout=15))
+            except subprocess.CalledProcessError:pass
             try:docker('rm','--force','craftsman-eval-fixture-'+nonce,timeout=15)
             except subprocess.CalledProcessError:pass
         if gateway_process:
