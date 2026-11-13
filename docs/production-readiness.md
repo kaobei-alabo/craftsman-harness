@@ -171,6 +171,18 @@ See [gadgets.md](gadgets.md) for the host contracts and project scopes.
 
 ## Verification entry point and CI
 
+The README is a concise product introduction. Current configuration,
+architecture and limits are in [runtime-status.md](runtime-status.md) and the
+feature docs.
+
+The owner made the MIT repository public on November 13. Main
+[run 43367914846, attempt 2](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43367914846)
+at `0389716` passed all four jobs, every mandatory step and both native modes,
+with the reviewed original/new inventories and warning signatures retained.
+All three dependency caches staged and saved successfully. Earlier attempts
+blocked before startup by account billing are retained separately. The source
+repository is public; binary/container publishing remains disabled.
+
 ```sh
 ./scripts/verify.sh
 ```
