@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "tasks": [
     {
       "id": "py-page-boundaries",
@@ -195,11 +195,11 @@
       "id": "js-json-line-chunks",
       "language": "javascript",
       "category": "feature",
-      "prompt": "Implement JsonLines with push(textChunk) returning all completed parsed JSON lines and finish() returning the remaining final value, if any. Support CRLF, empty lines and chunk boundaries; invalid complete JSON must throw SyntaxError. finish is idempotent and push after finish must throw. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "prompt": "Implement JsonLines with push(textChunk) returning all completed parsed JSON lines and finish() returning an array containing the remaining final value, or an empty array when none remains. Repeated finish calls return an empty array. Support CRLF, empty lines and chunk boundaries; invalid complete JSON must throw SyntaxError. finish is idempotent and push after finish must throw. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
       "files": {
         "lib.cjs": "class JsonLines {push(chunk){throw new Error(\"not implemented\");} finish(){throw new Error(\"not implemented\");}}\nmodule.exports={JsonLines};\n",
         "test.cjs": "const assert=require('node:assert/strict');assert.equal(typeof require('./lib.cjs').JsonLines,'function');\n",
-        "README.md": "# Mini toolkit\n\nImplement JsonLines with push(textChunk) returning all completed parsed JSON lines and finish() returning the remaining final value, if any. Support CRLF, empty lines and chunk boundaries; invalid complete JSON must throw SyntaxError. finish is idempotent and push after finish must throw.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        "README.md": "# Mini toolkit\n\nImplement JsonLines with push(textChunk) returning all completed parsed JSON lines and finish() returning an array containing the remaining final value, or an empty array when none remains. Repeated finish calls return an empty array. Support CRLF, empty lines and chunk boundaries; invalid complete JSON must throw SyntaxError. finish is idempotent and push after finish must throw.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
         ".gitignore": "target/\n__pycache__/\n"
       },
       "reference": {
@@ -517,13 +517,13 @@
       "id": "py-dry-run-wiring",
       "language": "python",
       "category": "multi-file",
-      "prompt": "Wire the dry_run option through configuration, execute() and cli.py. Default false must write the requested text; explicit true must return a preview without writing. Reject non-boolean dry_run values with ValueError. CLI accepts one JSON config argument and prints its result as JSON; errors go to stderr with exit 2. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "prompt": "Wire the dry_run option through configuration, execute() and cli.py. Default false must write the requested text; explicit true must return {\"preview\": text} without writing; an actual write returns {\"written\": true}. Reject non-boolean dry_run values with ValueError. CLI accepts one JSON config argument and prints its result as JSON; errors go to stderr with exit 2. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
       "files": {
         "settings.py": "def load(config):\n    return {'dry_run':config.get('dry_run') or True}\n",
         "cli.py": "import sys,json\nfrom toolkit import execute\ntry:print(execute(json.loads(sys.argv[1]),sys.argv[2],sys.argv[3]))\nexcept Exception as e:print(str(e));sys.exit(1)\n",
         "toolkit.py": "from settings import load\ndef execute(config,path,text):\n    options=load(config)\n    if options['dry_run']:return {'preview':text}\n    from pathlib import Path\n    Path(path).write_text(text)\n    return {'written':True}\n",
         "test_public.py": "from toolkit import execute\nassert callable(execute)\n",
-        "README.md": "# Mini toolkit\n\nWire the dry_run option through configuration, execute() and cli.py. Default false must write the requested text; explicit true must return a preview without writing. Reject non-boolean dry_run values with ValueError. CLI accepts one JSON config argument and prints its result as JSON; errors go to stderr with exit 2.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
+        "README.md": "# Mini toolkit\n\nWire the dry_run option through configuration, execute() and cli.py. Default false must write the requested text; explicit true must return {\"preview\": text} without writing; an actual write returns {\"written\": true}. Reject non-boolean dry_run values with ValueError. CLI accepts one JSON config argument and prints its result as JSON; errors go to stderr with exit 2.\n\nRun the public checks with `python3 -B test_public.py`. No dependency downloads are required.\n",
         ".gitignore": "target/\n__pycache__/\n"
       },
       "reference": {
