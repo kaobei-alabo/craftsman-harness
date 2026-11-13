@@ -1,5 +1,14 @@
 # OSS review: text inherited from deepagents
 
+> **Project license decision (November 13, 2026):** the owner explicitly selected
+> MIT for the project's original work. The root [LICENSE](../LICENSE) and the
+> application package declaration now match the framework/SDK/macros' existing
+> MIT metadata. This resolves the project license choice, not the remaining
+> authorship, third-party provenance or distribution-review questions. Existing
+> [NOTICE](../NOTICE) text and third-party license grants are preserved. The
+> October inventory, quoted absence-of-license findings and old file paths below
+> remain historical evidence for the source revision they examined.
+
 > **Transport retirement (November 11):** references to `serve.rs`,
 > `desktop_serve.rs` and their command/protocol surfaces below are historical.
 > The owner removed those servers; ACP stdio and its WebSocket bridge remain.

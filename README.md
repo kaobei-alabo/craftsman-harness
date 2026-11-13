@@ -17,6 +17,11 @@ are historical evidence. The `craftsman` CLI, `craftsman-*` Cargo packages,
 See [the identity migration notes](docs/repository-name.md) for existing-data
 handling and the earlier namespace change.
 
+The project's original work is licensed under the [MIT License](LICENSE),
+including commercial use, modification and redistribution with the copyright
+and license notice retained. Third-party material keeps its existing licenses
+and attribution; see [NOTICE](NOTICE) and the [attribution review](docs/oss-review.md).
+
 Start with [production readiness](docs/production-readiness.md) for the current
 overview, build/setup steps, self-built gadget workflow, validation record and
 remaining gates. [Gadget authoring](docs/gadgets.md) describes the implemented
@@ -635,10 +640,9 @@ See [provider models](docs/provider-models.md) and the [complete placeholder con
 connections and the conversation. Flat configs keep their platform/direct setup.
 
 Without named providers, the legacy chat route is the endpoint named by `base_url`
-and `api_key` (`https://api.openai.com/v1` when `base_url` is empty). The
-platform's LLM app is used the same way, with `base_url` pointing at
-`{platform}/apps/llm/api/v1` (see `examples/config/platform.json`). The harness
-profile applies on top of whichever model is selected.
+and `api_key` (`https://api.openai.com/v1` when `base_url` is empty). The harness
+profile applies on top of whichever model is selected. The former platform
+connection example has been removed because that service is no longer available.
 
 For the legacy route, `provider_profile` supports:
 
@@ -654,16 +658,14 @@ are sent to the selected route.
 
 Ready-to-copy examples are in [`examples/config/`](examples/config/):
 
-- `platform.json` — the platform as a stock OpenAI-compatible endpoint plus
-  its `/mcp` as a plain MCP entry (token via `${CRAFTSMAN_PLATFORM_TOKEN}`)
+- `multi-provider.json` — named connections with actual model IDs and per-model settings
 - `direct-openai.json` — direct OpenAI-compatible endpoint
 - `direct-nvidia.json` — direct NVIDIA/Nemotron endpoint
 - `litellm-proxy.json` — proxy route with provider defaults disabled
 
-The example files contain placeholders and no real credentials. Mint a
-personal API key on the platform (auth → API keys), export it as
-`CRAFTSMAN_PLATFORM_TOKEN` (or paste it into `platform.api_token` /
-`api_key`), and the LLM route, MCP entry, and skills REST all use it.
+The example files contain placeholders and no real credentials. Set the endpoint
+and API key supplied by your model provider; `${ENV_VAR}` credential references
+are also supported. No platform account or platform connection is needed.
 
 ## Gadgets
 

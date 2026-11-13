@@ -163,8 +163,9 @@ empty, so the file can stay secret-free:
 - Downstream effect: harness/provider profiles lose `uses_platform_llm()` as a
   signal. `harness_profiles::model_identity` already infers the family from the
   model name / `provider:model` spec, so users of platform-hosted models keep
-  correct profile inference by naming the model. `examples/config/platform.json`
-  is updated to the new shape.
+  correct profile inference by naming the model. The former platform connection
+  example was updated to the new shape, then retired on November 13, 2026 because
+  the service was no longer available.
 
 ### 4.3 Skills REST client (`platform_rest.rs`, new; skills only)
 
@@ -288,8 +289,8 @@ config per HTTP call.
   bullets 1-2 become obsolete; `./install.sh --no-locked` semantics simplify —
   no pinned SDK tag to worry about). AGENTS.md's delegated-agents paragraph is
   removed with the feature.
-- New `examples/config/platform.json` reflecting the token shape (and updated
-  `direct-*.json` if field names change).
+- A platform connection example reflecting the token shape (retired November 13,
+  2026), and updated `direct-*.json` if field names change.
 
 ## 6. Design decisions and tradeoffs
 
@@ -369,7 +370,8 @@ breaking change for password-login users.
    `context_window` fallback; delete `apps|app|invoke` CLI.
 5. `craftsman setup` wizard token flow; remove `/login` `/logout` `/connect`,
    `LoginModal`, `craftsman login` CLI.
-6. Update `examples/config/platform.json`; README/AGENTS.md notes.
+6. Update the then-current platform connection example; README/AGENTS.md notes.
+   The example was subsequently removed on November 13, 2026.
 
 **Phase 2 — skills REST client + modern MCP + SDK removal (~1 week)**
 

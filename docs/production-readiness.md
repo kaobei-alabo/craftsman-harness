@@ -16,7 +16,7 @@ checkout also use the new history and remote. Old hashes/issues/CI runs in the
 | Private headless foundations | Explicit permissions, retained confined filesystem, captured/redacted views, input-first preparation, checked private output and shared admission meter | Successful response/output/storage boundaries, real usage settlement and public result/event producers |
 | Request-budget arguments | New private `--max-rounds`, default 50/range 1..10000, shared main/delegate/compaction cap | Public CLI integration follows the remaining headless contracts |
 | Process lifecycle | Bounded shell capture and owned cancellation, scoped TUI Unix groups/Windows Job Objects, signal shutdown; native behavior regression checks | Validate native containment and exceptional cleanup |
-| Distribution | Authenticated new repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled and workflows removed | Explicit owner approval before restoring publication, plan-supported branch protection and licensing/distribution decisions |
+| Distribution | MIT license for the project's original work; authenticated repository, verified implementations merged, pinned toolchain and source validation; binary/image publishing disabled | Explicit owner approval before restoring publication, plan-supported branch protection and remaining provenance/distribution review |
 
 The roadmap in [craftsman-harness-plan.md](craftsman-harness-plan.md) includes
 future events, recovery, editing, context and containment work. Its historical
@@ -117,6 +117,15 @@ remain separate from these corrected results. Fresh platform and independent
 merged-main verification remain required.
 
 ## Build and use the gadget workflow
+
+The user-authorized [live starter evaluation](live-gadget-evaluation.md) on
+November 13 completed four actual agent build sessions and four fresh use
+sessions, split between `gpt-6.1-sol` and Claude Fable 5.2 on Bedrock. All 30
+independent cases passed, including invalid-input/overflow refusals. The reviewed
+pure gadgets were installed create-only with ephemeral invocation grants; global
+manual permissions and live shell limits were preserved. This is specific live
+task evidence, distinct from scripted tests and general production/containment
+claims. The former platform example is retired because its service is unavailable.
 
 Use the exact **Rust 1.99.1** toolchain in `rust-toolchain.toml`. The application
 now declares the tested 1.99 compiler floor instead of the inherited 1.85 claim;
