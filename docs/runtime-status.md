@@ -14,6 +14,14 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Terminal branding (November 13):** startup uses Craftsman block lettering
+> beside a solid colored hammer, with a compact layout for narrow terminals.
+> Indexed art colors work in Terminal.app. The status rows describe the selected
+> named model connection or legacy direct connection, without showing API keys
+> or resolving credentials/contacting providers. Configured keys remain explicitly
+> unverified. The README shows a native terminal preview from isolated configuration;
+> [provider configuration](provider-models.md) explains the status semantics.
+
 > **Public repository validation (November 13):** after the owner made the MIT
 > repository public, main run 43367914846 attempt 2 passed all four jobs/every
 > mandatory step and both full native modes at `0389716`. Native inventories and

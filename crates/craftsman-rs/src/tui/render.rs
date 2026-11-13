@@ -18,12 +18,27 @@ use std::sync::{Arc, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) const BANNER: &str = r#"███╗   ███╗ █████╗  ██████╗ ███╗   ██╗ █████╗
-████╗ ████║██╔══██╗██╔════╝ ████╗  ██║██╔══██╗
-██╔████╔██║███████║██║  ███╗██╔██╗ ██║███████║
-██║╚██╔╝██║██╔══██║██║   ██║██║╚██╗██║██╔══██║
-██║ ╚═╝ ██║██║  ██║╚██████╔╝██║ ╚████║██║  ██║
-╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝"#;
+pub(super) const BANNER: &str = r#" ████ ████   ███  █████ █████  ████ █   █  ███  █   █
+█     █   █ █   █ █       █   █     ██ ██ █   █ ██  █
+█     ████  █████ ████    █    ███  █ █ █ █████ █ █ █
+█     █  █  █   █ █       █       █ █   █ █   █ █  ██
+ ████ █   █ █   █ █       █   ████  █   █ █   █ █   █"#;
+
+const HAMMER: [&str; 6] = [
+    "  ████████████",
+    "██████████████",
+    "████████████  ",
+    "     ████     ",
+    "     ████     ",
+    "     ████     ",
+];
+const SMALL_HAMMER: [&str; 5] = [
+    " █████████",
+    "██████████",
+    "████████  ",
+    "   ███    ",
+    "   ███    ",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ScreenSelection {
@@ -146,7 +161,7 @@ fn truncate_visible(text: &str, max_width: usize) -> String {
 }
 
 fn splash_box_line(margin: usize, box_width: usize, content: Vec<Span<'static>>) -> Line<'static> {
-    let border = Style::default().fg(Color::Rgb(141, 115, 255));
+    let border = Style::default().fg(Color::Indexed(141));
     let inner_width = box_width.saturating_sub(4);
     let content_width = content
         .iter()
@@ -163,7 +178,7 @@ fn splash_box_line(margin: usize, box_width: usize, content: Vec<Span<'static>>)
 }
 
 fn splash_value_style(label: &str, value: &str) -> Style {
-    if value.contains("(none") || value.contains("not connected") || value.contains("not signed") {
+    if value.starts_with('(') || value.contains("not connected") || value.contains("not signed") {
         return Style::default().fg(Color::Yellow);
     }
     match label {
@@ -179,18 +194,21 @@ fn splash_value_style(label: &str, value: &str) -> Style {
 }
 
 fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
-    let available = width.max(4);
+    if width < 4 {
+        return vec![Line::raw(truncate_visible("CRAFTSMAN", width))];
+    }
+    let available = width;
     let box_width = if available >= 24 {
         available.saturating_sub(2).min(88)
     } else {
         available
     };
     let margin = available.saturating_sub(box_width) / 2;
-    let border = Style::default().fg(Color::Rgb(141, 115, 255));
+    let border = Style::default().fg(Color::Indexed(141));
     let title_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    let title = " CRAFTSMAN CLI ";
+    let title = truncate_visible(" CRAFTSMAN CLI ", box_width.saturating_sub(2));
     let title_width = title.width();
     let rule_width = box_width.saturating_sub(title_width + 2);
     let left_rule = rule_width.min(2);
@@ -208,43 +226,77 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
         .map(UnicodeWidthStr::width)
         .max()
         .unwrap_or(0);
-    if inner_width >= banner_width {
-        let colors = [
-            Color::Rgb(177, 156, 255),
-            Color::Rgb(155, 135, 255),
-            Color::Rgb(117, 168, 255),
-            Color::Rgb(91, 200, 220),
-            Color::Rgb(144, 238, 144),
-            Color::Rgb(105, 205, 140),
-        ];
-        for (index, art) in BANNER.lines().enumerate() {
-            let left_pad = inner_width.saturating_sub(art.width()) / 2;
+    let hammer_width = HAMMER[0].width();
+    let full_width = hammer_width + 3 + banner_width;
+    let compact = ["", "CRAFTSMAN", "", "Build your own", "WASM gadgets.", ""];
+    let compact_width = hammer_width + 3 + compact.iter().map(|s| s.width()).max().unwrap_or(0);
+    if inner_width >= compact_width {
+        let full = inner_width >= full_width;
+        let wordmark: Vec<_> = BANNER
+            .lines()
+            .chain(std::iter::once("A coding agent that builds its own tools."))
+            .collect();
+        let art_width = if full { full_width } else { compact_width };
+        let left_pad = inner_width.saturating_sub(art_width) / 2;
+        let hammer_colors = [141, 135, 111, 214, 208, 202];
+        let wordmark_colors = [141, 135, 111, 117, 120, 245];
+        for (index, hammer) in HAMMER.iter().enumerate() {
+            let caption = if full {
+                wordmark[index]
+            } else {
+                compact[index]
+            };
             lines.push(splash_box_line(
                 margin,
                 box_width,
                 vec![
                     Span::raw(" ".repeat(left_pad)),
                     Span::styled(
-                        art.to_string(),
+                        *hammer,
                         Style::default()
-                            .fg(colors[index.min(colors.len() - 1)])
+                            .fg(Color::Indexed(hammer_colors[index]))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("   "),
+                    Span::styled(
+                        caption.to_string(),
+                        Style::default()
+                            .fg(Color::Indexed(wordmark_colors[index]))
                             .add_modifier(Modifier::BOLD),
                     ),
                 ],
             ));
         }
     } else {
-        let compact = "M A G N A";
-        let left_pad = inner_width.saturating_sub(compact.width()) / 2;
+        if inner_width >= SMALL_HAMMER[0].width() {
+            let colors = [141, 135, 111, 214, 208];
+            for (index, hammer) in SMALL_HAMMER.iter().enumerate() {
+                lines.push(splash_box_line(
+                    margin,
+                    box_width,
+                    vec![
+                        Span::raw(" ".repeat((inner_width - hammer.width()) / 2)),
+                        Span::styled(
+                            *hammer,
+                            Style::default()
+                                .fg(Color::Indexed(colors[index]))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ],
+                ));
+            }
+        }
+        let caption = truncate_visible("CRAFTSMAN", inner_width);
+        let left_pad = inner_width.saturating_sub(caption.width()) / 2;
         lines.push(splash_box_line(
             margin,
             box_width,
             vec![
                 Span::raw(" ".repeat(left_pad)),
                 Span::styled(
-                    compact,
+                    caption,
                     Style::default()
-                        .fg(Color::LightGreen)
+                        .fg(Color::Indexed(120))
                         .add_modifier(Modifier::BOLD),
                 ),
             ],
@@ -257,8 +309,9 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         };
         let label = label.to_ascii_uppercase();
-        let label_display = format!("{label:<8}");
-        let value_width = inner_width.saturating_sub(label_display.width() + 1);
+        let label_display = truncate_visible(&format!("{label:<8}"), inner_width);
+        let gap = usize::from(inner_width > label_display.width());
+        let value_width = inner_width.saturating_sub(label_display.width() + gap);
         let value = truncate_visible(value, value_width);
         lines.push(splash_box_line(
             margin,
@@ -270,7 +323,7 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" "),
+                Span::raw(" ".repeat(gap)),
                 Span::styled(value.clone(), splash_value_style(&label, &value)),
             ],
         ));
@@ -856,17 +909,34 @@ pub(super) fn auth_status(cfg: &Config) -> String {
 }
 
 pub(super) fn startup_splash_data(cfg: &Config) -> String {
-    let server = if cfg.base_url.is_empty() {
-        "(not configured — set base_url or run /setup)".to_string()
+    // Configuration status only: rendering never resolves credentials or
+    // contacts a provider, including connections that are not selected.
+    let (server, auth) = if cfg.providers.is_empty() {
+        let server = if cfg.base_url.is_empty() && cfg.api_key.is_empty() {
+            "(not configured — run /setup)".to_string()
+        } else {
+            splash_endpoint(if cfg.base_url.is_empty() {
+                "https://api.openai.com/v1"
+            } else {
+                &cfg.base_url
+            })
+        };
+        (server, splash_key_status(&cfg.api_key))
     } else {
-        cfg.base_url.clone()
-    };
-    let auth = if cfg.platform.base_url.is_empty() {
-        "(platform not configured)".to_string()
-    } else if cfg.platform_configured() {
-        format!("{} (api-token)", cfg.platform.base_url)
-    } else {
-        format!("{} (no api token)", cfg.platform.base_url)
+        match cfg
+            .model
+            .as_deref()
+            .and_then(|model| crate::provider_config::selection(cfg, model).ok())
+        {
+            Some(chosen) => (
+                splash_endpoint(crate::provider_config::endpoint(chosen.provider)),
+                splash_key_status(&chosen.provider.api_key),
+            ),
+            None => (
+                "(select a model — run /model)".to_string(),
+                "(no model connection selected)".to_string(),
+            ),
+        }
     };
     format!(
         "version\t{}\nagent\t{}\nmodel\t{}\nserver\t{}\nauth\t{}\nmode\t{}",
@@ -877,6 +947,32 @@ pub(super) fn startup_splash_data(cfg: &Config) -> String {
         auth,
         cfg.permission_mode.as_str(),
     )
+}
+
+fn splash_key_status(key: &str) -> String {
+    if key.is_empty() {
+        "(no API key — run /setup)"
+    } else if key.contains("${") {
+        "API key from environment (not verified)"
+    } else {
+        "API key configured (not verified)"
+    }
+    .to_string()
+}
+
+fn splash_endpoint(endpoint: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(endpoint) else {
+        return "(invalid endpoint — run /setup)".to_string();
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return "(invalid endpoint — run /setup)".to_string();
+    }
+    // Legacy endpoints may contain credentials. Keep only the public route.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
 }
 
 #[cfg(test)]
@@ -963,7 +1059,15 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(plain.contains('╭') && plain.contains('╯'));
-        assert!(plain.contains("███╗"));
+        assert!(plain.contains("CRAFTSMAN CLI"));
+        assert!(plain.contains("██████████████"));
+        assert!(plain.contains(BANNER.lines().next().unwrap()));
+        let hammer = lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content == HAMMER[1])
+            .expect("filled hammer head");
+        assert_eq!(hammer.style.fg, Some(Color::Indexed(135)));
         assert!(plain.contains("VERSION"));
         let version = lines
             .iter()
@@ -987,8 +1091,10 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(plain.contains("M A G N A"));
-        assert!(!plain.contains("███╗"));
+        assert!(plain.contains("CRAFTSMAN"));
+        assert!(plain.contains("██████████████"));
+        assert!(plain.contains("WASM gadgets."));
+        assert!(!plain.contains(BANNER.lines().next().unwrap()));
         assert!(lines.iter().all(|line| {
             line.spans
                 .iter()
@@ -996,6 +1102,111 @@ mod tests {
                 .sum::<usize>()
                 <= 40
         }));
+    }
+
+    #[test]
+    fn splash_card_fits_resizes_and_standard_startup_height() {
+        let cfg = Config {
+            model: Some("模型/long-model-name-".repeat(12)),
+            agent: "long-agent-name-".repeat(12),
+            ..Config::default()
+        };
+        let data = startup_splash_data(&cfg);
+        for width in 0..=144 {
+            let lines = render_splash_card(&data, width);
+            assert!(
+                lines.iter().all(|line| line.width() <= width),
+                "width {width}"
+            );
+            if width >= 40 {
+                assert_eq!(
+                    Paragraph::new(Text::from(lines)).line_count(width as u16),
+                    15
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn splash_uses_selected_provider_without_resolving_any_keys() {
+        let mut cfg: Config = serde_json::from_value(serde_json::json!({
+            "model": "openai/gpt-test",
+            "api_key": "legacy-key-must-not-be-shown",
+            "base_url": "https://legacy.example/v1",
+            "providers": {
+                "openai": {
+                    "protocol": "openai_responses",
+                    "base_url": "https://gpt.example/v1",
+                    "api_key": "selected-key-must-not-be-shown",
+                    "models": {"gpt-test": {}}
+                },
+                "claude": {
+                    "protocol": "anthropic_messages",
+                    "api_key": "${CRAFTSMAN_SPLASH_UNRESOLVED_TEST_KEY}",
+                    "models": {"claude-test": {}}
+                }
+            }
+        }))
+        .unwrap();
+        let data = startup_splash_data(&cfg);
+        assert!(data.contains("server\thttps://gpt.example/v1"));
+        assert!(data.contains("auth\tAPI key configured (not verified)"));
+        assert!(!data.contains("legacy.example"));
+        assert!(!data.contains("must-not-be-shown"));
+        assert!(!data.contains("CRAFTSMAN_SPLASH_UNRESOLVED_TEST_KEY"));
+
+        cfg.model = Some("claude/claude-test".into());
+        let data = startup_splash_data(&cfg);
+        assert!(data.contains("server\thttps://api.anthropic.com/v1"));
+        assert!(data.contains("auth\tAPI key from environment (not verified)"));
+        assert!(!data.contains("CRAFTSMAN_SPLASH_UNRESOLVED_TEST_KEY"));
+        assert!(!data.contains("must-not-be-shown"));
+    }
+
+    #[test]
+    fn splash_reports_missing_selection_and_key_without_legacy_fallback() {
+        let mut cfg: Config = serde_json::from_value(serde_json::json!({
+            "api_key": "legacy-key",
+            "base_url": "https://legacy.example/v1",
+            "providers": {"openai": {"protocol": "openai_responses", "models": {}}}
+        }))
+        .unwrap();
+        for model in [None, Some("missing/gpt-test".to_string())] {
+            cfg.model = model;
+            let data = startup_splash_data(&cfg);
+            assert!(data.contains("auth\t(no model connection selected)"));
+            assert!(!data.contains("legacy.example"));
+        }
+        cfg.model = Some("openai/gpt-test".into());
+        let data = startup_splash_data(&cfg);
+        assert!(data.contains("server\thttps://api.openai.com/v1"));
+        assert!(data.contains("auth\t(no API key — run /setup)"));
+        assert!(!data.contains("legacy-key"));
+    }
+
+    #[test]
+    fn splash_legacy_connection_hides_endpoint_credentials() {
+        let cfg = Config {
+            model: Some("gpt-test".into()),
+            base_url: "https://user:secret@gpt.example/v1?api_key=secret#secret".into(),
+            api_key: "key-must-not-be-shown".into(),
+            ..Config::default()
+        };
+        let data = startup_splash_data(&cfg);
+        assert!(data.contains("server\thttps://gpt.example/v1\n"));
+        assert!(data.contains("auth\tAPI key configured (not verified)"));
+        assert!(!data.contains("secret"));
+        assert!(!data.contains("user"));
+        assert!(!data.contains("must-not-be-shown"));
+        let default_endpoint = startup_splash_data(&Config {
+            base_url: String::new(),
+            ..cfg
+        });
+        assert!(default_endpoint.contains("server\thttps://api.openai.com/v1"));
+        assert_eq!(
+            splash_endpoint("data:credential-must-not-be-shown"),
+            "(invalid endpoint — run /setup)"
+        );
     }
 
     #[test]

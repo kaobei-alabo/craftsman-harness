@@ -29,6 +29,15 @@ or silently switch to another endpoint/model when a request fails.
 
 ## Terminal selection
 
+The startup card pairs Craftsman block lettering with a filled, colored hammer.
+It uses a compact layout on narrow terminals and indexed colors supported by
+Terminal.app. Its model, endpoint and API-key status describe the selected
+connection, including protocol defaults; obsolete platform authentication is
+not used as model-connection status. This is configuration information, not an
+authentication or connectivity check. Rendering does not resolve environment
+keys or contact providers. Keys and endpoint credentials/query fragments are
+excluded from the displayed status.
+
 `/setup` and `craftsman setup` offer a picker for configured connections, then
 edit that connection's endpoint/key and actual API model ID. The complete
 candidate is validated before saving; failed saves keep the current session.
