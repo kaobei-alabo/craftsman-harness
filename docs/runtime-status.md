@@ -14,6 +14,15 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Public repository validation (November 13):** after the owner made the MIT
+> repository public, main run 43367914846 attempt 2 passed all four jobs/every
+> mandatory step and both full native modes at `0389716`. Native inventories and
+> warning signatures match the reviewed baseline plus the recorded ACP additions.
+> Dependency cache staging/saving succeeded on all three platforms. Earlier
+> billing-blocked attempts remain failed evidence. The concise README introduces
+> the product; current technical limits and historical validation remain here
+> and in the feature docs. Binary/container publication stays on hold.
+
 > **MIT license decision (November 13):** the owner selected MIT for the project's
 > original work. A root `LICENSE` and application package metadata now match the
 > existing MIT declarations of the framework, gadget SDK and macros. Commercial
