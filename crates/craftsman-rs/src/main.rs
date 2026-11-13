@@ -30,19 +30,15 @@ mod harness_profiles;
 mod history;
 mod hitl;
 mod hitl_middleware;
-mod inbox_poller;
 mod llm;
 mod lsp;
 mod mcp;
+mod model_catalog;
 mod model_controls;
 mod native_model;
 mod oneshot_io;
 mod picker;
-mod platform;
 mod platform_os;
-mod platform_rest;
-#[allow(dead_code, unused_imports)]
-mod platform_skills;
 mod plugins;
 mod prompt;
 mod provider_config;
@@ -51,8 +47,6 @@ mod service_agent;
 mod shell;
 mod shell_output;
 mod skills;
-#[allow(dead_code)]
-mod skills_browser;
 mod store_fs;
 mod subagent_gate;
 #[cfg(test)]
@@ -77,11 +71,7 @@ use clap::{Parser, Subcommand};
 use config::{Config, PermissionMode};
 
 #[derive(Parser)]
-#[command(
-    name = "craftsman",
-    version,
-    about = "Craftsman platform chat client (Rust)"
-)]
+#[command(name = "craftsman", version, about = "Craftsman terminal coding agent")]
 struct Cli {
     /// One-shot: send a single message and exit.
     #[arg(short, long)]
@@ -167,9 +157,8 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     }
     if cfg.has_legacy_credentials() {
         eprintln!(
-            "note: login-era fields found in config.json; they are ignored now. Set \
-             platform.api_token (or $CRAFTSMAN_PLATFORM_TOKEN), point base_url at the platform's \
-             OpenAI-compatible endpoint, and add the platform as an mcp_servers entry."
+            "note: legacy login fields in config.json are ignored. Configure a model \
+             connection with an endpoint and API key."
         );
     }
 

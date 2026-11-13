@@ -30,6 +30,8 @@ pub(super) struct AskModal {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum AppAction {
+    ChooseModel(crate::model_controls::CatalogModel),
+    #[cfg(test)]
     SelectModel(String),
     SelectModelEffort {
         model: String,
@@ -46,10 +48,6 @@ pub(super) enum AppAction {
     ResumeSession(String),
     CancelTask(String),
     RemoveQueued(usize),
-    SetupPlatform {
-        url: String,
-        token: String,
-    },
     SetupDirect {
         base_url: String,
         api_key: String,
@@ -62,7 +60,6 @@ pub(super) enum AppAction {
         api_key: String,
         model: String,
     },
-    Skill(crate::skills_browser::BrowserAction),
 }
 
 #[derive(Clone)]
@@ -80,12 +77,49 @@ pub(super) struct SelectionModal {
     pub(super) hint: String,
 }
 
+impl SelectionModal {
+    fn is_model_catalog(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| matches!(item.enter_action, Some(AppAction::ChooseModel(_))))
+    }
+
+    fn selectable(&self, index: usize) -> bool {
+        !self.is_model_catalog()
+            || self
+                .items
+                .get(index)
+                .is_some_and(|item| item.enter_action.is_some())
+    }
+
+    fn move_selection(&mut self, forward: bool, steps: usize) {
+        if self.items.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        self.selected = self.selected.min(self.items.len() - 1);
+        for _ in 0..steps {
+            let next = if forward {
+                ((self.selected + 1)..self.items.len()).find(|&index| self.selectable(index))
+            } else {
+                (0..self.selected)
+                    .rev()
+                    .find(|&index| self.selectable(index))
+            };
+            if let Some(next) = next {
+                self.selected = next;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 pub(super) struct EditorModal {
     pub(super) text: String,
 }
 
 pub(super) struct SetupModal {
-    kind: usize,
     provider: Option<(String, &'static str)>,
     pub(super) fields: Vec<String>,
     pub(super) field: usize,
@@ -112,7 +146,6 @@ impl SetupModal {
 
     fn new() -> Self {
         Self {
-            kind: 0,
             provider: None,
             fields: vec![String::new(), String::new(), String::new()],
             field: 0,
@@ -122,8 +155,6 @@ impl SetupModal {
     fn labels(&self) -> [&'static str; 3] {
         if self.provider.is_some() {
             ["Base URL", "API key", "API model ID"]
-        } else if self.kind == 0 {
-            ["Platform URL", "API token", "Model (optional)"]
         } else {
             ["Base URL", "API key", "Model"]
         }
@@ -226,21 +257,13 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         Modal::Selection(selection) => match key.code {
-            KeyCode::Up => selection.selected = selection.selected.saturating_sub(1),
-            KeyCode::Down => {
-                if !selection.items.is_empty() {
-                    selection.selected = (selection.selected + 1).min(selection.items.len() - 1);
-                }
-            }
-            KeyCode::PageUp => selection.selected = selection.selected.saturating_sub(10),
-            KeyCode::PageDown => {
-                if !selection.items.is_empty() {
-                    selection.selected = (selection.selected + 10).min(selection.items.len() - 1);
-                }
-            }
-            KeyCode::Home => selection.selected = 0,
+            KeyCode::Up => selection.move_selection(false, 1),
+            KeyCode::Down => selection.move_selection(true, 1),
+            KeyCode::PageUp => selection.move_selection(false, 10),
+            KeyCode::PageDown => selection.move_selection(true, 10),
+            KeyCode::Home => selection.move_selection(false, selection.items.len()),
             KeyCode::End => {
-                selection.selected = selection.items.len().saturating_sub(1);
+                selection.move_selection(true, selection.items.len());
             }
             KeyCode::Enter => {
                 let action = selection
@@ -293,11 +316,6 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         Modal::Setup(setup) => match key.code {
-            KeyCode::Left | KeyCode::Right if setup.provider.is_none() => {
-                setup.kind = 1 - setup.kind;
-                setup.field = 0;
-                setup.fields = vec![String::new(), String::new(), String::new()];
-            }
             KeyCode::Tab | KeyCode::Down => setup.field = (setup.field + 1) % 3,
             KeyCode::BackTab | KeyCode::Up => setup.field = (setup.field + 2) % 3,
             KeyCode::Char(character)
@@ -321,16 +339,9 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Enter if setup.field < 2 => setup.field += 1,
             KeyCode::Enter => {
-                // Platform flow: URL + token required; the model is chosen
-                // from the endpoint's listing afterwards. Direct flow: URL +
-                // model required (key may be empty for a local proxy).
-                let missing = if setup.provider.is_some() {
-                    setup.fields[0].trim().is_empty() || setup.fields[2].trim().is_empty()
-                } else if setup.kind == 0 {
-                    setup.fields[0].trim().is_empty() || setup.fields[1].trim().is_empty()
-                } else {
-                    setup.fields[0].trim().is_empty() || setup.fields[2].trim().is_empty()
-                };
+                // A local compatible endpoint may have no API key.
+                let missing =
+                    setup.fields[0].trim().is_empty() || setup.fields[2].trim().is_empty();
                 if !missing && let Some(Modal::Setup(modal)) = app.modal.take() {
                     app.pending_action = Some(if let Some((provider, _)) = modal.provider {
                         AppAction::SaveProviderSetup {
@@ -338,11 +349,6 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
                             base_url: modal.fields[0].trim().to_string(),
                             api_key: modal.fields[1].clone(),
                             model: modal.fields[2].trim().to_string(),
-                        }
-                    } else if modal.kind == 0 {
-                        AppAction::SetupPlatform {
-                            url: modal.fields[0].trim().to_string(),
-                            token: modal.fields[1].clone(),
                         }
                     } else {
                         AppAction::SetupDirect {
@@ -458,17 +464,15 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 .split(inner);
             let tabs = if let Some((provider, protocol)) = &modal.provider {
                 format!("{provider} · {protocol}\nCtrl-U clear current field")
-            } else if modal.kind == 0 {
-                "[ Craftsman Platform ]   Direct provider\n←/→ switch connection type".into()
             } else {
-                "Craftsman Platform   [ Direct provider ]\n←/→ switch connection type".into()
+                "Model connection\nEnter its configured endpoint, API key and model".into()
             };
             frame.render_widget(
                 Paragraph::new(tabs).style(Style::default().fg(Color::Cyan)),
                 chunks[0],
             );
             for (index, label) in modal.labels().into_iter().enumerate() {
-                let secret = (index == 1 && modal.kind == 0) || (index == 1 && modal.kind == 1);
+                let secret = index == 1;
                 let value = if secret {
                     "•".repeat(modal.fields[index].chars().count())
                 } else {
@@ -489,8 +493,6 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
             frame.render_widget(
                 Paragraph::new(if modal.provider.is_some() {
                     "Enter save and select · Esc cancel · other providers and models are retained"
-                } else if modal.kind == 0 {
-                    "Mint an API key on the platform, then paste it here · model is picked after connect"
                 } else {
                     "API key may be empty for a local proxy · Enter finish · Esc cancel"
                 })
@@ -579,7 +581,6 @@ pub(super) fn show_provider_setup_modal(
     fields: Vec<String>,
 ) {
     app.modal = Some(Modal::Setup(SetupModal {
-        kind: 1,
         provider: Some((provider, protocol)),
         fields,
         field: 0,
@@ -700,62 +701,24 @@ pub(super) fn show_tasks_modal(app: &mut App, tasks: Vec<craftsman_harness::Agen
     app.dirty = true;
 }
 
-pub(super) fn show_skills_modal(app: &mut App, statuses: Vec<crate::platform_skills::SkillStatus>) {
-    use crate::platform_skills::SkillState;
-    use crate::skills_browser::BrowserAction;
-    let items = statuses
-        .into_iter()
-        .map(|status| {
-            let enter_action = match status.state {
-                SkillState::NotInstalled => {
-                    Some(AppAction::Skill(BrowserAction::Install(status.id.clone())))
-                }
-                SkillState::UpdateAvailable => {
-                    Some(AppAction::Skill(BrowserAction::Update(status.id.clone())))
-                }
-                SkillState::UpToDate | SkillState::LocalOnly => None,
-            };
-            let delete_action = if status.installed_version.is_some()
-                && !matches!(status.state, SkillState::LocalOnly)
-            {
-                Some(AppAction::Skill(BrowserAction::Remove(status.id.clone())))
-            } else {
-                None
-            };
-            let version = status
-                .installed_version
-                .as_deref()
-                .or(status.platform_version.as_deref())
-                .unwrap_or("?");
-            let state = match status.state {
-                SkillState::UpToDate => "installed".to_string(),
-                SkillState::UpdateAvailable => format!(
-                    "update → {}",
-                    status.platform_version.as_deref().unwrap_or("?")
-                ),
-                SkillState::NotInstalled => "available".to_string(),
-                SkillState::LocalOnly => "local".to_string(),
-            };
-            SelectionItem {
-                label: format!("{:<18} v{version}", status.name),
-                detail: if status.description.is_empty() {
-                    state
-                } else {
-                    format!(
-                        "{state} · {}",
-                        crate::util::one_line(&status.description, 70)
-                    )
-                },
-                enter_action,
-                delete_action,
-            }
-        })
-        .collect();
+pub(super) fn show_skills_modal(app: &mut App, skills: Vec<crate::skills::Skill>) {
     app.modal = Some(Modal::Selection(SelectionModal {
-        title: "Skills".to_string(),
-        items,
+        title: "Local skills".into(),
+        items: skills
+            .into_iter()
+            .map(|skill| SelectionItem {
+                label: skill.name,
+                detail: format!(
+                    "{} · {}",
+                    crate::util::one_line(&skill.description, 70),
+                    skill.path.display()
+                ),
+                enter_action: None,
+                delete_action: None,
+            })
+            .collect(),
         selected: 0,
-        hint: "↑/↓ select · Enter install/update · d remove · Esc close".to_string(),
+        hint: "↑/↓ browse · Esc close · read SKILL.md to use a skill".into(),
     }));
     app.dirty = true;
 }
@@ -792,6 +755,51 @@ pub(super) fn show_harness_modal(cfg: &Config, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_skills_menu_has_no_remote_or_destructive_actions() {
+        let mut app = App::new(&Config::default());
+        show_skills_modal(
+            &mut app,
+            vec![crate::skills::Skill {
+                name: "Local skill".into(),
+                description: "Read local instructions".into(),
+                path: std::path::PathBuf::from("workspace/.craftsman/skills/local/SKILL.md"),
+            }],
+        );
+        let Some(Modal::Selection(picker)) = &app.modal else {
+            panic!("missing skills menu")
+        };
+        assert_eq!(picker.title, "Local skills");
+        assert!(
+            picker
+                .items
+                .iter()
+                .all(|item| item.enter_action.is_none() && item.delete_action.is_none())
+        );
+        assert!(picker.items[0].detail.contains("SKILL.md"));
+    }
+
+    #[test]
+    fn setup_is_a_model_connection_and_does_not_offer_a_platform_tab() {
+        let mut app = App::new(&Config::default());
+        show_setup_modal(&mut app);
+        let Some(Modal::Setup(setup)) = &mut app.modal else {
+            panic!("missing setup")
+        };
+        assert_eq!(setup.labels(), ["Base URL", "API key", "Model"]);
+        setup.fields = vec![
+            "http://127.0.0.1:4000/v1".into(),
+            String::new(),
+            "local-model".into(),
+        ];
+        setup.field = 2;
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(&app.pending_action, Some(AppAction::SetupDirect{base_url,api_key,model}) if base_url=="http://127.0.0.1:4000/v1" && api_key.is_empty() && model=="local-model")
+        );
+    }
 
     #[test]
     fn selection_enter_emits_action() {
@@ -868,56 +876,6 @@ mod tests {
         assert_eq!(
             modal.items[3].enter_action,
             Some(AppAction::SelectHarness("claude".into()))
-        );
-    }
-
-    #[test]
-    fn skills_modal_maps_install_update_and_remove_actions() {
-        use crate::platform_skills::{SkillState, SkillStatus};
-        let mut app = App::new(&Config::default());
-        show_skills_modal(
-            &mut app,
-            vec![
-                SkillStatus {
-                    id: "new".into(),
-                    name: "New".into(),
-                    description: String::new(),
-                    installed_version: None,
-                    platform_version: Some("1".into()),
-                    state: SkillState::NotInstalled,
-                    source: "platform".into(),
-                },
-                SkillStatus {
-                    id: "update".into(),
-                    name: "Update".into(),
-                    description: String::new(),
-                    installed_version: Some("1".into()),
-                    platform_version: Some("2".into()),
-                    state: SkillState::UpdateAvailable,
-                    source: "platform".into(),
-                },
-            ],
-        );
-        let Some(Modal::Selection(modal)) = app.modal.as_ref() else {
-            panic!("expected selection modal");
-        };
-        assert_eq!(
-            modal.items[0].enter_action,
-            Some(AppAction::Skill(
-                crate::skills_browser::BrowserAction::Install("new".into())
-            ))
-        );
-        assert_eq!(
-            modal.items[1].enter_action,
-            Some(AppAction::Skill(
-                crate::skills_browser::BrowserAction::Update("update".into())
-            ))
-        );
-        assert_eq!(
-            modal.items[1].delete_action,
-            Some(AppAction::Skill(
-                crate::skills_browser::BrowserAction::Remove("update".into())
-            ))
         );
     }
 }

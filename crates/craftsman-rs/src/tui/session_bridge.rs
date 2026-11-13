@@ -46,6 +46,7 @@ pub(super) enum UiEvent {
     OperationFinished(String),
     ModelCatalogLoaded {
         current: Option<String>,
+        group_providers: bool,
         result: Result<(Vec<crate::model_controls::CatalogModel>, bool), String>,
     },
     ScopedPrompt {
@@ -370,24 +371,29 @@ impl AgentSlot {
         let tx = self.bridge.tx.clone();
         self.retired.spawn(async move {
             let current = cfg.model.clone();
+            let group_providers = !cfg.providers.is_empty();
             let result = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => Err("Model catalog lookup cancelled.".into()),
                 result = async {
                     if !cfg.providers.is_empty() {
-                        let (models, available) = crate::platform::list_provider_models(&cfg).await;
+                        let (models, available) = crate::model_catalog::list_provider_models(&cfg).await;
                         return crate::model_controls::merge_catalog(&cfg, models).map(|models| (models, available));
                     }
-                    let remote = match crate::route::resolve_chat_endpoint(&cfg).await {
-                        Ok(route) => crate::platform::model_catalog(&route).await.ok(),
-                        Err(_) => None,
+                    let remote = if cfg.has_model_connection() {
+                        match crate::route::resolve_chat_endpoint(&cfg).await {
+                            Ok(route) => crate::model_catalog::model_catalog(&route).await.ok(),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
                     };
                     let available = remote.is_some();
                     crate::model_controls::merge_catalog(&cfg, remote.unwrap_or_default())
                         .map(|models| (models, available))
                 } => result,
             };
-            let _ = tx.send(UiEvent::ModelCatalogLoaded { current, result });
+            let _ = tx.send(UiEvent::ModelCatalogLoaded { current, group_providers, result });
         });
         turn
     }
@@ -484,7 +490,11 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             app.discard_stream_deltas = false;
             app.push(output);
         }
-        UiEvent::ModelCatalogLoaded { current, result } => {
+        UiEvent::ModelCatalogLoaded {
+            current,
+            group_providers,
+            result,
+        } => {
             let cancelled = app.cancel_requested || app.closing;
             app.operation_cancellation = None;
             app.running = false;
@@ -500,7 +510,12 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
                         if !available {
                             app.push("Provider catalog unavailable; showing configured models.");
                         }
-                        super::model_commands::show_model_catalog(app, models, current.as_deref());
+                        super::model_commands::show_model_catalog(
+                            app,
+                            models,
+                            current.as_deref(),
+                            group_providers,
+                        );
                     }
                     Err(error) => app.push_error(error),
                 }

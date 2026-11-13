@@ -1,12 +1,12 @@
 //! The agent: craftsman-rs runs on the `craftsman-harness` framework. This module is
 //! the *app-side glue* between that
-//! framework and craftsman's platform pieces:
+//! framework and configured app services:
 //!
 //! - [`StreamingLlmProvider`] implements the framework's `ModelProvider` over
 //!   the existing SSE [`LlmClient`], streaming content to the terminal exactly
 //!   as before and accumulating token usage for `/tokens`.
 //! - The host tools (`ls`/`read_file`/`write_file`/`edit_file`/`glob`/`grep`/
-//!   `execute`) and platform MCP tools are exposed as framework `Tool`s that
+//!   `execute`) and configured MCP tools are exposed as framework `Tool`s that
 //!   delegate to the `RealFs` backend / the MCP client.
 //! - [`build_session_ext`] wires it all together: provider + backend + middleware
 //!   (patch-tool-calls, todos, HITL approval) + tools.
@@ -115,9 +115,8 @@ pub const COMPACT_THRESHOLD_MSGS: usize = 120;
 pub const COMPACT_KEEP_TAIL_MSGS: usize = 20;
 
 impl Session {
-    /// Estimated session cost in USD. `None` (→ footer shows `n/a`): platform
-    /// pricing metadata is no longer fetched (see
-    /// `docs/platform-token-refactor.md`), and no config field supplies rates.
+    /// Estimated session cost in USD. No configured rates are available,
+    /// so the footer truthfully shows `n/a`.
     pub fn cost_usd(&self) -> Option<f64> {
         None
     }
@@ -696,7 +695,7 @@ fn host_and_web_tools(
 }
 
 // ---------------------------------------------------------------------------
-// MCP tools (platform capabilities, not host-mutating → not HITL-gated).
+// Configured MCP tools retain their existing permission/capability gates.
 // ---------------------------------------------------------------------------
 
 struct McpFrameworkTool {
@@ -1190,6 +1189,12 @@ async fn build_session_with_profile(
         _ => return None,
     }
     let cfg = construction.config();
+    if construction.prepared().is_none() && !cfg.has_model_connection() {
+        if let Some(sink) = &extras.activity_sink {
+            sink("No model connection configured. Set an endpoint and API key with /setup.");
+        }
+        return None;
+    }
     let cwd = match construction.prepared() {
         Some(prepared) => prepared.workspace().to_path_buf(),
         None => extras
@@ -1825,8 +1830,8 @@ async fn build_session_with_profile(
     };
     // Token-fraction trigger when the config reports a context window for
     // this model (`model_profiles.<model>.context_window`); otherwise the
-    // message-count fallback. Platform metadata is no longer fetched (see
-    // docs/platform-token-refactor.md). See `CompactionTrigger`'s docs for
+    // message-count fallback. Catalog metadata is not used here.
+    // See `CompactionTrigger`'s docs for
     // the tail-selection difference between the two modes.
     let compaction_trigger = match cfg.model_context_window(&selected_model) {
         Some(cw) => CompactionTrigger::Tokens {

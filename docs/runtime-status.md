@@ -14,6 +14,18 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Local services and model menus (November 13):** `/model` reads the configured
+> catalog, groups models by provider, then asks for the chosen model's effort or
+> budget. The final selection saves/applies both without replay; opening/cancelling
+> a menu makes no model request or configuration change. Explicit `/model --refresh`
+> retains bounded configured discovery. Platform setup, remote skill browsing and
+> the ACP bridge's inbox worker are retired. `/skills` lists local files; model,
+> MCP and search services use configured connections. Missing voice models require
+> `voice.allow_model_download: true`; cached models remain local. Legacy platform
+> fields/secret capture remain compatibility data, not active services. Existing
+> permissions, native limits, SDK/WIT/pins and retained goldens are unchanged.
+> See [connections](connections.md).
+
 > **Terminal branding (November 13):** startup uses Craftsman block lettering
 > beside a solid colored hammer, with a compact layout for narrow terminals.
 > Indexed art colors work in Terminal.app. The status rows describe the selected

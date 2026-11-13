@@ -66,8 +66,8 @@ craftsman
 
 Configure your endpoint, API key and model using setup or the
 [example config](examples/config/multi-provider.json). Enable `gadgets.enabled`
-to use the gadget authoring tools and catalog. Inside the agent, `/model` selects
-a model and `/effort` adjusts its reasoning setting.
+to use the gadget authoring tools and catalog. `/model` opens the grouped model
+catalog, then its effort picker; `/effort` adjusts the current model directly.
 
 For editor integrations, run `craftsman acp-serve`. Use `craftsman acp-bridge`
 when the client needs WebSocket transport.
@@ -76,6 +76,7 @@ when the client needs WebSocket transport.
 
 [Gadget authoring](docs/gadgets.md) ·
 [Models and configuration](docs/provider-models.md) ·
+[Local state and connections](docs/connections.md) ·
 [ACP integration](docs/acp.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
 [Development and validation](docs/production-readiness.md)

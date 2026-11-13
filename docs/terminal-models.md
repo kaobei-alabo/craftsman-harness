@@ -8,15 +8,17 @@ Claude and Gemini continuation data has its own bounded app-layer checkpoint
 middleware; portable conversation transfer retains the contracts below.
 
 The terminal selects models and reasoning effort while retaining the current
-conversation. `/model` combines the configured provider's OpenAI-compatible
-`GET /models` response, explicit `model_catalog` entries, `model_profiles` keys
-and the current model. Configured labels/effort options override discovered
-metadata for the same id. If discovery is unavailable, configured models remain
-selectable. Lookup is asynchronous; Ctrl-C stops it without cancelling an idle
+conversation. `/model` opens the configured catalog locally, with models grouped
+by provider. Choosing a model opens its effort or thinking-budget menu; the final
+choice saves/applies both. Closing either menu keeps the active configuration.
+`/model --refresh` explicitly combines bounded configured-provider discovery
+with `model_catalog`, `model_profiles` and the current model. Configured metadata
+wins for the same ID. Ctrl-C stops that lookup without cancelling an idle
 conversation.
 
 ```text
 /model
+/model --refresh
 /model MODEL_ID
 /model MODEL_ID --reasoning=high
 /model --reasoning=medium
@@ -25,7 +27,7 @@ conversation.
 /effort default
 ```
 
-Catalog entries with effort metadata offer combined model/effort choices.
+Catalog entries carry effort metadata to the next menu.
 `/effort` opens the current model's effort picker. Choices are saved in the user
 config for subsequent terminal launches. Changes during an active turn are
 queued until it returns. The footer displays the selected effort.

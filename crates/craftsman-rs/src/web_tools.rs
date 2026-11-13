@@ -698,23 +698,19 @@ impl WebSearchTool {
     /// Build from config: constructs the named provider if a key is present,
     /// otherwise a tool that reports the setup message.
     pub fn from_config(cfg: &crate::config::Config) -> Self {
-        // Only Brave today; `search_provider` is read for forward-compat but an
-        // unknown name still takes the Brave path so a typo degrades to a
-        // visible HTTP error, not a silent no-op.
-        let _ = cfg.search_provider();
-        let provider: Option<Arc<dyn SearchProvider>> = cfg
-            .search_api_key()
-            .map(|key| Arc::new(BraveSearch::new(key)) as Arc<dyn SearchProvider>);
+        let provider: Option<Arc<dyn SearchProvider>> = match cfg.search_provider() {
+            "duckduckgo" => Some(Arc::new(DuckDuckGoSearch::new())),
+            "brave" => cfg
+                .search_api_key()
+                .map(|key| Arc::new(BraveSearch::new(key)) as Arc<dyn SearchProvider>),
+            _ => None,
+        };
         Self { provider }
     }
 
-    /// Build the shared service-agent provider. It uses the configured Brave
-    /// provider when a key exists and otherwise falls back to DuckDuckGo's
-    /// keyless public instant-answer endpoint.
-    pub fn public_default() -> Self {
-        Self {
-            provider: Some(Arc::new(DuckDuckGoSearch::new())),
-        }
+    /// Use only the configured search provider in the shared service agent.
+    pub fn public_default(cfg: &crate::config::Config) -> Self {
+        Self::from_config(cfg)
     }
 
     /// Construct directly from a provider (tests).
@@ -1025,9 +1021,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_agent_search_always_has_a_provider() {
-        let tool = WebSearchTool::public_default();
+    async fn service_agent_search_uses_only_an_explicitly_configured_provider() {
+        let missing = WebSearchTool::public_default(&crate::config::Config::default());
+        assert!(missing.provider.is_none());
+        assert_eq!(
+            call_query(&missing, "anything").await.content,
+            SETUP_MESSAGE
+        );
+        let cfg = serde_json::from_value(json!({"search_provider":"duckduckgo"})).unwrap();
+        let tool = WebSearchTool::public_default(&cfg);
         assert!(tool.provider.is_some());
+        let unknown = serde_json::from_value(
+            json!({"search_provider":"unknown","search_api_key":"synthetic"}),
+        )
+        .unwrap();
+        assert!(WebSearchTool::public_default(&unknown).provider.is_none());
     }
 
     #[tokio::test]

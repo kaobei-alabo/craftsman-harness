@@ -43,10 +43,11 @@ edit that connection's endpoint/key and actual API model ID. The complete
 candidate is validated before saving; failed saves keep the current session.
 Other connections and model settings survive, and reconfiguration retains the
 conversation without replay. See [provider setup](provider-setup.md). Flat
-configurations retain the legacy platform/direct setup.
+configurations retain direct endpoint/key/model setup.
 
 ```text
 /model
+/model --refresh
 /model openai/YOUR_GPT_MODEL_ID
 /model anthropic/YOUR_CLAUDE_MODEL_ID --reasoning=high
 /effort
@@ -55,7 +56,11 @@ configurations retain the legacy platform/direct setup.
 /effort 4096
 ```
 
-The picker combines all configured connections into one menu. Optional discovery
+The first menu groups configured models by provider. Choosing a model opens its
+own effort or thinking-budget menu, preselected from that model's saved setting.
+The final choice saves and applies both; cancelling either menu leaves the
+active configuration intact. `/effort` directly opens the active model's settings.
+Opening `/model` reads local configuration. Explicit `/model --refresh` discovery
 uses each connection's own authentication and response format, preserving
 provider-qualified identifiers. A failed discovery leaves configured models
 available. Placeholder/unresolvable keys do not generate discovery requests.

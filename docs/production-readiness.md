@@ -7,6 +7,13 @@ were removed from the inherited checkout. The active workspace and personal
 checkout also use the new history and remote. Old hashes/issues/CI runs in the
 [handover](../handover.md) and dated docs are inherited engineering records.
 
+The terminal uses a grouped configured model catalog followed by the selected
+model's effort/budget picker. Opening/cancelling menus is local and read-only;
+`/model --refresh` explicitly requests configured discovery. Platform onboarding,
+remote skill sync and the ACP inbox worker are retired. Model/MCP/search services
+use configuration; voice-model downloads require explicit opt-in. See
+[local state and connections](connections.md).
+
 ## What the code can do
 
 | Area | Current implementation | Remaining production work |

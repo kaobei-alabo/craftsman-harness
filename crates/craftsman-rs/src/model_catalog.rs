@@ -1,14 +1,11 @@
-//! Platform operations. The login/refresh era is gone (see
-//! `docs/platform-token-refactor.md`): the CLI is headless and
-//! token-configured. The platform's LLM endpoint is a stock OpenAI-compatible
-//! provider reached through `route.rs`; harness-facing REST (skills) lives in
-//! `platform_rest.rs`. What remains here is OpenAI-compatible model listing.
+//! Bounded discovery from explicitly configured model connections.
+//! Configured catalogs remain available without remote discovery.
 
 use crate::config::Config;
 use serde_json::Value;
 
 #[cfg(test)]
-#[path = "platform/provider_tests.rs"]
+#[path = "model_catalog/provider_tests.rs"]
 mod provider_tests;
 
 /// The parent future owns every bounded discovery request directly. Cancelling
@@ -130,9 +127,8 @@ async fn discover_provider(
 }
 
 /// Fetch model ids for the active chat route: a plain OpenAI-style
-/// `GET {base}/models` with the resolved bearer. The platform's `llm` app is
-/// reached exactly the same way — it exposes `/apps/llm/api/v1/models`, an
-/// OpenAI-compatible surface — so there is no platform-specific branch.
+/// `GET {base}/models` with the resolved bearer. This helper is retained only for the original direct-route HTTP test.
+#[cfg(test)]
 pub async fn list_models(
     _cfg: &Config,
     route: &crate::route::ChatRoute,

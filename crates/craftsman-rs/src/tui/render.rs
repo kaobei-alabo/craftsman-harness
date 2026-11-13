@@ -883,32 +883,22 @@ fn footer(
 }
 
 pub(super) fn server_status(cfg: &Config) -> String {
-    if cfg.base_url.is_empty() {
-        return "srv:disconnected".to_string();
+    let (endpoint, _) = connection_details(cfg);
+    match reqwest::Url::parse(&endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+    {
+        Some(host) => format!("srv:{host}"),
+        None => "srv:not-configured".into(),
     }
-    let host = cfg
-        .base_url
-        .split("://")
-        .nth(1)
-        .unwrap_or(&cfg.base_url)
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches('/');
-    format!("srv:{host}")
 }
 
 pub(super) fn auth_status(cfg: &Config) -> String {
-    if cfg.platform.base_url.is_empty() {
-        "platform:not-configured".to_string()
-    } else if !cfg.platform_configured() {
-        "platform:no-api-token".to_string()
-    } else {
-        format!("platform:{} (api-token)", cfg.platform.base_url)
-    }
+    let (_, status) = connection_details(cfg);
+    format!("key:{status}")
 }
 
-pub(super) fn startup_splash_data(cfg: &Config) -> String {
+pub(super) fn connection_details(cfg: &Config) -> (String, String) {
     // Configuration status only: rendering never resolves credentials or
     // contacts a provider, including connections that are not selected.
     let (server, auth) = if cfg.providers.is_empty() {
@@ -938,6 +928,11 @@ pub(super) fn startup_splash_data(cfg: &Config) -> String {
             ),
         }
     };
+    (server, auth)
+}
+
+pub(super) fn startup_splash_data(cfg: &Config) -> String {
+    let (server, auth) = connection_details(cfg);
     format!(
         "version\t{}\nagent\t{}\nmodel\t{}\nserver\t{}\nauth\t{}\nmode\t{}",
         env!("CARGO_PKG_VERSION"),
@@ -973,29 +968,6 @@ fn splash_endpoint(endpoint: &str) -> String {
     url.set_query(None);
     url.set_fragment(None);
     url.to_string()
-}
-
-#[cfg(test)]
-fn startup_info(cfg: &Config) -> String {
-    format!(
-        "version: {}\nagent:   {}\nmodel:   {}\nserver:  {}\nauth:    {}\nmode:    {}",
-        env!("CARGO_PKG_VERSION"),
-        cfg.agent,
-        cfg.model.as_deref().unwrap_or("(none — run /model)"),
-        if cfg.base_url.is_empty() {
-            "(not configured — set base_url or run /setup)".to_string()
-        } else {
-            cfg.base_url.clone()
-        },
-        if cfg.platform.base_url.is_empty() {
-            "(platform not configured)".to_string()
-        } else if cfg.platform_configured() {
-            format!("{} (api-token)", cfg.platform.base_url)
-        } else {
-            format!("{} (no api token)", cfg.platform.base_url)
-        },
-        cfg.permission_mode.as_str(),
-    )
 }
 
 #[cfg(test)]
@@ -1241,24 +1213,24 @@ mod tests {
     }
 
     #[test]
-    fn startup_and_footer_include_platform_status() {
+    fn startup_and_footer_use_the_model_connection_without_platform() {
         let cfg = Config {
             agent: "research".into(),
             model: Some("model-a".into()),
-            base_url: "https://platform.example/apps/llm/api/v1".into(),
+            base_url: "https://model.example/v1".into(),
+            api_key: "synthetic-model-key".into(),
             platform: crate::config::PlatformConfig {
-                base_url: "https://platform.example".into(),
-                api_token: "mpat-token".into(),
+                base_url: "https://retired.example".into(),
+                api_token: "retired-token".into(),
             },
             ..Config::default()
         };
-        let info = startup_info(&cfg);
-        assert!(info.contains("agent:   research"));
-        assert!(info.contains("https://platform.example"));
-        assert_eq!(server_status(&cfg), "srv:platform.example");
-        assert_eq!(
-            auth_status(&cfg),
-            "platform:https://platform.example (api-token)"
-        );
+        let info = startup_splash_data(&cfg);
+        assert!(info.contains("agent\tresearch"));
+        assert!(info.contains("https://model.example/v1"));
+        assert_eq!(server_status(&cfg), "srv:model.example");
+        assert_eq!(auth_status(&cfg), "key:API key configured (not verified)");
+        assert!(!info.contains("retired"));
+        assert!(!info.contains("synthetic-model-key"));
     }
 }

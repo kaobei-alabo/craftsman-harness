@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceConfig {
     pub enabled: bool,
+    pub allow_model_download: bool,
     pub engine: String,
     pub model: String,
     pub language: Option<String>,
@@ -24,6 +25,7 @@ impl VoiceConfig {
     pub fn from_config(_cfg: &Config) -> Self {
         Self {
             enabled: false,
+            allow_model_download: false,
             engine: "unavailable".into(),
             model: "large-v3-turbo-q5_0".into(),
             language: None,

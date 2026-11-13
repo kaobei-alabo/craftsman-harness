@@ -14,6 +14,8 @@
 > The owner removed those servers; ACP stdio and its WebSocket bridge remain.
 > This does not change the retained token, provider, trace or attribution contracts.
 
+> **Platform retirement (November 13):** platform skill sync/REST, the old skill browser, inbox worker and platform connection guide are removed. Their quoted rows below remain historical inventory evidence. Retained prompt provenance markers and third-party notices are unchanged.
+
 > **Status:** prepared on 2026-10-16 (UTC) and revised on 2026-10-17 (UTC) for the review owner. It records what was checked, what was not, and the questions only the owner can answer. It is not legal advice and it states no legal conclusion. Line numbers are for commit `6c64777` (main after PR #76); they move when P1 renames and splits files, so every quoted row also gives the text to search for.
 >
 > **Owner:** to be named (plan section 11, decision 6). **Written outcome:** not yet written; due before P5 starts (section 2).

@@ -45,13 +45,14 @@ fn configured_model_picker_carries_effort_choices_and_close_does_not_apply_them(
             reasoning_efforts: vec![ReasoningEffort::Low, ReasoningEffort::High],
         }],
         Some("a"),
+        false,
     );
     let Some(Modal::Selection(picker)) = &app.modal else {
         panic!("catalog picker missing");
     };
-    assert_eq!(picker.items.len(), 3);
+    assert_eq!(picker.items.len(), 1);
     assert!(
-        matches!(&picker.items[2].enter_action,Some(AppAction::SelectModelEffort {model,effort:Some(ReasoningEffort::High)}) if model=="a")
+        matches!(&picker.items[0].enter_action,Some(AppAction::ChooseModel(model)) if model.id=="a" && model.reasoning_efforts==[ReasoningEffort::Low, ReasoningEffort::High])
     );
     app.modal = None;
     assert_eq!(cfg.model.as_deref(), Some("a"));
@@ -59,6 +60,136 @@ fn configured_model_picker_carries_effort_choices_and_close_does_not_apply_them(
         crate::model_controls::selected_effort(&cfg, "a")
             .unwrap()
             .is_none()
+    );
+}
+
+#[test]
+fn grouped_model_catalog_contains_models_and_navigation_skips_provider_headers() {
+    let cfg: Config = serde_json::from_value(json!({
+        "model":"openai/a", "providers": {
+            "openai":{"protocol":"openai_responses","models":{"a":{"label":"GPT A","reasoning_controls":{"type":"effort","values":["low","high"]}}}},
+            "claude":{"protocol":"anthropic_messages","models":{"m":{"label":"Claude","reasoning_controls":{"type":"budget","min":1024,"max":4096}}}}
+        }
+    })).unwrap();
+    let mut app = App::new(&cfg);
+    show_model_catalog(
+        &mut app,
+        crate::model_controls::configured_catalog(&cfg).unwrap(),
+        cfg.model.as_deref(),
+        true,
+    );
+    let Some(Modal::Selection(picker)) = &app.modal else {
+        panic!("missing catalog")
+    };
+    assert_eq!(picker.items.len(), 4);
+    assert_eq!(
+        picker
+            .items
+            .iter()
+            .filter(|item| matches!(item.enter_action, Some(AppAction::ChooseModel(_))))
+            .count(),
+        2
+    );
+    assert_eq!(picker.selected, 3);
+    assert_eq!(picker.items[0].label, "▾ claude");
+    assert_eq!(picker.items[2].label, "▾ openai");
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    super::super::modals::handle_modal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+    );
+    assert!(matches!(&app.modal, Some(Modal::Selection(picker)) if picker.selected==1));
+    super::super::modals::handle_modal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    );
+    assert!(matches!(&app.modal, Some(Modal::Selection(picker)) if picker.selected==3));
+    super::super::modals::handle_modal_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+    );
+    assert!(matches!(&app.modal, Some(Modal::Selection(picker)) if picker.selected==1));
+    assert_eq!(cfg.model.as_deref(), Some("openai/a"));
+}
+
+#[test]
+fn staged_effort_picker_uses_the_target_models_settings_without_applying_or_copying() {
+    let cfg: Config = serde_json::from_value(json!({
+        "model":"openai/a", "providers": {
+            "openai":{"protocol":"openai_responses","models":{
+                "a":{"reasoning_controls":{"type":"effort","values":["low","high"]},"settings":{"reasoning":{"type":"effort","value":"high"}}},
+                "b":{"reasoning_controls":{"type":"effort","values":["low","high"]},"settings":{"reasoning":{"type":"effort","value":"low"}}}
+            }}
+        }, "user-data":{"preserve":true}
+    })).unwrap();
+    let before = serde_json::to_value(&cfg).unwrap();
+    let target = crate::model_controls::configured_catalog(&cfg)
+        .unwrap()
+        .into_iter()
+        .find(|model| model.id == "openai/b")
+        .unwrap();
+    let mut app = App::new(&cfg);
+    show_model_effort_picker(&cfg, &mut app, target);
+    let Some(Modal::Selection(picker)) = &app.modal else {
+        panic!("missing effort picker")
+    };
+    assert!(picker.title.contains("openai/b"));
+    assert_eq!(picker.selected, 1);
+    assert!(
+        matches!(&picker.items[1].enter_action, Some(AppAction::SelectModelEffort{model,effort:Some(ReasoningEffort::Low)}) if model=="openai/b")
+    );
+    super::super::modals::handle_modal_key(
+        &mut app,
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+    );
+    assert!(app.modal.is_none());
+    assert!(app.pending_action.is_none());
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), before);
+}
+
+#[test]
+fn staged_budget_picker_keeps_the_current_model_and_highlights_the_target_budget() {
+    let cfg: Config = serde_json::from_value(json!({
+        "model":"openai/a", "providers": {
+            "openai":{"protocol":"openai_responses","models":{"a":{}}},
+            "claude":{"protocol":"anthropic_messages","models":{"m":{"reasoning_controls":{"type":"budget","min":1024,"max":4096},"settings":{"reasoning":{"type":"budget","value":4096}}}}}
+        }
+    })).unwrap();
+    let mut app = App::new(&cfg);
+    show_model_effort_picker(&cfg, &mut app, CatalogModel::named("claude/m".into()));
+    let Some(Modal::Selection(picker)) = &app.modal else {
+        panic!("missing budget picker")
+    };
+    assert_eq!(picker.selected, 2);
+    assert!(
+        matches!(&picker.items[picker.selected].enter_action, Some(AppAction::SelectModelBudget{model,budget:4096}) if model=="claude/m")
+    );
+    assert_eq!(cfg.model.as_deref(), Some("openai/a"));
+    assert_eq!(
+        cfg.providers["claude"].models["m"].settings["reasoning"]["value"],
+        4096
+    );
+}
+
+#[test]
+fn a_legacy_model_id_with_a_slash_does_not_become_a_provider_group() {
+    let cfg: Config = serde_json::from_value(json!({"model":"org/model"})).unwrap();
+    let mut app = App::new(&cfg);
+    show_model_catalog(
+        &mut app,
+        crate::model_controls::configured_catalog(&cfg).unwrap(),
+        cfg.model.as_deref(),
+        false,
+    );
+    let Some(Modal::Selection(picker)) = &app.modal else {
+        panic!("missing catalog")
+    };
+    assert_eq!(picker.items.len(), 1);
+    assert!(
+        matches!(&picker.items[0].enter_action, Some(AppAction::ChooseModel(model)) if model.id=="org/model")
     );
 }
 
@@ -73,6 +204,7 @@ fn cancelled_catalog_delivery_does_not_open_a_late_model_picker() {
         &mut app,
         crate::tui::session_bridge::UiEvent::ModelCatalogLoaded {
             current: Some("a".into()),
+            group_providers: false,
             result: Ok((vec![CatalogModel::named("a".into())], true)),
         },
         None,
@@ -136,6 +268,37 @@ async fn terminal_model_fixture() {
         mode: crate::config::PermissionMode::BypassPermissions,
         ..Default::default()
     }));
+    // The existing marked child owns config/HOME/cwd; legacy connection
+    // data must not initialize a model client or create session storage.
+    let missing: Config = serde_json::from_value(json!({
+        "model":"model-only", "platform":{"base_url":format!("{}/retired",server.uri()),"api_token":"retired-fixture-token"}
+    })).unwrap();
+    let mut before_paths: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    before_paths.sort();
+    let missing_session = crate::agent::build_session_ext(
+        &missing,
+        approval.clone(),
+        "",
+        false,
+        false,
+        None,
+        crate::agent::SessionExtras {
+            workspace_root: Some(directory.clone()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(missing_session.is_none());
+    let mut after_paths: Vec<_> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    after_paths.sort();
+    assert_eq!(before_paths, after_paths);
+    assert!(server.received_requests().await.unwrap().is_empty());
     let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     let root = craftsman_harness::SessionCancellation::new();
     let mut slot = AgentSlot::spawn(&cfg, approval.clone(), UiBridge { tx }, root.clone());

@@ -125,3 +125,8 @@ The bridge recording, model-request goldens, schemas, native cleanup limits,
 SDK/WIT and publication hold are unchanged. These checks establish the tested
 ACP behavior; they do not establish paid-model quality, every third-party client,
 full MCP-version interoperability, public headless execution or OS containment.
+
+The ACP bridge accepts clients without a platform inbox worker. Legacy platform
+credentials do not start polling or scheduled agent turns. Its retained HTTP
+health/stats, proxy headers and ACP frames are unchanged; see
+[connections](connections.md).
