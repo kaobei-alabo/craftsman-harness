@@ -9,7 +9,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::layout::Position;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
@@ -737,7 +737,7 @@ pub(super) fn styled_input_text(layout: &InputLayout) -> Text<'static> {
         (
             layout.tentative_render_range,
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(crate::theme::MUTED)
                 .add_modifier(Modifier::ITALIC),
         ),
         (

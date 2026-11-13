@@ -1,5 +1,4 @@
-//! The REPL's color theme — light-green craftsman accents plus a subtle animated
-//! "RGB" shimmer on the input box's top border.
+//! The terminal theme: neutral grays with restrained turquoise accents.
 //!
 //! Everything emits 256-color indexed codes (`ESC[38;5;Nm`), never 24-bit
 //! truecolor: macOS Terminal.app has no truecolor support, and tmux
@@ -11,19 +10,24 @@
 //! the elapsed-milliseconds value the chrome already has, so it advances only
 //! when the chrome repaints anyway (every keystroke + the idle tick).
 
-/// Light green — the primary accent (`#90EE90` ≈ palette 120).
-const ACCENT: u8 = 120;
-/// Muted green — frames and secondary marks.
-const ACCENT_DIM: u8 = 71;
+/// Turquoise — the primary accent.
+pub(crate) const ACCENT: u8 = 80;
+/// Muted turquoise — secondary accents.
+const ACCENT_DIM: u8 = 73;
+pub(crate) const TEXT: ratatui::style::Color = ratatui::style::Color::Indexed(252);
+pub(crate) const MUTED: ratatui::style::Color = ratatui::style::Color::Indexed(245);
+pub(crate) const FRAME: ratatui::style::Color = ratatui::style::Color::Indexed(240);
+pub(crate) const TURQUOISE: ratatui::style::Color = ratatui::style::Color::Indexed(ACCENT);
+pub(crate) const SURFACE: ratatui::style::Color = ratatui::style::Color::Indexed(235);
+pub(crate) const SELECTION: ratatui::style::Color = ratatui::style::Color::Indexed(238);
+pub(crate) const IMPORTANT: ratatui::style::Color = ratatui::style::Color::Indexed(255);
 /// Gray — de-emphasized text (status line, hints).
 const GRAY: u8 = 245;
 
-/// Soft pastel hue ring for the top-border shimmer: green → teal → blue →
-/// violet → pink → back to green. Adjacent entries are near neighbors in hue,
-/// so a border sampling consecutive entries reads as a gentle gradient, not
-/// color bars.
+/// Neutral gray ring for the top-border shimmer: gray → light gray → gray.
+/// Adjacent shades give the border a gentle gradient.
 const RING: [u8; 16] = [
-    120, 121, 122, 123, 117, 111, 105, 141, 177, 213, 218, 217, 223, 229, 193, 156,
+    245, 246, 247, 248, 250, 252, 250, 248, 247, 246, 245, 246, 247, 248, 246, 245,
 ];
 
 /// One ring step per this many ms — full sweep ≈ 10s. Slow enough to feel
@@ -35,9 +39,9 @@ const STEP_MS: u128 = 600;
 /// gradient across the width.
 const SEGMENTS: usize = 10;
 
-/// Static per-line colors for the banner art: violet at the top fading to the
-/// light-green accent at the bottom.
-const BANNER_FADE: [u8; 6] = [141, 135, 111, 117, 123, ACCENT];
+/// Static per-line colors for the banner art: light gray at the top fading to the
+/// turquoise accent at the bottom.
+const BANNER_FADE: [u8; 6] = [252, 250, 248, 247, 246, ACCENT];
 
 #[cfg(test)]
 thread_local! {
@@ -61,7 +65,7 @@ fn fg(idx: u8, s: &str) -> String {
     format!("\x1b[38;5;{idx}m{s}\x1b[39m")
 }
 
-/// Light green, bold — the primary accent (`❯`, picker selection, model name).
+/// Turquoise, bold — the primary accent (`❯`, picker selection, model name).
 pub fn accent(s: &str) -> String {
     if color_off() {
         return s.to_string();
@@ -69,7 +73,7 @@ pub fn accent(s: &str) -> String {
     format!("\x1b[1;38;5;{ACCENT}m{s}\x1b[22;39m")
 }
 
-/// Muted green — box frames, secondary marks.
+/// Muted turquoise — box frames, secondary marks.
 pub fn accent_dim(s: &str) -> String {
     if color_off() {
         return s.to_string();
@@ -86,7 +90,7 @@ pub fn dim(s: &str) -> String {
 }
 
 /// The animated top border: `╭` + rule + `╮`, the rule split into
-/// [`SEGMENTS`] spans whose colors walk the pastel ring, phase-shifted by
+/// [`SEGMENTS`] spans whose colors walk the gray ring, phase-shifted by
 /// elapsed time — a slow shimmer sweeping along the border. Corners take the
 /// ring color at their end of the rule. Plain when `NO_COLOR` or too narrow.
 pub fn top_border(cols: usize, phase_ms: u128) -> String {
@@ -114,14 +118,14 @@ pub fn top_border(cols: usize, phase_ms: u128) -> String {
     out
 }
 
-/// The static bottom border: `╰` + rule + `╯` in the muted frame green.
+/// The static bottom border: `╰` + rule + `╯` in the muted turquoise.
 pub fn bottom_border(cols: usize) -> String {
     let plain = format!("╰{}╯", "─".repeat(cols.saturating_sub(2)));
     accent_dim(&plain)
 }
 
 /// Colorize the fitted status line: the whole line gray, with the model name
-/// (text before the first " · ") re-tinted in the accent green. MUST be given
+/// (text before the first " · ") re-tinted in the turquoise accent. MUST be given
 /// the already-width-fitted plain line — the replacement only inserts
 /// zero-width escape bytes, so the padding math stays intact.
 pub fn status_line(fitted: &str) -> String {
@@ -139,7 +143,7 @@ pub fn status_line(fitted: &str) -> String {
 }
 
 /// Colorize the boot banner: each ASCII-art line takes one step of a static
-/// violet→green fade; the trailing "(rs)" tag and any non-art line render
+/// gray→turquoise fade; the trailing "(rs)" tag and any non-art line render
 /// dim. Art lines are recognized by their block-drawing characters.
 pub fn banner(raw: &str) -> String {
     if color_off() {
@@ -227,7 +231,10 @@ mod tests {
         let out = banner(raw);
         assert_eq!(strip(&out), raw.trim_end_matches('\n').to_string() + "");
         // Art got color codes; the (rs) tag got the gray code.
-        assert!(out.contains("38;5;141"), "first art line violet: {out:?}");
+        assert!(
+            out.contains("38;5;252"),
+            "first art line light gray: {out:?}"
+        );
         assert!(out.contains("38;5;245m(rs)"), "rs tag dim: {out:?}");
     }
 

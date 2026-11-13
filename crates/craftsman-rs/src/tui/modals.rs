@@ -7,7 +7,7 @@ use super::session_bridge::ApprovalChoice;
 use crate::config::Config;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use std::sync::mpsc as std_mpsc;
@@ -375,7 +375,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
             let block = Block::default()
                 .title(" deny with feedback ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow));
+                .border_style(Style::default().fg(crate::theme::TEXT));
             let inner = block.inner(area);
             frame.render_widget(block, area);
             frame.render_widget(
@@ -397,7 +397,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 Block::default()
                     .title(" approval required ")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
+                    .border_style(Style::default().fg(crate::theme::TEXT)),
             );
             frame.render_widget(summary, chunks[0]);
             let always = if matches!(modal.tool.as_str(), "web_fetch" | "web_search") {
@@ -420,7 +420,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
             let block = Block::default()
                 .title(" question from agent ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan));
+                .border_style(Style::default().fg(crate::theme::TURQUOISE));
             let inner = block.inner(area);
             frame.render_widget(block, area);
             frame.render_widget(
@@ -435,7 +435,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
             let block = Block::default()
                 .title(" Prompt editor · F2/Ctrl-Enter save · Esc cancel ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan));
+                .border_style(Style::default().fg(crate::theme::TURQUOISE));
             let inner = block.inner(area);
             frame.render_widget(block, area);
             frame.render_widget(
@@ -449,7 +449,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
             let block = Block::default()
                 .title(" Set up Craftsman ")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan));
+                .border_style(Style::default().fg(crate::theme::TURQUOISE));
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let chunks = Layout::default()
@@ -468,7 +468,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 "Model connection\nEnter its configured endpoint, API key and model".into()
             };
             frame.render_widget(
-                Paragraph::new(tabs).style(Style::default().fg(Color::Cyan)),
+                Paragraph::new(tabs).style(Style::default().fg(crate::theme::TURQUOISE)),
                 chunks[0],
             );
             for (index, label) in modal.labels().into_iter().enumerate() {
@@ -480,7 +480,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 };
                 let style = if modal.field == index {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(crate::theme::TURQUOISE)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -496,7 +496,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 } else {
                     "API key may be empty for a local proxy · Enter finish · Esc cancel"
                 })
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(Style::default().fg(crate::theme::MUTED)),
                 chunks[4],
             );
         }
@@ -512,7 +512,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                     Span::styled(
                         item.label.clone(),
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(crate::theme::TURQUOISE)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(if item.detail.is_empty() {
@@ -531,19 +531,19 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                         Block::default()
                             .title(format!(" {} ", modal.title))
                             .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Cyan)),
+                            .border_style(Style::default().fg(crate::theme::TURQUOISE)),
                     )
                     .highlight_symbol("▶ ")
                     .highlight_style(
                         Style::default()
-                            .bg(Color::DarkGray)
+                            .bg(crate::theme::SELECTION)
                             .add_modifier(Modifier::BOLD),
                     ),
                 chunks[0],
                 &mut state,
             );
             frame.render_widget(
-                Paragraph::new(modal.hint.as_str()).style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new(modal.hint.as_str()).style(Style::default().fg(crate::theme::MUTED)),
                 chunks[1],
             );
         }
