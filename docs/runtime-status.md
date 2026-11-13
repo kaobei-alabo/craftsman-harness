@@ -14,6 +14,13 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Terminal theme (November 13):** the TUI uses a neutral gray/light-gray
+> palette with restrained turquoise accents, including the filled hammer,
+> grouped model/effort menus, chat, task/tool states and composer. Indexed colors
+> support Terminal.app. Text and symbols distinguish errors and waiting states;
+> rendering still passes through SafeBackend. Theme changes do not alter
+> model requests, permissions, recovery, native cleanup or dependency contracts.
+
 > **Local services and model menus (November 13):** `/model` reads the configured
 > catalog, groups models by provider, then asks for the chosen model's effort or
 > budget. The final selection saves/applies both without replay; opening/cancelling

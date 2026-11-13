@@ -161,7 +161,7 @@ fn truncate_visible(text: &str, max_width: usize) -> String {
 }
 
 fn splash_box_line(margin: usize, box_width: usize, content: Vec<Span<'static>>) -> Line<'static> {
-    let border = Style::default().fg(Color::Indexed(141));
+    let border = Style::default().fg(crate::theme::FRAME);
     let inner_width = box_width.saturating_sub(4);
     let content_width = content
         .iter()
@@ -179,17 +179,17 @@ fn splash_box_line(margin: usize, box_width: usize, content: Vec<Span<'static>>)
 
 fn splash_value_style(label: &str, value: &str) -> Style {
     if value.starts_with('(') || value.contains("not connected") || value.contains("not signed") {
-        return Style::default().fg(Color::Yellow);
+        return Style::default().fg(crate::theme::TEXT);
     }
     match label {
-        "VERSION" => Style::default().fg(Color::LightMagenta),
-        "AGENT" => Style::default().fg(Color::LightGreen),
-        "MODEL" => Style::default().fg(Color::LightBlue),
-        "SERVER" | "AUTH" => Style::default().fg(Color::Green),
+        "VERSION" => Style::default().fg(crate::theme::TURQUOISE),
+        "AGENT" => Style::default().fg(crate::theme::TEXT),
+        "MODEL" => Style::default().fg(crate::theme::TEXT),
+        "SERVER" | "AUTH" => Style::default().fg(crate::theme::TURQUOISE),
         "MODE" => Style::default()
-            .fg(Color::Magenta)
+            .fg(crate::theme::TURQUOISE)
             .add_modifier(Modifier::BOLD),
-        _ => Style::default().fg(Color::White),
+        _ => Style::default().fg(crate::theme::TEXT),
     }
 }
 
@@ -204,9 +204,9 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
         available
     };
     let margin = available.saturating_sub(box_width) / 2;
-    let border = Style::default().fg(Color::Indexed(141));
+    let border = Style::default().fg(crate::theme::FRAME);
     let title_style = Style::default()
-        .fg(Color::Cyan)
+        .fg(crate::theme::TURQUOISE)
         .add_modifier(Modifier::BOLD);
     let title = truncate_visible(" CRAFTSMAN CLI ", box_width.saturating_sub(2));
     let title_width = title.width();
@@ -238,8 +238,8 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
             .collect();
         let art_width = if full { full_width } else { compact_width };
         let left_pad = inner_width.saturating_sub(art_width) / 2;
-        let hammer_colors = [141, 135, 111, 214, 208, 202];
-        let wordmark_colors = [141, 135, 111, 117, 120, 245];
+        let hammer_colors = [252, 250, 248, 80, 80, 73];
+        let wordmark_colors = [252, 252, 250, 250, 248, 245];
         for (index, hammer) in HAMMER.iter().enumerate() {
             let caption = if full {
                 wordmark[index]
@@ -269,7 +269,7 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
         }
     } else {
         if inner_width >= SMALL_HAMMER[0].width() {
-            let colors = [141, 135, 111, 214, 208];
+            let colors = [252, 250, 248, 80, 73];
             for (index, hammer) in SMALL_HAMMER.iter().enumerate() {
                 lines.push(splash_box_line(
                     margin,
@@ -296,7 +296,7 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
                 Span::styled(
                     caption,
                     Style::default()
-                        .fg(Color::Indexed(120))
+                        .fg(crate::theme::TURQUOISE)
                         .add_modifier(Modifier::BOLD),
                 ),
             ],
@@ -320,7 +320,7 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
                 Span::styled(
                     label_display,
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(crate::theme::TURQUOISE)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" ".repeat(gap)),
@@ -351,15 +351,15 @@ pub(super) fn render_transcript(items: &[TranscriptItem], width: usize) -> Text<
         if let Some(block) = &item.block {
             let marker = if block.collapsed { "▶" } else { "▼" };
             let (status, status_style) = match block.state {
-                BlockState::Running => ("●", Style::default().fg(Color::Yellow)),
-                BlockState::Done => ("✓", Style::default().fg(Color::Green)),
-                BlockState::Error => ("✗", Style::default().fg(Color::Red)),
-                BlockState::Waiting => ("!", Style::default().fg(Color::Yellow)),
+                BlockState::Running => ("●", Style::default().fg(crate::theme::TEXT)),
+                BlockState::Done => ("✓", Style::default().fg(crate::theme::TURQUOISE)),
+                BlockState::Error => ("✗", Style::default().fg(crate::theme::TEXT)),
+                BlockState::Waiting => ("!", Style::default().fg(crate::theme::TEXT)),
             };
             let kind_style = if item.kind == TranscriptKind::Task {
-                Style::default().fg(Color::Magenta)
+                Style::default().fg(crate::theme::TURQUOISE)
             } else {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(crate::theme::TEXT)
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("{marker} "), kind_style),
@@ -368,13 +368,13 @@ pub(super) fn render_transcript(items: &[TranscriptItem], width: usize) -> Text<
             ]));
             if !block.collapsed {
                 let detail_style = if block.state == BlockState::Error {
-                    Style::default().fg(Color::LightRed)
+                    Style::default().fg(crate::theme::TEXT)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(crate::theme::TEXT)
                 };
                 for detail in block.details.lines() {
                     lines.push(Line::from(vec![
-                        Span::styled("  │ ", Style::default().fg(Color::DarkGray)),
+                        Span::styled("  │ ", Style::default().fg(crate::theme::MUTED)),
                         Span::styled(detail.to_string(), detail_style),
                     ]));
                 }
@@ -383,40 +383,52 @@ pub(super) fn render_transcript(items: &[TranscriptItem], width: usize) -> Text<
         }
         let (label, label_style, body_style) = match item.kind {
             TranscriptKind::Splash => unreachable!("handled above"),
-            TranscriptKind::Hint => (None, Style::default(), Style::default().fg(Color::DarkGray)),
-            TranscriptKind::System => (None, Style::default(), Style::default().fg(Color::White)),
+            TranscriptKind::Hint => (
+                None,
+                Style::default(),
+                Style::default().fg(crate::theme::MUTED),
+            ),
+            TranscriptKind::System => (
+                None,
+                Style::default(),
+                Style::default().fg(crate::theme::TEXT),
+            ),
             TranscriptKind::User => (
                 Some("YOU"),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(crate::theme::TURQUOISE)
                     .add_modifier(Modifier::BOLD),
                 Style::default(),
             ),
             TranscriptKind::Assistant => (
                 Some("CRAFTSMAN"),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(crate::theme::TURQUOISE)
                     .add_modifier(Modifier::BOLD),
                 Style::default(),
             ),
             TranscriptKind::Activity => (
                 Some("TOOL"),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(crate::theme::TEXT)
                     .add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::Gray),
+                Style::default().fg(crate::theme::TEXT),
             ),
             TranscriptKind::Task => (
                 Some("TASK"),
                 Style::default()
-                    .fg(Color::Magenta)
+                    .fg(crate::theme::TURQUOISE)
                     .add_modifier(Modifier::BOLD),
                 Style::default(),
             ),
             TranscriptKind::Error => (
                 Some("ERROR"),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::LightRed),
+                Style::default()
+                    .fg(crate::theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(crate::theme::IMPORTANT)
+                    .add_modifier(Modifier::BOLD),
             ),
         };
         if let Some(label) = label {
@@ -428,17 +440,21 @@ pub(super) fn render_transcript(items: &[TranscriptItem], width: usize) -> Text<
             if trimmed.starts_with("```") {
                 code = !code;
             }
-            let style = if code {
+            let style = if raw.starts_with("Error:") {
                 Style::default()
-                    .fg(Color::LightCyan)
-                    .bg(Color::Rgb(24, 24, 30))
+                    .fg(crate::theme::IMPORTANT)
+                    .add_modifier(Modifier::BOLD)
+            } else if code {
+                Style::default()
+                    .fg(crate::theme::TURQUOISE)
+                    .bg(crate::theme::SURFACE)
             } else if trimmed.starts_with('#') {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(crate::theme::TURQUOISE)
                     .add_modifier(Modifier::BOLD)
             } else if trimmed.starts_with("> ") {
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(crate::theme::MUTED)
                     .add_modifier(Modifier::ITALIC)
             } else {
                 body_style
@@ -503,16 +519,16 @@ fn render_subagent_progress(
         if index + 1 == visible && tasks.len() > visible {
             lines.push(
                 Line::from(vec![
-                    Span::styled(" … ", Style::default().fg(Color::Magenta)),
+                    Span::styled(" … ", Style::default().fg(crate::theme::TURQUOISE)),
                     Span::styled(
                         format!(
                             "{} more delegated agents running",
                             tasks.len() - visible + 1
                         ),
-                        Style::default().fg(Color::Gray),
+                        Style::default().fg(crate::theme::TEXT),
                     ),
                 ])
-                .style(Style::default().bg(Color::Rgb(20, 18, 28))),
+                .style(Style::default().bg(crate::theme::SURFACE)),
             );
             break;
         }
@@ -523,18 +539,18 @@ fn render_subagent_progress(
             Line::from(vec![
                 Span::styled(
                     format!(" {spinner} "),
-                    Style::default().fg(Color::LightMagenta),
+                    Style::default().fg(crate::theme::TURQUOISE),
                 ),
                 Span::styled(
                     name,
                     Style::default()
-                        .fg(Color::Magenta)
+                        .fg(crate::theme::TURQUOISE)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(progress, Style::default().fg(Color::LightCyan)),
+                Span::styled(progress, Style::default().fg(crate::theme::TURQUOISE)),
             ])
-            .style(Style::default().bg(Color::Rgb(20, 18, 28))),
+            .style(Style::default().bg(crate::theme::SURFACE)),
         );
     }
     Text::from(lines)
@@ -563,8 +579,8 @@ fn highlight_screen_selection(
             if let Some(cell) = buffer.cell_mut(Position { x, y }) {
                 cell.set_style(
                     Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Rgb(72, 65, 120)),
+                        .fg(crate::theme::TEXT)
+                        .bg(crate::theme::SELECTION),
                 );
             }
         }
@@ -597,6 +613,7 @@ pub(super) fn draw(
         app.composer_display();
     let completed = terminal.draw(|frame| {
         let area = frame.area();
+        frame.render_widget(Block::default().style(Style::default().fg(crate::theme::TEXT).bg(crate::theme::SURFACE)), area);
         let input_layout = layout_input_with_tentative(
             &composer_display,
             composer_cursor,
@@ -728,7 +745,7 @@ pub(super) fn draw(
         let input_block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(141, 115, 255)));
+            .border_style(Style::default().fg(crate::theme::FRAME));
         let input_inner = input_block.inner(input_area);
         let input_style = Style::default();
         frame.render_widget(input_block, input_area);
@@ -767,7 +784,7 @@ pub(super) fn draw(
             );
         }
         frame.render_widget(
-            Paragraph::new(footer).style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new(footer).style(Style::default().fg(crate::theme::MUTED)),
             footer_area,
         );
 
@@ -783,7 +800,7 @@ pub(super) fn draw(
             frame.render_widget(Clear, popup);
             let items = matches.iter().map(|(command, description)| {
                 ListItem::new(Line::from(vec![
-                    Span::styled(format!("{command:<12}"), Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("{command:<12}"), Style::default().fg(crate::theme::TURQUOISE)),
                     Span::raw(description.as_str()),
                 ]))
             });
@@ -795,7 +812,7 @@ pub(super) fn draw(
                     .block(Block::default().borders(Borders::ALL).title(" commands "))
                     .highlight_style(
                         Style::default()
-                            .bg(Color::DarkGray)
+                            .bg(crate::theme::SELECTION)
                             .add_modifier(Modifier::BOLD),
                     )
                     .highlight_symbol("▶ "),
@@ -988,8 +1005,8 @@ mod tests {
             area,
         );
         assert_eq!(buffer[(0, 0)].bg, Color::Reset);
-        assert_eq!(buffer[(1, 0)].bg, Color::Rgb(72, 65, 120));
-        assert_eq!(buffer[(3, 0)].bg, Color::Rgb(72, 65, 120));
+        assert_eq!(buffer[(1, 0)].bg, crate::theme::SELECTION);
+        assert_eq!(buffer[(3, 0)].bg, crate::theme::SELECTION);
         assert_eq!(buffer[(4, 0)].bg, Color::Reset);
     }
 
@@ -1039,14 +1056,14 @@ mod tests {
             .flat_map(|line| &line.spans)
             .find(|span| span.content == HAMMER[1])
             .expect("filled hammer head");
-        assert_eq!(hammer.style.fg, Some(Color::Indexed(135)));
+        assert_eq!(hammer.style.fg, Some(Color::Indexed(250)));
         assert!(plain.contains("VERSION"));
         let version = lines
             .iter()
             .flat_map(|line| &line.spans)
             .find(|span| span.content.contains(env!("CARGO_PKG_VERSION")))
             .expect("version span");
-        assert_ne!(version.style.fg, Some(Color::DarkGray));
+        assert_ne!(version.style.fg, Some(crate::theme::MUTED));
     }
 
     #[test]

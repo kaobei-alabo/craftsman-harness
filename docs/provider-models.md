@@ -30,8 +30,9 @@ or silently switch to another endpoint/model when a request fails.
 ## Terminal selection
 
 The startup card pairs Craftsman block lettering with a filled, colored hammer.
-It uses a compact layout on narrow terminals and indexed colors supported by
-Terminal.app. Its model, endpoint and API-key status describe the selected
+It uses a compact layout on narrow terminals, gray/light-gray colors with
+turquoise accents, and indexed colors supported by Terminal.app. Its model,
+endpoint and API-key status describe the selected
 connection, including protocol defaults; obsolete platform authentication is
 not used as model-connection status. This is configuration information, not an
 authentication or connectivity check. Rendering does not resolve environment
