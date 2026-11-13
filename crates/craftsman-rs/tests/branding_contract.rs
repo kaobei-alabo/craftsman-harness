@@ -130,7 +130,7 @@ async fn cli_help_and_version_use_current_name_before_any_config_effect() {
             assert_eq!(stdout, format!("craftsman {}\n", env!("CARGO_PKG_VERSION")));
         } else {
             assert!(stdout.contains("Usage: craftsman"));
-            assert!(stdout.contains("Craftsman platform chat client"));
+            assert!(stdout.contains("Craftsman terminal coding agent"));
         }
         assert!(output.stderr.is_empty());
         assert!(!config.exists(), "help/version must not initialize config");
