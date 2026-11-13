@@ -2,6 +2,8 @@
 
 **A coding agent that builds its own tools.**
 
+![Craftsman terminal with a solid colored hammer, block lettering and model connection status](docs/assets/craftsman-splash.png)
+
 Craftsman is a Rust terminal coding agent that reads your code, makes edits,
 runs commands and carries work across sessions. Bring your own GPT, Claude,
 Gemini or OpenAI-compatible model connection.
