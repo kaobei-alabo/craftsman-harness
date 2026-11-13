@@ -12,7 +12,7 @@ Linux prerequisite downloads use the existing HTTPS package source over IPv4,
 with up to three APT transport retries. An incomplete package index still fails
 the job through `--error-on=any`; the voice packages and every build/test step
 remain mandatory. Merged-main run 43458891311 failed this setup step when the
-package mirror attempted an unavailable IPv6 route. Its passing native suites
+package endpoint attempted an unavailable IPv6 route. Its passing native suites
 do not turn that failed prerequisite into a successful job; the failed run is
 retained separately from validation of the corrected workflow.
 
