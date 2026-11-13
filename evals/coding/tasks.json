@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 4,
   "tasks": [
     {
       "id": "py-page-boundaries",
@@ -451,11 +451,11 @@
       "id": "js-stable-cache-key",
       "language": "javascript",
       "category": "failing-tests",
-      "prompt": "Fix cacheKey(value) so recursively reordered object keys have the same JSON key, array order is significant, primitives retain their types, and cycles throw TypeError. Repeated non-cyclic object references must remain valid; undefined values or unsupported bigint inputs must throw TypeError. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "prompt": "Fix cacheKey(value) so recursively reordered object keys have the same JSON key, array order is significant, primitives retain their types, and cycles throw TypeError. Repeated non-cyclic object references must remain valid; undefined values, unsupported bigint inputs, NaN and infinities must throw TypeError; nonfinite numbers must not collapse to null. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
       "files": {
         "lib.cjs": "function cacheKey(value){return JSON.stringify(value);}\nmodule.exports={cacheKey};\n",
         "test.cjs": "const a=require('node:assert/strict'),t=require('./lib.cjs');a.equal(t.cacheKey({a:1,b:2}),t.cacheKey({b:2,a:1}));\n",
-        "README.md": "# Mini toolkit\n\nFix cacheKey(value) so recursively reordered object keys have the same JSON key, array order is significant, primitives retain their types, and cycles throw TypeError. Repeated non-cyclic object references must remain valid; undefined values or unsupported bigint inputs must throw TypeError.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
+        "README.md": "# Mini toolkit\n\nFix cacheKey(value) so recursively reordered object keys have the same JSON key, array order is significant, primitives retain their types, and cycles throw TypeError. Repeated non-cyclic object references must remain valid; undefined values, unsupported bigint inputs, NaN and infinities must throw TypeError; nonfinite numbers must not collapse to null.\n\nRun the public checks with `node test.cjs`. No dependency downloads are required.\n",
         ".gitignore": "target/\n__pycache__/\n"
       },
       "reference": {
@@ -581,7 +581,7 @@
         "node",
         "test.cjs"
       ],
-      "held_out": "const a=require('node:assert/strict');const {options}=require('/workspace/lib.cjs');const {load}=require('/workspace/settings.cjs');\na.deepEqual(options({}),{timeoutMs:1000,retries:0});for(const n of [1,1234,60000]){a.deepEqual(options({timeoutMs:n}),{timeoutMs:n,retries:0});a.equal(load({timeoutMs:n}).timeoutMs,n);}\nfor(const n of [0,-1,60001,1.5,'1000',null,true])a.throws(()=>options({timeoutMs:n}),RangeError);\n"
+      "held_out": "const a=require('node:assert/strict');const {options}=require('/workspace/lib.cjs');const {load}=require('/workspace/settings.cjs');\na.deepEqual(options({}),{timeoutMs:1000,retries:0});for(const n of [1,1234,60000]){a.deepEqual(options({timeoutMs:n}),{timeoutMs:n,retries:0});}\nfor(const n of [0,-1,60001,1.5,'1000',null,true])a.throws(()=>options({timeoutMs:n}),RangeError);\n"
     },
     {
       "id": "js-json-cli-errors",

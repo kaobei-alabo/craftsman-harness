@@ -26,7 +26,8 @@
 > gateway and source snapshots. The initial live cycle selects GPT-6.1 Sol
 > under a confirmed $25 cap. TUI/ACP explicitly select task-focused memory
 > guidance; legacy/private/frozen policies remain. Native tests and live coding
-> results are independent; comparison evidence is still being collected.
+> results are independent; the first live cycle records 30 baseline tasks and
+> paired six-case memory/Codex checks in `live-coding-evaluation.md`.
 > See `coding-evaluation.md` and `terminal-memory.md`. Public exec, headless
 > gadget registration, native containment and publication gates remain separate.
 

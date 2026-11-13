@@ -12,6 +12,10 @@ model and settings on this corpus; they do not establish performance on large
 repositories or equivalence to another coding product. Starter gadget tests
 and native runtime tests remain separate evidence.
 
+The [first live cycle](live-coding-evaluation.md) records the baseline, grader
+corrections, six-case memory-guidance comparison, pinned Codex comparison,
+repeat variation and conservative accounting under the approved $25 cap.
+
 ## Runner boundary
 
 `scripts/coding-eval/run_suite.py` runs the existing `craftsman acp-serve` in a
