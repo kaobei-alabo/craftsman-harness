@@ -768,6 +768,8 @@ pub struct SessionExtras {
     /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
     /// Other legacy/private/frozen frontends leave this false.
     pub interrupt_model_on_cancel: bool,
+    /// Owned TUI only: configured round budget and a completed limited-turn checkpoint.
+    pub terminal_round_limits: bool,
     /// Explicit TUI/ACP memory-guidance opt-in; legacy/private/frozen defaults stay false.
     pub task_focused_memory: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
@@ -1227,6 +1229,19 @@ async fn build_session_with_profile(
         _ => return None,
     }
     let cfg = construction.config();
+    let terminal_max_rounds = if construction.prepared().is_none() && extras.terminal_round_limits {
+        match crate::terminal_limits::max_rounds(cfg) {
+            Ok(rounds) => Some(rounds),
+            Err(error) => {
+                if let Some(sink) = &extras.activity_sink {
+                    sink(error);
+                }
+                return None;
+            }
+        }
+    } else {
+        None
+    };
     if construction.prepared().is_none() && !cfg.has_model_connection() {
         if let Some(sink) = &extras.activity_sink {
             sink("No model connection configured. Set an endpoint and API key with /setup.");
@@ -2021,6 +2036,9 @@ async fn build_session_with_profile(
         .notifications(notif_tx)
         .thread_id(thread_id.clone())
         .harness_profile(harness_profile.clone());
+    if let Some(rounds) = terminal_max_rounds {
+        builder = builder.max_rounds(rounds).finish_on_round_limit(true);
+    }
     if let Some(prepared) = construction.prepared() {
         // Copy the already cleaned checkpoint; never load_thread/resume, which
         // would re-park persisted approvals and enable a middleware bypass.

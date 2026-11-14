@@ -81,6 +81,7 @@ documents and folders containing several projects are supported too.
 [Models and configuration](docs/provider-models.md) ·
 [Local state and connections](docs/connections.md) ·
 [File checkpoints and rewind](docs/workspace-checkpoints.md) ·
+[Long tasks and turn limits](docs/terminal-turn-limits.md) ·
 [ACP integration](docs/acp.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
 [Coding evaluations](docs/coding-evaluation.md) ·

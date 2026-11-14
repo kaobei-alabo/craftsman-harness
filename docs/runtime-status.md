@@ -14,6 +14,18 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Terminal turn limits (November 14):** the owned TUI main agent uses a
+> configurable 200-round default instead of inheriting the framework's 50-round
+> cutoff. Exhaustion closes the last fully executed round, runs end hooks and
+> saves the actual transcript before displaying a chat activity pause. A user
+> follow-up continues from that history without automatic replay or approval
+> bypass. Final-save failures remain errors; last-round accepted input is retained
+> and cancellation keeps its existing outcome. Framework/other-frontend/delegated
+> defaults and native operation limits remain. New framework and marked actual
+> builder/HTTP/approved-file/SQLite/UI tests accompany the implementation; full
+> local/all-four/every-step/both-mode and independent-main checks gate delivery.
+> See [terminal turn limits](terminal-turn-limits.md).
+
 > **Workspace file checkpoints (November 14):** read-only turns do no automatic
 > workspace snapshot work. Direct writes/edits capture their selected files;
 > shell snapshots use actual file/directory tool context and bounded fallback

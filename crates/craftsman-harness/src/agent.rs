@@ -123,6 +123,7 @@ pub struct Agent {
     backend: Arc<dyn Backend>,
     system_prompt: String,
     max_rounds: usize,
+    finish_on_round_limit: bool,
     /// Shared subagent registry: the `task` tool records spawned children here so
     /// the app (and peers) can list/poll them. Every dispatched `ToolCtx` clones
     /// this `Arc`.
@@ -434,6 +435,36 @@ impl Agent {
             }
         }
 
+        if self.finish_on_round_limit {
+            // A limit is reached only after every call in the last sampled
+            // round has returned (including an explicitly resumed approval).
+            // Preserve real results and close the turn without sampling a
+            // summary or manufacturing a final assistant message.
+            let (cancelled, pending) = {
+                let mut input = self.turn_input.lock().unwrap();
+                // Keep the activity guard held while rejecting further
+                // steering; accepted last-round input must be durably retained.
+                input.idle_operation = true;
+                let cancelled = input.cancel_requested
+                    || input
+                        .cancellation
+                        .as_ref()
+                        .is_some_and(|turn| turn.is_cancelled());
+                if cancelled {
+                    input.cancel_requested = false;
+                    input.pending.clear();
+                    (true, Vec::new())
+                } else {
+                    (false, input.pending.drain(..).collect())
+                }
+            };
+            if cancelled {
+                return self.finish_cancelled().await;
+            }
+            self.append_steering_messages(pending);
+            self.drain_agent_notifications_into_state();
+            self.finish_state().await?;
+        }
         Err(AgentError::MaxRounds(self.max_rounds))
     }
 
@@ -579,15 +610,21 @@ impl Agent {
 
     /// Terminal exit of a turn: fire `turn_end` (the sixth lifecycle hook)
     /// on a working copy, commit it, and return the final message. Runs once
-    /// per turn on the End / no-more-tool-calls paths (not on `MaxRounds`,
-    /// which is an error exit).
+    /// per turn on the End / no-more-tool-calls paths. The explicit
+    /// `finish_on_round_limit` option also closes a limited turn; the default
+    /// retains the original `MaxRounds` error exit without end hooks.
     async fn finish(&self, message: Msg) -> Result<TurnResult, AgentError> {
+        self.finish_state().await?;
+        Ok(TurnResult::Done(TurnOutput { message }))
+    }
+
+    async fn finish_state(&self) -> Result<(), AgentError> {
         self.turn_input.lock().unwrap().finishing = true;
         let mut working = self.snapshot();
         self.chain.turn_end(&mut working).await?;
         self.commit(working);
         self.save_checkpoint(None).await?;
-        Ok(TurnResult::Done(TurnOutput { message }))
+        Ok(())
     }
 
     async fn finish_cancelled(&self) -> Result<TurnResult, AgentError> {
@@ -1299,6 +1336,7 @@ pub struct AgentBuilder {
     backend: Option<Arc<dyn Backend>>,
     system_prompt: String,
     max_rounds: usize,
+    finish_on_round_limit: bool,
     interrupt_model_on_cancel: bool,
     cancellation_session: Option<crate::SessionCancellation>,
     state: Option<Arc<Mutex<AgentState>>>,
@@ -1321,6 +1359,7 @@ impl AgentBuilder {
             backend: None,
             system_prompt: String::new(),
             max_rounds: 50,
+            finish_on_round_limit: false,
             interrupt_model_on_cancel: false,
             cancellation_session: None,
             state: None,
@@ -1361,6 +1400,15 @@ impl AgentBuilder {
 
     pub fn max_rounds(mut self, n: usize) -> Self {
         self.max_rounds = n;
+        self
+    }
+
+    /// Close a turn normally when its round budget is exhausted, then return
+    /// the original typed `MaxRounds` limit. End hooks and the final checkpoint
+    /// run once; no new model response or tool call is synthesized. Defaults
+    /// false so existing framework callers retain their error-exit behavior.
+    pub fn finish_on_round_limit(mut self, enabled: bool) -> Self {
+        self.finish_on_round_limit = enabled;
         self
     }
 
@@ -1492,6 +1540,7 @@ impl AgentBuilder {
             backend,
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
+            finish_on_round_limit: self.finish_on_round_limit,
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,
             registry,
@@ -1523,6 +1572,10 @@ mod continuation_tests;
 #[cfg(test)]
 #[path = "agent_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "agent_round_limit_tests.rs"]
+mod round_limit_tests;
 
 #[cfg(test)]
 #[path = "agent_owned_cancellation_tests.rs"]

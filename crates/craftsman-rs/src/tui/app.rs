@@ -1090,11 +1090,7 @@ impl App {
         result: Result<TurnResult, String>,
         session: Option<&Session>,
     ) {
-        self.operation_cancellation = None;
-        self.active_response = None;
-        self.running = false;
-        self.cancel_requested = false;
-        self.discard_stream_deltas = false;
+        self.reset_turn_ui();
         match result {
             Ok(TurnResult::Done(_)) => {}
             Ok(TurnResult::Suspended(suspension)) => {
@@ -1109,6 +1105,22 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    fn reset_turn_ui(&mut self) {
+        self.operation_cancellation = None;
+        self.active_response = None;
+        self.running = false;
+        self.cancel_requested = false;
+        self.discard_stream_deltas = false;
+        self.dirty = true;
+    }
+
+    pub(super) fn finish_limited_turn(&mut self, rounds: usize) {
+        self.reset_turn_ui();
+        self.activity(format!(
+            "Paused after {rounds} model rounds. Completed work remains in this conversation. Send a follow-up to continue; terminal.max_rounds in config.json controls the per-turn limit."
+        ));
     }
 }
 
@@ -1539,11 +1551,8 @@ pub async fn run(
                     let tx = bridge.tx.clone();
                     let prompt = extension_prompt.unwrap_or(line);
                     work.spawn(async move {
-                        let result = agent
-                            .run_turn(prompt)
-                            .await
-                            .map_err(|error| error.to_string());
-                        let _ = tx.send(UiEvent::TurnFinished(result));
+                        let event = UiEvent::turn_result(agent.run_turn(prompt).await);
+                        let _ = tx.send(event);
                     });
                 }
             }
