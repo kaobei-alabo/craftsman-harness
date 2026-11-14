@@ -119,6 +119,7 @@ impl UiBridge {
             interrupt_model_on_cancel: true,
             terminal_round_limits: true,
             task_focused_memory: true,
+            task_workflow: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             round_sink: Some(Arc::new(move || {

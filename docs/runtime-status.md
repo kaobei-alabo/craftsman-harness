@@ -14,6 +14,17 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Task workflow (November 14):** TUI/ACP main agents explicitly select
+> proportional planning/delegation, required verification and prompt completion
+> guidance. A bounded observer inside existing approvals adds fixed recovery
+> guidance after repeated identical returned tool errors; successes, changed
+> errors and typed permission/cancellation outcomes retain normal iteration.
+> Original results/usage/native continuations stay intact, and legacy/private/
+> frozen/delegated policies remain. This is advisory guidance, not the full
+> verification or stuck-governor gate. Native and live quality evidence are
+> separate; full local/all-four/every-step/both-mode/inventory/warning/tree and
+> independent-main validation remain delivery gates. See `task-workflow.md`.
+
 > **Terminal turn limits (November 14):** the owned TUI main agent uses a
 > configurable 200-round default instead of inheriting the framework's 50-round
 > cutoff. Exhaustion closes the last fully executed round, runs end hooks and
