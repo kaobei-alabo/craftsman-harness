@@ -17,7 +17,7 @@ do not turn that failed prerequisite into a successful job; the failed run is
 retained separately from validation of the corrected workflow.
 
 PR #22 run `43608477313` at `7dfa658` later failed the same mandatory setup
-step because the kernel.org mirror's IPv4 HTTPS connection timed out for all
+step because the kernel.org endpoint's IPv4 HTTPS connection timed out for all
 four Ubuntu suites. The workflow now selects `archive.ubuntu.com`, retaining
 the original suites/components/signing configuration, IPv4 transport retries,
 `--error-on=any` and every package/build/test requirement. A local read-only

@@ -28,7 +28,7 @@
 > native validation is still required. Unfinished observations survive explicit
 > follow-ups, and model transfers require fresh verification while preserving
 > the transferred checkpoint sequence without replay. The subsequent Windows
-> direct-helper/shell divergence and Linux package-mirror timeout remain separate
+> direct-helper/shell divergence and Linux package endpoint timeout remain separate
 > failed evidence. Read-only/empty-policy and legacy/private/frozen/delegated defaults
 > remain. This is an app-only scoped completion gate, not OS containment or the
 > public headless receipt producer. See `verification.md`; full local/all-four/

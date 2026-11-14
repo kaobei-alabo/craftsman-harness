@@ -158,7 +158,7 @@ the same id. The first follow-up and checkpoint failures are retained separately
 from corrected proof. Framework thread-switch behavior and SQL layout remain.
 
 The Linux job in that run failed its mandatory package setup because the chosen
-mirror's IPv4 HTTPS connection timed out; [CI documentation](ci.md) records the
+endpoint's IPv4 HTTPS connection timed out; [CI documentation](ci.md) records the
 official-archive correction and the continuing full validation requirements.
 
 An actual terminal capture also exposed clipped protected-file review behind
