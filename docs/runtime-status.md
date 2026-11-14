@@ -25,7 +25,11 @@
 > changes. Terminal review puts protected changes first and pages through all
 > bounded details while preserving the composer draft. The first PR #22 Windows
 > failures and clipped native review capture remain retained; corrected-source
-> native validation is still required. Read-only/empty-policy and legacy/private/frozen/delegated defaults
+> native validation is still required. Unfinished observations survive explicit
+> follow-ups, and model transfers require fresh verification while preserving
+> the transferred checkpoint sequence without replay. The subsequent Windows
+> direct-helper/shell divergence and Linux package-mirror timeout remain separate
+> failed evidence. Read-only/empty-policy and legacy/private/frozen/delegated defaults
 > remain. This is an app-only scoped completion gate, not OS containment or the
 > public headless receipt producer. See `verification.md`; full local/all-four/
 > every-step/both-mode/inventory/warning/tree and independent-main proof gate

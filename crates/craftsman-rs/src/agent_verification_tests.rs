@@ -54,7 +54,7 @@ pub(super) fn command(mode: &str) -> String {
     #[cfg(windows)]
     {
         format!(
-            "& '{}' '--ignored' '--exact' '{COMMAND_HELPER}' '--nocapture' '{COMMAND_MARKER}{mode}'; $craftsman_check_exit = $LASTEXITCODE; [Console]::Out.Flush(); [Console]::Error.Flush(); [Environment]::Exit($craftsman_check_exit)",
+            "& '{}' '--ignored' '--exact' '{COMMAND_HELPER}' '--nocapture' '{COMMAND_MARKER}{mode}'; $craftsman_check_exit = $LASTEXITCODE; [Console]::Out.Flush(); [Console]::Error.Flush(); exit $craftsman_check_exit",
             binary.replace("'", "''")
         )
     }
@@ -107,6 +107,7 @@ async fn native_verification_fixture() {
                 | "project-bypass"
                 | "invalid"
                 | "command-status"
+                | "continue-failed"
         )
     {
         return;
@@ -141,6 +142,37 @@ async fn native_verification_fixture() {
             String::from_utf8_lossy(&output.stdout)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("actual check failed"));
+        #[cfg(windows)]
+        {
+            let output = tokio::process::Command::new("powershell.exe")
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    &command("check"),
+                ])
+                .current_dir(&root)
+                .stdin(Stdio::null())
+                .kill_on_drop(true)
+                .output()
+                .await
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(7),
+                "direct PowerShell status: {:?}; stdout: {}; stderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("actual check failed"),
+                "direct PowerShell failure output: stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let shell = crate::tools::ShellRunner::new(root, crate::shell::ShellSettings::default());
         let result = shell.run_outcome(&command("check"), None).await;
         assert_eq!(
@@ -160,7 +192,9 @@ async fn native_verification_fixture() {
     let server = MockServer::start().await;
     let requests = Arc::new(AtomicUsize::new(0));
     let observed = requests.clone();
-    let scenario = if mode == "restore" || mode == "project" || mode == "project-bypass" {
+    let scenario = if mode == "continue-failed" {
+        String::from("limit")
+    } else if mode == "restore" || mode == "project" || mode == "project-bypass" {
         String::from("repair")
     } else {
         mode.clone()
@@ -247,7 +281,7 @@ async fn native_verification_fixture() {
     } else {
         "check"
     });
-    cfg.extra.insert("verification".into(),json!({"commands":[selected_command],"paths":["src","tests"],"protected_paths":["tests"],"max_repair_rounds":if mode=="mutating-check"{0}else{3}}));
+    cfg.extra.insert("verification".into(),json!({"commands":[selected_command],"paths":["src","tests"],"protected_paths":["tests"],"max_repair_rounds":if matches!(mode.as_str(),"mutating-check"|"continue-failed"){0}else{3}}));
     if mode == "project" || mode == "policy-stale" || mode == "project-bypass" {
         std::fs::create_dir(root.join(".craftsman")).unwrap();
         let policy = cfg.extra.remove("verification").unwrap();
@@ -435,6 +469,117 @@ async fn native_verification_fixture() {
     if mode == "limit" {
         assert_eq!(state.messages.iter().filter(|message|matches!(message,craftsman_harness::Msg::Tool{content,..}if content.contains("actual check failed"))).count(),4);
     }
+    if mode == "continue-failed" {
+        let before = session.agent.state.lock().unwrap().clone();
+        assert!(before.messages.iter().any(|message|matches!(message,craftsman_harness::Msg::Tool{content,..}if content.contains("actual check failed"))));
+        let error = session
+            .agent
+            .run_turn("Continue from the failed checks without changing files.")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AgentError::State(_)));
+        assert!(error.to_string().contains("Verification still failed"));
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        assert_eq!(verification_prompts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/value.txt")).unwrap(),
+            "still broken"
+        );
+        let after = session.agent.state.lock().unwrap().clone();
+        assert!(after.messages.starts_with(&before.messages));
+        assert_eq!(after.messages.iter().filter(|message|matches!(message,craftsman_harness::Msg::Tool{content,..}if content.contains("actual check failed"))).count(),2);
+        assert_eq!(after.messages.iter().filter(|message|matches!(message,craftsman_harness::Msg::Tool{tool_call_id,..}if tool_call_id=="model-0")).count(),1);
+        let (_, saved, _) = store
+            .load_latest(&session.thread_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.messages, after.messages);
+        assert_eq!(
+            saved.custom["_craftsman_durable_turn_v1"]["in_progress"],
+            false
+        );
+        // Exercise both app transfer call sites' bookkeeping: the TUI keeps
+        // its captured thread, while ACP explicitly assigns the existing id.
+        for explicit_id in [false, true] {
+            let previous = session.agent.state.lock().unwrap().clone();
+            let before_requests = requests.load(Ordering::SeqCst);
+            let before_prompts = verification_prompts.load(Ordering::SeqCst);
+            let continued_prompts = verification_prompts.clone();
+            let mut next = build_session_ext(
+                &cfg,
+                Arc::new(Mutex::new(ApprovalState::default())),
+                "",
+                false,
+                false,
+                Some(session.thread_id.clone()),
+                SessionExtras {
+                    workspace_root: Some(root.clone()),
+                    verification: true,
+                    cancellation_session: Some(craftsman_harness::SessionCancellation::default()),
+                    interrupt_model_on_cancel: true,
+                    token_sink: Some(Arc::new(|_| {})),
+                    activity_sink: Some(Arc::new(|_| {})),
+                    approval_prompt: Some(Arc::new(move |tool, _, _| {
+                        assert_eq!(tool, "verify");
+                        continued_prompts.fetch_add(1, Ordering::SeqCst);
+                        ApprovalPromptResult::Approve
+                    })),
+                    ..SessionExtras::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(requests.load(Ordering::SeqCst), before_requests);
+            session.agent.request_cancel();
+            for task in session.registry.take_background_joins() {
+                let _ = task.await;
+            }
+            session.lsp.shutdown().await;
+            next.inherit_conversation(&session, explicit_id.then_some(session.thread_id.as_str()))
+                .unwrap();
+            assert_eq!(next.agent.state.lock().unwrap().messages, previous.messages);
+            assert_eq!(*next.usage.lock().unwrap(), *session.usage.lock().unwrap());
+            assert_eq!(requests.load(Ordering::SeqCst), before_requests);
+            assert_eq!(verification_prompts.load(Ordering::SeqCst), before_prompts);
+            assert!(
+                next.verification
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .contains("requires fresh checks")
+            );
+            let error = next
+                .agent
+                .run_turn("Continue after selecting a model.")
+                .await
+                .unwrap_err();
+            assert!(matches!(error, AgentError::State(_)));
+            assert!(error.to_string().contains("Verification still failed"));
+            assert_eq!(requests.load(Ordering::SeqCst), before_requests + 1);
+            assert_eq!(
+                verification_prompts.load(Ordering::SeqCst),
+                before_prompts + 1
+            );
+            let after = next.agent.state.lock().unwrap().clone();
+            assert!(after.messages.starts_with(&previous.messages));
+            assert_eq!(after.messages.iter().filter(|message|matches!(message,craftsman_harness::Msg::Tool{tool_call_id,..}if tool_call_id=="model-0")).count(),1);
+            let (_, saved, _) = next
+                .checkpointer
+                .as_ref()
+                .unwrap()
+                .load_latest(&next.thread_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(saved.messages, after.messages);
+            assert_eq!(
+                saved.custom["_craftsman_durable_turn_v1"]["in_progress"],
+                false
+            );
+            session = next;
+        }
+    }
     if mode == "restore" {
         let id = session.thread_id.clone();
         let before_requests = requests.load(Ordering::SeqCst);
@@ -575,4 +720,9 @@ async fn actual_invalid_verification_policy_refuses_before_store_or_model_effect
 #[tokio::test]
 async fn actual_marked_check_command_preserves_native_failure_exit_and_output() {
     run_case("command-status").await;
+}
+
+#[tokio::test]
+async fn actual_followup_cannot_accept_prior_unverified_changes_without_fresh_checks() {
+    run_case("continue-failed").await;
 }

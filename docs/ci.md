@@ -8,13 +8,22 @@ current head. A skipped job or cache hit does not establish that evidence.
 Merged main still receives independent full validation. Binary/container
 publication remains disabled.
 
-Linux prerequisite downloads use the existing HTTPS package source over IPv4,
+Linux prerequisite downloads use Ubuntu's official HTTPS archive over IPv4,
 with up to three APT transport retries. An incomplete package index still fails
 the job through `--error-on=any`; the voice packages and every build/test step
 remain mandatory. Merged-main run 43458891311 failed this setup step when the
 package endpoint attempted an unavailable IPv6 route. Its passing native suites
 do not turn that failed prerequisite into a successful job; the failed run is
 retained separately from validation of the corrected workflow.
+
+PR #22 run `43608477313` at `7dfa658` later failed the same mandatory setup
+step because the kernel.org mirror's IPv4 HTTPS connection timed out for all
+four Ubuntu suites. The workflow now selects `archive.ubuntu.com`, retaining
+the original suites/components/signing configuration, IPv4 transport retries,
+`--error-on=any` and every package/build/test requirement. A local read-only
+probe received the official archive's index response; fresh native CI remains
+required and that probe is not runner validation. The failed setup and any
+tests that continued after it remain separate from a passing full job.
 
 ## Draft and full validation
 

@@ -494,7 +494,12 @@ impl AgentMiddleware for VerificationController {
     async fn turn_start(&self, _: &mut AgentState) -> Result<(), AgentError> {
         let mut state = self.state.lock().unwrap();
         let restored = state.restored;
+        // A refused or stopped turn can leave changed sources unverified.
+        // Keep its original observation until completion is actually accepted;
+        // a new explicit turn gets its own repair allowance, not a bypass.
+        let before = state.before.take();
         *state = VerificationState {
+            before,
             restored,
             ..VerificationState::default()
         };
@@ -546,6 +551,7 @@ impl CompletionCheck for VerificationController {
                 .is_some_and(|before| current.digest() == before.digest())
             || passed.as_deref() == Some(current.digest())
         {
+            self.state.lock().unwrap().before = None;
             return Ok(CompletionAction::Ready);
         }
         let mut state = self.state.lock().unwrap();

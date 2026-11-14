@@ -134,6 +134,31 @@ impl Session {
         self.thread_id = thread_id;
     }
 
+    pub(crate) fn inherit_conversation(
+        &mut self,
+        previous: &Self,
+        thread_id: Option<&str>,
+    ) -> Result<(), AgentError> {
+        self.agent.inherit_conversation(&previous.agent)?;
+        *self.usage.lock().unwrap() = *previous.usage.lock().unwrap();
+        if let Some(thread_id) = thread_id {
+            if thread_id == previous.thread_id {
+                // The framework already transferred this id and next sequence.
+                // Rebinding the app bookkeeping must not reset its save counter.
+                self.thread_id = thread_id.to_owned();
+                if let Some(workspace) = &self.workspace_checkpoints {
+                    workspace.set_thread_id(thread_id.to_owned());
+                }
+            } else {
+                self.set_thread_id(thread_id);
+            }
+        }
+        if let Some(verification) = &self.verification {
+            verification.mark_restored();
+        }
+        Ok(())
+    }
+
     pub async fn load_thread(&mut self, thread_id: &str) -> Result<bool, AgentError> {
         let loaded = self.agent.load_thread(thread_id).await?;
         if loaded {

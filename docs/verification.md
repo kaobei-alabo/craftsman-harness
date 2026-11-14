@@ -60,6 +60,14 @@ allowed; the next failing verification stops with completed work and results
 retained. Denied or unperformed verification stops without another model request.
 Cancellation and durable-save failures keep their existing stop/refusal rules.
 
+An explicit follow-up keeps the observation for unfinished changes and gets a
+new repair allowance. Starting a new turn cannot accept those same broken files
+without fresh checks. Accepted completion clears that pending observation, so
+ordinary read-only turns still do no scan. A conversation inherited after model
+selection requires fresh verification under the rebuilt session's policy;
+transfer itself performs no model/tool/checkpoint replay and retains the actual
+next checkpoint sequence.
+
 Verification is one tool operation containing the declared command list. Its
 completed per-command results are retained together; it is not a public headless
 receipt producer or a promise to recover each internal command after abrupt exit.
@@ -129,6 +137,29 @@ quotes its native arguments and explicitly preserves that exit. An additive
 native case checks the same failure bytes/status directly and through
 `ShellRunner`; existing process rules, bounds and assertions remain intact.
 Fresh Windows execution is required before claiming the correction works there.
+
+The next run, `43608477313` at `7dfa658`, passed macOS but retained nine new
+Windows failures in each mode. Its direct marked helper returned the required
+exit 7/output; the shell invocation returned zero with empty output and was
+incorrectly accepted by the verifier. The Windows-only test initializer now
+uses PowerShell's `exit` statement after capturing the native exit, and the
+same test checks direct PowerShell execution before the existing `ShellRunner`
+assertions. No production runner/process workaround or weakened assertion is
+introduced. Fresh native Windows proof is still required; the observation is
+not a diagnosis of the retired shell instrumentation's historical failures.
+
+A new actual-builder/HTTP/SQLite case first reproduced completion being accepted
+on a follow-up to failed checks. The pending observation now survives an
+unfinished turn and is cleared only by accepted completion. Both app model-transfer
+paths mark inherited verification as needing fresh checks without replay.
+The same native case caught ACP's redundant thread setter resetting the
+transferred save counter; app bookkeeping now retains that counter when rebinding
+the same id. The first follow-up and checkpoint failures are retained separately
+from corrected proof. Framework thread-switch behavior and SQL layout remain.
+
+The Linux job in that run failed its mandatory package setup because the chosen
+mirror's IPv4 HTTPS connection timed out; [CI documentation](ci.md) records the
+official-archive correction and the continuing full validation requirements.
 
 An actual terminal capture also exposed clipped protected-file review behind
 long command/path details. The review order and paged display correct that
