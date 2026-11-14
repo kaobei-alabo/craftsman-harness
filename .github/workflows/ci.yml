@@ -88,10 +88,10 @@ jobs:
       - name: Install Linux voice build prerequisites
         if: runner.os == 'Linux'
         run: |
-          # Use kernel.org's HTTPS Ubuntu package endpoint instead of the runner's
+          # Use Ubuntu's official HTTPS archive instead of the runner's
           # dynamically selected Azure package service. Preserve suites, components
           # and Signed-By in the Ubuntu 24.04 deb822 source file.
-          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           # Hosted runners may have no IPv6 route; retry transient index fetches
           # while still refusing an incomplete package index.
           sudo apt-get update --error-on=any -o Acquire::ForceIPv4=true -o Acquire::Retries=3

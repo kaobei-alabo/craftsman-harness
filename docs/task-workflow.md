@@ -46,8 +46,9 @@ unchanged.
 This is **model guidance**, the first advisory step toward the roadmap's stuck
 governor. It does not execute verification, refuse otherwise allowed tool calls,
 retry requests, switch models, create diagnosis agents or guarantee that the
-model follows the workflow. The full verification gate, test-integrity guard,
-broader progress detection and context compiler remain planned.
+model follows the workflow. The separate [declared verifier](verification.md)
+adds actual scoped completion checks and protected content review. Broader
+semantic test-integrity, progress detection and context compilation remain work.
 
 ## Evidence and evaluation
 

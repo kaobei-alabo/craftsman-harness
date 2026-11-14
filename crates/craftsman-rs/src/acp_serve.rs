@@ -559,6 +559,7 @@ async fn build_acp_session(
         interrupt_model_on_cancel: true,
         task_focused_memory: true,
         task_workflow: true,
+        verification: true,
         round_sink: Some({
             let messages = messages.clone();
             let counter = state.req_counter.clone();
@@ -1294,12 +1295,10 @@ async fn set_model(state: &mut AcpServerState, model: String) -> Result<(), Stri
         let _ = task.await;
     }
     previous.lsp.shutdown().await;
-    if let Err(error) = rebuilt.runtime.agent.inherit_conversation(&previous.agent) {
+    if let Err(error) = rebuilt.runtime.inherit_conversation(previous, Some(&id)) {
         rebuilt.runtime.lsp.shutdown().await;
         return Err(error.to_string());
     }
-    *rebuilt.runtime.usage.lock().unwrap() = *previous.usage.lock().unwrap();
-    rebuilt.runtime.set_thread_id(id.clone());
     state.sessions.insert(id, rebuilt);
     Ok(())
 }

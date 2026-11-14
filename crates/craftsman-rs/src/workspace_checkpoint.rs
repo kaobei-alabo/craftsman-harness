@@ -119,6 +119,212 @@ struct WorkspaceSnapshot {
     partial: bool,
 }
 
+/// Pure bounded source observation shared with explicit verification. No store,
+/// checkpoint manager, undo grant or model/tool dispatch participates here.
+#[derive(Clone)]
+pub(crate) struct SourceObservation {
+    snapshot: WorkspaceSnapshot,
+    root_identity: String,
+    digest: String,
+}
+
+impl SourceObservation {
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+    pub(crate) fn complete(&self) -> bool {
+        !self.snapshot.partial
+    }
+
+    pub(crate) fn protected_contents(
+        &self,
+        protected: &[String],
+    ) -> Result<(String, String), &'static str> {
+        let mut detail = String::new();
+        let mut digest = Sha256::new();
+        for (path, file) in &self.snapshot.files {
+            if !protected.iter().any(|scope| within_directory(path, scope)) {
+                continue;
+            }
+            let text = source_review_text(Some(file))?;
+            let section = format!(
+                "\nProtected file: {path}\nPrevious verification baseline is unavailable after restore.\nCurrent contents:\n{text}\n"
+            );
+            if detail.len().saturating_add(section.len()) > 1024 * 1024 {
+                return Err("Protected changes exceed the verification review limit.");
+            }
+            digest.update((path.len() as u64).to_le_bytes());
+            digest.update(path.as_bytes());
+            digest.update(file.hash.as_bytes());
+            digest.update(file.mode.unwrap_or(0).to_le_bytes());
+            detail.push_str(&section);
+        }
+        Ok((format!("{:x}", digest.finalize()), detail))
+    }
+
+    pub(crate) fn protected_review(
+        &self,
+        after: &Self,
+        protected: &[String],
+    ) -> Result<(String, String), &'static str> {
+        if self.root_identity != after.root_identity {
+            return Err("Verification root changed between observations.");
+        }
+        const MAX_REVIEW_BYTES: usize = 1024 * 1024;
+        let mut detail = String::new();
+        let mut digest = Sha256::new();
+        let names: BTreeSet<_> = self
+            .snapshot
+            .files
+            .keys()
+            .chain(after.snapshot.files.keys())
+            .collect();
+        for path in names {
+            if !protected.iter().any(|scope| within_directory(path, scope)) {
+                continue;
+            }
+            let before = self.snapshot.files.get(path);
+            let now = after.snapshot.files.get(path);
+            if before.map(|file| (&file.hash, file.mode)) == now.map(|file| (&file.hash, file.mode))
+            {
+                continue;
+            }
+            let before_text = source_review_text(before)?;
+            let after_text = source_review_text(now)?;
+            let section =
+                format!("\nProtected file: {path}\nBefore:\n{before_text}\nAfter:\n{after_text}\n");
+            if detail.len().saturating_add(section.len()) > MAX_REVIEW_BYTES {
+                return Err("Protected changes exceed the verification review limit.");
+            }
+            digest.update((path.len() as u64).to_le_bytes());
+            digest.update(path.as_bytes());
+            for file in [before, now] {
+                match file {
+                    Some(file) => {
+                        digest.update([1]);
+                        digest.update(file.hash.as_bytes());
+                        digest.update(file.mode.unwrap_or(0).to_le_bytes());
+                    }
+                    None => digest.update([0]),
+                }
+            }
+            detail.push_str(&section);
+        }
+        Ok((format!("{:x}", digest.finalize()), detail))
+    }
+}
+
+fn source_review_text(file: Option<&SnapshotFile>) -> Result<&str, &'static str> {
+    match file {
+        None => Ok("(absent)"),
+        Some(file) => {
+            let bytes = file
+                .content
+                .as_deref()
+                .ok_or("Protected changes exceed the verification review limit.")?;
+            if bytes.len() > 64 * 1024 {
+                return Err("Protected changes exceed the verification review limit.");
+            }
+            std::str::from_utf8(bytes)
+                .map_err(|_| "Protected binary changes require explicit external review.")
+        }
+    }
+}
+
+fn source_root_identity(root: &Path) -> Result<String, &'static str> {
+    let metadata =
+        std::fs::symlink_metadata(root).map_err(|_| "Verification root is unavailable.")?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Verification root is unavailable.");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(format!("{}:{}", metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(format!("{:?}:{:?}", root, metadata.created().ok()))
+    }
+}
+
+pub(crate) fn observe_source(
+    root: &Path,
+    paths: &[String],
+    excluded: &BTreeSet<String>,
+) -> Result<SourceObservation, &'static str> {
+    let identity = source_root_identity(root)?;
+    let mut selection = SnapshotSelection {
+        excluded: excluded.clone(),
+        ..SnapshotSelection::default()
+    };
+    for path in paths {
+        if excluded
+            .iter()
+            .any(|excluded| within_directory(path, excluded))
+        {
+            return Err("Verification scope includes protected application state.");
+        }
+        let Some(absolute) = safe_join(root, path) else {
+            return Err("Verification scope could not be observed safely.");
+        };
+        match std::fs::symlink_metadata(&absolute) {
+            Ok(metadata) if metadata.file_type().is_dir() => {
+                selection.directories.insert(path.clone());
+            }
+            Ok(metadata) if metadata.file_type().is_file() => {
+                selection.files.insert(path.clone());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                selection.files.insert(path.clone());
+            }
+            _ => return Err("Verification scope could not be observed safely."),
+        }
+    }
+    let snapshot = capture_selection_mode(root, &selection, 0, false)
+        .map_err(|_| "Verification scope could not be observed safely.")?;
+    if source_root_identity(root)? != identity {
+        return Err("Verification root changed during observation.");
+    }
+    let mut digest = Sha256::new();
+    digest.update(identity.as_bytes());
+    for (path, file) in &snapshot.files {
+        digest.update((path.len() as u64).to_le_bytes());
+        digest.update(path.as_bytes());
+        digest.update(file.hash.as_bytes());
+        digest.update(file.mode.unwrap_or(0).to_le_bytes());
+    }
+    Ok(SourceObservation {
+        snapshot,
+        root_identity: identity,
+        digest: format!("{:x}", digest.finalize()),
+    })
+}
+
+pub(crate) fn read_verification_policy(
+    root: &Path,
+    path: &str,
+) -> Result<Option<Vec<u8>>, &'static str> {
+    let mut budget = SnapshotBudget {
+        retained: 0,
+        hashed: MAX_SNAPSHOT_BYTES - (256 * 1024 + 1),
+    };
+    let file = capture_snapshot_file(root, path, &mut budget)
+        .map_err(|_| "Project verification policy could not be read safely.")?;
+    match file {
+        None => Ok(None),
+        Some(file) => {
+            let bytes = file
+                .content
+                .ok_or("Project verification policy exceeds its read limit.")?;
+            if bytes.len() > 256 * 1024 {
+                return Err("Project verification policy exceeds its read limit.");
+            }
+            Ok(Some(bytes))
+        }
+    }
+}
+
 impl WorkspaceSnapshot {
     fn covers(&self, path: &str) -> bool {
         self.files.contains_key(path)
@@ -660,7 +866,21 @@ fn capture_selection(
     selection: &SnapshotSelection,
     retained: u64,
 ) -> Result<WorkspaceSnapshot, String> {
-    let enumeration = enumerate_paths_excluding(root, &selection.directories, &selection.excluded)?;
+    capture_selection_mode(root, selection, retained, true)
+}
+
+fn capture_selection_mode(
+    root: &Path,
+    selection: &SnapshotSelection,
+    retained: u64,
+    use_git_ignore: bool,
+) -> Result<WorkspaceSnapshot, String> {
+    let enumeration = enumerate_paths_mode(
+        root,
+        &selection.directories,
+        &selection.excluded,
+        use_git_ignore,
+    )?;
     let mut snapshot = WorkspaceSnapshot {
         unavailable: enumeration.unavailable,
         non_files: enumeration.non_files,
@@ -736,56 +956,67 @@ fn enumerate_paths(root: &Path, directories: &BTreeSet<String>) -> Result<Enumer
     enumerate_paths_excluding(root, directories, &BTreeSet::new())
 }
 
+#[cfg(test)]
 fn enumerate_paths_excluding(
     root: &Path,
     directories: &BTreeSet<String>,
     excluded: &BTreeSet<String>,
+) -> Result<EnumeratedPaths, String> {
+    enumerate_paths_mode(root, directories, excluded, true)
+}
+
+fn enumerate_paths_mode(
+    root: &Path,
+    directories: &BTreeSet<String>,
+    excluded: &BTreeSet<String>,
+    use_git_ignore: bool,
 ) -> Result<EnumeratedPaths, String> {
     let mut result = EnumeratedPaths::default();
     result.unavailable.extend(excluded.iter().cloned());
     if directories.is_empty() {
         return Ok(result);
     }
-    let mut command = std::process::Command::new("git");
-    command
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-co", "--exclude-standard", "-z"]);
-    if !directories.contains("") {
-        command.arg("--");
-        for directory in directories {
-            command.arg(format!(":(literal){directory}"));
+    if use_git_ignore {
+        let mut command = std::process::Command::new("git");
+        command
+            .arg("-C")
+            .arg(root)
+            .args(["ls-files", "-co", "--exclude-standard", "-z"]);
+        if !directories.contains("") {
+            command.arg("--");
+            for directory in directories {
+                command.arg(format!(":(literal){directory}"));
+            }
         }
-    }
-    if let Some((output, limited)) = bounded_git_listing(command)? {
-        if limited {
-            result.partial = true;
-            result.unavailable.extend(directories.iter().cloned());
-        }
-        for (index, raw) in output
-            .split_inclusive(|byte| *byte == 0)
-            .filter(|raw| raw.len() > 1 && raw.last() == Some(&0))
-            .map(|raw| &raw[..raw.len() - 1])
-            .enumerate()
-        {
-            if index >= MAX_SCAN_ENTRIES {
+        if let Some((output, limited)) = bounded_git_listing(command)? {
+            if limited {
                 result.partial = true;
                 result.unavailable.extend(directories.iter().cloned());
-                break;
             }
-            if let Ok(path) = std::str::from_utf8(raw) {
-                let relative = normalize_relative_path(path);
-                if !excluded
-                    .iter()
-                    .any(|prefix| within_directory(&relative, prefix))
-                {
-                    result.paths.insert(relative);
+            for (index, raw) in output
+                .split_inclusive(|byte| *byte == 0)
+                .filter(|raw| raw.len() > 1 && raw.last() == Some(&0))
+                .map(|raw| &raw[..raw.len() - 1])
+                .enumerate()
+            {
+                if index >= MAX_SCAN_ENTRIES {
+                    result.partial = true;
+                    result.unavailable.extend(directories.iter().cloned());
+                    break;
+                }
+                if let Ok(path) = std::str::from_utf8(raw) {
+                    let relative = normalize_relative_path(path);
+                    if !excluded
+                        .iter()
+                        .any(|prefix| within_directory(&relative, prefix))
+                    {
+                        result.paths.insert(relative);
+                    }
                 }
             }
+            return Ok(result);
         }
-        return Ok(result);
     }
-
     let mut stack = directories
         .iter()
         .map(|dir| root.join(dir))

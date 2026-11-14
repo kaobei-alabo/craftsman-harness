@@ -16,6 +16,7 @@ pub(super) struct ApprovalModal {
     pub(super) tool: String,
     pub(super) summary: String,
     pub(super) details: String,
+    pub(super) details_scroll: std::cell::Cell<usize>,
     pub(super) selected: usize,
     pub(super) feedback: String,
     pub(super) feedback_mode: bool,
@@ -212,6 +213,14 @@ pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         Modal::Approval(approval) => match key.code {
+            KeyCode::PageDown => approval
+                .details_scroll
+                .set(approval.details_scroll.get().saturating_add(10)),
+            KeyCode::PageUp => approval
+                .details_scroll
+                .set(approval.details_scroll.get().saturating_sub(10)),
+            KeyCode::Home => approval.details_scroll.set(0),
+            KeyCode::End => approval.details_scroll.set(usize::MAX),
             KeyCode::Up => approval.selected = approval.selected.saturating_sub(1),
             KeyCode::Down => approval.selected = (approval.selected + 1).min(3),
             KeyCode::Enter => {
@@ -388,14 +397,38 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(6)])
                 .split(area);
-            let summary = Paragraph::new(format!(
-                "{}\n\n{}\n\n{}",
-                modal.tool, modal.summary, modal.details
-            ))
-            .wrap(Wrap { trim: false })
+            let contents = format!("{}\n\n{}\n\n{}", modal.tool, modal.summary, modal.details);
+            let summary = if modal.tool == "verify" {
+                let lines = approval_detail_lines(
+                    &contents,
+                    chunks[0].width.saturating_sub(2).max(1) as usize,
+                );
+                let height = chunks[0].height.saturating_sub(2) as usize;
+                let start = modal
+                    .details_scroll
+                    .get()
+                    .min(lines.len().saturating_sub(height));
+                // Clamp the retained offset so PageUp works immediately after End
+                // or after the terminal is resized to a larger viewport.
+                modal.details_scroll.set(start);
+                Paragraph::new(
+                    lines
+                        .into_iter()
+                        .skip(start)
+                        .take(height)
+                        .map(Line::from)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                Paragraph::new(contents).wrap(Wrap { trim: false })
+            }
             .block(
                 Block::default()
-                    .title(" approval required ")
+                    .title(if modal.tool == "verify" {
+                        " approval required · PgUp/PgDn details "
+                    } else {
+                        " approval required "
+                    })
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(crate::theme::TEXT)),
             );
@@ -548,6 +581,27 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
             );
         }
     }
+}
+
+fn approval_detail_lines(text: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    let mut lines = Vec::new();
+    for logical in text.split('\n') {
+        let mut line = String::new();
+        let mut columns = 0usize;
+        for grapheme in logical.graphemes(true) {
+            let size = grapheme.width();
+            if columns > 0 && columns.saturating_add(size) > width {
+                lines.push(std::mem::take(&mut line));
+                columns = 0;
+            }
+            line.push_str(grapheme);
+            columns = columns.saturating_add(size);
+        }
+        lines.push(line);
+    }
+    lines
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -755,6 +809,89 @@ pub(super) fn show_harness_modal(cfg: &Config, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_detail_pages_preserve_approval_selection_and_composer() {
+        let mut app = App::new(&Config::default());
+        app.input = "draft".into();
+        app.cursor = 3;
+        let (response, receiver) = std_mpsc::channel();
+        app.modal = Some(Modal::Approval(ApprovalModal {
+            tool: "verify".into(),
+            summary: "review changes".into(),
+            details: format!("{}last review line", "long detail\n".repeat(100)),
+            details_scroll: 0.into(),
+            selected: 0,
+            feedback: String::new(),
+            feedback_mode: false,
+            response,
+        }));
+        handle_modal_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        );
+        let Some(Modal::Approval(modal)) = &app.modal else {
+            panic!("approval lost");
+        };
+        assert_eq!(modal.details_scroll.get(), 10);
+        assert_eq!(modal.selected, 0);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.cursor, 3);
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        let Some(Modal::Approval(modal)) = &app.modal else {
+            panic!("approval lost");
+        };
+        assert_eq!(modal.details_scroll.get(), 0);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        terminal
+            .draw(|frame| render_modal(frame, app.modal.as_ref().unwrap()))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("last review line")
+        );
+        let Some(Modal::Approval(modal)) = &app.modal else {
+            panic!("approval lost");
+        };
+        let end = modal.details_scroll.get();
+        assert!(end > 10 && end < usize::MAX);
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        let Some(Modal::Approval(modal)) = &app.modal else {
+            panic!("approval lost");
+        };
+        assert_eq!(modal.details_scroll.get(), end - 10);
+        assert_eq!(modal.selected, 0);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(app.input, "draft");
+        assert_eq!(app.cursor, 3);
+        handle_modal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(receiver.recv().unwrap(), ApprovalChoice::Approve));
+    }
+
+    #[test]
+    fn verification_details_wrap_without_losing_unicode_or_long_line_text() {
+        let text = "before é漢🙂 e\u{301} after";
+        let lines = approval_detail_lines(text, 4);
+        assert_eq!(lines.concat(), text);
+        assert!(
+            lines
+                .iter()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= 4)
+        );
+        let long = "x".repeat(70000);
+        let lines = approval_detail_lines(&long, 10);
+        assert_eq!(lines.len(), 7000);
+        assert_eq!(lines.concat(), long);
+    }
 
     #[test]
     fn local_skills_menu_has_no_remote_or_destructive_actions() {

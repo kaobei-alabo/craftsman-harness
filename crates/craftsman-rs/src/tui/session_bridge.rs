@@ -120,6 +120,7 @@ impl UiBridge {
             terminal_round_limits: true,
             task_focused_memory: true,
             task_workflow: true,
+            verification: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             round_sink: Some(Arc::new(move || {
@@ -312,7 +313,7 @@ impl AgentSlot {
                     ))
                     .await
             };
-            let Some(candidate) = candidate else {
+            let Some(mut candidate) = candidate else {
                 let _ = bridge.tx.send(UiEvent::Activity("Model/session configuration could not be initialized. The earlier conversation was retained and further work was stopped. Select a working model to continue.".into()));
                 owner.cancel();
                 old.cancellation.cancel();
@@ -338,11 +339,7 @@ impl AgentSlot {
                 previous.lsp.shutdown().await;
                 // Snapshot only after actual old cleanup: completed child writes
                 // and addressed notifications are part of the continued chat.
-                if candidate
-                    .agent
-                    .inherit_conversation(&previous.agent)
-                    .is_err()
-                {
+                if candidate.inherit_conversation(&previous, None).is_err() {
                     candidate.lsp.shutdown().await;
                     owner.cancel();
                     let _ = bridge.tx.send(UiEvent::Activity("The earlier conversation is still retained, but its transfer was refused. Wait for active work to stop before selecting a model.".into()));
@@ -351,7 +348,6 @@ impl AgentSlot {
                         cancellation: old.cancellation,
                     };
                 }
-                *candidate.usage.lock().unwrap() = *previous.usage.lock().unwrap();
             }
             ReconfiguredSession {
                 session: Some(candidate),
@@ -571,6 +567,7 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
                 tool,
                 summary,
                 details,
+                details_scroll: 0.into(),
                 selected: 0,
                 feedback: String::new(),
                 feedback_mode: false,

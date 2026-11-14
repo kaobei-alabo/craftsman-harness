@@ -14,6 +14,30 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Declared verification (November 14):** TUI/ACP main agents select explicit
+> user/project verification plans with declared source and protected paths.
+> Source observation is lazy and bounded; normal completion schedules the
+> registered verifier through existing approvals, durable saves and owned shell
+> execution. Actual zero exits plus unchanged complete source observations are
+> required for acceptance. Failures feed normal model repairs under a three-round
+> bound; denied/unperformed checks stop further sampling. Protected content review
+> is independent of bypass switches, and stale approvals do not authorize later
+> changes. Terminal review puts protected changes first and pages through all
+> bounded details while preserving the composer draft. The first PR #22 Windows
+> failures and clipped native review capture remain retained; corrected-source
+> native validation is still required. Unfinished observations survive explicit
+> follow-ups, and model transfers require fresh verification while preserving
+> the transferred checkpoint sequence without replay. The subsequent Windows
+> direct-helper/shell divergence and Linux package endpoint timeout remain separate
+> failed evidence. Read-only/empty-policy and legacy/private/frozen/delegated defaults
+> remain. This is an app-only scoped completion gate, not OS containment or the
+> public headless receipt producer. See `verification.md`; full local/all-four/
+> every-step/both-mode/inventory/warning/tree and independent-main proof gate
+> delivery, separately from live model-quality evidence. A matched model check
+> records an actual candidate verification result and preserves correctness;
+> `live-verification-evaluation.md` labels that composition evidence and its
+> $23.153274/$25 cumulative conservative accounting.
+
 > **Task workflow (November 14):** TUI/ACP main agents explicitly select
 > proportional planning/delegation, required verification and prompt completion
 > guidance. A bounded observer inside existing approvals adds fixed recovery

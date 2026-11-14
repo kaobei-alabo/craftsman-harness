@@ -60,6 +60,7 @@ mod token_counter;
 mod tools;
 mod tui;
 mod util;
+mod verification;
 #[cfg(all(feature = "voice", any(target_os = "macos", target_os = "linux")))]
 mod voice;
 #[cfg(not(all(feature = "voice", any(target_os = "macos", target_os = "linux"))))]
