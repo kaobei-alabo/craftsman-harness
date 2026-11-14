@@ -50,5 +50,6 @@ corpus/policy/image hashes and ledger records remain under
 were preserved. Local evaluation images are not published binaries/containers.
 
 [Declared verification](verification.md) is an explicit scoped completion policy.
-Broader semantic test-integrity, context compilation, public headless receipts,+larger/repeated model comparisons and native containment retain separate work
+Broader semantic test-integrity, context compilation, public headless receipts,
+larger/repeated model comparisons and native containment retain separate work
 and validation requirements.
