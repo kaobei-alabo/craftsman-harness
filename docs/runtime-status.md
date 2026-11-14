@@ -22,7 +22,10 @@
 > required for acceptance. Failures feed normal model repairs under a three-round
 > bound; denied/unperformed checks stop further sampling. Protected content review
 > is independent of bypass switches, and stale approvals do not authorize later
-> changes. Read-only/empty-policy and legacy/private/frozen/delegated defaults
+> changes. Terminal review puts protected changes first and pages through all
+> bounded details while preserving the composer draft. The first PR #22 Windows
+> failures and clipped native review capture remain retained; corrected-source
+> native validation is still required. Read-only/empty-policy and legacy/private/frozen/delegated defaults
 > remain. This is an app-only scoped completion gate, not OS containment or the
 > public headless receipt producer. See `verification.md`; full local/all-four/
 > every-step/both-mode/inventory/warning/tree and independent-main proof gate

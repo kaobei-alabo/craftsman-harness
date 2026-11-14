@@ -107,7 +107,10 @@ async fn native_verification_protocol_fixture() {
                 }));
             }
             if index == 2 {
-                assert!(serialized.contains("actual check failed"));
+                assert!(
+                    serialized.contains("actual check failed"),
+                    "actual verification results before native repair: {serialized}"
+                );
             }
             if index == 4 {
                 assert!(serialized.contains("Verification passed."));

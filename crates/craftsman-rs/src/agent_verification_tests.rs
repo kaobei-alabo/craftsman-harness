@@ -40,6 +40,9 @@ fn native_verification_command() {
     let value = std::fs::read_to_string("src/value.txt").unwrap();
     if value != "fixed" {
         println!("actual check failed: value remains {value}");
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+        std::io::stderr().flush().unwrap();
         std::process::exit(7);
     }
     println!("actual check passed: fixed value");
@@ -51,7 +54,7 @@ pub(super) fn command(mode: &str) -> String {
     #[cfg(windows)]
     {
         format!(
-            "& '{}' --ignored --exact {COMMAND_HELPER} --nocapture {COMMAND_MARKER}{mode}; [Environment]::Exit($LASTEXITCODE)",
+            "& '{}' '--ignored' '--exact' '{COMMAND_HELPER}' '--nocapture' '{COMMAND_MARKER}{mode}'; $craftsman_check_exit = $LASTEXITCODE; [Console]::Out.Flush(); [Console]::Error.Flush(); [Environment]::Exit($craftsman_check_exit)",
             binary.replace("'", "''")
         )
     }
@@ -103,6 +106,7 @@ async fn native_verification_fixture() {
                 | "policy-stale"
                 | "project-bypass"
                 | "invalid"
+                | "command-status"
         )
     {
         return;
@@ -121,6 +125,38 @@ async fn native_verification_fixture() {
     };
     std::fs::write(root.join("src/value.txt"), value).unwrap();
     std::fs::write(root.join("tests/public.txt"), "test original").unwrap();
+    if mode == "command-status" {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", COMMAND_HELPER, "--nocapture"])
+            .arg(format!("{COMMAND_MARKER}check"))
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(7),
+            "direct marked helper status: {:?}; stdout: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("actual check failed"));
+        let shell = crate::tools::ShellRunner::new(root, crate::shell::ShellSettings::default());
+        let result = shell.run_outcome(&command("check"), None).await;
+        assert_eq!(
+            result.meta.exit_code,
+            Some(7),
+            "actual shell result: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("actual check failed"),
+            "actual shell result: {}",
+            result.content
+        );
+        eprintln!("{DONE}");
+        return;
+    }
     let server = MockServer::start().await;
     let requests = Arc::new(AtomicUsize::new(0));
     let observed = requests.clone();
@@ -134,6 +170,14 @@ async fn native_verification_fixture() {
         .respond_with(move |request: &wiremock::Request| {
             let index = observed.fetch_add(1, Ordering::SeqCst);
             let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if index == 1 && matches!(scenario.as_str(), "repair" | "limit") {
+                assert_eq!(
+                    std::fs::read_to_string("src/value.txt").unwrap(),
+                    "still broken",
+                    "first actual edit result: {}",
+                    body["messages"]
+                );
+            }
             if scenario == "readonly" {
                 return streamed(json!({"content":"read-only answer"}), false);
             }
@@ -168,12 +212,16 @@ async fn native_verification_fixture() {
             }
             if scenario == "repair" && index == 2 {
                 let messages = body["messages"].as_array().unwrap();
-                assert!(messages.iter().any(|message| {
-                    message["role"] == "tool"
-                        && message["content"]
-                            .as_str()
-                            .is_some_and(|text| text.contains("actual check failed"))
-                }));
+                assert!(
+                    messages.iter().any(|message| {
+                        message["role"] == "tool"
+                            && message["content"]
+                                .as_str()
+                                .is_some_and(|text| text.contains("actual check failed"))
+                    }),
+                    "actual verification tool results before repair: {}",
+                    body["messages"]
+                );
                 return streamed(edit("src/value.txt", "still broken", "fixed", index), true);
             }
             if scenario == "repair" && (index == 4 || index == 6)
@@ -522,4 +570,9 @@ async fn actual_project_command_approval_is_required_despite_bypass() {
 #[tokio::test]
 async fn actual_invalid_verification_policy_refuses_before_store_or_model_effects() {
     run_case("invalid").await;
+}
+
+#[tokio::test]
+async fn actual_marked_check_command_preserves_native_failure_exit_and_output() {
+    run_case("command-status").await;
 }

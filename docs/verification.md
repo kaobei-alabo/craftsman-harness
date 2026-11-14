@@ -72,7 +72,10 @@ baseline unavailable and require new checks on subsequent completion.
 Changed files inside `protected_paths` require approval of their current contents
 before checks can establish success. The prompt shows full before/after text
 within bounded review limits; after restore it shows current text with the prior
-baseline explicitly unavailable. Approval binds to those protected contents.
+baseline explicitly unavailable. Protected changes appear before command/path
+details. Use PgUp/PgDn to page through the review, or Home/End to jump to its
+ends; navigation preserves the approval choice and composer draft. Unicode text
+and long lines wrap without discarding review contents. Approval binds to those protected contents.
 Further changes require review again. This requirement remains independent of
 ordinary bypass/always-allow switches. The plan/read-only mode does not execute
 verification commands.
@@ -99,7 +102,7 @@ no-follow file walks and nonblocking regular-file checks; Windows retains the
 existing best-effort checks. Native blocking work, external writers, namespace
 races and shutdown bounds keep their existing limits. Existing user
 configuration/data, SQL layout, SDK/WIT, dependency pins, native limits and retained request/ACP frame
-goldens are changed.
+goldens stay unchanged.
 
 Agent-loop, local-source and marked actual builder/HTTP/subprocess/approval/SQLite
 tests cover scheduling, real failure/repair, protected review/denial/staleness,
@@ -114,3 +117,21 @@ separate.
 The [bounded model check](live-verification-evaluation.md) records a matched
 successful task with an actual verifier result in the candidate trace, using the
 same original capped ledger. It is composition evidence, not a broad quality gain.
+
+## Retained validation corrections
+
+The first PR #22 run, `43604864157` at `5a92797`, passed Linux/macOS but failed
+eight new verification cases in both Windows modes. Failed-check output was
+missing from the synthetic repair requests; that observation alone did not
+establish a production shell cause. The new marked command fixture now flushes
+its genuine output before its real failure exit, and the Windows initializer
+quotes its native arguments and explicitly preserves that exit. An additive
+native case checks the same failure bytes/status directly and through
+`ShellRunner`; existing process rules, bounds and assertions remain intact.
+Fresh Windows execution is required before claiming the correction works there.
+
+An actual terminal capture also exposed clipped protected-file review behind
+long command/path details. The review order and paged display correct that
+usability defect; the failed capture and subsequent native proof remain separate
+under `target/verification/verification-gate/`. No unchanged broad CI retry or
+weakened existing deadline/assertion counts as correction evidence.

@@ -314,7 +314,8 @@ impl VerificationController {
             .map(|path| if path.is_empty() { "." } else { path.as_str() })
             .collect();
         let details = format!(
-            "Working folder: {}\nDeclared scopes: {}\nChecks:\n{}\n{}",
+            "{}\nWorking folder: {}\nDeclared scopes: {}\nChecks:\n{}",
+            changes,
             self.root.display(),
             paths.join(", "),
             self.plan
@@ -324,7 +325,6 @@ impl VerificationController {
                 .map(|(i, command)| format!("{}. {command}", i + 1))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            changes
         );
         if details.len() > MAX_EVIDENCE_BYTES {
             return Err(state_error(

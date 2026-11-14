@@ -572,6 +572,7 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
                 tool,
                 summary,
                 details,
+                details_scroll: 0.into(),
                 selected: 0,
                 feedback: String::new(),
                 feedback_mode: false,
