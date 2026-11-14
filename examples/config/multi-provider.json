@@ -66,6 +66,9 @@
     }
   },
   "permission_mode": "manual",
+  "terminal": {
+    "max_rounds": 200
+  },
   "gadgets": {
     "enabled": true
   }

@@ -61,9 +61,13 @@ pub struct LibsqlCheckpointer {
     /// accidentally participate in a checkpoint transaction on `conn`.
     checkpoint_conn: tokio::sync::Mutex<libsql::Connection>,
     workspace: String,
+    database_path: std::path::PathBuf,
 }
 
 impl LibsqlCheckpointer {
+    pub(crate) fn database_path(&self) -> &std::path::Path {
+        &self.database_path
+    }
     /// Open (creating if needed) the checkpoint store at
     /// `~/.craftsman/threads.db`, applying the schema.
     pub async fn open_for_workspace(workspace: &std::path::Path) -> Result<Self, String> {
@@ -216,6 +220,7 @@ impl LibsqlCheckpointer {
             conn,
             checkpoint_conn: tokio::sync::Mutex::new(checkpoint_conn),
             workspace,
+            database_path: path,
         })
     }
 

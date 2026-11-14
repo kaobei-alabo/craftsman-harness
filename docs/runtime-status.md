@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 13, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 14, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -13,6 +13,30 @@
 > private bounded token reservations are implemented (`token-reservations.md`).
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
+
+> **Terminal turn limits (November 14):** the owned TUI main agent uses a
+> configurable 200-round default instead of inheriting the framework's 50-round
+> cutoff. Exhaustion closes the last fully executed round, runs end hooks and
+> saves the actual transcript before displaying a chat activity pause. A user
+> follow-up continues from that history without automatic replay or approval
+> bypass. Final-save failures remain errors; last-round accepted input is retained
+> and cancellation keeps its existing outcome. Framework/other-frontend/delegated
+> defaults and native operation limits remain. New framework and marked actual
+> builder/HTTP/approved-file/SQLite/UI tests accompany the implementation; full
+> local/all-four/every-step/both-mode and independent-main checks gate delivery.
+> See [terminal turn limits](terminal-turn-limits.md).
+
+> **Workspace file checkpoints (November 14):** read-only turns do no automatic
+> workspace snapshot work. Direct writes/edits capture their selected files;
+> shell snapshots use actual file/directory tool context and bounded fallback
+> scans. Folder access does not require Git or exclude home/multi-project folders.
+> Permission-denied paths and scan limits produce partial coverage, never inferred
+> creation/deletion. Existing checkpoint content/retention, conflict checks and
+> conversation recovery remain. TUI notices use its activity queue and SafeBackend,
+> so background diagnostics do not write over the composer. New local-file and
+> marked builder/HTTP/SQLite/draft tests accompany the implementation; full local,
+> all-four/every-step/both-mode and independent-main checks gate delivery.
+> See [workspace file checkpoints](workspace-checkpoints.md).
 
 > **Terminal theme (November 13):** the TUI uses a neutral gray/light-gray
 > palette with restrained turquoise accents, including the filled hammer,

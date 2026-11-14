@@ -72,11 +72,16 @@ catalog, then its effort picker; `/effort` adjusts the current model directly.
 For editor integrations, run `craftsman acp-serve`. Use `craftsman acp-bridge`
 when the client needs WebSocket transport.
 
+Start Craftsman in the folder where you want to work. Git is optional;
+documents and folders containing several projects are supported too.
+
 ## Explore
 
 [Gadget authoring](docs/gadgets.md) ·
 [Models and configuration](docs/provider-models.md) ·
 [Local state and connections](docs/connections.md) ·
+[File checkpoints and rewind](docs/workspace-checkpoints.md) ·
+[Long tasks and turn limits](docs/terminal-turn-limits.md) ·
 [ACP integration](docs/acp.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
 [Coding evaluations](docs/coding-evaluation.md) ·

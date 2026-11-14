@@ -180,8 +180,11 @@ fn status_text(
                 .count()
         })
         .unwrap_or(0);
+    let rounds = crate::terminal_limits::max_rounds(cfg)
+        .map(|rounds| rounds.to_string())
+        .unwrap_or_else(|_| "invalid configuration".into());
     format!(
-        "model: {}\nagent: {}\nmode: {} — {}\nroute: {}\nserver: {}\nauth: {}\ntokens: input {input}, output {output}\nqueued: {}\nrunning tasks: {tasks}/{}",
+        "model: {}\nagent: {}\nmode: {} — {}\nroute: {}\nserver: {}\nauth: {}\ntokens: input {input}, output {output}\nqueued: {}\nrunning tasks: {tasks}/{}\nmodel rounds per turn: {rounds}",
         cfg.model.as_deref().unwrap_or("(none)"),
         cfg.agent,
         mode.as_str(),
@@ -1230,8 +1233,11 @@ pub(super) fn display_submission(line: &str) -> String {
 
 fn config_text(cfg: &Config, session: Option<&Session>) -> String {
     let (endpoint, key_status) = super::render::connection_details(cfg);
+    let rounds = crate::terminal_limits::max_rounds(cfg)
+        .map(|rounds| rounds.to_string())
+        .unwrap_or_else(|_| "invalid configuration".into());
     format!(
-        "agent:   {}\nmodel:   {}\nharness: {}\npreset:  {}\nparallel agents: {}\nendpoint: {}\nAPI key: {}\nMCP servers: {}\nstorage: local",
+        "agent:   {}\nmodel:   {}\nharness: {}\npreset:  {}\nparallel agents: {}\nendpoint: {}\nAPI key: {}\nMCP servers: {}\nstorage: local\nmodel rounds per turn: {rounds}",
         cfg.agent,
         cfg.model.as_deref().unwrap_or("(none — run /model)"),
         session.map_or("(resolving)", |session| session.harness_profile.as_str()),

@@ -14,11 +14,17 @@ use unicode_segmentation::UnicodeSegmentation;
 #[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
+#[path = "session_bridge/checkpoint_tests.rs"]
+mod checkpoint_tests;
+#[cfg(test)]
 #[path = "session_bridge/compaction_tests.rs"]
 mod compaction_tests;
 #[cfg(test)]
 #[path = "session_bridge/lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "session_bridge/round_limit_tests.rs"]
+mod round_limit_tests;
 
 #[derive(Debug)]
 pub(super) enum ApprovalChoice {
@@ -43,6 +49,7 @@ pub(super) enum UiEvent {
         response: std_mpsc::Sender<Option<String>>,
     },
     TurnFinished(Result<TurnResult, String>),
+    TurnLimited(usize),
     OperationFinished(String),
     ModelCatalogLoaded {
         current: Option<String>,
@@ -54,6 +61,15 @@ pub(super) enum UiEvent {
         event: Box<UiEvent>,
     },
     Voice(crate::voice::VoiceEvent),
+}
+
+impl UiEvent {
+    pub(super) fn turn_result(result: Result<TurnResult, craftsman_harness::AgentError>) -> Self {
+        match result {
+            Err(craftsman_harness::AgentError::MaxRounds(rounds)) => Self::TurnLimited(rounds),
+            result => Self::TurnFinished(result.map_err(|error| error.to_string())),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -101,6 +117,7 @@ impl UiBridge {
         let ask_tx = self.tx.clone();
         SessionExtras {
             interrupt_model_on_cancel: true,
+            terminal_round_limits: true,
             task_focused_memory: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
@@ -568,6 +585,7 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             }));
         }
         UiEvent::TurnFinished(result) => app.finish_turn(result, session),
+        UiEvent::TurnLimited(rounds) => app.finish_limited_turn(rounds),
         UiEvent::Voice(event) => match event {
             crate::voice::VoiceEvent::State(state) => {
                 app.voice.state = state;

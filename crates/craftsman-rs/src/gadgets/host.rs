@@ -439,8 +439,18 @@ impl Host for HostState {
                     }
                 },
             }
+            let checkpoints = self.options.workspace_checkpoints.clone();
+            let ticket = if let Some(checkpoints) = &checkpoints {
+                tokio::time::timeout(self.budget.remaining(), checkpoints.begin_file_mutation(
+                    &relative.to_string_lossy(), format!("gadget write: {path}")
+                )).await.map_err(|_| GadgetError::new(ErrorKind::Timeout, "gadget I/O timed out"))?
+            } else { None };
             let workspace = self.workspace.clone();
-            bounded_blocking(self.budget.remaining(), move || workspace.write(&relative, &contents)).await
+            let result = bounded_blocking(self.budget.remaining(), move || workspace.write(&relative, &contents)).await;
+            if let Some(checkpoints) = &checkpoints {
+                let _ = tokio::time::timeout(self.budget.remaining(), checkpoints.finish_mutation(ticket)).await;
+            }
+            result
         }.await;
         self.result(result)
     }
