@@ -85,6 +85,7 @@ documents and folders containing several projects are supported too.
 [ACP integration](docs/acp.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
 [Coding evaluations](docs/coding-evaluation.md) ·
+[Task workflow](docs/task-workflow.md) ·
 [Development and validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).

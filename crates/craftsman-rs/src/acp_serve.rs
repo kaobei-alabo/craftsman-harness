@@ -558,6 +558,7 @@ async fn build_acp_session(
         workspace_root: Some(cwd.clone()),
         interrupt_model_on_cancel: true,
         task_focused_memory: true,
+        task_workflow: true,
         round_sink: Some({
             let messages = messages.clone();
             let counter = state.req_counter.clone();

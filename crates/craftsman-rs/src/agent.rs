@@ -772,6 +772,8 @@ pub struct SessionExtras {
     pub terminal_round_limits: bool,
     /// Explicit TUI/ACP memory-guidance opt-in; legacy/private/frozen defaults stay false.
     pub task_focused_memory: bool,
+    /// TUI/ACP main-agent workflow guidance; legacy/private/frozen defaults stay false.
+    pub task_workflow: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
     pub local_gadgets: bool,
@@ -1994,7 +1996,7 @@ async fn build_session_with_profile(
             return None;
         }
     };
-    // Legacy approval remains last. Headless instead protects its immutable
+    // Legacy approval remains the last policy gate. Headless protects its immutable
     // gate before profile hooks AND wraps every contributed tool terminal.
     if let Some(gate) = construction.gate() {
         // Also gate tools contributed by todo/subagent/profile middleware at
@@ -2014,6 +2016,14 @@ async fn build_session_with_profile(
                 cwd,
             )
             .with_call_prompt(extras.call_approval_prompt.clone()),
+        ));
+    }
+
+    if construction.prepared().is_none() && extras.task_workflow {
+        // A transparent observer inside the unchanged approval gate sees only
+        // actual admitted tool calls. It never dispatches/retries/approves work.
+        middleware.push(Arc::new(
+            crate::task_workflow::TaskWorkflowMiddleware::default(),
         ));
     }
 
@@ -2282,3 +2292,7 @@ mod admission_receipt_tests;
 #[cfg(test)]
 #[path = "agent_memory_tests.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "agent_task_workflow_tests.rs"]
+mod task_workflow_tests;
