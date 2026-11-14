@@ -21,7 +21,7 @@ The three selected first-cycle traces showed post-check planning/review work,
 long completed-edit turns and repeated unavailable diagnostics:
 
 - JavaScript ledger refactoring (`js-ledger-refactor`).
-- Python create-only export (`py-create-only-export`).
+- python create-only export (`py-create-only-export`).
 - Rust report/skipped-row wiring (`rs-report-skips`).
 
 Both initial JavaScript attempts completed normally but failed the held-out
@@ -37,9 +37,9 @@ unchanged. Both arms then passed the separate clarified pair. The committed
 corpus contains this explicit contract; the first cycle's 17/30 and 21/30 records
 are historical results and were not rewritten.
 
-Python and Rust each ran once more in both arms to observe repeat variation.
+python and Rust each ran once more in both arms to observe repeat variation.
 The primary comparison below contains the clarified JavaScript pair and two
-Python/Rust pairs: **five matched task instances per arm across three tasks**.
+python/Rust pairs: **five matched task instances per arm across three tasks**.
 The original JavaScript failures remain a separate cohort and remain charged.
 
 ## Results
@@ -60,10 +60,10 @@ The original JavaScript failures remain a separate cohort and remain charged.
 The candidate preserves correctness on this selected cohort while using 31.0%
 fewer provider requests, 23.9% fewer tool calls and 31.2% lower accounted cost.
 These observations support continued workflow-efficiency work. They do not
-establish a broad coding-quality gain, statistical non-inferiority or parity with
+establish a broad coding-quality gain, statistical non-inferiority or equivalence to
 another product.
 
-Latency varies: the first Python pair was 164.784/130.843 seconds
+Latency varies: the first python pair was 164.784/130.843 seconds
 (control/candidate), while its repeat was 167.277/200.748. Rust was
 118.248/68.763 and 90.664/49.011; the clarified JavaScript pair was
 73.417/56.159. The aggregate elapsed reduction is not a universal speed claim.
