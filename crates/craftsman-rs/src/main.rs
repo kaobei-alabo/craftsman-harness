@@ -49,6 +49,7 @@ mod shell_output;
 mod skills;
 mod store_fs;
 mod subagent_gate;
+mod task_workflow;
 mod terminal_limits;
 #[cfg(test)]
 mod test_environment;
