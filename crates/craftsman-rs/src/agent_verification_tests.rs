@@ -54,7 +54,7 @@ pub(super) fn command(mode: &str) -> String {
     #[cfg(windows)]
     {
         format!(
-            "& '{}' '--ignored' '--exact' '{COMMAND_HELPER}' '--nocapture' '{COMMAND_MARKER}{mode}'; $craftsman_check_exit = $LASTEXITCODE; [Console]::Out.Flush(); [Console]::Error.Flush(); exit $craftsman_check_exit",
+            "$craftsman_check = [System.Diagnostics.Process]::new(); $craftsman_check.StartInfo.FileName = '{}'; $craftsman_check.StartInfo.Arguments = '--ignored --exact {COMMAND_HELPER} --nocapture {COMMAND_MARKER}{mode}'; $craftsman_check.StartInfo.WorkingDirectory = [Environment]::CurrentDirectory; $craftsman_check.StartInfo.UseShellExecute = $false; $craftsman_check.StartInfo.RedirectStandardOutput = $true; $craftsman_check.StartInfo.RedirectStandardError = $true; [void]$craftsman_check.Start(); $craftsman_check_stdout = $craftsman_check.StandardOutput.ReadToEnd(); $craftsman_check_stderr = $craftsman_check.StandardError.ReadToEnd(); $craftsman_check.WaitForExit(); $craftsman_check_exit = $craftsman_check.ExitCode; $craftsman_check.Dispose(); [Console]::Out.Write($craftsman_check_stdout); [Console]::Error.Write($craftsman_check_stderr); [Console]::Out.Flush(); [Console]::Error.Flush(); [Environment]::Exit($craftsman_check_exit)",
             binary.replace("'", "''")
         )
     }

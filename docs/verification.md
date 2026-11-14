@@ -148,6 +148,18 @@ assertions. No production runner/process workaround or weakened assertion is
 introduced. Fresh native Windows proof is still required; the observation is
 not a diagnosis of the retired shell instrumentation's historical failures.
 
+Run `43610470467` at `73950b4` then retained the direct PowerShell divergence
+itself: zero exit and empty output before `ShellRunner` ran. Its twelve new
+Windows failures remain evidence. The corrected Windows-only input creates one
+actual `System.Diagnostics.Process` for the marked helper, redirects its real
+streams, starts without printing a Boolean, waits for actual exit, forwards
+those streams and returns that observed exit code. The same direct-helper,
+direct-PowerShell and `ShellRunner` exit-7/output assertions remain mandatory.
+The production launcher/Job Object rules and all bounds stay intact. The run
+also rejected reserved lineage wording in network documentation; that wording
+was corrected without weakening the checker. Its gadget runs do not replace
+the skipped core mode or the required fresh full run.
+
 A new actual-builder/HTTP/SQLite case first reproduced completion being accepted
 on a follow-up to failed checks. The pending observation now survives an
 unfinished turn and is cleared only by accepted completion. Both app model-transfer
