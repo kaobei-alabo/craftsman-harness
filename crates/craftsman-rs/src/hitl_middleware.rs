@@ -31,6 +31,7 @@ pub struct ApprovalMiddleware {
     approval_prompt: Option<ApprovalPrompt>,
     call_approval_prompt: Option<CallApprovalPrompt>,
     workspace_root: PathBuf,
+    verification: Option<Arc<crate::verification::VerificationController>>,
 }
 
 impl ApprovalMiddleware {
@@ -69,11 +70,20 @@ impl ApprovalMiddleware {
             approval_prompt,
             workspace_root,
             call_approval_prompt: None,
+            verification: None,
         }
     }
 
     pub fn with_call_prompt(mut self, prompt: Option<CallApprovalPrompt>) -> Self {
         self.call_approval_prompt = prompt;
+        self
+    }
+
+    pub(crate) fn with_verification(
+        mut self,
+        controller: Option<Arc<crate::verification::VerificationController>>,
+    ) -> Self {
+        self.verification = controller;
         self
     }
 
@@ -110,8 +120,12 @@ impl ApprovalMiddleware {
             ToolPermission::Deny(reason) => return Some(Decision::Reject(reason)),
             ToolPermission::Prompt => {}
         }
+        Some(self.prompt_approval(call, summary, details))
+    }
+
+    fn prompt_approval(&self, call: &ToolCall, summary: &str, details: &str) -> Decision {
         if let Some(prompt) = &self.call_approval_prompt {
-            return Some(match prompt(call, summary, details) {
+            return match prompt(call, summary, details) {
                 ApprovalPromptResult::Approve => Decision::Approve,
                 ApprovalPromptResult::ApproveAlways => {
                     let mut approval = self.approval.lock().unwrap();
@@ -123,9 +137,9 @@ impl ApprovalMiddleware {
                     Decision::Approve
                 }
                 ApprovalPromptResult::Reject(feedback) => Decision::Reject(feedback),
-            });
+            };
         }
-        Some(match &self.approval_prompt {
+        match &self.approval_prompt {
             Some(prompt) => match prompt(&call.name, summary, details) {
                 ApprovalPromptResult::Approve => Decision::Approve,
                 ApprovalPromptResult::ApproveAlways => {
@@ -140,10 +154,15 @@ impl ApprovalMiddleware {
                 ApprovalPromptResult::Reject(feedback) => Decision::Reject(feedback),
             },
             None => {
+                if call.name == "verify" && self.verification.is_some() {
+                    return Decision::Reject(
+                        "Declared verification requires an interactive approval callback.".into(),
+                    );
+                }
                 let mut appr = self.approval.lock().unwrap();
                 prompt_decision(&mut appr, &call.name, summary)
             }
-        })
+        }
     }
 }
 
@@ -159,9 +178,18 @@ impl AgentMiddleware for ApprovalMiddleware {
         ctx: &mut ToolCtx<'_>,
         next: ToolNext<'_>,
     ) -> Result<ToolOutcome, AgentError> {
-        let summary = summarize_call(&call.name, &call.args);
-        let details =
-            crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root);
+        let review = match self.verification.as_ref().filter(|_| call.name == "verify") {
+            Some(controller) => Some(controller.approval_context().await?),
+            None => None,
+        };
+        let summary = review.as_ref().map_or_else(
+            || summarize_call(&call.name, &call.args),
+            |review| review.summary.clone(),
+        );
+        let details = review.as_ref().map_or_else(
+            || crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root),
+            |review| review.details.clone(),
+        );
         let call_id = call.id.clone();
         let tool = call.name.clone();
         self.emit(&summary);
@@ -172,8 +200,33 @@ impl AgentMiddleware for ApprovalMiddleware {
             details: details.clone(),
         });
 
-        if let Some(Decision::Reject(feedback)) = self.approval_decision(&call, &summary, &details)
-        {
+        let decision = if let (Some(controller), Some(review)) = (&self.verification, &review) {
+            let (plan, allowed) = {
+                let state = self.approval.lock().unwrap();
+                (
+                    state.mode == crate::config::PermissionMode::Plan,
+                    state.auto_approve
+                        || state.mode == crate::config::PermissionMode::BypassPermissions,
+                )
+            };
+            if plan {
+                Some(Decision::Reject("Permission mode 'plan' does not run verification commands. Switch modes to permit these checks.".into()))
+            } else if controller.needs_project_approval()
+                || controller.needs_protected_approval(review)
+                || !allowed
+            {
+                let decision = self.prompt_approval(&call, &summary, &details);
+                if matches!(decision, Decision::Approve) {
+                    controller.approve_protected(review);
+                }
+                Some(decision)
+            } else {
+                None
+            }
+        } else {
+            self.approval_decision(&call, &summary, &details)
+        };
+        if let Some(Decision::Reject(feedback)) = decision {
             let content = rejection_result(&feedback);
             self.emit_tool_event(ToolActivityEvent::Finished {
                 call_id,

@@ -13,7 +13,7 @@ establish performance across large projects or other models.
 | Folder-aware checkpoints and long turns | Merged and locally installed | Mutation-driven bounded checkpoints, chat notices, configurable 200-round terminal default and saved limit pauses |
 | First coding-quality cycle | Complete | 30-task baseline: 17/30 normal successful turns, 21/30 behavior-passing workspaces; six-case memory and controlled Codex comparisons |
 | Task workflow and repeated tool errors | Implemented; validation and delivery gates apply | Advisory guidance; native checks and five matched instances preserve correctness with lower observed work/cost |
-| Automatic verification and test integrity | Planned | Actual approved check receipts, bounded correction loop and protected-test change decisions |
+| Declared verification and protected changes | Implemented in the maintained checkout; validation gates apply | Scoped user/project checks, actual results, bounded repairs and content-bound protected review; broader semantic test-integrity/public receipt work remains |
 | Context compilation | Planned | Pinned task state, file-aware context, stale-output handling and explainable `/context` |
 | Broader quality evaluation | Planned | Larger repositories, longer sessions, more models and repeated paired comparisons |
 
@@ -25,11 +25,12 @@ the first cycle's `max` setting. The [workflow comparison](live-workflow-evaluat
 records $23.000498 total accounting under that cap. Failed attempts and contract corrections keep
 their original evidence.
 
-[Task workflow](task-workflow.md) is advisory model guidance. It does not complete
-the roadmap's verification gate, test-integrity guard, stuck escalation or
-context compiler. Those implementations need their own behavior, permission,
-recovery and quality validation. Native CI and live coding results remain
-separate checks.
+[Task workflow](task-workflow.md) is advisory model guidance. The separate
+[declared verifier](verification.md) implements actual scoped completion checks
+and configured protected-file review. Broader semantic test-integrity, stuck
+escalation, public receipts and context compilation remain work with their own
+behavior, permission, recovery and quality validation. Native CI and live coding
+results remain separate checks.
 
 Public headless execution/gadget registration, broader native containment and
 binary/container publication retain their independent gates and existing hold.

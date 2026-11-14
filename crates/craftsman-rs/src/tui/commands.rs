@@ -183,8 +183,14 @@ fn status_text(
     let rounds = crate::terminal_limits::max_rounds(cfg)
         .map(|rounds| rounds.to_string())
         .unwrap_or_else(|_| "invalid configuration".into());
+    let verification = session
+        .and_then(|session| session.verification.as_ref())
+        .map_or_else(
+            || "no declared policy".into(),
+            |controller| controller.status(),
+        );
     format!(
-        "model: {}\nagent: {}\nmode: {} — {}\nroute: {}\nserver: {}\nauth: {}\ntokens: input {input}, output {output}\nqueued: {}\nrunning tasks: {tasks}/{}\nmodel rounds per turn: {rounds}",
+        "model: {}\nagent: {}\nmode: {} — {}\nroute: {}\nserver: {}\nauth: {}\ntokens: input {input}, output {output}\nqueued: {}\nrunning tasks: {tasks}/{}\nmodel rounds per turn: {rounds}\nverification: {verification}",
         cfg.model.as_deref().unwrap_or("(none)"),
         cfg.agent,
         mode.as_str(),

@@ -124,6 +124,8 @@ pub struct Agent {
     system_prompt: String,
     max_rounds: usize,
     finish_on_round_limit: bool,
+    completion_check: Option<Arc<dyn crate::CompletionCheck>>,
+    completion_sequence: Arc<AtomicU64>,
     /// Shared subagent registry: the `task` tool records spawned children here so
     /// the app (and peers) can list/poll them. Every dispatched `ToolCtx` clones
     /// this `Arc`.
@@ -388,7 +390,10 @@ impl Agent {
                         TurnBoundaryAction::Cancel => return self.finish_cancelled().await,
                         TurnBoundaryAction::Finish => {}
                     }
-                    return self.finish(assistant).await;
+                    if let Some(result) = self.finish_model(assistant, round).await? {
+                        return Ok(result);
+                    }
+                    continue;
                 }
                 Flow::Resample => continue,
                 Flow::Proceed => {
@@ -402,7 +407,10 @@ impl Agent {
                             TurnBoundaryAction::Cancel => return self.finish_cancelled().await,
                             TurnBoundaryAction::Finish => {}
                         }
-                        return self.finish(assistant).await;
+                        if let Some(result) = self.finish_model(assistant, round).await? {
+                            return Ok(result);
+                        }
+                        continue;
                     }
                     for (i, c) in calls.iter().enumerate() {
                         if self.take_cancel_request() {
@@ -606,6 +614,153 @@ impl Agent {
     /// result (or propagates a non-suspension error).
     async fn dispatch_approved(&self, call: ToolCall) -> Result<(), AgentError> {
         self.dispatch_call_inner(call, true).await
+    }
+
+    async fn finish_model(
+        &self,
+        message: Msg,
+        round: usize,
+    ) -> Result<Option<TurnResult>, AgentError> {
+        let Some(policy) = &self.completion_check else {
+            return self.finish(message).await.map(Some);
+        };
+        let action = match policy.before_finish(&self.snapshot()).await {
+            Ok(action) => action,
+            Err(error) => {
+                return self.stop_completion(error).await;
+            }
+        };
+        if self.take_cancel_request() {
+            return self.finish_cancelled().await.map(Some);
+        }
+        match action {
+            crate::CompletionAction::Ready => {
+                match self.completion_boundary_action() {
+                    TurnBoundaryAction::Continue => return Ok(None),
+                    TurnBoundaryAction::Cancel => return self.finish_cancelled().await.map(Some),
+                    TurnBoundaryAction::Finish => {}
+                }
+                self.finish(message).await.map(Some)
+            }
+            crate::CompletionAction::Stop { reason } => {
+                self.stop_completion(AgentError::State(reason)).await
+            }
+            crate::CompletionAction::Check { tool, args } => {
+                let id = self.next_completion_id()?;
+                let call = ToolCall {
+                    id,
+                    name: tool,
+                    args,
+                };
+                let assistant = Msg::Assistant {
+                    content: "Running the declared completion check.".into(),
+                    tool_calls: vec![call.clone()],
+                };
+                self.state.lock().unwrap().messages.push(assistant.clone());
+                self.journal(
+                    "assistant",
+                    serde_json::to_value(&assistant).unwrap_or_default(),
+                );
+                // A durable save precedes actual check effects, just as for an
+                // actual sampled tool call. No model/review hook is replayed.
+                self.save_checkpoint(None).await?;
+                if self.take_cancel_request() {
+                    self.append_cancelled_tool_results(&assistant);
+                    return self.finish_cancelled().await.map(Some);
+                }
+                match self.dispatch_call(call.clone()).await {
+                    Ok(()) => {}
+                    Err(AgentError::Suspended(suspension)) => {
+                        *self.pending.lock().unwrap() = Some(PendingResume {
+                            call,
+                            remaining: Vec::new(),
+                            round,
+                        });
+                        *self.parked_suspension.lock().unwrap() = Some((*suspension).clone());
+                        self.journal(
+                            "suspended",
+                            serde_json::to_value(suspension.as_ref()).unwrap_or_default(),
+                        );
+                        self.save_checkpoint(Some(&suspension)).await?;
+                        return Ok(Some(TurnResult::Suspended(*suspension)));
+                    }
+                    Err(error) => return Err(error),
+                }
+                if self.take_cancel_request() {
+                    return self.finish_cancelled().await.map(Some);
+                }
+                let outcome = match policy.after_check(&self.snapshot()).await {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        return self.stop_completion(error).await;
+                    }
+                };
+                if self.take_cancel_request() {
+                    return self.finish_cancelled().await.map(Some);
+                }
+                match outcome {
+                    crate::CompletionAfterCheck::Continue => Ok(None),
+                    crate::CompletionAfterCheck::Stop { reason } => {
+                        self.stop_completion(AgentError::State(reason)).await
+                    }
+                }
+            }
+        }
+    }
+
+    async fn stop_completion(&self, error: AgentError) -> Result<Option<TurnResult>, AgentError> {
+        let pending = {
+            let mut input = self.turn_input.lock().unwrap();
+            input.idle_operation = true;
+            input.pending.drain(..).collect()
+        };
+        self.append_steering_messages(pending);
+        let message = Msg::assistant(
+            "The declared completion check did not accept this turn. Completed effects and check results are retained.",
+        );
+        self.journal(
+            "assistant",
+            serde_json::to_value(&message).unwrap_or_default(),
+        );
+        self.state.lock().unwrap().messages.push(message);
+        self.finish_state().await?;
+        Err(error)
+    }
+
+    fn next_completion_id(&self) -> Result<String, AgentError> {
+        // Model-supplied ids are not authority and may collide with our prefix.
+        // Choose an unused id in the current committed transcript, boundedly.
+        for _ in 0..10_000 {
+            let sequence = self.completion_sequence.load(Ordering::SeqCst);
+            let next = sequence.checked_add(1).ok_or_else(|| {
+                AgentError::State("Completion check identity is unavailable.".into())
+            })?;
+            self.completion_sequence
+                .compare_exchange(sequence, next, Ordering::SeqCst, Ordering::SeqCst)
+                .map_err(|_| {
+                    AgentError::State("Completion check identity is unavailable.".into())
+                })?;
+            let id = format!("_craftsman_completion_{sequence}");
+            let present = self
+                .state
+                .lock()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|message| match message {
+                    Msg::Assistant { tool_calls, .. } => {
+                        tool_calls.iter().any(|call| call.id == id)
+                    }
+                    Msg::Tool { tool_call_id, .. } => tool_call_id == &id,
+                    _ => false,
+                });
+            if !present {
+                return Ok(id);
+            }
+        }
+        Err(AgentError::State(
+            "Completion check identity is unavailable.".into(),
+        ))
     }
 
     /// Terminal exit of a turn: fire `turn_end` (the sixth lifecycle hook)
@@ -886,6 +1041,14 @@ impl Agent {
     /// steer racing with turn completion is therefore either included in this
     /// turn or rejected by `steer`, never stranded in an inactive turn.
     fn turn_boundary_action(&self) -> TurnBoundaryAction {
+        self.turn_boundary(false)
+    }
+
+    fn completion_boundary_action(&self) -> TurnBoundaryAction {
+        self.turn_boundary(true)
+    }
+
+    fn turn_boundary(&self, close_completion_window: bool) -> TurnBoundaryAction {
         // A background child may have completed while the model was sampling.
         // Feed that result back and force another round before accepting a
         // seemingly-final answer from the parent.
@@ -904,7 +1067,11 @@ impl Agent {
                 return TurnBoundaryAction::Cancel;
             }
             if input.pending.is_empty() && !received_notification {
-                input.active = false;
+                if self.completion_check.is_none() {
+                    input.active = false;
+                } else if close_completion_window {
+                    input.idle_operation = true;
+                }
                 input.cancel_requested = false;
                 return TurnBoundaryAction::Finish;
             }
@@ -1337,6 +1504,7 @@ pub struct AgentBuilder {
     system_prompt: String,
     max_rounds: usize,
     finish_on_round_limit: bool,
+    completion_check: Option<Arc<dyn crate::CompletionCheck>>,
     interrupt_model_on_cancel: bool,
     cancellation_session: Option<crate::SessionCancellation>,
     state: Option<Arc<Mutex<AgentState>>>,
@@ -1360,6 +1528,7 @@ impl AgentBuilder {
             system_prompt: String::new(),
             max_rounds: 50,
             finish_on_round_limit: false,
+            completion_check: None,
             interrupt_model_on_cancel: false,
             cancellation_session: None,
             state: None,
@@ -1409,6 +1578,14 @@ impl AgentBuilder {
     /// false so existing framework callers retain their error-exit behavior.
     pub fn finish_on_round_limit(mut self, enabled: bool) -> Self {
         self.finish_on_round_limit = enabled;
+        self
+    }
+
+    /// Select an optional completion policy. Scheduled checks use this agent's
+    /// registered tools, permissions, cancellation, journal and durable saves.
+    /// The policy is not consulted on cancellation or round-limit closure.
+    pub fn completion_check(mut self, policy: Arc<dyn crate::CompletionCheck>) -> Self {
+        self.completion_check = Some(policy);
         self
     }
 
@@ -1541,6 +1718,8 @@ impl AgentBuilder {
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
             finish_on_round_limit: self.finish_on_round_limit,
+            completion_check: self.completion_check,
+            completion_sequence: Arc::new(AtomicU64::new(0)),
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,
             registry,
@@ -1576,6 +1755,10 @@ mod recovery_tests;
 #[cfg(test)]
 #[path = "agent_round_limit_tests.rs"]
 mod round_limit_tests;
+
+#[cfg(test)]
+#[path = "agent_completion_tests.rs"]
+mod completion_tests;
 
 #[cfg(test)]
 #[path = "agent_owned_cancellation_tests.rs"]

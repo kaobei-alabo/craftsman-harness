@@ -120,6 +120,7 @@ impl UiBridge {
             terminal_round_limits: true,
             task_focused_memory: true,
             task_workflow: true,
+            verification: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             round_sink: Some(Arc::new(move || {

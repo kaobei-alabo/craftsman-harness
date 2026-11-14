@@ -1,0 +1,26 @@
+{
+  "commands": [
+    "./scripts/verify.sh"
+  ],
+  "paths": [
+    "crates",
+    "scripts",
+    "docs",
+    "evals",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "README.md",
+    "AGENTS.md"
+  ],
+  "protected_paths": [
+    "crates/craftsman-harness/tests",
+    "crates/craftsman-rs/tests",
+    "crates/craftsman-gadget/tests",
+    "crates/craftsman-rs/src/verification/tests.rs",
+    "crates/craftsman-harness/src/agent_completion_tests.rs",
+    "crates/craftsman-rs/src/agent_verification_tests.rs",
+    "crates/craftsman-rs/src/agent_verification_protocol_tests.rs"
+  ],
+  "max_repair_rounds": 3
+}

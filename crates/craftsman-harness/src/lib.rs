@@ -22,6 +22,9 @@ pub use middleware::{AgentMiddleware, Flow, MiddlewareChain, Next, ToolNext};
 pub mod agent;
 pub use agent::{Agent, AgentBuilder, TurnOutput, TurnResult};
 
+pub mod completion;
+pub use completion::{CompletionAction, CompletionAfterCheck, CompletionCheck};
+
 pub mod interrupt;
 pub use interrupt::{HitlAction, HitlRequest, Suspension, SuspensionFrame};
 

@@ -67,6 +67,7 @@ pub struct Session {
     /// Per-turn workspace file checkpoint/rewind service. It shares the
     /// conversation store and follows thread switches through Session helpers.
     pub workspace_checkpoints: Option<Arc<WorkspaceCheckpointManager>>,
+    pub(crate) verification: Option<Arc<crate::verification::VerificationController>>,
     /// The durable long-term-memory store, when it opened — the SAME `Arc` routed
     /// into the composite backend. Kept here so `/memories` can list the files
     /// without reaching into the agent's backend. `None` when the store failed to
@@ -127,6 +128,9 @@ impl Session {
         if let Some(workspace) = &self.workspace_checkpoints {
             workspace.set_thread_id(thread_id.clone());
         }
+        if let Some(verification) = &self.verification {
+            verification.reset();
+        }
         self.thread_id = thread_id;
     }
 
@@ -137,6 +141,9 @@ impl Session {
                 workspace.set_thread_id(thread_id.to_string());
             }
             self.thread_id = thread_id.to_string();
+            if let Some(verification) = &self.verification {
+                verification.mark_restored();
+            }
         }
         Ok(loaded)
     }
@@ -774,6 +781,8 @@ pub struct SessionExtras {
     pub task_focused_memory: bool,
     /// TUI/ACP main-agent workflow guidance; legacy/private/frozen defaults stay false.
     pub task_workflow: bool,
+    /// TUI/ACP only: explicit verification policy, actual checks and protected review.
+    pub verification: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
     pub local_gadgets: bool,
@@ -1257,6 +1266,29 @@ async fn build_session_with_profile(
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
+    let verification_plan = if construction.prepared().is_none() && extras.verification {
+        let captured_config = cfg.clone();
+        let captured_root = cwd.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::verification::VerificationPlan::load(&captured_config, &captured_root)
+        })
+        .await
+        {
+            Ok(Ok(plan)) => plan,
+            result => {
+                let error = match result {
+                    Ok(Err(error)) => error,
+                    _ => "Verification policy could not be loaded.",
+                };
+                if let Some(sink) = &extras.activity_sink {
+                    sink(error);
+                }
+                return None;
+            }
+        }
+    } else {
+        None
+    };
     let selected_model = cfg.model.clone()?;
     let configured_provider = !cfg.providers.is_empty();
     if configured_provider && construction.prepared().is_some() {
@@ -1617,6 +1649,17 @@ async fn build_session_with_profile(
         Some(scope) => crate::tools::ShellRunner::headless(scope),
         None => crate::tools::ShellRunner::new(cwd.clone(), shell_settings.clone()),
     };
+    let shell_runner = Arc::new(shell_runner);
+    let verification = verification_plan.map(|plan| {
+        Arc::new(
+            crate::verification::VerificationController::new(
+                cwd.clone(),
+                plan,
+                shell_runner.clone(),
+            )
+            .with_activity(extras.activity_sink.clone()),
+        )
+    });
     let scoped_web = construction
         .web_scope()
         .map(|scope| Arc::new(crate::exec::web::Web::from_scope(scope)));
@@ -1629,7 +1672,7 @@ async fn build_session_with_profile(
             Some(lsp.clone())
         },
         workspace_checkpoints.clone(),
-        Some(Arc::new(shell_runner)),
+        Some(shell_runner),
     );
     #[cfg(feature = "gadgets")]
     let gadgets = if local_gadgets {
@@ -2015,7 +2058,8 @@ async fn build_session_with_profile(
                 extras.approval_prompt.clone(),
                 cwd,
             )
-            .with_call_prompt(extras.call_approval_prompt.clone()),
+            .with_call_prompt(extras.call_approval_prompt.clone())
+            .with_verification(verification.clone()),
         ));
     }
 
@@ -2025,6 +2069,9 @@ async fn build_session_with_profile(
         middleware.push(Arc::new(
             crate::task_workflow::TaskWorkflowMiddleware::default(),
         ));
+    }
+    if let Some(controller) = &verification {
+        middleware.push(controller.clone() as Arc<dyn AgentMiddleware>);
     }
 
     if let Some(history) = native_history {
@@ -2049,6 +2096,9 @@ async fn build_session_with_profile(
     if let Some(rounds) = terminal_max_rounds {
         builder = builder.max_rounds(rounds).finish_on_round_limit(true);
     }
+    if let Some(controller) = &verification {
+        builder = builder.completion_check(controller.clone());
+    }
     if let Some(prepared) = construction.prepared() {
         // Copy the already cleaned checkpoint; never load_thread/resume, which
         // would re-park persisted approvals and enable a middleware bypass.
@@ -2070,6 +2120,11 @@ async fn build_session_with_profile(
     for tool in &shared_tools {
         builder = builder.tool(tool.clone());
     }
+    if let Some(controller) = &verification {
+        builder = builder.tool(Arc::new(crate::verification::VerifyTool(
+            controller.clone(),
+        )));
+    }
 
     // ask_user: mid-task clarification. Interactive only in the REPL (activity
     // goes to stdout there); in one-shot mode (activity_to_stderr) there's no
@@ -2086,6 +2141,12 @@ async fn build_session_with_profile(
     // Host-supplied extensions (ACP wires the a2ui `render_ui` tool). Kept
     // generic so this builder never grows mode-specific logic.
     for t in extras.extra_tools {
+        if verification.is_some() && t.def().name == "verify" {
+            if let Some(sink) = &extras.activity_sink {
+                sink("The declared verification tool cannot be overridden.");
+            }
+            return None;
+        }
         builder = builder.tool(t);
     }
 
@@ -2099,6 +2160,7 @@ async fn build_session_with_profile(
         thread_id,
         checkpointer,
         workspace_checkpoints,
+        verification,
         memories,
         compaction,
         mcp: mcp_summary,
@@ -2296,3 +2358,11 @@ mod memory_tests;
 #[cfg(test)]
 #[path = "agent_task_workflow_tests.rs"]
 mod task_workflow_tests;
+
+#[cfg(test)]
+#[path = "agent_verification_tests.rs"]
+mod verification_tests;
+
+#[cfg(test)]
+#[path = "agent_verification_protocol_tests.rs"]
+mod verification_protocol_tests;

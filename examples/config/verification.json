@@ -1,0 +1,16 @@
+{
+  "verification": {
+    "commands": [
+      "REPLACE_WITH_YOUR_TEST_COMMAND",
+      "REPLACE_WITH_YOUR_CHECK_COMMAND"
+    ],
+    "paths": [
+      "src",
+      "tests"
+    ],
+    "protected_paths": [
+      "tests"
+    ],
+    "max_repair_rounds": 3
+  }
+}
