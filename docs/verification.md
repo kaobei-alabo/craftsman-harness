@@ -110,3 +110,7 @@ all four hosted jobs/every mandatory step/both native modes, inventory/warning/t
 review and independent-main validation remain required before delivery. Live
 quality measurements and public headless/context/compiler/publication work remain
 separate.
+
+The [bounded model check](live-verification-evaluation.md) records a matched
+successful task with an actual verifier result in the candidate trace, using the
+same original capped ledger. It is composition evidence, not a broad quality gain.

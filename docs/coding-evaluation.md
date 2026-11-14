@@ -25,6 +25,9 @@ the same model, effort, corpus, graders, limits and admission ledger. The full
 verification/stuck/context roadmap remains separate from this advisory slice.
 The [workflow comparison](live-workflow-evaluation.md) records selected paired
 runs and repeats, original/clarified contracts and the same capped accounting.
+The [declared-verifier check](live-verification-evaluation.md) then compares one
+matched task with identical policy files and records an actual verification result;
+the same original ledger remains authoritative.
 
 ## Runner boundary
 

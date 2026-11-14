@@ -26,7 +26,10 @@
 > remain. This is an app-only scoped completion gate, not OS containment or the
 > public headless receipt producer. See `verification.md`; full local/all-four/
 > every-step/both-mode/inventory/warning/tree and independent-main proof gate
-> delivery, separately from live model-quality evidence.
+> delivery, separately from live model-quality evidence. A matched model check
+> records an actual candidate verification result and preserves correctness;
+> `live-verification-evaluation.md` labels that composition evidence and its
+> $23.153274/$25 cumulative conservative accounting.
 
 > **Task workflow (November 14):** TUI/ACP main agents explicitly select
 > proportional planning/delegation, required verification and prompt completion

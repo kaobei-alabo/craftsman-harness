@@ -22,7 +22,9 @@ one conservative ledger. Its $20.678352 accounting and 40 unknown-usage
 reservations remain retained. The task-workflow continuation uses the remainder
 of that same allowance and records its current `xhigh` setting separately from
 the first cycle's `max` setting. The [workflow comparison](live-workflow-evaluation.md)
-records $23.000498 total accounting under that cap. Failed attempts and contract corrections keep
+records its $23.000498 accounting; the subsequent
+[declared-verifier check](live-verification-evaluation.md) brings the same ledger
+to $23.153274. Failed attempts and contract corrections keep
 their original evidence.
 
 [Task workflow](task-workflow.md) is advisory model guidance. The separate
