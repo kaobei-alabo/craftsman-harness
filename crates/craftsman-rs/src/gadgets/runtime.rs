@@ -31,6 +31,7 @@ pub struct RuntimeOptions {
     pub approval: Arc<Mutex<ApprovalState>>,
     pub prompt: Option<ApprovalPrompt>,
     pub disk_cache: bool,
+    pub workspace_checkpoints: Option<Arc<crate::workspace_checkpoint::WorkspaceCheckpointManager>>,
 }
 impl Default for RuntimeOptions {
     fn default() -> Self {
@@ -43,6 +44,7 @@ impl Default for RuntimeOptions {
             approval: Arc::new(Mutex::new(ApprovalState::default())),
             prompt: None,
             disk_cache: true,
+            workspace_checkpoints: None,
         }
     }
 }

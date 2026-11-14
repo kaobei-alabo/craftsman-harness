@@ -13,7 +13,7 @@ use std::io::Read;
 #[cfg(unix)]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,10 @@ use crate::checkpoints::LibsqlCheckpointer;
 
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 25 * 1024 * 1024;
+const MAX_SCAN_ENTRIES: usize = 4096;
+const MAX_SCAN_FILES: usize = 1024;
+const MAX_SCOPE_DIRS: usize = 64;
+const MAX_GIT_LIST_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceCheckpointSummary {
@@ -108,11 +112,69 @@ struct SnapshotFile {
 #[derive(Debug, Clone, Default)]
 struct WorkspaceSnapshot {
     files: BTreeMap<String, SnapshotFile>,
+    observed: BTreeSet<String>,
+    directories: BTreeMap<String, Arc<BTreeSet<String>>>,
+    unavailable: BTreeSet<String>,
+    non_files: BTreeSet<String>,
+    partial: bool,
+}
+
+impl WorkspaceSnapshot {
+    fn covers(&self, path: &str) -> bool {
+        self.files.contains_key(path)
+            || self.observed.contains(path)
+            || (!self.non_files.contains(path)
+                && self.directories.iter().any(|(dir, unavailable)| {
+                    within_directory(path, dir)
+                        && !unavailable.iter().any(|dir| within_directory(path, dir))
+                }))
+    }
+
+    fn retain_first_observations(&mut self, fresh: Self) {
+        for path in &fresh.observed {
+            if !self.covers(path) {
+                if let Some(file) = fresh.files.get(path) {
+                    self.files.insert(path.clone(), file.clone());
+                }
+                self.observed.insert(path.clone());
+            }
+        }
+        for (directory, unavailable) in fresh.directories {
+            self.directories.entry(directory).or_insert(unavailable);
+        }
+        self.unavailable.extend(fresh.unavailable);
+        self.non_files.extend(fresh.non_files);
+        self.partial |= fresh.partial;
+    }
+
+    fn retained_bytes(&self) -> u64 {
+        self.files
+            .values()
+            .filter_map(|file| file.content.as_ref())
+            .map(|bytes| bytes.len() as u64)
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SnapshotSelection {
+    directories: BTreeSet<String>,
+    files: BTreeSet<String>,
+    partial: bool,
+    excluded: BTreeSet<String>,
+    protected: BTreeSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct TurnSnapshots {
+    before: WorkspaceSnapshot,
+    selection: SnapshotSelection,
+    directory_hints: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveTurn {
-    before: WorkspaceSnapshot,
+    snapshots: Arc<tokio::sync::Mutex<TurnSnapshots>>,
     id: String,
     thread_id: String,
     turn_seq: u64,
@@ -126,6 +188,10 @@ pub struct WorkspaceCheckpointManager {
     store: Arc<LibsqlCheckpointer>,
     thread_id: Mutex<String>,
     before: Mutex<Option<ActiveTurn>>,
+    warning_sink: Option<crate::agent::ActivitySink>,
+    partial_notice_sent: AtomicBool,
+    automatic_exclusions: BTreeSet<String>,
+    protected: BTreeSet<String>,
 }
 
 impl WorkspaceCheckpointManager {
@@ -135,11 +201,77 @@ impl WorkspaceCheckpointManager {
         thread_id: impl Into<String>,
     ) -> Self {
         let root = root.canonicalize().unwrap_or(root);
+        let database_path = store
+            .database_path()
+            .canonicalize()
+            .unwrap_or_else(|_| store.database_path().to_path_buf());
+        let mut protected = BTreeSet::new();
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut path = database_path.as_os_str().to_os_string();
+            path.push(suffix);
+            if let Some(relative) = Path::new(&path)
+                .to_str()
+                .and_then(|path| checkpoint_relative(&root, path))
+            {
+                protected.insert(relative);
+            }
+        }
+        let mut automatic_exclusions = protected.clone();
+        let config = crate::config::config_dir();
+        let config = config.canonicalize().unwrap_or(config);
+        if let Some(relative) = config
+            .to_str()
+            .and_then(|path| checkpoint_relative(&root, path))
+        {
+            if relative.is_empty() {
+                automatic_exclusions.extend(
+                    ["config.json", "sessions-rs", "gadgets"]
+                        .into_iter()
+                        .map(str::to_owned),
+                );
+            } else {
+                automatic_exclusions.insert(relative);
+            }
+        }
         Self {
             root,
             store,
             thread_id: Mutex::new(thread_id.into()),
             before: Mutex::new(None),
+            warning_sink: None,
+            partial_notice_sent: AtomicBool::new(false),
+            automatic_exclusions,
+            protected,
+        }
+    }
+
+    pub(crate) fn with_warning_sink(mut self, sink: Option<crate::agent::ActivitySink>) -> Self {
+        self.warning_sink = sink;
+        self
+    }
+
+    pub(crate) async fn note_file(&self, path: &str) {
+        let Some(relative) = checkpoint_relative(&self.root, path) else {
+            return;
+        };
+        let parent = Path::new(&relative)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        self.note_directory(parent.to_str().unwrap_or("")).await;
+    }
+
+    pub(crate) async fn note_directory(&self, path: &str) {
+        let Some(relative) = checkpoint_relative(&self.root, path) else {
+            return;
+        };
+        let active = self.before.lock().unwrap().clone();
+        if let Some(active) = active {
+            let mut snapshots = active.snapshots.lock().await;
+            if snapshots.directory_hints.len() < MAX_SCOPE_DIRS {
+                snapshots.directory_hints.insert(relative);
+            } else {
+                snapshots.selection.partial = true;
+            }
         }
     }
 
@@ -159,7 +291,7 @@ impl WorkspaceCheckpointManager {
         force: bool,
     ) -> Result<RewindReport, AgentError> {
         let thread_id = self.thread_id.lock().unwrap().clone();
-        let checkpoint = self
+        let mut checkpoint = self
             .store
             .load_workspace_checkpoint(&thread_id, checkpoint_id)
             .await?
@@ -169,6 +301,11 @@ impl WorkspaceCheckpointManager {
                     None => "no workspace checkpoints for this session".to_string(),
                 })
             })?;
+        for file in &mut checkpoint.files {
+            if self.protected.contains(&file.path) {
+                file.restorable = false;
+            }
+        }
         let root = self.root.clone();
         tokio::task::spawn_blocking(move || restore_checkpoint(&root, checkpoint, force))
             .await
@@ -177,24 +314,81 @@ impl WorkspaceCheckpointManager {
     }
 
     pub(crate) async fn begin_mutation(&self, summary: String) -> Option<ActiveTurn> {
-        if let Some(active) = self.before.lock().unwrap().clone() {
-            // Return a durable ticket even for a background child. If the
-            // parent turn finishes before the child tool does, the child can
-            // still update the same checkpoint from this cloned baseline.
-            return Some(active);
+        let active = self.mutation_ticket(summary).await;
+        let mut snapshots = active.snapshots.lock().await;
+        {
+            let mut directories = if snapshots.directory_hints.is_empty() {
+                BTreeSet::from([String::new()])
+            } else {
+                snapshots.directory_hints.clone()
+            };
+            if directories.len() > 1 {
+                directories.remove("");
+            }
+            directories.retain(|directory| !snapshots.selection.directories.contains(directory));
+            if snapshots
+                .selection
+                .directories
+                .len()
+                .saturating_add(directories.len())
+                > MAX_SCOPE_DIRS
+            {
+                snapshots.selection.partial = true;
+                self.warn("the checkpoint directory count limit was reached");
+                return Some(active.clone());
+            }
+            if directories.is_empty() {
+                return Some(active.clone());
+            }
+            let selection = SnapshotSelection {
+                directories,
+                ..SnapshotSelection::default()
+            };
+            if !self.enroll(&mut snapshots, selection).await {
+                return None;
+            }
         }
-        let root = self.root.clone();
-        let before = match tokio::task::spawn_blocking(move || capture_snapshot(&root)).await {
-            Ok(Ok(snapshot)) => snapshot,
-            Ok(Err(error)) => {
-                Self::warn(error);
-                return None;
-            }
-            Err(error) => {
-                Self::warn(error);
-                return None;
-            }
+        drop(snapshots);
+        Some(active)
+    }
+
+    pub(crate) async fn begin_file_mutation(
+        &self,
+        path: &str,
+        summary: String,
+    ) -> Option<ActiveTurn> {
+        let Some(relative) = checkpoint_relative(&self.root, path) else {
+            self.warn("the file path is outside the checkpoint scope");
+            return None;
         };
+        if self.protected.contains(&relative) {
+            self.warn("the live application database is excluded from file undo");
+            return None;
+        }
+        let active = self.mutation_ticket(summary).await;
+        let mut snapshots = active.snapshots.lock().await;
+        if !snapshots.selection.files.contains(&relative) {
+            if snapshots.selection.files.len() >= MAX_SCAN_FILES {
+                snapshots.selection.partial = true;
+                self.warn("the file checkpoint count limit was reached");
+                return None;
+            }
+            let selection = SnapshotSelection {
+                files: BTreeSet::from([relative]),
+                ..SnapshotSelection::default()
+            };
+            if !self.enroll(&mut snapshots, selection).await {
+                return None;
+            }
+        }
+        drop(snapshots);
+        Some(active)
+    }
+
+    async fn mutation_ticket(&self, summary: String) -> ActiveTurn {
+        if let Some(active) = self.before.lock().unwrap().clone() {
+            return active;
+        }
         let thread_id = self.thread_id.lock().unwrap().clone();
         let turn_seq = self
             .store
@@ -204,13 +398,57 @@ impl WorkspaceCheckpointManager {
             .and_then(|items| items.into_iter().map(|item| item.turn_seq).max())
             .unwrap_or(0)
             + 1;
-        Some(ActiveTurn {
-            before,
+        ActiveTurn {
+            snapshots: Arc::new(tokio::sync::Mutex::new(TurnSnapshots::default())),
             id: new_checkpoint_id(),
             thread_id,
             turn_seq,
             summary,
-        })
+        }
+    }
+
+    async fn enroll(&self, snapshots: &mut TurnSnapshots, selection: SnapshotSelection) -> bool {
+        let root = self.root.clone();
+        let mut requested = selection.clone();
+        requested
+            .excluded
+            .extend(self.automatic_exclusions.iter().cloned());
+        requested.protected.extend(self.protected.iter().cloned());
+        let retained = snapshots.before.retained_bytes();
+        let captured =
+            tokio::task::spawn_blocking(move || capture_selection(&root, &requested, retained))
+                .await;
+        match captured {
+            Ok(Ok(before)) => {
+                if before.partial {
+                    self.report_partial();
+                }
+                snapshots.before.retain_first_observations(before);
+                snapshots
+                    .selection
+                    .directories
+                    .extend(selection.directories);
+                snapshots.selection.files.extend(selection.files);
+                snapshots.selection.partial |= selection.partial;
+                snapshots
+                    .selection
+                    .excluded
+                    .extend(self.automatic_exclusions.iter().cloned());
+                snapshots
+                    .selection
+                    .protected
+                    .extend(self.protected.iter().cloned());
+                true
+            }
+            Ok(Err(error)) => {
+                self.warn(error);
+                false
+            }
+            Err(error) => {
+                self.warn(error);
+                false
+            }
+        }
     }
 
     pub(crate) async fn finish_mutation(&self, ticket: Option<ActiveTurn>) {
@@ -220,26 +458,77 @@ impl WorkspaceCheckpointManager {
     }
 
     async fn persist_active(&self, active: &ActiveTurn) {
+        let snapshots = active.snapshots.lock().await;
+        if snapshots.selection.files.is_empty() && snapshots.selection.directories.is_empty() {
+            return;
+        }
         let root = self.root.clone();
-        let after = match tokio::task::spawn_blocking(move || capture_snapshot(&root)).await {
+        let selection = snapshots.selection.clone();
+        let after = match tokio::task::spawn_blocking(move || {
+            capture_selection(&root, &selection, 0)
+        })
+        .await
+        {
             Ok(Ok(snapshot)) => snapshot,
             Ok(Err(error)) => {
-                Self::warn(error);
+                self.warn(error);
                 return;
             }
             Err(error) => {
-                Self::warn(error);
+                self.warn(error);
                 return;
             }
         };
-        let files = diff_snapshots(&active.before, &after);
+        let mut files = diff_snapshots(&snapshots.before, &after);
+        let type_change = snapshots
+            .before
+            .files
+            .keys()
+            .any(|path| after.non_files.contains(path))
+            || after
+                .files
+                .keys()
+                .any(|path| snapshots.before.non_files.contains(path));
+        let observation_partial =
+            snapshots.before.partial || after.partial || snapshots.selection.partial || type_change;
+        if observation_partial {
+            match self
+                .store
+                .load_workspace_checkpoint(&active.thread_id, Some(&active.id))
+                .await
+            {
+                Ok(Some(previous)) => {
+                    for file in previous.files {
+                        if (!snapshots.before.covers(&file.path) || !after.covers(&file.path))
+                            && !files.iter().any(|current| current.path == file.path)
+                        {
+                            files.push(file);
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.warn(error);
+                    return;
+                }
+            }
+        }
+        if after.partial {
+            self.report_partial();
+        }
         if files.is_empty() {
+            // An incomplete observation cannot disprove recorded effects.
+            if observation_partial {
+                return;
+            }
             if let Err(error) = self.store.delete_workspace_checkpoint(&active.id).await {
-                Self::warn(error);
+                self.warn(error);
             }
             return;
         }
-        let partial = files.iter().any(|file| !file.restorable);
+        let partial = observation_partial
+            || !snapshots.selection.directories.contains("")
+            || files.iter().any(|file| !file.restorable);
         let checkpoint = NewWorkspaceCheckpoint {
             id: active.id.clone(),
             thread_id: active.thread_id.clone(),
@@ -250,12 +539,27 @@ impl WorkspaceCheckpointManager {
             files,
         };
         if let Err(error) = self.store.save_workspace_checkpoint(&checkpoint).await {
-            Self::warn(error);
+            self.warn(error);
         }
     }
 
-    fn warn(error: impl std::fmt::Display) {
-        eprintln!("craftsman: workspace checkpoint unavailable for this turn: {error}");
+    fn warn(&self, error: impl std::fmt::Display) {
+        let message = format!("Workspace file checkpoint unavailable for this operation: {error}");
+        self.emit_notice(&message);
+    }
+
+    fn report_partial(&self) {
+        if !self.partial_notice_sent.swap(true, Ordering::Relaxed) {
+            self.emit_notice("Workspace file checkpoints have partial coverage: unreadable paths or scan limits were encountered. Only captured changes can be rewound.");
+        }
+    }
+
+    fn emit_notice(&self, message: &str) {
+        if let Some(sink) = &self.warning_sink {
+            sink(message);
+        } else {
+            eprintln!("craftsman: {message}");
+        }
     }
 }
 
@@ -266,40 +570,27 @@ impl AgentMiddleware for WorkspaceCheckpointManager {
     }
 
     async fn turn_start(&self, state: &mut AgentState) -> Result<(), AgentError> {
-        let root = self.root.clone();
-        match tokio::task::spawn_blocking(move || capture_snapshot(&root)).await {
-            Ok(Ok(snapshot)) => {
-                let summary = state
-                    .messages
-                    .iter()
-                    .rev()
-                    .find_map(|message| match message {
-                        Msg::User { content } => Some(crate::util::one_line(content, 100)),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| "Agent workspace changes".to_string());
-                let turn_seq = state
-                    .messages
-                    .iter()
-                    .filter(|message| matches!(message, Msg::User { .. }))
-                    .count() as u64;
-                *self.before.lock().unwrap() = Some(ActiveTurn {
-                    before: snapshot,
-                    id: new_checkpoint_id(),
-                    thread_id: self.thread_id.lock().unwrap().clone(),
-                    turn_seq,
-                    summary,
-                });
-            }
-            Ok(Err(error)) => {
-                *self.before.lock().unwrap() = None;
-                Self::warn(error);
-            }
-            Err(error) => {
-                *self.before.lock().unwrap() = None;
-                Self::warn(error);
-            }
-        }
+        let summary = state
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                Msg::User { content } => Some(crate::util::one_line(content, 100)),
+                _ => None,
+            })
+            .unwrap_or_else(|| "Agent workspace changes".to_string());
+        let turn_seq = state
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Msg::User { .. }))
+            .count() as u64;
+        *self.before.lock().unwrap() = Some(ActiveTurn {
+            snapshots: Arc::new(tokio::sync::Mutex::new(TurnSnapshots::default())),
+            id: new_checkpoint_id(),
+            thread_id: self.thread_id.lock().unwrap().clone(),
+            turn_seq,
+            summary,
+        });
         Ok(())
     }
 
@@ -329,61 +620,253 @@ fn new_checkpoint_id() -> String {
     )
 }
 
+fn within_directory(path: &str, directory: &str) -> bool {
+    directory.is_empty() || Path::new(path).starts_with(directory)
+}
+
+fn checkpoint_relative(root: &Path, path: &str) -> Option<String> {
+    let path = Path::new(path);
+    let relative = if path.is_absolute() {
+        path.strip_prefix(root).ok()?
+    } else {
+        path
+    };
+    let mut normalized = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => normalized.push(name),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let value = normalize_relative_path(normalized.to_str()?);
+    (value.len() <= 4096).then_some(value)
+}
+
+#[cfg(test)]
 fn capture_snapshot(root: &Path) -> Result<WorkspaceSnapshot, String> {
-    let paths = enumerate_paths(root)?;
-    let mut captured = 0u64;
-    let mut files = BTreeMap::new();
-    for relative in paths {
+    capture_selection(
+        root,
+        &SnapshotSelection {
+            directories: BTreeSet::from([String::new()]),
+            ..SnapshotSelection::default()
+        },
+        0,
+    )
+}
+
+fn capture_selection(
+    root: &Path,
+    selection: &SnapshotSelection,
+    retained: u64,
+) -> Result<WorkspaceSnapshot, String> {
+    let enumeration = enumerate_paths_excluding(root, &selection.directories, &selection.excluded)?;
+    let mut snapshot = WorkspaceSnapshot {
+        unavailable: enumeration.unavailable,
+        non_files: enumeration.non_files,
+        partial: enumeration.partial || selection.partial,
+        ..WorkspaceSnapshot::default()
+    };
+    let mut budget = SnapshotBudget {
+        retained,
+        hashed: 0,
+    };
+    let paths = selection.files.iter().cloned().chain(
+        enumeration
+            .paths
+            .into_iter()
+            .filter(|path| !selection.files.contains(path)),
+    );
+    for (index, relative) in paths.enumerate() {
+        if selection.protected.contains(&relative) {
+            snapshot.unavailable.insert(relative);
+            snapshot.partial = true;
+            continue;
+        }
+        if index >= MAX_SCAN_FILES || budget.hashed >= MAX_SNAPSHOT_BYTES {
+            snapshot.unavailable.insert(relative);
+            snapshot.partial = true;
+            continue;
+        }
         let Some(_) = safe_join(root, &relative) else {
             continue;
         };
-        let Some(file) = capture_snapshot_file(root, &relative, captured)? else {
-            continue;
-        };
-        if let Some(bytes) = &file.content {
-            captured = captured.saturating_add(bytes.len() as u64);
+        match capture_snapshot_file(root, &relative, &mut budget) {
+            Ok(file) => {
+                snapshot.observed.insert(relative.clone());
+                if let Some(file) = file {
+                    snapshot.files.insert(relative, file);
+                }
+            }
+            Err(SnapshotReadError::Budget | SnapshotReadError::Unsupported) => {
+                snapshot.unavailable.insert(relative);
+                snapshot.partial = true;
+            }
+            Err(SnapshotReadError::Io {
+                operation: _,
+                source,
+            }) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                snapshot.unavailable.insert(relative);
+                snapshot.partial = true;
+            }
+            Err(SnapshotReadError::Io { operation, source }) => {
+                return Err(format!("{operation} {relative}: {source}"));
+            }
         }
-        files.insert(relative, file);
     }
-    Ok(WorkspaceSnapshot { files })
+    let unavailable = Arc::new(snapshot.unavailable.clone());
+    snapshot.directories = selection
+        .directories
+        .iter()
+        .map(|dir| (dir.clone(), unavailable.clone()))
+        .collect();
+    Ok(snapshot)
 }
 
-fn enumerate_paths(root: &Path) -> Result<Vec<String>, String> {
-    let git = std::process::Command::new("git")
+#[derive(Default)]
+struct EnumeratedPaths {
+    paths: BTreeSet<String>,
+    unavailable: BTreeSet<String>,
+    non_files: BTreeSet<String>,
+    partial: bool,
+}
+
+#[cfg(test)]
+fn enumerate_paths(root: &Path, directories: &BTreeSet<String>) -> Result<EnumeratedPaths, String> {
+    enumerate_paths_excluding(root, directories, &BTreeSet::new())
+}
+
+fn enumerate_paths_excluding(
+    root: &Path,
+    directories: &BTreeSet<String>,
+    excluded: &BTreeSet<String>,
+) -> Result<EnumeratedPaths, String> {
+    let mut result = EnumeratedPaths::default();
+    result.unavailable.extend(excluded.iter().cloned());
+    if directories.is_empty() {
+        return Ok(result);
+    }
+    let mut command = std::process::Command::new("git");
+    command
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "-co", "--exclude-standard", "-z"])
-        .output();
-    if let Ok(output) = git
-        && output.status.success()
-    {
-        let mut paths = output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|raw| !raw.is_empty())
-            .filter_map(|raw| std::str::from_utf8(raw).ok())
-            .map(normalize_relative_path)
-            .collect::<Vec<_>>();
-        paths.sort();
-        paths.dedup();
-        return Ok(paths);
+        .args(["ls-files", "-co", "--exclude-standard", "-z"]);
+    if !directories.contains("") {
+        command.arg("--");
+        for directory in directories {
+            command.arg(format!(":(literal){directory}"));
+        }
+    }
+    if let Some((output, limited)) = bounded_git_listing(command)? {
+        if limited {
+            result.partial = true;
+            result.unavailable.extend(directories.iter().cloned());
+        }
+        for (index, raw) in output
+            .split_inclusive(|byte| *byte == 0)
+            .filter(|raw| raw.len() > 1 && raw.last() == Some(&0))
+            .map(|raw| &raw[..raw.len() - 1])
+            .enumerate()
+        {
+            if index >= MAX_SCAN_ENTRIES {
+                result.partial = true;
+                result.unavailable.extend(directories.iter().cloned());
+                break;
+            }
+            if let Ok(path) = std::str::from_utf8(raw) {
+                let relative = normalize_relative_path(path);
+                if !excluded
+                    .iter()
+                    .any(|prefix| within_directory(&relative, prefix))
+                {
+                    result.paths.insert(relative);
+                }
+            }
+        }
+        return Ok(result);
     }
 
-    let mut paths = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
+    let mut stack = directories
+        .iter()
+        .map(|dir| root.join(dir))
+        .collect::<Vec<_>>();
+    let mut examined = 0usize;
     while let Some(directory) = stack.pop() {
-        let entries = std::fs::read_dir(&directory)
-            .map_err(|error| format!("could not scan {}: {error}", directory.display()))?;
-        for entry in entries.filter_map(Result::ok) {
+        let relative_directory = normalize_relative_path(
+            directory
+                .strip_prefix(root)
+                .unwrap_or(Path::new(""))
+                .to_str()
+                .unwrap_or(""),
+        );
+        if excluded
+            .iter()
+            .any(|prefix| within_directory(&relative_directory, prefix))
+        {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                result.unavailable.insert(relative_directory);
+                result.partial = true;
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && directory != root => {
+                continue;
+            }
+            Err(error) => return Err(format!("could not scan {}: {error}", directory.display())),
+        };
+        for entry in entries {
+            if examined >= MAX_SCAN_ENTRIES {
+                result.unavailable.extend(directories.iter().cloned());
+                result.partial = true;
+                return Ok(result);
+            }
+            examined += 1;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    result.unavailable.insert(relative_directory.clone());
+                    result.partial = true;
+                    continue;
+                }
+            };
             let path = entry.path();
+            let relative_path = path
+                .strip_prefix(root)
+                .ok()
+                .and_then(Path::to_str)
+                .map(normalize_relative_path);
+            if relative_path
+                .as_ref()
+                .is_some_and(|path| excluded.iter().any(|prefix| within_directory(path, prefix)))
+            {
+                continue;
+            }
             let metadata = match std::fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
-                Err(_) => continue,
+                Err(_) => {
+                    if let Ok(relative) = path.strip_prefix(root)
+                        && let Some(relative) = relative.to_str()
+                    {
+                        result.unavailable.insert(normalize_relative_path(relative));
+                    }
+                    result.partial = true;
+                    continue;
+                }
             };
             if metadata.file_type().is_symlink() {
+                if let Some(relative) = relative_path {
+                    result.non_files.insert(relative);
+                }
+                result.partial = true;
                 continue;
             }
             if metadata.is_dir() {
+                if let Some(relative) = relative_path {
+                    result.non_files.insert(relative);
+                }
                 if is_skipped_dir(path.file_name()) {
                     continue;
                 }
@@ -392,13 +875,16 @@ fn enumerate_paths(root: &Path) -> Result<Vec<String>, String> {
                 && let Ok(relative) = path.strip_prefix(root)
                 && let Some(relative) = relative.to_str()
             {
-                paths.push(normalize_relative_path(relative));
+                result.paths.insert(normalize_relative_path(relative));
+            } else {
+                if let Some(relative) = relative_path {
+                    result.non_files.insert(relative);
+                }
+                result.partial = true;
             }
         }
     }
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    Ok(result)
 }
 
 #[cfg(windows)]
@@ -409,6 +895,40 @@ fn normalize_relative_path(path: &str) -> String {
 #[cfg(not(windows))]
 fn normalize_relative_path(path: &str) -> String {
     path.to_string()
+}
+
+fn bounded_git_listing(
+    mut command: std::process::Command,
+) -> Result<Option<(Vec<u8>, bool)>, String> {
+    use std::process::Stdio;
+    let Ok(mut child) = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Ok(None);
+    };
+    let mut output = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .expect("piped git output")
+        .take(MAX_GIT_LIST_BYTES + 1)
+        .read_to_end(&mut output);
+    let limited = output.len() as u64 > MAX_GIT_LIST_BYTES;
+    if limited || read.is_err() {
+        let _ = child.kill();
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("could not finish checkpoint file listing: {error}"))?;
+    read.map_err(|error| format!("could not read checkpoint file listing: {error}"))?;
+    if limited || status.success() {
+        Ok(Some((output, limited)))
+    } else {
+        Ok(None)
+    }
 }
 
 fn is_skipped_dir(name: Option<&OsStr>) -> bool {
@@ -497,7 +1017,7 @@ fn open_relative_read(root: &Path, relative: &str) -> std::io::Result<std::fs::F
         libc::openat(
             parent.as_raw_fd(),
             name.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW,
         )
     };
     if raw < 0 {
@@ -557,58 +1077,147 @@ fn write_relative(
     Ok(())
 }
 
+#[derive(Default)]
+struct SnapshotBudget {
+    retained: u64,
+    hashed: u64,
+}
+
+#[derive(Debug)]
+enum SnapshotReadError {
+    Io {
+        operation: &'static str,
+        source: std::io::Error,
+    },
+    Budget,
+    Unsupported,
+}
+
+fn snapshot_io(operation: &'static str, source: std::io::Error) -> SnapshotReadError {
+    SnapshotReadError::Io { operation, source }
+}
+
+fn snapshot_file_contents(
+    file: &mut std::fs::File,
+    metadata: &std::fs::Metadata,
+    budget: &mut SnapshotBudget,
+) -> Result<SnapshotFile, SnapshotReadError> {
+    let remaining = MAX_SNAPSHOT_BYTES.saturating_sub(budget.hashed);
+    if metadata.len() > remaining {
+        return Err(SnapshotReadError::Budget);
+    }
+    let retain = metadata.len() <= MAX_FILE_BYTES
+        && budget.retained.saturating_add(metadata.len()) <= MAX_SNAPSHOT_BYTES;
+    let mut bytes = retain.then(Vec::new);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut actual = 0u64;
+    loop {
+        let available = MAX_SNAPSHOT_BYTES.saturating_sub(budget.hashed);
+        let amount = (available.saturating_add(1)).min(buffer.len() as u64) as usize;
+        let read = file
+            .read(&mut buffer[..amount])
+            .map_err(|error| snapshot_io("could not read", error))?;
+        if read == 0 {
+            break;
+        }
+        budget.hashed = budget.hashed.saturating_add(read as u64);
+        actual = actual.saturating_add(read as u64);
+        if budget.hashed > MAX_SNAPSHOT_BYTES {
+            return Err(SnapshotReadError::Budget);
+        }
+        if actual > MAX_FILE_BYTES || budget.retained.saturating_add(actual) > MAX_SNAPSHOT_BYTES {
+            bytes = None;
+        }
+        hasher.update(&buffer[..read]);
+        if let Some(bytes) = &mut bytes {
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+    }
+    if let Some(bytes) = &bytes {
+        budget.retained = budget.retained.saturating_add(bytes.len() as u64);
+    }
+    Ok(SnapshotFile {
+        hash: format!("{:x}", hasher.finalize()),
+        mode: file_mode(metadata),
+        content: bytes,
+    })
+}
+
 #[cfg(unix)]
 fn capture_snapshot_file(
     root: &Path,
     relative: &str,
-    captured: u64,
-) -> Result<Option<SnapshotFile>, String> {
-    let mut file = match open_relative_read(root, relative) {
-        Ok(file) => file,
+    budget: &mut SnapshotBudget,
+) -> Result<Option<SnapshotFile>, SnapshotReadError> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let (parent, name) = match open_relative_parent(root, relative, false) {
+        Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("could not safely open {relative}: {error}")),
+        Err(error) => return Err(snapshot_io("could not safely open", error)),
     };
+    let mut info = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            info.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } < 0
+    {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(snapshot_io("could not inspect", error));
+    }
+    let info = unsafe { info.assume_init() };
+    if info.st_mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(SnapshotReadError::Unsupported);
+    }
+    let raw = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if raw < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(snapshot_io("could not safely open", error));
+    }
+    let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
     let metadata = file
         .metadata()
-        .map_err(|error| format!("could not inspect {relative}: {error}"))?;
+        .map_err(|error| snapshot_io("could not inspect", error))?;
     if !metadata.is_file() {
-        return Ok(None);
+        return Err(SnapshotReadError::Unsupported);
     }
-    let retain = metadata.len() <= MAX_FILE_BYTES
-        && captured.saturating_add(metadata.len()) <= MAX_SNAPSHOT_BYTES;
-    let (hash, content) = hash_reader(&mut file, retain)
-        .map_err(|error| format!("could not read {relative}: {error}"))?;
-    Ok(Some(SnapshotFile {
-        hash,
-        mode: file_mode(&metadata),
-        content,
-    }))
+    snapshot_file_contents(&mut file, &metadata, budget).map(Some)
 }
 
 #[cfg(not(unix))]
 fn capture_snapshot_file(
     root: &Path,
     relative: &str,
-    captured: u64,
-) -> Result<Option<SnapshotFile>, String> {
+    budget: &mut SnapshotBudget,
+) -> Result<Option<SnapshotFile>, SnapshotReadError> {
     let Some(path) = safe_join(root, relative) else {
         return Ok(None);
     };
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_file() => metadata,
-        _ => return Ok(None),
+        Ok(_) => return Err(SnapshotReadError::Unsupported),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(snapshot_io("could not inspect", error)),
     };
-    let retain = metadata.len() <= MAX_FILE_BYTES
-        && captured.saturating_add(metadata.len()) <= MAX_SNAPSHOT_BYTES;
-    let mut file = std::fs::File::open(&path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    let (hash, content) = hash_reader(&mut file, retain)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-    Ok(Some(SnapshotFile {
-        hash,
-        mode: file_mode(&metadata),
-        content,
-    }))
+    let mut file =
+        std::fs::File::open(&path).map_err(|error| snapshot_io("could not read", error))?;
+    snapshot_file_contents(&mut file, &metadata, budget).map(Some)
 }
 
 fn hash_reader(
@@ -659,6 +1268,9 @@ fn diff_snapshots(
         .collect::<BTreeSet<_>>();
     let mut changes = Vec::new();
     for path in paths {
+        if !before.covers(&path) || !after.covers(&path) {
+            continue;
+        }
         let old = before.files.get(&path);
         let new = after.files.get(&path);
         if old.map(|file| (&file.hash, file.mode)) == new.map(|file| (&file.hash, file.mode)) {
@@ -902,6 +1514,10 @@ fn set_file_mode(_path: &Path, _mode: Option<u32>) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "workspace_checkpoint/scoped_tests.rs"]
+mod scoped_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -941,6 +1557,10 @@ mod tests {
         std::fs::write(root.join("deleted.txt"), b"before").unwrap();
         let mut state = state("change files");
         manager.turn_start(&mut state).await.unwrap();
+        manager
+            .begin_mutation("fixture mutation".into())
+            .await
+            .unwrap();
         std::fs::write(root.join("modified.bin"), [9, 8, 7]).unwrap();
         std::fs::remove_file(root.join("deleted.txt")).unwrap();
         std::fs::write(root.join("created.txt"), b"new").unwrap();
@@ -964,6 +1584,10 @@ mod tests {
         std::fs::write(&path, b"before").unwrap();
         let mut state = state("edit");
         manager.turn_start(&mut state).await.unwrap();
+        manager
+            .begin_mutation("fixture mutation".into())
+            .await
+            .unwrap();
         std::fs::write(&path, b"agent").unwrap();
         manager.turn_end(&mut state).await.unwrap();
         std::fs::write(&path, b"user").unwrap();
@@ -988,6 +1612,7 @@ mod tests {
                     content: None,
                 },
             )]),
+            ..WorkspaceSnapshot::default()
         };
         let after = WorkspaceSnapshot {
             files: BTreeMap::from([(
@@ -998,6 +1623,7 @@ mod tests {
                     content: None,
                 },
             )]),
+            ..WorkspaceSnapshot::default()
         };
         let changes = diff_snapshots(&before, &after);
         assert_eq!(changes.len(), 1);
@@ -1015,6 +1641,10 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let mut state = state("make executable");
         manager.turn_start(&mut state).await.unwrap();
+        manager
+            .begin_mutation("fixture mutation".into())
+            .await
+            .unwrap();
         std::fs::write(&path, b"after").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         manager.turn_end(&mut state).await.unwrap();
@@ -1034,6 +1664,10 @@ mod tests {
         let manager = manager(&dir).await;
         let mut state = state("create nested file");
         manager.turn_start(&mut state).await.unwrap();
+        manager
+            .begin_mutation("fixture mutation".into())
+            .await
+            .unwrap();
         std::fs::create_dir_all(manager.root.join("nested")).unwrap();
         std::fs::write(manager.root.join("nested/file.txt"), b"agent").unwrap();
         manager.turn_end(&mut state).await.unwrap();
@@ -1129,6 +1763,10 @@ mod tests {
         let manager = manager(&dir).await;
         let mut state = state("first");
         manager.turn_start(&mut state).await.unwrap();
+        manager
+            .begin_mutation("fixture mutation".into())
+            .await
+            .unwrap();
         std::fs::write(manager.root.join("a.txt"), b"a").unwrap();
         manager.turn_end(&mut state).await.unwrap();
         assert_eq!(manager.list().await.unwrap().len(), 1);

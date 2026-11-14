@@ -28,6 +28,8 @@ pub struct McpTool {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    /// Advisory checkpoint hint; never an invocation permission grant.
+    pub read_only_hint: bool,
 }
 
 /// The per-request `_meta` every modern-era request must carry — the
@@ -354,6 +356,7 @@ impl McpClient {
                     .get("inputSchema")
                     .cloned()
                     .unwrap_or_else(|| json!({"type": "object"})),
+                read_only_hint: t["annotations"]["readOnlyHint"].as_bool() == Some(true),
             })
             .filter(|t| !t.name.is_empty())
             .collect();

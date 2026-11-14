@@ -387,6 +387,110 @@ async fn capabilities_and_file_write_approval_are_independent() {
 }
 
 #[tokio::test]
+async fn approved_gadget_write_enrolls_its_file_checkpoint_and_rewinds() {
+    let home = TestHome::new(capabilities(false, true, &[]));
+    let store = Arc::new(
+        crate::checkpoints::LibsqlCheckpointer::open_at(home.config.join("threads.db"))
+            .await
+            .unwrap(),
+    );
+    let checkpoints = Arc::new(
+        crate::workspace_checkpoint::WorkspaceCheckpointManager::new(
+            home.workspace.clone(),
+            store,
+            "gadget-checkpoint",
+        )
+        .with_warning_sink(Some(Arc::new(|_| {}))),
+    );
+    let mut state = craftsman_harness::AgentState::default();
+    state
+        .messages
+        .push(craftsman_harness::Msg::user("Create a gadget output file."));
+    craftsman_harness::AgentMiddleware::turn_start(checkpoints.as_ref(), &mut state)
+        .await
+        .unwrap();
+    let mut options = home.options();
+    options.approval.lock().unwrap().mode = PermissionMode::AcceptEdits;
+    options.workspace_checkpoints = Some(checkpoints.clone());
+    let runtime = home.runtime(options);
+    runtime
+        .call(
+            "demo",
+            "write",
+            json!({"path":"nested/created.txt","text":"gadget output"}),
+        )
+        .await
+        .unwrap();
+    craftsman_harness::AgentMiddleware::turn_end(checkpoints.as_ref(), &mut state)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(home.workspace.join("nested/created.txt")).unwrap(),
+        b"gadget output"
+    );
+    let list = checkpoints.list().await.unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].file_count, 1);
+    assert_eq!(
+        checkpoints.rewind(None, false).await.unwrap().restored,
+        ["nested/created.txt"]
+    );
+    assert!(!home.workspace.join("nested/created.txt").exists());
+}
+
+#[tokio::test]
+async fn denied_gadget_write_does_not_start_file_checkpoint_work() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let home = TestHome::new(capabilities(false, true, &[]));
+    std::fs::create_dir(home.workspace.join("already-a-directory")).unwrap();
+    let store = Arc::new(
+        crate::checkpoints::LibsqlCheckpointer::open_at(home.config.join("threads.db"))
+            .await
+            .unwrap(),
+    );
+    let notices = Arc::new(AtomicUsize::new(0));
+    let observed = notices.clone();
+    let checkpoints = Arc::new(
+        crate::workspace_checkpoint::WorkspaceCheckpointManager::new(
+            home.workspace.clone(),
+            store,
+            "denied-gadget-checkpoint",
+        )
+        .with_warning_sink(Some(Arc::new(move |_| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        }))),
+    );
+    let mut state = craftsman_harness::AgentState::default();
+    state
+        .messages
+        .push(craftsman_harness::Msg::user("Do not approve the write."));
+    craftsman_harness::AgentMiddleware::turn_start(checkpoints.as_ref(), &mut state)
+        .await
+        .unwrap();
+    let mut options = home.options();
+    options.workspace_checkpoints = Some(checkpoints.clone());
+    let runtime = home.runtime(options);
+    assert_eq!(
+        runtime
+            .call(
+                "demo",
+                "write",
+                json!({"path":"already-a-directory","text":"blocked"})
+            )
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::DeniedCapability
+    );
+    craftsman_harness::AgentMiddleware::turn_end(checkpoints.as_ref(), &mut state)
+        .await
+        .unwrap();
+    assert_eq!(notices.load(Ordering::SeqCst), 0);
+    assert!(checkpoints.list().await.unwrap().is_empty());
+    assert!(home.workspace.join("already-a-directory").is_dir());
+}
+
+#[tokio::test]
 async fn timeout_memory_result_and_log_limits_leave_next_call_healthy() {
     let home = TestHome::new(Capabilities::default());
     let mut options = home.options();

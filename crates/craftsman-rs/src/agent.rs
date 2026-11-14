@@ -386,6 +386,10 @@ enum HostKind {
     Execute,
 }
 
+#[cfg(test)]
+#[path = "agent_checkpoint_tests.rs"]
+mod checkpoint_tests;
+
 struct HostTool {
     kind: HostKind,
     /// The filesystem/exec backend this tool operates against. Held explicitly
@@ -596,7 +600,12 @@ impl Tool for HostTool {
                 let offset = args["offset"].as_u64().unwrap_or(0) as usize;
                 let limit = args["limit"].as_u64().unwrap_or(100).max(1) as usize;
                 match b.read(path, offset, limit).await {
-                    Ok(s) => ToolOutcome::ok(s),
+                    Ok(s) => {
+                        if let Some(workspace) = &self.workspace_checkpoints {
+                            workspace.note_file(path).await;
+                        }
+                        ToolOutcome::ok(s)
+                    }
                     Err(e) => err_outcome(e),
                 }
             }
@@ -605,8 +614,9 @@ impl Tool for HostTool {
                 let content = args["content"].as_str().unwrap_or_default();
                 let baseline = match &self.workspace_checkpoints {
                     Some(workspace) => {
+                        workspace.note_file(path).await;
                         workspace
-                            .begin_mutation(format!("write_file: {path}"))
+                            .begin_file_mutation(path, format!("write_file: {path}"))
                             .await
                     }
                     None => None,
@@ -630,7 +640,12 @@ impl Tool for HostTool {
                 let new = args["new_string"].as_str().unwrap_or_default();
                 let replace_all = args["replace_all"].as_bool().unwrap_or(false);
                 let baseline = match &self.workspace_checkpoints {
-                    Some(workspace) => workspace.begin_mutation(format!("edit_file: {path}")).await,
+                    Some(workspace) => {
+                        workspace.note_file(path).await;
+                        workspace
+                            .begin_file_mutation(path, format!("edit_file: {path}"))
+                            .await
+                    }
                     None => None,
                 };
                 let result = b.edit(path, old, new, replace_all).await;
@@ -649,13 +664,18 @@ impl Tool for HostTool {
             HostKind::Ls => {
                 let path = args["path"].as_str().unwrap_or(".");
                 match b.ls(path).await {
-                    Ok(entries) => ToolOutcome::ok(
-                        entries
-                            .into_iter()
-                            .map(|f| f.path)
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    ),
+                    Ok(entries) => {
+                        if let Some(workspace) = &self.workspace_checkpoints {
+                            workspace.note_directory(path).await;
+                        }
+                        ToolOutcome::ok(
+                            entries
+                                .into_iter()
+                                .map(|f| f.path)
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    }
                     Err(e) => err_outcome(e),
                 }
             }
@@ -702,6 +722,8 @@ struct McpFrameworkTool {
     mcp: Arc<McpTools>,
     def: ToolDef,
     name: String,
+    read_only_hint: bool,
+    workspace_checkpoints: Option<Arc<WorkspaceCheckpointManager>>,
 }
 
 #[async_trait]
@@ -713,9 +735,23 @@ impl Tool for McpFrameworkTool {
     async fn call(&self, args: Value, _ctx: &mut ToolCtx<'_>) -> Result<ToolOutcome, AgentError> {
         // `call_tool` never fails the turn — it returns error text as its
         // result string, which the model reads and adjusts to.
-        Ok(ToolOutcome::ok(
-            self.mcp.client.call_tool(&self.name, &args).await,
-        ))
+        let ticket = if !self.read_only_hint {
+            match &self.workspace_checkpoints {
+                Some(workspace) => {
+                    workspace
+                        .begin_mutation(format!("MCP tool: {}", self.name))
+                        .await
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let result = self.mcp.client.call_tool(&self.name, &args).await;
+        if let Some(workspace) = &self.workspace_checkpoints {
+            workspace.finish_mutation(ticket).await;
+        }
+        Ok(ToolOutcome::ok(result))
     }
 }
 
@@ -1526,11 +1562,10 @@ async fn build_session_with_profile(
         }
     };
     let workspace_checkpoints = checkpointer.as_ref().map(|store| {
-        Arc::new(WorkspaceCheckpointManager::new(
-            cwd.clone(),
-            store.clone(),
-            thread_id.clone(),
-        ))
+        Arc::new(
+            WorkspaceCheckpointManager::new(cwd.clone(), store.clone(), thread_id.clone())
+                .with_warning_sink(extras.activity_sink.clone()),
+        )
     });
 
     // Build the non-interactive capability set ONCE and share the same safe,
@@ -1587,6 +1622,7 @@ async fn build_session_with_profile(
             options.prompt = extras.approval_prompt.clone();
             options.allowed_gadgets = extras.allowed_gadgets.clone();
             options.trust_workspace = extras.trust_workspace;
+            options.workspace_checkpoints = workspace_checkpoints.clone();
             crate::gadgets::GadgetRuntime::new(&cwd, &crate::config::config_dir(), options)
                 .map_err(Into::into)
         });
@@ -1617,22 +1653,29 @@ async fn build_session_with_profile(
         shared_tools.extend(lsp.tools());
     }
     for server in loaded.servers {
-        let defs: Vec<ToolDef> = server
+        let defs: Vec<(ToolDef, bool)> = server
             .tools
             .iter()
-            .map(|tool| ToolDef {
-                name: tool.name.clone(),
-                description: tool.description.clone(),
-                parameters: tool.input_schema.clone(),
+            .map(|tool| {
+                (
+                    ToolDef {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        parameters: tool.input_schema.clone(),
+                    },
+                    tool.read_only_hint,
+                )
             })
             .collect();
         let mcp = Arc::new(server);
-        for def in defs {
+        for (def, read_only_hint) in defs {
             let name = def.name.clone();
             shared_tools.push(Arc::new(McpFrameworkTool {
                 mcp: mcp.clone(),
                 def,
                 name,
+                read_only_hint,
+                workspace_checkpoints: workspace_checkpoints.clone(),
             }));
         }
     }
