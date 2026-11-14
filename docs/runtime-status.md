@@ -23,7 +23,10 @@
 > frozen/delegated policies remain. This is advisory guidance, not the full
 > verification or stuck-governor gate. Native and live quality evidence are
 > separate; full local/all-four/every-step/both-mode/inventory/warning/tree and
-> independent-main validation remain delivery gates. See `task-workflow.md`.
+> independent-main validation remain delivery gates. Five selected matched
+> instances preserve correctness while reducing observed work/accounted cost;
+> original failures, contract clarification and repeat variation remain recorded.
+> See `task-workflow.md` and `live-workflow-evaluation.md`.
 
 > **Terminal turn limits (November 14):** the owned TUI main agent uses a
 > configurable 200-round default instead of inheriting the framework's 50-round

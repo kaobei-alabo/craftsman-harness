@@ -1,5 +1,8 @@
 # Coding-quality evaluations
 
+See [improvement progress](harness-improvements.md) for completed work and the
+remaining verification/context/quality milestones.
+
 The starter corpus contains 30 small repository tasks: six bugs, six features,
 six refactors, six failing-test repairs and six changes across multiple files.
 Each group has two python, two JavaScript and two Rust tasks. Public checks
@@ -20,6 +23,8 @@ The next candidate adds [task-workflow guidance](task-workflow.md) for TUI/ACP
 main agents. Its baseline is the merged first-cycle runtime; paired runs retain
 the same model, effort, corpus, graders, limits and admission ledger. The full
 verification/stuck/context roadmap remains separate from this advisory slice.
+The [workflow comparison](live-workflow-evaluation.md) records selected paired
+runs and repeats, original/clarified contracts and the same capped accounting.
 
 ## Runner boundary
 

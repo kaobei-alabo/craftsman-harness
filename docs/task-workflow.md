@@ -65,6 +65,12 @@ inspection. The [coding evaluation runner](coding-evaluation.md) supplies separa
 held-out grading and conservative accounting for a paired live comparison; native
 tests are not live coding-quality evidence.
 
+The [live workflow comparison](live-workflow-evaluation.md) preserves correctness
+on five matched instances across three selected tasks while reducing observed
+request/tool/planning work and accounted cost. It records the explicit-export
+contract correction, original failures, repeats and latency variation. This
+small cohort does not establish broad competitiveness or causation.
+
 Full local verification, all four hosted jobs/every mandatory step/both native
 modes, retained/new inventory and warning/tree review, plus independent-main
 validation remain required before delivery. Existing live accounting and failed
