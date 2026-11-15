@@ -67,7 +67,8 @@
   },
   "permission_mode": "manual",
   "terminal": {
-    "max_rounds": 200
+    "max_rounds": 200,
+    "osc7501": true
   },
   "gadgets": {
     "enabled": true

@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 14, 2026 (Asia/Taipei). This page describes the maintained checkout,
+> **Updated:** November 15, 2026 (Asia/Taipei). This page describes the maintained checkout,
 > including private implementation foundations. It is not a release announcement.
 > **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
 > target architecture and historical measurements. Its baseline “today” boxes
@@ -14,6 +14,18 @@
 > Private admission-correlated send/header observations now exist (`admission-receipts.md`);
 > usage/settlement/public producers remain unwired.
 
+> **Terminal status (November 15):** the interactive TUI emits change-only OSC
+> 7501 root and bounded delegated-task records with fixed messages and numeric
+> ids. Actual approval/question waits, returned completion/error, paused turns
+> and cancellation/cleanup determine status; text never determines authority.
+> Reporting defaults on, with `terminal.osc7501: false` as an opt-out. Normal
+> rendering retains SafeBackend, and ACP/noninteractive/private output stays
+> unchanged. Isolated actual builder/HTTP/file/SQLite and newly owned PTY cases
+> validate the event path, opt-out, control safety and restoration. Full local/
+> all-four/every-step/both-mode/inventory/warning/tree and independent-main proof
+> remain delivery gates. This enables terminal monitoring, not automatic native
+> host chat registration or OS/model-billing containment. See `terminal-status.md`.
+
 > **Declared verification (November 14):** TUI/ACP main agents select explicit
 > user/project verification plans with declared source and protected paths.
 > Source observation is lazy and bounded; normal completion schedules the
@@ -24,8 +36,9 @@
 > is independent of bypass switches, and stale approvals do not authorize later
 > changes. Terminal review puts protected changes first and pages through all
 > bounded details while preserving the composer draft. The first PR #22 Windows
-> failures and clipped native review capture remain retained; corrected-source
-> native validation is still required. Unfinished observations survive explicit
+> failures and clipped native review capture remain retained; corrected PR #22
+> run 43612457680 and merged-main run 43614462838 completed all four jobs and
+> both native modes with inventories/warnings audited. Unfinished observations survive explicit
 > follow-ups, and model transfers require fresh verification while preserving
 > the transferred checkpoint sequence without replay. The subsequent Windows
 > direct-helper/shell divergence and Linux package endpoint timeout remain separate

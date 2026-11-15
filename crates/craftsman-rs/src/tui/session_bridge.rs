@@ -499,6 +499,9 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             }
         }
         UiEvent::OperationFinished(output) => {
+            // This existing helper event has no typed success/error outcome.
+            // Report its actual return as idle, without interpreting its text.
+            app.program_status = super::program_status::Status::Idle;
             app.operation_cancellation = None;
             app.running = false;
             app.cancel_requested = false;
@@ -511,6 +514,11 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             result,
         } => {
             let cancelled = app.cancel_requested || app.closing;
+            app.program_status = if !cancelled && result.is_err() {
+                super::program_status::Status::Error
+            } else {
+                super::program_status::Status::Idle
+            };
             app.operation_cancellation = None;
             app.running = false;
             app.cancel_requested = false;

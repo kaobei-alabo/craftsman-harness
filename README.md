@@ -71,6 +71,7 @@ catalog, then its effort picker; `/effort` adjusts the current model directly.
 
 For editor integrations, run `craftsman acp-serve`. Use `craftsman acp-bridge`
 when the client needs WebSocket transport.
+Compatible terminals can monitor work and approval waits through OSC 7501.
 
 Start Craftsman in the folder where you want to work. Git is optional;
 documents and folders containing several projects are supported too.
@@ -83,6 +84,7 @@ documents and folders containing several projects are supported too.
 [File checkpoints and rewind](docs/workspace-checkpoints.md) ·
 [Long tasks and turn limits](docs/terminal-turn-limits.md) ·
 [ACP integration](docs/acp.md) ·
+[Terminal status reporting](docs/terminal-status.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
 [Coding evaluations](docs/coding-evaluation.md) ·
 [Task workflow](docs/task-workflow.md) ·

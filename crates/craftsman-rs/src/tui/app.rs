@@ -7,6 +7,7 @@ use super::commands::{
 };
 use super::input::{VoiceRequest, VoiceUiState, handle_terminal_event};
 use super::modals::{AppAction, Modal};
+use super::program_status::Status;
 use super::render::{
     BANNER, ScreenSelection, ScreenSnapshot, TranscriptRenderCache, clamp_point_to_rect, draw,
     startup_splash_data, subagent_activity,
@@ -128,6 +129,7 @@ pub(super) struct App {
     pub(super) extension_commands: Vec<(String, String)>,
     slash_active: bool,
     pub(super) running: bool,
+    pub(super) program_status: Status,
     pub(super) active_response: Option<usize>,
     pub(super) modal: Option<Modal>,
     pub(super) modal_queue: VecDeque<Modal>,
@@ -188,6 +190,7 @@ impl App {
             extension_commands: Vec::new(),
             slash_active: false,
             running: false,
+            program_status: Status::Idle,
             active_response: None,
             modal: None,
             modal_queue: VecDeque::new(),
@@ -1090,6 +1093,12 @@ impl App {
         result: Result<TurnResult, String>,
         session: Option<&Session>,
     ) {
+        self.program_status = match &result {
+            Err(_) => Status::Error,
+            Ok(TurnResult::Suspended(_)) => Status::Permission,
+            Ok(TurnResult::Done(_)) if self.discard_stream_deltas => Status::Idle,
+            Ok(TurnResult::Done(_)) => Status::Done,
+        };
         self.reset_turn_ui();
         match result {
             Ok(TurnResult::Done(_)) => {}
@@ -1117,10 +1126,27 @@ impl App {
     }
 
     pub(super) fn finish_limited_turn(&mut self, rounds: usize) {
+        self.program_status = if self.discard_stream_deltas {
+            Status::Idle
+        } else {
+            Status::Paused
+        };
         self.reset_turn_ui();
         self.activity(format!(
             "Paused after {rounds} model rounds. Completed work remains in this conversation. Send a follow-up to continue; terminal.max_rounds in config.json controls the per-turn limit."
         ));
+    }
+
+    pub(super) fn current_program_status(&self, initializing: bool) -> Status {
+        if self.closing || (self.running && self.discard_stream_deltas) {
+            return Status::Stopping;
+        }
+        match self.modal.as_ref() {
+            Some(Modal::Approval(_)) => Status::Permission,
+            Some(Modal::Ask(_)) => Status::Question,
+            _ if self.running || initializing => Status::Working,
+            _ => self.program_status,
+        }
     }
 }
 
@@ -1155,6 +1181,8 @@ pub async fn run(
     if !stdout().is_terminal() || !std::io::stdin().is_terminal() {
         anyhow::bail!("interactive mode requires a terminal");
     }
+    let program_status_enabled =
+        super::program_status::enabled(&cfg).map_err(anyhow::Error::msg)?;
     let shutdown = super::shutdown::Shutdown::install()?;
     let mut work = tokio::task::JoinSet::new();
 
@@ -1186,6 +1214,7 @@ pub async fn run(
     let panic_hook = guard.panic_hook(shutdown.cancellation.clone());
     let mut terminal = Terminal::new(SafeBackend(CrosstermBackend::new(stdout())))?;
     terminal.clear()?;
+    guard.enable_program_status(program_status_enabled);
 
     let agent_seed_error = crate::agents::ensure_agent(&cfg.agent).err();
 
@@ -1237,6 +1266,7 @@ pub async fn run(
                         app.push(format!("Resumed session {thread_id}"));
                         app.show_recovery_notice(session);
                         if let Some(suspension) = session.agent.pending_suspension() {
+                            app.program_status = Status::Permission;
                             app.push(format!(
                                 "Session is awaiting approval: {}",
                                 suspension.request.summary
@@ -1262,6 +1292,14 @@ pub async fn run(
         if slot.initialization_finished() {
             let _ = slot.get().await;
             app.dirty = true;
+        }
+        if let Err(error) = guard.report_program_status(
+            app.current_program_status(slot.is_pending()),
+            slot.peek().map(|session| session.registry.as_ref()),
+            slot.is_pending(),
+        ) {
+            drawing_error = Some(error.into());
+            break 'ui;
         }
         tokio::select! {
             biased;
@@ -1409,12 +1447,21 @@ pub async fn run(
                 break 'ui;
             }
             app.dirty = false;
+            if let Err(error) = guard.report_program_status(
+                Status::Working,
+                slot.peek().map(|session| session.registry.as_ref()),
+                slot.is_pending(),
+            ) {
+                drawing_error = Some(error.into());
+                break 'ui;
+            }
             let command_scope = slot.cancellation().new_turn();
             command_scope
                 .scope(handle_app_action(
                     action, &mut cfg, &mut slot, &approval, &mut app,
                 ))
                 .await;
+            app.program_status = Status::Idle;
             app.dirty = true;
             continue;
         }
@@ -1442,11 +1489,20 @@ pub async fn run(
                 if line.starts_with('/') && live_command(&line) {
                     app.push_user(display_submission(&line));
                     let command_scope = slot.cancellation().new_turn();
+                    if let Err(error) = guard.report_program_status(
+                        Status::Working,
+                        slot.peek().map(|session| session.registry.as_ref()),
+                        slot.is_pending(),
+                    ) {
+                        drawing_error = Some(error.into());
+                        break 'ui;
+                    }
                     let rebuild = command_scope
                         .scope(handle_slash(
                             &line, &mut cfg, &mut slot, &approval, &mut app,
                         ))
                         .await;
+                    app.program_status = Status::Idle;
                     if rebuild {
                         slot.rebuild(&cfg, approval.clone());
                     }
@@ -1522,12 +1578,21 @@ pub async fn run(
                         }
                         continue;
                     }
+                    if let Err(error) = guard.report_program_status(
+                        Status::Working,
+                        slot.peek().map(|session| session.registry.as_ref()),
+                        slot.is_pending(),
+                    ) {
+                        drawing_error = Some(error.into());
+                        break 'ui;
+                    }
                     let command_scope = slot.cancellation().new_turn();
                     let rebuild = command_scope
                         .scope(handle_slash(
                             &line, &mut cfg, &mut slot, &approval, &mut app,
                         ))
                         .await;
+                    app.program_status = Status::Idle;
                     if rebuild {
                         slot.rebuild(&cfg, approval.clone());
                     }
@@ -1569,6 +1634,26 @@ pub async fn run(
     }
 
     app.closing = true;
+    let stopping_work = app.running
+        || slot.is_pending()
+        || slot.peek().is_some_and(|session| {
+            session.registry.list().iter().any(|(_, status)| {
+                matches!(
+                    status,
+                    craftsman_harness::AgentStatus::Running
+                        | craftsman_harness::AgentStatus::Suspended
+                )
+            })
+        });
+    if stopping_work {
+        if let Err(error) = guard.report_program_status(
+            Status::Stopping,
+            slot.peek().map(|session| session.registry.as_ref()),
+            slot.is_pending(),
+        ) {
+            drawing_error.get_or_insert(error.into());
+        }
+    }
     shutdown.cancellation.cancel();
     if let Some(session) = slot.peek() {
         session.agent.request_cancel();
@@ -1594,12 +1679,31 @@ pub async fn run(
             .then(|| session.thread_id.clone())
     });
     let cursor_result = terminal.show_cursor();
+    let exit_code = shutdown.exit_code();
+    let panicked = panic_hook.triggered();
+    let final_status = if cleanup.is_err()
+        || panicked
+        || drawing_error.is_some()
+        || cursor_result.is_err()
+        || slot
+            .peek()
+            .is_some_and(|session| session.agent.checkpoint_failed())
+    {
+        Status::Error
+    } else if exit_code != 0 || app.running || app.discard_stream_deltas {
+        Status::Idle
+    } else {
+        match app.program_status {
+            Status::Done => Status::Done,
+            Status::Error => Status::Error,
+            _ => Status::Idle,
+        }
+    };
+    let status_result = guard.finish_program_status(final_status);
     drop(terminal);
     drop(guard);
     drop(slot);
-    let panicked = panic_hook.triggered();
     drop(panic_hook);
-    let exit_code = shutdown.exit_code();
     drop(shutdown);
     if cleanup.is_err() {
         anyhow::bail!("terminal shutdown timed out; work may still be completing");
@@ -1608,6 +1712,7 @@ pub async fn run(
         anyhow::bail!("terminal stopped after an internal error");
     }
     cursor_result?;
+    status_result?;
     if let Some(error) = drawing_error {
         return Err(error);
     }
