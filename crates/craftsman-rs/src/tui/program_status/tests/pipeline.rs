@@ -321,22 +321,27 @@ async fn native_status_pipeline_fixture() {
 #[tokio::test]
 async fn actual_tui_event_pipeline_reports_approval_answer_and_saved_completion() {
     let directory = tempfile::tempdir().unwrap();
-    let output = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", HELPER, "--nocapture", "--skip"])
-            .arg(format!("{MARKER}ui"))
-            .current_dir(directory.path())
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("CRAFTSMAN_CONFIG_DIR", directory.path().join("config"))
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--ignored", "--exact", HELPER, "--nocapture", "--skip"])
+        .arg(format!("{MARKER}ui"))
+        .current_dir(directory.path())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("CRAFTSMAN_CONFIG_DIR", directory.path().join("config"))
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    // Winsock expands its provider DLL path through SystemRoot. Retain only
+    // that native prerequisite, not the ambient credential/user environment.
+    #[cfg(windows)]
+    command.env(
+        "SystemRoot",
+        std::env::var_os("SystemRoot").expect("Windows fixture requires SystemRoot"),
+    );
+    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(output.stdout.len() + output.stderr.len() <= 1024 * 1024);
     assert!(
         output.status.success(),

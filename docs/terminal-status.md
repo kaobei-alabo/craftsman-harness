@@ -133,8 +133,12 @@ opt-out and panic, recording actual modes before process exit. Only Darwin's
 kernel-managed `PENDIN` bit is excluded from the new configured-mode comparison.
 Helpers refuse unmarked/unknown startup before config or terminal access.
 
-The first new Darwin PTY initializer's pointer-type failure and the raw-word
-capture failure are retained separately. The corrected test checks escaped
+The first new Darwin PTY initializer's pointer-type failure, raw-word capture
+failure and PR run 43704885446 at `672fe2b` remain separate evidence. That run's
+new Windows pipeline failed before agent construction in both modes: clearing
+`SystemRoot` prevented Winsock's provider from loading (native error 10106).
+Only the new immutable child environment preserves that Windows prerequisite;
+production code, limits and original assertions remain. The corrected test checks escaped
 rendered control text and the whole actual saved answer; original assertions,
 native deadlines and production runners remain intact. Full local/all-four
 hosted/every-step/both-native-mode inventories and warning/tree audits gate
