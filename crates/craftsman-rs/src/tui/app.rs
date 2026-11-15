@@ -1679,10 +1679,10 @@ pub async fn run(
             .then(|| session.thread_id.clone())
     });
     let cursor_result = terminal.show_cursor();
-    let exit_code = shutdown.exit_code();
-    let panicked = panic_hook.triggered();
+    let status_exit_code = shutdown.exit_code();
+    let status_panicked = panic_hook.triggered();
     let final_status = if cleanup.is_err()
-        || panicked
+        || status_panicked
         || drawing_error.is_some()
         || cursor_result.is_err()
         || slot
@@ -1690,7 +1690,7 @@ pub async fn run(
             .is_some_and(|session| session.agent.checkpoint_failed())
     {
         Status::Error
-    } else if exit_code != 0 || app.running || app.discard_stream_deltas {
+    } else if status_exit_code != 0 || app.running || app.discard_stream_deltas {
         Status::Idle
     } else {
         match app.program_status {
@@ -1703,7 +1703,9 @@ pub async fn run(
     drop(terminal);
     drop(guard);
     drop(slot);
+    let panicked = panic_hook.triggered();
     drop(panic_hook);
+    let exit_code = shutdown.exit_code();
     drop(shutdown);
     if cleanup.is_err() {
         anyhow::bail!("terminal shutdown timed out; work may still be completing");

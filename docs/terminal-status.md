@@ -78,7 +78,7 @@ ESC ]7501;state=blocked:app=craftsman:kind=permission:msg=V2FpdGluZyBmb3IgYXBwcm
 
 The message decodes to `Waiting for approval`. Every report repeats
 `app=craftsman` because a report replaces its whole record. Reports use the
-`ESC \\` terminator, fixed single-line base64 messages and no fabricated
+escape-byte/backslash terminator, fixed single-line base64 messages and no fabricated
 percentage. No heartbeat or terminal query is sent, and no input is consumed
 for feature detection. Unsupported terminals ignore the sequence; the
 terminal host chooses its own presentation.
