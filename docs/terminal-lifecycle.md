@@ -7,6 +7,12 @@ the tool future remains alive while that owner kills, reaps and drains. Inline
 `!command` and manual `/compact` work runs on owned tasks so input remains
 responsive. Finished operations clear their UI state only after actual return.
 
+The [terminal status reporter](terminal-status.md) observes these same lifecycle
+returns and publishes OSC 7501 for compatible terminal hosts. Cancellation
+stays working until actual return; main and delegated-task records are separate.
+Status metadata uses fixed text and does not bypass SafeBackend for any drawn
+model, tool or repository content.
+
 ## Turn and session owners
 
 The opt-in framework scope has a separate turn stop and session shutdown owner.

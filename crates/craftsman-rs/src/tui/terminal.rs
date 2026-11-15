@@ -13,7 +13,10 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use std::io::{self, Stdout, stdout};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::program_status::{Reporter, Status};
 
 pub(super) struct TerminalGuard {
     owner: Arc<TerminalOwner>,
@@ -22,6 +25,7 @@ pub(super) struct TerminalGuard {
 struct TerminalOwner {
     mouse: bool,
     restored: AtomicBool,
+    program_status: Mutex<Option<Reporter>>,
     #[cfg(unix)]
     original: UnixTerminalMode,
 }
@@ -66,6 +70,7 @@ impl TerminalGuard {
         let owner = Arc::new(TerminalOwner {
             mouse,
             restored: AtomicBool::new(false),
+            program_status: Mutex::new(None),
             #[cfg(unix)]
             original,
         });
@@ -84,6 +89,41 @@ impl TerminalGuard {
             return Err(error.into());
         }
         Ok(Self { owner })
+    }
+
+    pub(super) fn enable_program_status(&self, enabled: bool) {
+        if enabled {
+            *self.owner.program_status.lock().unwrap() = Some(Reporter::default());
+        }
+    }
+
+    /// The only ordinary OSC 7501 writer: fixed states, fixed messages and
+    /// local numeric ids. Model/tool/repository text still goes through SafeBackend.
+    pub(super) fn report_program_status(
+        &self,
+        status: Status,
+        registry: Option<&craftsman_harness::AgentRegistry>,
+        initializing: bool,
+    ) -> io::Result<()> {
+        let mut reporting = self.owner.program_status.lock().unwrap();
+        if self.owner.restored.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(reporter) = reporting.as_mut() {
+            reporter.update(&mut stdout().lock(), status, registry, initializing)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_program_status(&self, status: Status) -> io::Result<()> {
+        let mut reporting = self.owner.program_status.lock().unwrap();
+        if self.owner.restored.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(reporter) = reporting.as_mut() {
+            reporter.finish(&mut stdout().lock(), status)?;
+        }
+        Ok(())
     }
 
     pub(super) fn panic_hook(
@@ -145,6 +185,13 @@ impl TerminalOwner {
     fn restore(&self) {
         if self.restored.swap(true, Ordering::AcqRel) {
             return;
+        }
+        // Best effort on abnormal exit/panic. Never wait on a lock potentially
+        // held by the panicking thread, or pass its payload to the terminal.
+        if let Ok(mut reporting) = self.program_status.try_lock()
+            && let Some(reporter) = reporting.as_mut()
+        {
+            let _ = reporter.finish(&mut stdout().lock(), Status::Error);
         }
         let _ = disable_raw_mode();
         if self.mouse {
