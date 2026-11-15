@@ -1634,6 +1634,13 @@ pub async fn run(
     }
 
     app.closing = true;
+    shutdown.cancellation.cancel();
+    if let Some(session) = slot.peek() {
+        session.agent.request_cancel();
+    }
+    ui_rx.close();
+    app.cancel_pending_prompts();
+    // Preserve cancellation/refusal before any new status observation or IO.
     let stopping_work = app.running
         || slot.is_pending()
         || slot.peek().is_some_and(|session| {
@@ -1654,12 +1661,6 @@ pub async fn run(
             drawing_error.get_or_insert(error.into());
         }
     }
-    shutdown.cancellation.cancel();
-    if let Some(session) = slot.peek() {
-        session.agent.request_cancel();
-    }
-    ui_rx.close();
-    app.cancel_pending_prompts();
     while let Ok(event) = ui_rx.try_recv() {
         super::session_bridge::handle_ui_event(&mut app, event, slot.peek());
     }

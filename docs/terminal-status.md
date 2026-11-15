@@ -60,6 +60,7 @@ temporarily hides the old registry, its child records remain until the new
 session is ready. Removing an unobserved child clears its record and does not
 invent a completion.
 
+Shutdown requests cancellation and refuses prompt waiters before status IO.
 On normal exit, after the existing owned cleanup returns, Craftsman clears
 only its child namespace and reports the last ready/error outcome or idle for
 interrupted work. Idle exit does not manufacture another work/completion cycle.
@@ -100,7 +101,8 @@ child namespaces alone. Each report is under the protocol's 4096-byte cap;
 stored reporter state and each batch are bounded. Registry observation retains
 the existing `AgentRegistry::list` API and cost.
 
-Only changes are written and flushed. Cache state commits after successful
+Ordinary updates write and flush only changes; exit adds a final namespace
+clear and root report. Cache state commits after successful
 output; a partial write or flush failure disables further status writes and
 enters the existing terminal error/cleanup path. There is no status IO retry,
 new provider request, transport retry or model/tool replay.
