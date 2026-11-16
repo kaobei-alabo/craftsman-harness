@@ -23,11 +23,9 @@ fn workspace_packages_and_launchers_use_craftsman_identity() {
             .unwrap(),
         "craftsman"
     );
-    assert_eq!(
-        Path::new(env!("CARGO_BIN_EXE_craftsman-rs"))
-            .file_stem()
-            .unwrap(),
-        "craftsman-rs"
+    assert!(
+        option_env!("CARGO_BIN_EXE_craftsman-rs").is_none(),
+        "the retired compatibility command must not remain a Cargo binary target"
     );
 }
 

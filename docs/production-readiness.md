@@ -50,12 +50,14 @@ craftsman
 A source build without voice uses:
 
 ```sh
-cargo install --path crates/craftsman-rs --locked --no-default-features --features gadgets
+cargo install --path crates/craftsman-rs --bin craftsman --locked --no-default-features --features gadgets
 ```
 
 Installation does not replace user configuration, keys, stored sessions or
-permissions. The `craftsman-rs` compatibility launcher executes its sibling
-`craftsman` binary. The current splash and OSC changes are locally installed.
+permissions. `craftsman` is the sole application executable. Upgrading replaces
+the current CLI and removes the retired Cargo-owned `craftsman-rs` launcher.
+The internal app package remains `craftsman-rs` for source-build commands;
+framework/SDK names and dependency pins stay fixed.
 
 ## Build and use the gadget workflow
 

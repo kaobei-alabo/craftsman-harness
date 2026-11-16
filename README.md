@@ -64,6 +64,9 @@ craftsman setup
 craftsman
 ```
 
+The CLI command is `craftsman`. Run `./install.sh --upgrade` to update an older
+installation and remove its retired compatibility launcher.
+
 Configure your endpoint, API key and model using setup or the
 [example config](examples/config/multi-provider.json). Enable `gadgets.enabled`
 to use the gadget authoring tools and catalog. `/model` opens the grouped model
