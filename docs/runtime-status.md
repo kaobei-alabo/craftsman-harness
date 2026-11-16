@@ -228,7 +228,7 @@ Four starter gadgets were built and used in live GPT/Claude sessions, with all
 30 independent cases passing. Runtime tests, gadget tests and coding-task grades
 remain distinct evidence.
 
-The original evaluation ledger accounts for **$23.153274 of $25**, including
+The original evaluation ledger accounts for **$24.285934 of $25**, including
 **40 retained unknown-usage reservations**. That is conservative admission
 accounting, not an invoice or permission to reset/refund unknown requests.
 No live calls were made for OSC or splash changes. See
@@ -237,9 +237,9 @@ No live calls were made for OSC or splash changes. See
 [verifier comparison](live-verification-evaluation.md) and
 [live starter gadgets](live-gadget-evaluation.md).
 
-The next bounded context/failure-control slice is implemented in the maintained
-checkout behind explicit settings; its native and live delivery checks are
-separate from the verified main recorded above. Full typed context artifacts,
+The bounded context/failure-control implementation has its own
+[selected live comparison](live-context-evaluation.md) and native validation,
+separate from the earlier verified main recorded above. Full typed context artifacts,
 read-cache/result eviction, semantic test adjudication, broader effectful-loop
 controls and a fresh full/repeated evaluation remain work. Larger repositories,
 longer sessions and additional models need their own comparisons. Current priority and

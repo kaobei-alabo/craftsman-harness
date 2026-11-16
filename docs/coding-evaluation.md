@@ -29,6 +29,13 @@ The [declared-verifier check](live-verification-evaluation.md) then compares one
 matched task with identical policy files and records an actual verification result;
 the same original ledger remains authoritative.
 
+The [context/failure comparison](live-context-evaluation.md) preserves a
+candidate question/cancellation on the original Rust task. Corpus version 5
+makes the already intended public `skipped` field addition explicit in that
+task's prompt and README. Code fixtures, public checks, held-out graders and
+reference fixes remain unchanged. Both arms use the clarified input for its
+separate comparison; earlier scores remain attached to their original corpus.
+
 Explicit [context](context.md) and [failure controls](failure-controls.md) options
 can be compared in a selected paired continuation. A live continuation requires
 an immutable image for each recorded source/tree, matching task/corpus/options

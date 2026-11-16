@@ -16,15 +16,16 @@ or additional models.
 | First coding-quality cycle | Complete | Original 30-task baseline: 17/30 completed successful turns, 21/30 behavior passes; selected memory/Codex comparisons |
 | Task workflow and error hints | Merged and locally installed | Advisory guidance; native proof and five matched instances preserve correctness with lower observed work/cost |
 | Declared verification | Merged and locally installed | Reviewed scoped checks, actual results, bounded repair and content-bound protected review; one matched live composition check |
-| Bounded task context | Implemented, explicit opt-in; delivery checks in progress | Actual input/file observations, stale/uncertain labels and local `/context`; original messages/native items preserved |
-| Exact failure budgets and structural test review | Implemented, explicit opt-in; delivery checks in progress | Actual owned sampling pause after saved results; protected-source notes preserve legitimate progress/approvals |
+| Bounded task context | Implemented, explicit opt-in | Actual input/file observations, stale/uncertain labels and local `/context`; original messages/native items preserved |
+| Exact failure budgets and structural test review | Implemented, explicit opt-in | Actual owned sampling pause after saved results; protected-source notes preserve legitimate progress/approvals |
 | Fresh and broader quality evaluation | Planned | Full latest-runtime suite, repeated comparisons, larger repositories, longer sessions and more models |
 
-The original $25 evaluation ledger accounts for **$23.153274**, including
+The original $25 evaluation ledger accounts for **$24.285934**, including
 **40 retained unknown-usage reservations**. Its stages remain separately recorded:
 [first cycle](live-coding-evaluation.md) $20.678352,
 [workflow comparison](live-workflow-evaluation.md) $23.000498 cumulative,
-[verifier comparison](live-verification-evaluation.md) $23.153274 cumulative.
+[verifier comparison](live-verification-evaluation.md) $23.153274 cumulative,
+[context/failure comparison](live-context-evaluation.md) $24.285934 cumulative.
 No unknown reservation was reset/refunded, and failed attempts/contract
 corrections retain their original evidence. These are conservative admission
 amounts, not a provider invoice or an additional allowance.

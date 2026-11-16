@@ -139,7 +139,7 @@ attribution/provenance questions; see [NOTICE](../NOTICE) and
 
 ## Current validation record
 
-Latest implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
+Earlier installed implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
 PR run [43797314382](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43797314382),
 independent main run [43799188076](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43799188076)
 at `9c5774d`. All four jobs, every mandatory step and both modes passed with
@@ -157,12 +157,22 @@ GPT/Claude fixture configs, clean exit, restored modes and no model requests.
 OSC approval/question waits, real edit and saved answer were also verified in
 an actual Orca terminal. Config and keys were preserved.
 
+The bounded context/failure continuation passed all 14 local checks at `12f16ae`,
+with 2,079 core / 2,237 gadget-mode tests and no warnings. All earlier tests and
+warnings were inventoried; 117 ordinary cases and two explicitly marked ignored
+helpers were added, with no retired cases or changed goldens. The first original
+reserved-command sorting failure and the new completed-recovery expectation
+failure are retained separately from the corrected proof. Its
+[selected live comparison](live-context-evaluation.md) records original and
+clarified inputs without changing the historical 30-task grades. Final hosted
+and independent-main validation still follow the same required gates.
+
 The [coding baseline](live-coding-evaluation.md) records 17/30 successful completed
 turns and 21/30 behavior-passing workspaces. Selected memory/workflow comparisons
 and one [declared-verifier comparison](live-verification-evaluation.md) provide
 limited live composition evidence. There is no full 30-task score for the latest
 runtime or broad comparison with other coding products. The original allowance accounts for
-$23.153274/$25, retaining all 40 unknown-usage reservations; these are conservative
+$24.285934/$25, retaining all 40 unknown-usage reservations; these are conservative
 admission amounts, not an invoice.
 
 Failed early fixture/build/CI attempts remain failed evidence in their feature
@@ -172,17 +182,14 @@ records, not checks performed against today's source.
 
 ## Next engineering gates
 
-1. Complete delivery validation of the explicitly opted-in bounded task/file
-   context and exact failure-budget/structural-review slice; retain default
-   requests, native history, actual effects/input and approvals.
-2. Extend typed context/cache and broader semantic test/effectful-loop controls
+1. Extend typed context/cache and broader semantic test/effectful-loop controls
    only with their own source authority and behavior/quality evidence.
-3. Analyze retained failures offline, then run a fresh full/repeated evaluation
+2. Analyze retained failures offline, then run a fresh full/repeated evaluation
    across larger projects, long sessions and additional models within an explicit
    budget. Keep historical grades and the same retained accounting intact.
-4. Complete public headless response/output/storage/usage/trace, shutdown and guest
+3. Complete public headless response/output/storage/usage/trace, shutdown and guest
    registration boundaries before exposing `exec` or unattended headless gadgets.
-5. Validate remaining exceptional recovery/native containment and complete
+4. Validate remaining exceptional recovery/native containment and complete
    attribution/distribution work before any owner-approved publication.
 
 [harness-improvements.md](harness-improvements.md) is the concise completion map.
