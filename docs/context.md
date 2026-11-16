@@ -59,3 +59,8 @@ input/save events. TUI command/transfer and ACP support are app-selected. Native
 and live quality checks remain separate; this bounded continuity slice does not
 implement tool-result eviction, a read cache, full typed context artifacts or a
 broad coding-performance claim.
+
+The first full local run caught the new reserved-command entry out of lexical
+order. The entry was reordered; the existing sorted/unique assertion and all
+other native checks remain intact. The first failed run is retained separately
+from corrected-source validation.
