@@ -1106,8 +1106,9 @@ impl App {
                 self.push(format!("[turn suspended: {}]", suspension.request.summary));
             }
             Err(error) => {
-                if let Some(session) = session.filter(|session| !session.agent.checkpoint_failed())
-                {
+                if let Some(session) = session.filter(|session| {
+                    session.controls.is_none() && !session.agent.checkpoint_failed()
+                }) {
                     agent::rollback_dangling_user(&session.agent);
                 }
                 self.push_error(format!("Request failed: {error}"));
@@ -1135,6 +1136,27 @@ impl App {
         self.activity(format!(
             "Paused after {rounds} model rounds. Completed work remains in this conversation. Send a follow-up to continue; terminal.max_rounds in config.json controls the per-turn limit."
         ));
+    }
+
+    pub(super) fn finish_controlled_turn(&mut self, failures: u8) {
+        self.program_status = if self.discard_stream_deltas {
+            Status::Idle
+        } else {
+            Status::Paused
+        };
+        self.reset_turn_ui();
+        self.activity(format!(
+            "Paused after at least {failures} identical failures from one permitted operation. The committed tool group and accepted input are retained. Send a follow-up to continue with a fresh failure budget."
+        ));
+    }
+
+    pub(super) fn finish_cancelled_turn(&mut self) {
+        self.program_status = Status::Idle;
+        self.reset_turn_ui();
+        self.activity(
+            "Stopped by the user; completed work and accepted input remain in this conversation."
+                .into(),
+        );
     }
 
     pub(super) fn current_program_status(&self, initializing: bool) -> Status {
@@ -1613,10 +1635,12 @@ pub async fn run(
                     app.discard_stream_deltas = false;
                     app.active_response = None;
                     let agent = session.agent.clone();
+                    let controls = session.controls.clone();
                     let tx = bridge.tx.clone();
                     let prompt = extension_prompt.unwrap_or(line);
                     work.spawn(async move {
-                        let event = UiEvent::turn_result(agent.run_turn(prompt).await);
+                        let result = agent.run_turn(prompt).await;
+                        let event = UiEvent::turn_result_with_controls(result, controls.as_deref());
                         let _ = tx.send(event);
                     });
                 }

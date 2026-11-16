@@ -50,7 +50,7 @@ impl Agent {
         self.save_progress_checkpoint(None).await?;
         let messages = self.snapshot().messages;
         let compacted = compaction.compact_now(&messages).await?;
-        let counts = {
+        let (counts, observer_error) = {
             // The same stop mutex linearizes cancellation with replacement.
             // Only the message list changes; concurrent files/todos/custom state
             // are retained and included in the subsequent committed snapshot.
@@ -76,12 +76,24 @@ impl Agent {
                 state.last_usage_msg_count = 0;
                 counts
             });
+            let observer_error = if counts.is_some() {
+                if let Some(policy) = &self.boundary_policy {
+                    policy.idle_compaction_committed(&mut state).err()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             input.finishing = true;
-            counts
+            (counts, observer_error)
         };
         // Do not select against cancellation or replay turn_end here. The
         // actual save retains ownership through return, including a late stop.
         self.save_progress_checkpoint(None).await?;
+        if let Some(error) = observer_error {
+            return Err(error);
+        }
         Ok(counts)
     }
 }

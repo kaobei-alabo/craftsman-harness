@@ -560,6 +560,8 @@ async fn build_acp_session(
         task_focused_memory: true,
         task_workflow: true,
         verification: true,
+        context_compilation: true,
+        failure_controls: true,
         round_sink: Some({
             let messages = messages.clone();
             let counter = state.req_counter.clone();
@@ -1166,6 +1168,7 @@ fn start_prompt_turn(
         return;
     };
     let agent = session.runtime.agent.clone();
+    let controls = session.runtime.controls.clone();
     let usage = session.runtime.usage.clone();
     let usage_before = *usage.lock().unwrap();
     let frame_slot = session.frame_slot.clone();
@@ -1229,11 +1232,11 @@ fn start_prompt_turn(
                     | craftsman_harness::TurnResult::Suspended(_),
                 )) => "end_turn",
                 Some(Err(craftsman_harness::AgentError::MaxRounds(_))) => {
-                    agent::rollback_dangling_user(&agent);
+                    agent::rollback_uncontrolled_user(&agent, controls.as_deref());
                     "max_turn_requests"
                 }
                 Some(Err(_)) | None => {
-                    agent::rollback_dangling_user(&agent);
+                    agent::rollback_uncontrolled_user(&agent, controls.as_deref());
                     respond_error(&tx, prompt_id.clone(), -32603, "agent turn failed");
                     if active.as_ref().is_some_and(|p| p.prompt_id == prompt_id) {
                         active.take();

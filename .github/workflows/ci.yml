@@ -55,6 +55,8 @@ jobs:
         run: |
           python -I -B scripts/coding-eval/test_budget.py
           python -I -B scripts/coding-eval/test_scope.py
+          python -I -B scripts/coding-eval/test_preflight_continuation.py
+          python -I -B scripts/coding-eval/test_runner_options.py
   test:
     name: test (${{ matrix.os }})
     # A skipped draft job is never final validation. Ready PRs/main/manual
@@ -120,6 +122,8 @@ jobs:
         run: |
           python -I -B scripts/coding-eval/test_budget.py
           python -I -B scripts/coding-eval/test_scope.py
+          python -I -B scripts/coding-eval/test_preflight_continuation.py
+          python -I -B scripts/coding-eval/test_runner_options.py
       - name: Test accepted headless contract (no CLI or model execution)
         run: python -I docs/schemas/check_exec.py --self-test
       - name: Check documented source provenance

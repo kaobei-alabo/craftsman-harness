@@ -68,6 +68,7 @@ pub struct Session {
     /// conversation store and follows thread switches through Session helpers.
     pub workspace_checkpoints: Option<Arc<WorkspaceCheckpointManager>>,
     pub(crate) verification: Option<Arc<crate::verification::VerificationController>>,
+    pub(crate) controls: Option<Arc<crate::agent_controls::AppControls>>,
     /// The durable long-term-memory store, when it opened — the SAME `Arc` routed
     /// into the composite backend. Kept here so `/memories` can list the files
     /// without reaching into the agent's backend. `None` when the store failed to
@@ -131,6 +132,9 @@ impl Session {
         if let Some(verification) = &self.verification {
             verification.reset();
         }
+        if let Some(controls) = &self.controls {
+            let _ = controls.reset(&mut self.agent.state.lock().unwrap());
+        }
         self.thread_id = thread_id;
     }
 
@@ -156,6 +160,9 @@ impl Session {
         if let Some(verification) = &self.verification {
             verification.mark_restored();
         }
+        if let Some(controls) = &self.controls {
+            controls.reset(&mut self.agent.state.lock().unwrap())?;
+        }
         Ok(())
     }
 
@@ -168,6 +175,9 @@ impl Session {
             self.thread_id = thread_id.to_string();
             if let Some(verification) = &self.verification {
                 verification.mark_restored();
+            }
+            if let Some(controls) = &self.controls {
+                controls.reset(&mut self.agent.state.lock().unwrap())?;
             }
         }
         Ok(loaded)
@@ -808,6 +818,10 @@ pub struct SessionExtras {
     pub task_workflow: bool,
     /// TUI/ACP only: explicit verification policy, actual checks and protected review.
     pub verification: bool,
+    /// TUI/ACP support for explicit user context settings; missing settings are off.
+    pub context_compilation: bool,
+    /// TUI/ACP support for explicit exact-operation budgets and review signals.
+    pub failure_controls: bool,
     /// Terminal-only opt-in; frozen/deferred frontends never load gadgets.
     #[cfg(feature = "gadgets")]
     pub local_gadgets: bool,
@@ -1265,6 +1279,41 @@ async fn build_session_with_profile(
         _ => return None,
     }
     let cfg = construction.config();
+    if construction.prepared().is_some() && (extras.context_compilation || extras.failure_controls)
+    {
+        if let Some(sink) = &extras.activity_sink {
+            sink(
+                "Local context and failure controls are not available in the private prepared runtime.",
+            );
+        }
+        return None;
+    }
+    let context_options = if construction.prepared().is_none() && extras.context_compilation {
+        match crate::context_compiler::ContextOptions::parse(cfg.extra.get("context")) {
+            Ok(options) => options,
+            Err(error) => {
+                if let Some(sink) = &extras.activity_sink {
+                    sink(&error.to_string());
+                }
+                return None;
+            }
+        }
+    } else {
+        crate::context_compiler::ContextOptions::default()
+    };
+    let failure_options = if construction.prepared().is_none() && extras.failure_controls {
+        match crate::failure_control::Settings::parse(cfg.extra.get("failure_control")) {
+            Ok(options) => options,
+            Err(error) => {
+                if let Some(sink) = &extras.activity_sink {
+                    sink(error);
+                }
+                return None;
+            }
+        }
+    } else {
+        None
+    };
     let terminal_max_rounds = if construction.prepared().is_none() && extras.terminal_round_limits {
         match crate::terminal_limits::max_rounds(cfg) {
             Ok(rounds) => Some(rounds),
@@ -1290,6 +1339,23 @@ async fn build_session_with_profile(
             .workspace_root
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    };
+    let controls = if context_options.enabled || failure_options.is_some() {
+        match crate::agent_controls::AppControls::new(
+            context_options,
+            failure_options.as_ref(),
+            &cwd,
+        ) {
+            Ok(controls) => Some(controls),
+            Err(error) => {
+                if let Some(sink) = &extras.activity_sink {
+                    sink(&error.to_string());
+                }
+                return None;
+            }
+        }
+    } else {
+        None
     };
     let verification_plan = if construction.prepared().is_none() && extras.verification {
         let captured_config = cfg.clone();
@@ -1682,7 +1748,12 @@ async fn build_session_with_profile(
                 plan,
                 shell_runner.clone(),
             )
-            .with_activity(extras.activity_sink.clone()),
+            .with_activity(extras.activity_sink.clone())
+            .with_test_review_signals(
+                failure_options
+                    .as_ref()
+                    .is_some_and(|options| options.test_review_signals()),
+            ),
         )
     });
     let scoped_web = construction
@@ -1699,6 +1770,34 @@ async fn build_session_with_profile(
         workspace_checkpoints.clone(),
         Some(shell_runner),
     );
+    let trusted_file_tools: Vec<_> = if controls.is_some() {
+        shared_tools
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool.def().name.as_str(),
+                    "read_file" | "write_file" | "edit_file"
+                )
+            })
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut trusted_observational_tools: Vec<_> = if controls.is_some() {
+        shared_tools
+            .iter()
+            .filter(|tool| {
+                matches!(
+                    tool.def().name.as_str(),
+                    "read_file" | "ls" | "glob" | "grep"
+                )
+            })
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     #[cfg(feature = "gadgets")]
     let gadgets = if local_gadgets {
         let runtime = crate::gadgets::cli::options(cfg).and_then(|mut options| {
@@ -1735,7 +1834,11 @@ async fn build_session_with_profile(
         None
     };
     if construction.prepared().is_none() {
-        shared_tools.extend(lsp.tools());
+        let lsp_tools = lsp.tools();
+        if controls.is_some() {
+            trusted_observational_tools.extend(lsp_tools.iter().cloned());
+        }
+        shared_tools.extend(lsp_tools);
     }
     for server in loaded.servers {
         let defs: Vec<(ToolDef, bool)> = server
@@ -2064,6 +2167,24 @@ async fn build_session_with_profile(
             return None;
         }
     };
+    if let Some(controls) = &controls {
+        if let Some(position) = middleware
+            .iter()
+            .position(|entry| entry.name() == "compaction")
+        {
+            let reset = controls.clone();
+            middleware[position] = controls.context.wrap_compaction_with(
+                compaction.clone(),
+                Some(Arc::new(move |observation| reset.compacted(observation))),
+            );
+            middleware.insert(position, controls.prepare());
+        } else {
+            middleware.insert(0, controls.prepare());
+            if context_options.enabled {
+                middleware.insert(1, controls.context.compiler());
+            }
+        }
+    }
     // Legacy approval remains the last policy gate. Headless protects its immutable
     // gate before profile hooks AND wraps every contributed tool terminal.
     if let Some(gate) = construction.gate() {
@@ -2098,6 +2219,20 @@ async fn build_session_with_profile(
     if let Some(controller) = &verification {
         middleware.push(controller.clone() as Arc<dyn AgentMiddleware>);
     }
+    if let Some(controls) = &controls {
+        if context_options.enabled {
+            let trusted = controls.clone();
+            middleware.push(
+                controls
+                    .context
+                    .observer_with_trust(Arc::new(move |name| trusted.file_tool_is_trusted(name))),
+            );
+            middleware.push(controls.context.request_observer());
+        }
+        if failure_options.is_some() {
+            middleware.push(controls.observer());
+        }
+    }
 
     if let Some(history) = native_history {
         // Installed after profile filtering; native continuation data cannot be
@@ -2123,6 +2258,9 @@ async fn build_session_with_profile(
     }
     if let Some(controller) = &verification {
         builder = builder.completion_check(controller.clone());
+    }
+    if let Some(controls) = &controls {
+        builder = builder.boundary_policy(controls.clone());
     }
     if let Some(prepared) = construction.prepared() {
         // Copy the already cleaned checkpoint; never load_thread/resume, which
@@ -2175,10 +2313,14 @@ async fn build_session_with_profile(
         builder = builder.tool(t);
     }
 
+    let agent = builder.build();
+    if let Some(controls) = &controls {
+        controls.bind_tools(&agent, &trusted_observational_tools, &trusted_file_tools);
+    }
     Some(Session {
         #[cfg(feature = "gadgets")]
         gadgets,
-        agent: builder.build(),
+        agent,
         usage,
         registry,
         notifications: notif_rx,
@@ -2186,6 +2328,7 @@ async fn build_session_with_profile(
         checkpointer,
         workspace_checkpoints,
         verification,
+        controls,
         memories,
         compaction,
         mcp: mcp_summary,
@@ -2231,12 +2374,28 @@ pub fn rollback_dangling_user(agent: &Agent) {
     }
 }
 
+/// Selected local input observers retain accepted originals on failure, even
+/// in ACP's existing non-durable progress policy. Keep the legacy helper exact.
+pub(crate) fn rollback_uncontrolled_user(
+    agent: &Agent,
+    controls: Option<&crate::agent_controls::AppControls>,
+) {
+    if controls.is_none() {
+        rollback_dangling_user(agent);
+    }
+}
+
 /// Reset a session to a fresh conversation: drop messages/todos/files and
 /// zero the token counter (the same result as the old `/clear`, which rebuilt
 /// the whole session).
 pub fn clear_session(session: &Session) {
     session.agent.clear_pending_input();
-    *session.agent.state.lock().unwrap() = AgentState::default();
+    let mut state = session.agent.state.lock().unwrap();
+    *state = AgentState::default();
+    if let Some(controls) = &session.controls {
+        let _ = controls.clear(&mut state);
+    }
+    drop(state);
     *session.usage.lock().unwrap() = (0, 0);
 }
 
@@ -2391,3 +2550,11 @@ mod verification_tests;
 #[cfg(test)]
 #[path = "agent_verification_protocol_tests.rs"]
 mod verification_protocol_tests;
+
+#[cfg(test)]
+#[path = "agent_failure_control_tests.rs"]
+mod failure_control_tests;
+
+#[cfg(test)]
+#[path = "agent_context_control_tests.rs"]
+mod context_control_tests;

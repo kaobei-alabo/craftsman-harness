@@ -1,8 +1,8 @@
 # Craftsman production readiness
 
 Updated November 16, 2026. The maintained repository is
-`kaobei-alabo/craftsman-harness`; the latest independently verified implementation
-is `9c5774d`. This is a working terminal/ACP agent with extensive source and
+`kaobei-alabo/craftsman-harness`. Earlier independent runtime proof at `9c5774d`
+and subsequent continuation evidence are recorded below. This working terminal/ACP agent has extensive source and
 native regression coverage plus bounded live task/gadget evidence. Full
 unattended execution, native OS containment and release readiness remain open.
 
@@ -10,7 +10,7 @@ unattended execution, native OS containment and release readiness remain open.
 
 | Area | Current implementation | Remaining production work |
 | --- | --- | --- |
-| Terminal / ACP coding agent | Streaming file/shell/web tools, approvals, steering, owned cancellation, durable turns and model changes, task guidance and declared verification | Context compilation, stronger failure/test-integrity controls, broader live and exceptional recovery evaluation |
+| Terminal / ACP coding agent | Streaming file/shell/web tools, approvals, steering, owned cancellation, durable turns and model changes, task guidance, declared verification and opt-in bounded context/failure controls | Typed context/cache, broader semantic test/effectful-loop controls, live and exceptional recovery evaluation |
 | Terminal UX | Gray/turquoise 匠 splash, small hammer/label, grouped model → effort menus, mutation-driven file checkpoints and saved 200-round pauses | Continued long-session usability measurement |
 | Host monitoring | OSC 7501 lifecycle and bounded delegated-task records, verified in an actual Orca terminal | Native host chat registration is separate ACP client integration |
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic component replacement, capability approvals and change-only discovery | Keep user opt-in and separate build/load approvals; expand representative live evaluation |
@@ -103,9 +103,9 @@ adds terminal monitoring; native Orca chat registration remains host work. See
 ./scripts/verify.sh
 ```
 
-The script selects an installed Python 3.11+ interpreter and runs all 12 checks:
+The script selects an installed Python 3.11+ interpreter and runs all 14 checks:
 formatting, locked core/default builds, accepted exec conformance, benchmark
-contracts, CI-cache/workflow contracts, coding-budget/scope contracts,
+contracts, CI-cache/workflow contracts, coding-budget/scope/preflight/options contracts,
 provenance, both full workspace feature modes and unchanged goldens. A failed
 core mode does not hide the gadget mode. Default builds include voice/gadgets.
 
@@ -139,7 +139,7 @@ attribution/provenance questions; see [NOTICE](../NOTICE) and
 
 ## Current validation record
 
-Latest implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
+Earlier installed implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
 PR run [43797314382](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43797314382),
 independent main run [43799188076](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43799188076)
 at `9c5774d`. All four jobs, every mandatory step and both modes passed with
@@ -157,12 +157,22 @@ GPT/Claude fixture configs, clean exit, restored modes and no model requests.
 OSC approval/question waits, real edit and saved answer were also verified in
 an actual Orca terminal. Config and keys were preserved.
 
+The bounded context/failure continuation passed all 14 local checks at `12f16ae`,
+with 2,079 core / 2,237 gadget-mode tests and no warnings. All earlier tests and
+warnings were inventoried; 117 ordinary cases and two explicitly marked ignored
+helpers were added, with no retired cases or changed goldens. The first original
+reserved-command sorting failure and the new completed-recovery expectation
+failure are retained separately from the corrected proof. Its
+[selected live comparison](live-context-evaluation.md) records original and
+clarified inputs without changing the historical 30-task grades. Final hosted
+and independent-main validation still follow the same required gates.
+
 The [coding baseline](live-coding-evaluation.md) records 17/30 successful completed
 turns and 21/30 behavior-passing workspaces. Selected memory/workflow comparisons
 and one [declared-verifier comparison](live-verification-evaluation.md) provide
 limited live composition evidence. There is no full 30-task score for the latest
 runtime or broad comparison with other coding products. The original allowance accounts for
-$23.153274/$25, retaining all 40 unknown-usage reservations; these are conservative
+$24.285934/$25, retaining all 40 unknown-usage reservations; these are conservative
 admission amounts, not an invoice.
 
 Failed early fixture/build/CI attempts remain failed evidence in their feature
@@ -172,15 +182,14 @@ records, not checks performed against today's source.
 
 ## Next engineering gates
 
-1. Implement bounded task/file context and an explainable `/context` view.
-2. Add safe repeated-failure escalation and semantic test-integrity review beyond
-   existing declared checks/protected-content approval.
-3. Analyze retained failures offline, then run a fresh full/repeated evaluation
+1. Extend typed context/cache and broader semantic test/effectful-loop controls
+   only with their own source authority and behavior/quality evidence.
+2. Analyze retained failures offline, then run a fresh full/repeated evaluation
    across larger projects, long sessions and additional models within an explicit
    budget. Keep historical grades and the same retained accounting intact.
-4. Complete public headless response/output/storage/usage/trace, shutdown and guest
+3. Complete public headless response/output/storage/usage/trace, shutdown and guest
    registration boundaries before exposing `exec` or unattended headless gadgets.
-5. Validate remaining exceptional recovery/native containment and complete
+4. Validate remaining exceptional recovery/native containment and complete
    attribution/distribution work before any owner-approved publication.
 
 [harness-improvements.md](harness-improvements.md) is the concise completion map.

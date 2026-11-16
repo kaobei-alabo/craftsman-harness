@@ -12,10 +12,12 @@ import stat
 import subprocess
 import sys
 import time
+import math
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from check_corpus import grade
 from test_scope import retained_checks
 from budget import money
+from preflight_continuation import read_json, validate_feature_options, preflight, canonical_sha256
 
 
 def snapshot_files(root):
@@ -96,20 +98,117 @@ def source_config(path,model):
     if selected['protocol']!='openai_responses' or api_model!='gpt-6.1-sol':raise ValueError('Only the approved GPT-6.1 Sol route is enabled for this run')
     key=re.sub(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}',lambda match:os.environ.get(match[1],''),selected['api_key'])
     if not key or '${' in key:raise ValueError('Configured credential is unavailable')
-    settings=selected['models'][api_model].get('settings',{})
+    settings=credential_free_settings(selected['models'][api_model].get('settings',{}))
     return selected['base_url'],key,settings,hashlib.sha256(raw).hexdigest()
+
+
+def selected_tasks(tasks, selection):
+    if selection is None:
+        return tasks
+    ids=selection.split(',')
+    known={task['id'] for task in tasks}
+    if len(ids)!=len(set(ids)) or any(task not in known for task in ids):
+        raise ValueError('Evaluation task selection must contain exact unique known ids')
+    selected=set(ids)
+    return [task for task in tasks if task['id'] in selected]
+
+
+def credential_free_settings(settings):
+    if not isinstance(settings,dict) or set(settings)-{'generation','reasoning'}:
+        raise ValueError('Evaluation model settings require only reviewed generation/reasoning fields')
+    result={}
+    generation=settings.get('generation')
+    if generation is not None:
+        if not isinstance(generation,dict) or set(generation)-{'max_output_tokens','temperature','top_p','seed','presence_penalty','frequency_penalty','parallel_tool_calls'}:
+            raise ValueError('Evaluation generation fields are not in the reviewed schema')
+        cleaned={}
+        for name,value in generation.items():
+            if name=='max_output_tokens':valid=type(value) is int and 1<=value<=1000000
+            elif name=='seed':valid=type(value) is int and 0<=value<2**63
+            elif name=='parallel_tool_calls':valid=type(value) is bool
+            elif name=='temperature':valid=type(value) in (int,float) and math.isfinite(value) and 0<=value<=2
+            elif name=='top_p':valid=type(value) in (int,float) and math.isfinite(value) and 0<=value<=1
+            else:valid=type(value) in (int,float) and math.isfinite(value) and -2<=value<=2
+            if not valid:raise ValueError('Evaluation generation value is invalid')
+            cleaned[name]=value
+        result['generation']=cleaned
+    reasoning=settings.get('reasoning')
+    if reasoning is None:
+        if 'reasoning' in settings:result['reasoning']=None
+    else:
+        if not isinstance(reasoning,dict) or set(reasoning)!={'type','value'} or reasoning['type']!='effort' or not isinstance(reasoning['value'],str) or reasoning['value'] not in {'none','minimal','low','medium','high','xhigh','max'}:
+            raise ValueError('Evaluation reasoning settings are invalid')
+        result['reasoning']={'type':'effort','value':reasoning['value']}
+    return result
+
+
+def load_feature_options(path):
+    if path is None:return {},None
+    value,digest=read_json(path,32768)
+    return validate_feature_options(value),digest
+
+
+def agent_configuration(model,gateway,key,settings,feature_options,effort=None):
+    features=validate_feature_options(feature_options)
+    if effort is not None and effort!='xhigh':
+        raise ValueError('The continuation effort must be explicitly xhigh')
+    eval_settings=credential_free_settings(settings)
+    generation=dict(eval_settings.get('generation',{}))
+    generation['max_output_tokens']=8192
+    eval_settings['generation']=generation
+    if effort is not None:
+        eval_settings['reasoning']={'type':'effort','value':effort}
+    config={'model':model,'providers':{model.split('/',1)[0]:{'protocol':'openai_responses','base_url':f'http://{gateway}:8765/v1','api_key':key,
+            'models':{'gpt-6.1-sol':{'settings':eval_settings}}}},'permission_mode':'manual','auto_approve':False,'voice':{'enabled':False},'gadgets':{'enabled':False},'mcp_servers':[],'lsp_servers':{}}
+    config.update(features)
+    return config
+
+
+def effective_settings_record(config):
+    provider,model=config['model'].split('/',1)
+    settings=credential_free_settings(config['providers'][provider]['models'][model]['settings'])
+    return {'effective_model_settings':settings,'effective_model_settings_sha256':canonical_sha256(settings)}
+
+
+def continuation_binding(args,tasks,feature_options,effort):
+    manifest=getattr(args,'continuation_manifest',None)
+    required=bool(feature_options) or effort is not None or manifest is not None
+    if getattr(args,'synthetic',False) or not required:return None
+    builds=getattr(args,'build_records',None)
+    checkpoint=getattr(args,'ledger_checkpoint',None)
+    arm=getattr(args,'continuation_arm',None)
+    if manifest is None or builds is None or checkpoint is None or arm not in {'control','candidate'}:
+        raise ValueError('Live continuation requires explicit manifest/build/checkpoint/arm bindings')
+    proof=preflight(manifest,builds,checkpoint,args.ledger,args.corpus)
+    if proof['cohort']!='selected_pair':
+        raise ValueError('Live continuation requires a selected_pair execution cohort; forecasts do not authorize runs')
+    selected=proof['arms'][arm]
+    if set(proof['tasks'])!={task['id'] for task in tasks} or selected['options']!=feature_options:
+        raise ValueError('Live continuation cohort/options differ from the reviewed manifest')
+    if args.image!=selected['image_id'] or not re.fullmatch(r'sha256:[0-9a-f]{64}',args.image):
+        raise ValueError('Live continuation must execute its bound immutable image id')
+    if args.timeout!=300 or effort!='xhigh' or args.model!='openai/gpt-6.1-sol' or args.arm!='craftsman':
+        raise ValueError('Live continuation settings differ from the reviewed experiment')
+    return proof
 
 
 def run(args):
     if not re.fullmatch(r'[a-z0-9-]{1,30}',args.label) or not 1<=args.timeout<=900:
         raise ValueError('Invalid evaluation label or timeout')
     corpus=json.loads(args.corpus.read_text())
-    tasks=corpus['tasks']
-    if args.tasks:tasks=[t for t in tasks if t['id'] in args.tasks.split(',')]
+    tasks=selected_tasks(corpus['tasks'],args.tasks)
     if not tasks:raise ValueError('No selected evaluation tasks')
+    options_path=getattr(args,'feature_options',None)
+    feature_options,feature_options_hash=load_feature_options(options_path)
+    effort=getattr(args,'effort',None)
+    if effort is not None and effort!='xhigh':raise ValueError('The continuation effort must be explicitly xhigh')
+    if feature_options and args.arm!='craftsman':raise ValueError('Craftsman feature options cannot configure a comparison product')
+    continuation=continuation_binding(args,tasks,feature_options,effort)
     output=args.output.resolve();output.mkdir(parents=True,exist_ok=False)
     driver=Path(__file__).resolve().parent
     endpoint,key,settings,config_hash=source_config(args.config,args.model)
+    if continuation is not None and set(settings.get('generation',{}))-{'max_output_tokens'}:
+        raise ValueError('Inherited generation options differ from the fixed continuation manifest')
     nonce=secrets.token_hex(5);network='craftsman-eval-'+nonce;gateway='craftsman-eval-gateway-'+nonce
     gateway_process=None;active=None
     ledger_dir=args.ledger.resolve().parent;ledger_dir.mkdir(parents=True,exist_ok=True)
@@ -127,13 +226,19 @@ def run(args):
         confirmed=True;cap=priced['cap_usd']
     if not 0<money(cap)<=money('25.00'):raise ValueError('Evaluation cap exceeds the approved allowance')
     for price in prices.values():money(price)
-    with lease.open('xb') as owner:owner.write(lease_bytes)
     bootstrap={'endpoint':endpoint,'api_key':key,'model':'gpt-6.1-sol','tokens':tokens,'prices':prices,'prices_verified':confirmed,'cap_usd':cap,'ledger':'/ledger/'+args.ledger.name}
+    if continuation is not None:bootstrap['expected_ledger_sha256']=continuation['ledger_sha256']
     if args.synthetic:
         if endpoint!='http://fixture:9876/v1' or key!='fixture-only-key':raise ValueError('Synthetic route must use the fixed fixture')
         bootstrap['synthetic']=True
     report={'version':1,'model':args.model,'cap_usd':cap,'prices':prices,'pricing_source':'Operator-confirmed endpoint rate file.','image':docker('image','inspect',args.image,'--format','{{.Id}}'),
             'config_sha256':config_hash,'corpus_sha256':hashlib.sha256(args.corpus.read_bytes()).hexdigest(),'tasks':[]}
+    report['feature_options']=feature_options
+    report['feature_options_sha256']=feature_options_hash
+    report['effort_override']=effort
+    report['continuation_preflight']=continuation
+    # Image inspection and all setup validation precede exclusive lease creation.
+    with lease.open('xb') as owner:owner.write(lease_bytes)
     try:
         docker('network','create','--internal',network)
         if args.synthetic:
@@ -160,9 +265,8 @@ def run(args):
             subprocess.run([*git,'init','--quiet',str(workspace)],check=True,stdout=subprocess.DEVNULL)
             subprocess.run([*git,'-C',str(workspace),'add','--all'],check=True,stdout=subprocess.DEVNULL)
             subprocess.run([*git,'-C',str(workspace),'commit','--quiet','--no-gpg-sign','-m','Task baseline'],check=True,stdout=subprocess.DEVNULL)
-            eval_settings=dict(settings);generation=dict(eval_settings.get('generation',{}));generation['max_output_tokens']=8192;eval_settings['generation']=generation
-            config={'model':args.model,'providers':{args.model.split('/',1)[0]:{'protocol':'openai_responses','base_url':f'http://{gateway}:8765/v1','api_key':token_for_run[run_id],
-                    'models':{'gpt-6.1-sol':{'settings':eval_settings}}}},'permission_mode':'manual','auto_approve':False,'voice':{'enabled':False},'gadgets':{'enabled':False},'mcp_servers':[],'lsp_servers':{}}
+            config=agent_configuration(args.model,gateway,token_for_run[run_id],settings,feature_options,effort)
+            settings_record=effective_settings_record(config)
             active='craftsman-eval-task-'+nonce+'-'+str(index)
             streams,code,elapsed,error=capture(base_args(args.image,active,network,workspace,driver,args.arm),{'config':config,'prompt':task['prompt']},active,args.timeout)
             for channel,text in streams.items():(case/(channel+'.jsonl' if channel=='stdout' else channel+'.txt')).write_text(text)
@@ -195,6 +299,7 @@ def run(args):
             passed=scored['passed'] and not unrelated and code==0 and stop=='end_turn'
             row={'id':task['id'],'category':task['category'],'language':task['language'],'passed':passed,'grader_passed':scored['passed'],'exit':code,'stop_reason':stop,
                  'elapsed_seconds':elapsed,'modified_files':modified,'unrelated_edits':unrelated,'error':error,'approvals_once':(result or {}).get('approvals_once',0),'human_questions':(result or {}).get('human_questions',0)}
+            row.update(settings_record)
             report['tasks'].append(row);(case/'result.json').write_text(json.dumps(row,indent=2)+'\n');(output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
             print(json.dumps(row),flush=True)
             ledger=json.loads(args.ledger.read_text())
@@ -232,5 +337,11 @@ if __name__=='__main__':
     p.add_argument('--synthetic',action='store_true')
     p.add_argument('--prices',type=Path)
     p.add_argument('--arm',choices=['craftsman','codex'],default='craftsman')
+    p.add_argument('--feature-options',type=Path,help='Explicit validated context/failure-control experiment options; never a user config copy')
+    p.add_argument('--effort',choices=['xhigh'],help='Explicit reasoning setting for the reviewed continuation experiment')
+    p.add_argument('--continuation-manifest',type=Path)
+    p.add_argument('--build-records',type=Path)
+    p.add_argument('--ledger-checkpoint',type=Path)
+    p.add_argument('--continuation-arm',choices=['control','candidate'])
     try:print(json.dumps(run(p.parse_args()),indent=2))
     except (ValueError,KeyError,subprocess.CalledProcessError,subprocess.TimeoutExpired):raise SystemExit('Evaluation setup failed; inspect the bounded task artifacts.')

@@ -1,7 +1,7 @@
 # Coding-quality evaluations
 
 See [improvement progress](harness-improvements.md) for completed work and the
-remaining verification/context/quality milestones.
+remaining context and broader quality milestones.
 
 The starter corpus contains 30 small repository tasks: six bugs, six features,
 six refactors, six failing-test repairs and six changes across multiple files.
@@ -28,6 +28,22 @@ runs and repeats, original/clarified contracts and the same capped accounting.
 The [declared-verifier check](live-verification-evaluation.md) then compares one
 matched task with identical policy files and records an actual verification result;
 the same original ledger remains authoritative.
+
+The [context/failure comparison](live-context-evaluation.md) preserves a
+candidate question/cancellation on the original Rust task. Corpus version 5
+makes the already intended public `skipped` field addition explicit in that
+task's prompt and README. Code fixtures, public checks, held-out graders and
+reference fixes remain unchanged. Both arms use the clarified input for its
+separate comparison; earlier scores remain attached to their original corpus.
+
+Explicit [context](context.md) and [failure controls](failure-controls.md) options
+can be compared in a selected paired continuation. A live continuation requires
+an immutable image for each recorded source/tree, matching task/corpus/options
+and fixed model settings, and a read-only checkpoint of the original ledger.
+The preflight rejects changes to original rows, unknown reservations,
+rates or the total allowance. The gateway checks the current ledger digest again
+before starting admission. Full-suite forecasts are preparation only; the
+selected pilot does not authorize running them.
 
 ## Runner boundary
 
@@ -105,11 +121,28 @@ endpoint and experiment ceiling. That comparison uses the external container
 as its sandbox and copies no host auth, plugins, hooks or MCP connections.
 It is a controlled same-model comparison, with those settings recorded.
 
+For a selected continuation, supply `--effort xhigh`, `--feature-options`,
+`--continuation-manifest`, `--build-records`, `--ledger-checkpoint` and
+`--continuation-arm control|candidate`, using the arm's recorded `sha256:` image
+ID. `preflight_continuation.py` independently checks those records and the
+original ledger without loading credentials or making a model request. Unknown
+task IDs, duplicate IDs and an explicitly empty selection refuse. Feature files
+contain only reviewed context/failure settings; endpoint credentials stay in
+the original operator config.
+
 The initial live route is explicitly limited to `gpt-6.1-sol` over Responses.
 Other model/protocol comparisons require their own reviewed rate/transport
 configuration; the script never guesses credentials or silently substitutes a
 model. All paid stages are operator-invoked. CI checks the offline admission,
 stream parsing and scope contracts without using model credentials.
+
+The first Windows continuation-contract run rejected unchanged files because
+python 3.12 path and handle `ctime` represent creation and change time
+respectively. The corrected reader checks every full version field within each
+source and exact identity/size/modification-time/link fields across them, with
+owned binary reads for unchanged CRLF bytes and genuine EOF. Original bounds,
+JSON/digest/changed-file checks remain intact. The failed run and its skipped
+Windows core step are retained; fresh full platform validation gates delivery.
 
 The evaluation design follows [official evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices):
 define task-specific criteria, use reproducible graders, inspect failure traces,

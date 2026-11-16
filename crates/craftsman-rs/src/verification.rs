@@ -178,6 +178,7 @@ pub(crate) struct VerificationController {
     state: Mutex<VerificationState>,
     activity: Option<crate::agent::ActivitySink>,
     approved_project: std::sync::atomic::AtomicBool,
+    test_review_signals: bool,
 }
 
 impl VerificationController {
@@ -204,11 +205,17 @@ impl VerificationController {
             state: Mutex::new(VerificationState::default()),
             activity: None,
             approved_project: std::sync::atomic::AtomicBool::new(false),
+            test_review_signals: false,
         }
     }
 
     pub(crate) fn with_activity(mut self, activity: Option<crate::agent::ActivitySink>) -> Self {
         self.activity = activity;
+        self
+    }
+
+    pub(crate) fn with_test_review_signals(mut self, enabled: bool) -> Self {
+        self.test_review_signals = enabled;
         self
     }
 
@@ -291,7 +298,8 @@ impl VerificationController {
             let state = self.state.lock().unwrap();
             (state.before.clone(), state.restored)
         };
-        let (protected_digest, changes) = match before.filter(|_| !restored) {
+        let baseline = before.filter(|_| !restored);
+        let (protected_digest, mut changes) = match baseline.as_ref() {
             Some(before) => before
                 .protected_review(&image, &self.plan.protected)
                 .map_err(state_error)?,
@@ -301,6 +309,32 @@ impl VerificationController {
             None => (String::new(), String::new()),
         };
         let changed = !changes.is_empty();
+        if self.test_review_signals && changed {
+            if let Some(before) = baseline.as_ref() {
+                let mut notes = String::new();
+                before.visit_protected_changes(&image, &self.plan.protected, |path, old, new| {
+                    if notes.len() <= MAX_EVIDENCE_BYTES {
+                        let analysis = crate::failure_control::integrity::analyze(path, old, new);
+                        notes.push_str(&format!("\nStructural review for {path:?}:\n"));
+                        if analysis.notes().is_empty()
+                            && matches!(analysis.coverage(), crate::failure_control::integrity::Coverage::StructuralOnly)
+                        {
+                            notes.push_str("No configured structural signals were found. This does not waive protected-content review or prove test correctness.\n");
+                        } else {
+                            notes.push_str(&analysis.render_notes());
+                        }
+                    }
+                }).map_err(state_error)?;
+                if changes.len().saturating_add(notes.len()) > MAX_EVIDENCE_BYTES {
+                    return Err(state_error(
+                        "Verification review exceeds its display limit.",
+                    ));
+                }
+                changes.push_str(&notes);
+            } else {
+                changes.push_str("\nStructural review baseline is unavailable after restore; review the actual protected contents.\n");
+            }
+        }
         let summary = if changed {
             "Review protected test changes and run declared verification"
         } else {

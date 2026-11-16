@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "tasks": [
     {
       "id": "py-page-boundaries",
@@ -636,14 +636,14 @@
       "id": "rs-report-skips",
       "language": "rust",
       "category": "multi-file",
-      "prompt": "Add skipped-test accounting across the existing Report model and JSON renderer. Keep Report::new(passed,failed), add skip() to increment skipped, and expose counts() -> (u64,u64,u64). render() must emit {\"passed\":N,\"failed\":N,\"skipped\":N} with all three actual counts. Preserve existing constructor behavior. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing.",
+      "prompt": "Add skipped-test accounting across the existing Report model and JSON renderer. Keep Report::new(passed,failed), add skip() to increment skipped, and expose counts() -> (u64,u64,u64). render() must emit {\"passed\":N,\"failed\":N,\"skipped\":N} with all three actual counts. Preserve existing constructor behavior. Preserve the existing public API unless a new API is explicitly requested. Do not weaken or delete existing tests. Run the relevant checks before finishing. Adding a public skipped: u64 field is authorized for this requested feature. Preserve the passed and failed fields and the Report::new(passed, failed) signature and behavior. Compatibility with old two-field Report struct literals is waived only for this field addition.",
       "files": {
         "src/model.rs": "pub struct Report{pub passed:u64,pub failed:u64}impl Report{pub fn new(passed:u64,failed:u64)->Self{Self{passed,failed}}}",
         "src/render.rs": "use crate::Report;pub fn json(r:&Report)->String{format!(\"{{\\\"passed\\\":{},\\\"failed\\\":{}}}\",r.passed,r.failed)}",
         "src/lib.rs": "mod model;mod render;pub use model::Report;impl Report{pub fn render(&self)->String{render::json(self)}}\n",
         "Cargo.toml": "[package]\nname = \"mini_toolkit\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         "tests/public.rs": "#[test] fn constructor(){assert!(mini_toolkit::Report::new(2,1).render().contains(\"passed\"));}\n",
-        "README.md": "# Mini toolkit\n\nAdd skipped-test accounting across the existing Report model and JSON renderer. Keep Report::new(passed,failed), add skip() to increment skipped, and expose counts() -> (u64,u64,u64). render() must emit {\"passed\":N,\"failed\":N,\"skipped\":N} with all three actual counts. Preserve existing constructor behavior.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
+        "README.md": "# Mini toolkit\n\nAdd skipped-test accounting across the existing Report model and JSON renderer. Keep Report::new(passed,failed), add skip() to increment skipped, and expose counts() -> (u64,u64,u64). render() must emit {\"passed\":N,\"failed\":N,\"skipped\":N} with all three actual counts. Preserve existing constructor behavior.\n\nAdding a public skipped: u64 field is authorized for this requested feature. Preserve the passed and failed fields and the Report::new(passed, failed) signature and behavior. Compatibility with old two-field Report struct literals is waived only for this field addition.\n\nRun the public checks with `cargo test --offline --quiet`. No dependency downloads are required.\n",
         ".gitignore": "target/\n__pycache__/\n"
       },
       "reference": {

@@ -90,6 +90,8 @@ documents and folders containing several projects are supported too.
 [Coding evaluations](docs/coding-evaluation.md) ·
 [Task workflow](docs/task-workflow.md) ·
 [Declared verification](docs/verification.md) ·
+[Task context](docs/context.md) ·
+[Failure controls](docs/failure-controls.md) ·
 [Development and validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).

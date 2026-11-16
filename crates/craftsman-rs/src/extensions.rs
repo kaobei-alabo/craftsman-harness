@@ -21,6 +21,7 @@ pub const RESERVED_COMMANDS: &[&str] = &[
     "clear",
     "compact",
     "config",
+    "context",
     "copy",
     "diff",
     "doctor",

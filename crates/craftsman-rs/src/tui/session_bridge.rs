@@ -20,6 +20,9 @@ mod checkpoint_tests;
 #[path = "session_bridge/compaction_tests.rs"]
 mod compaction_tests;
 #[cfg(test)]
+#[path = "session_bridge/control_tests.rs"]
+mod control_tests;
+#[cfg(test)]
 #[path = "session_bridge/lifecycle_tests.rs"]
 mod lifecycle_tests;
 #[cfg(test)]
@@ -50,6 +53,8 @@ pub(super) enum UiEvent {
     },
     TurnFinished(Result<TurnResult, String>),
     TurnLimited(usize),
+    TurnPaused(u8),
+    TurnCancelled,
     OperationFinished(String),
     ModelCatalogLoaded {
         current: Option<String>,
@@ -69,6 +74,23 @@ impl UiEvent {
             Err(craftsman_harness::AgentError::MaxRounds(rounds)) => Self::TurnLimited(rounds),
             result => Self::TurnFinished(result.map_err(|error| error.to_string())),
         }
+    }
+
+    pub(super) fn turn_result_with_controls(
+        result: Result<TurnResult, craftsman_harness::AgentError>,
+        controls: Option<&crate::agent_controls::AppControls>,
+    ) -> Self {
+        if controls.is_some() && matches!(&result, Err(craftsman_harness::AgentError::Cancelled)) {
+            return Self::TurnCancelled;
+        }
+        if matches!(&result, Err(craftsman_harness::AgentError::State(_))) {
+            if let Some(receipt) =
+                controls.and_then(crate::agent_controls::AppControls::confirmed_pause)
+            {
+                return Self::TurnPaused(receipt.failures());
+            }
+        }
+        Self::turn_result(result)
     }
 }
 
@@ -121,6 +143,8 @@ impl UiBridge {
             task_focused_memory: true,
             task_workflow: true,
             verification: true,
+            context_compilation: true,
+            failure_controls: true,
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             round_sink: Some(Arc::new(move || {
@@ -592,6 +616,8 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
         }
         UiEvent::TurnFinished(result) => app.finish_turn(result, session),
         UiEvent::TurnLimited(rounds) => app.finish_limited_turn(rounds),
+        UiEvent::TurnPaused(failures) => app.finish_controlled_turn(failures),
+        UiEvent::TurnCancelled => app.finish_cancelled_turn(),
         UiEvent::Voice(event) => match event {
             crate::voice::VoiceEvent::State(state) => {
                 app.voice.state = state;

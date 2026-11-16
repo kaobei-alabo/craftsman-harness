@@ -1,9 +1,11 @@
 # Craftsman runtime — current implementation and remaining work
 
 Updated November 16, 2026 (Asia/Taipei). This page describes maintained runtime
-behavior and its remaining boundaries. The latest independently verified main
-is `9c5774d`, including the 匠 splash and OSC 7501. Source validation, live coding
-results and published releases are separate evidence.
+behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
+at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
+main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
+The context/failure continuation is recorded below. Source validation, live
+coding results and published releases are separate evidence.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -106,7 +108,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | File checkpoints and long turns | Merged and locally installed | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
-| Context compilation and stronger failure controls | Planned | Pinned task/file state, explainable /context, safe stuck escalation and semantic test-integrity review; [progress](harness-improvements.md) |
+| Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
 | Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
@@ -186,8 +188,8 @@ requires CMake, plus ALSA development headers/pkg-config/clang on Linux.
 ```
 
 The verification script selects an installed python 3.11 or newer runtime
-and runs 12 checks: formatting, locked core/default builds, exec-contract,
-benchmark-driver, CI-cache/workflow, coding-budget and scope contracts,
+and runs 14 checks: formatting, locked core/default builds, exec-contract,
+benchmark-driver, CI-cache/workflow, coding-budget/scope/preflight/options contracts,
 provenance, both complete native modes and unchanged goldens. A failed core mode
 does not hide the gadget mode.
 
@@ -199,7 +201,7 @@ independent full validation before local fast-forward/install. Windows is
 required. Draft checks are intentionally light and never substitute for ready-PR
 validation. See [CI controls](ci.md).
 
-Latest verified implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
+Earlier verified runtime: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
 PR run [43797314382](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43797314382),
 independent main run [43799188076](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43799188076)
 at `9c5774d`.
@@ -228,7 +230,7 @@ Four starter gadgets were built and used in live GPT/Claude sessions, with all
 30 independent cases passing. Runtime tests, gadget tests and coding-task grades
 remain distinct evidence.
 
-The original evaluation ledger accounts for **$23.153274 of $25**, including
+The original evaluation ledger accounts for **$24.285934 of $25**, including
 **40 retained unknown-usage reservations**. That is conservative admission
 accounting, not an invoice or permission to reset/refund unknown requests.
 No live calls were made for OSC or splash changes. See
@@ -237,9 +239,12 @@ No live calls were made for OSC or splash changes. See
 [verifier comparison](live-verification-evaluation.md) and
 [live starter gadgets](live-gadget-evaluation.md).
 
-Next coding-quality work is context compilation, safe repeated-failure
-escalation, semantic test-integrity review and a fresh full/repeated evaluation
-on larger repositories, longer sessions and more models. Current priority and
+The bounded context/failure-control implementation has its own
+[selected live comparison](live-context-evaluation.md) and native validation,
+separate from the earlier verified main recorded above. Full typed context artifacts,
+read-cache/result eviction, semantic test adjudication, broader effectful-loop
+controls and a fresh full/repeated evaluation remain work. Larger repositories,
+longer sessions and additional models need their own comparisons. Current priority and
 completion state are in [harness-improvements.md](harness-improvements.md).
 Public headless execution/gadgets, native containment and full typed events /
 Session API keep their separate roadmap gates.
