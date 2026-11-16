@@ -99,6 +99,8 @@ including the November 13 public-repository validation and November 16 run
 The repository is public and standard GitHub-hosted runner compute is free;
 cache size/storage/concurrency limits and the publication hold remain.
 
-The active `Protect` ruleset currently guards main against deletion and
-non-fast-forward updates. It does not yet enforce the four required status
-contexts server-side; the engineering merge gate above remains mandatory.
+The active `Protect` ruleset now requires all four matching GitHub Actions
+contexts with current-branch checks, in addition to its existing deletion and
+non-fast-forward protections. The November 16 update preserved its target
+conditions and bypass actors. Server-side status enforcement complements the
+every-step, source/tree and native inventory audits required above.

@@ -123,11 +123,12 @@ ready PRs/main/manual runs retain the full matrix. Dependency caches are capped
 at 2 GiB per platform, exclude workspace binaries and guest fixtures, and are
 saved only by successful main jobs. See [CI controls](ci.md).
 
-As observed on November 16, the active `Protect` ruleset prevents deletion and
-non-fast-forward updates to main; it does not yet require the four status
-contexts server-side. The repository's mandatory engineering gate still applies.
-This statement replaces the obsolete private-repository plan/403 explanation;
-no billing or repository visibility setting was changed.
+On November 16 the active `Protect` ruleset was updated to require all four
+matching GitHub Actions contexts and current-branch checks. Its existing
+deletion/non-fast-forward protections, target conditions and bypass actors were
+preserved. This replaces the obsolete private-repository plan/403 explanation;
+no billing or repository visibility setting was changed. The source/tree and
+every-step/native-mode audits remain mandatory in addition to status enforcement.
 
 Binary/container publication remains disabled by owner request. Release binary
 artifacts and service/workspace image workflows are absent; validation CI and
