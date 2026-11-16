@@ -29,7 +29,7 @@ tests that continued after it remain separate from a passing full job.
 
 | Event | Validation |
 | --- | --- |
-| Draft PR opened, edited or reopened | Formatting and small cache/workflow contract tests on Linux |
+| Draft PR opened, code updated or reopened | Formatting and small cache/workflow contract tests on Linux |
 | PR marked ready for review | Fresh full four-context validation |
 | Ready PR updated or reopened | Fresh full four-context validation |
 | PR converted back to draft | Light validation; supersedes any running PR validation |
@@ -93,6 +93,12 @@ isolated tooling environment, without adding a workspace dependency.
 An isolated offline Rust 1.99.1 probe staged/restored actual dependency artifacts,
 then rebuilt: Cargo reported external dependencies fresh while recompiling the
 workspace program. Local proof is retained under
-`target/verification/ci-cost-reduction/`. Hosted archive restore/save and timing
-remain separate validation; the last requested CI retry was blocked before
-startup by account billing.
+`target/verification/ci-cost-reduction/`. Hosted restore/save has since been exercised by successful public main runs,
+including the November 13 public-repository validation and November 16 run
+`43799188076`. Earlier billing-blocked attempts are retained historical failures.
+The repository is public and standard GitHub-hosted runner compute is free;
+cache size/storage/concurrency limits and the publication hold remain.
+
+The active `Protect` ruleset currently guards main against deletion and
+non-fast-forward updates. It does not yet enforce the four required status
+contexts server-side; the engineering merge gate above remains mandatory.
