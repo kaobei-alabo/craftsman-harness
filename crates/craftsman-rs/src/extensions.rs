@@ -20,6 +20,7 @@ pub const RESERVED_COMMANDS: &[&str] = &[
     "checkpoints",
     "clear",
     "compact",
+    "context",
     "config",
     "copy",
     "diff",

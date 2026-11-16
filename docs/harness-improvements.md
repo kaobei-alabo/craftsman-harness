@@ -16,8 +16,8 @@ or additional models.
 | First coding-quality cycle | Complete | Original 30-task baseline: 17/30 completed successful turns, 21/30 behavior passes; selected memory/Codex comparisons |
 | Task workflow and error hints | Merged and locally installed | Advisory guidance; native proof and five matched instances preserve correctness with lower observed work/cost |
 | Declared verification | Merged and locally installed | Reviewed scoped checks, actual results, bounded repair and content-bound protected review; one matched live composition check |
-| Context compilation | Planned | Pinned task state, file-aware observations, stale-output handling and explainable `/context` |
-| Stronger failure/test-integrity controls | Planned | Safe stuck escalation and conservative review of test changes; preserve legitimate progress/permissions |
+| Bounded task context | Implemented, explicit opt-in; delivery checks in progress | Actual input/file observations, stale/uncertain labels and local `/context`; original messages/native items preserved |
+| Exact failure budgets and structural test review | Implemented, explicit opt-in; delivery checks in progress | Actual owned sampling pause after saved results; protected-source notes preserve legitimate progress/approvals |
 | Fresh and broader quality evaluation | Planned | Full latest-runtime suite, repeated comparisons, larger repositories, longer sessions and more models |
 
 The original $25 evaluation ledger accounts for **$23.153274**, including
@@ -32,9 +32,11 @@ amounts, not a provider invoice or an additional allowance.
 The first full 30-task score is historical. Subsequent selected comparisons do
 not create a full score for the current runtime. [Task workflow](task-workflow.md)
 is advisory; [declared verification](verification.md) implements actual scoped
-completion checks and protected-content review. Context compilation, broader
-semantic test-integrity, safe stuck escalation and public receipts still need
-implementation and behavior/permission/recovery/quality validation.
+completion checks and protected-content review. The bounded [context](context.md)
+and [failure controls](failure-controls.md) implementation keeps default behavior
+unchanged and has its own native/live delivery checks. Full typed context/cache,
+semantic test adjudication, broader effectful-loop controls and public receipts
+remain work with separate validation.
 
 Public `exec`, headless gadget registration, broader native containment and the
 full Session API/event contracts retain separate roadmap gates. Binary/container

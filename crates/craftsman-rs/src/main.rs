@@ -2,24 +2,27 @@
 //!
 //! `craftsman`                         → interactive REPL (or one-shot with -m)
 //! `craftsman setup`                    → guided first-run configuration
-//! Platform access is headless and token-configured (no login subcommand):
-//! LLM credentials and MCP servers live in `~/.craftsman/config.json`.
+//! Model/MCP/search connections are explicit; sessions and skills stay local.
+//! Credentials and connection settings live in `~/.craftsman/config.json`.
 
 mod a2ui;
 mod acp_bridge;
 mod acp_serve;
 mod agent;
+mod agent_controls;
 mod agents;
 mod ask_user;
 mod backend_fs;
 mod bridge_support;
 mod checkpoints;
 mod config;
+mod context_compiler;
 mod execution_profile;
 // Private P2a foundations; do not route a CLI command until all boundaries exist.
 #[cfg_attr(not(test), allow(dead_code))]
 mod exec;
 mod extensions;
+mod failure_control;
 #[cfg(test)]
 mod fixture_corpus;
 #[cfg(feature = "gadgets")]

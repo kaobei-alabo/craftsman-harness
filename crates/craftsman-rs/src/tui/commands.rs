@@ -15,7 +15,7 @@ use crate::hitl::ApprovalState;
 use craftsman_harness::Checkpointer;
 use std::sync::{Arc, Mutex};
 
-const HELP: &str = "Commands\n  /setup      configure model endpoint and API key\n  /help       show this help\n  /model      choose model then effort; /model --refresh discovers configured providers\n  /effort     choose model reasoning effort\n  /mode       choose permissions; Shift-Tab cycles modes\n  /status     show route, model, mode, token, and task status\n  /doctor     diagnose local configuration and connectivity state\n  /agents     list agents; /agents <name> selects/creates\n  /skills     list local skills\n  /gadgets    list local gadgets, capabilities, and approval status\n  /mcp        list MCP servers and tools\n  /lsp        show/restart language servers; /lsp restart <name>\n  /config     show current config\n  /harness    choose or inspect the harness profile\n  /clear      start a fresh conversation\n  /compact    summarize older messages\n  /session    list/resume sessions; supports rename/delete/export\n  /queue      inspect or remove queued follow-ups\n  /tokens     show token usage\n  /tasks      open the subagent task drawer\n  /memories   list long-term memory files\n  /diff       show staged, unstaged, and untracked workspace changes\n  /checkpoints list per-turn workspace file checkpoints\n  /rewind     restore files; /rewind [checkpoint-id] [--force]\n  /copy       copy the latest Craftsman answer\n  /editor     open a large multiline prompt editor\n  /version    print version\n  /voice      dictate by voice (Ctrl+G)\n  /quit       exit (also /exit)\nInline: !cmd runs a shell command. Ctrl-C stops a running turn.
+const HELP: &str = "Commands\n  /setup      configure model endpoint and API key\n  /help       show this help\n  /model      choose model then effort; /model --refresh discovers configured providers\n  /effort     choose model reasoning effort\n  /mode       choose permissions; Shift-Tab cycles modes\n  /status     show route, model, mode, token, and task status\n  /context    inspect bounded local task context; no model request\n  /doctor     diagnose local configuration and connectivity state\n  /agents     list agents; /agents <name> selects/creates\n  /skills     list local skills\n  /gadgets    list local gadgets, capabilities, and approval status\n  /mcp        list MCP servers and tools\n  /lsp        show/restart language servers; /lsp restart <name>\n  /config     show current config\n  /harness    choose or inspect the harness profile\n  /clear      start a fresh conversation\n  /compact    summarize older messages\n  /session    list/resume sessions; supports rename/delete/export\n  /queue      inspect or remove queued follow-ups\n  /tokens     show token usage\n  /tasks      open the subagent task drawer\n  /memories   list long-term memory files\n  /diff       show staged, unstaged, and untracked workspace changes\n  /checkpoints list per-turn workspace file checkpoints\n  /rewind     restore files; /rewind [checkpoint-id] [--force]\n  /copy       copy the latest Craftsman answer\n  /editor     open a large multiline prompt editor\n  /version    print version\n  /voice      dictate by voice (Ctrl+G)\n  /quit       exit (also /exit)\nInline: !cmd runs a shell command. Ctrl-C stops a running turn.
 Navigation: ↑/↓ prompt/history · trackpad/mouse or PgUp/PgDn chat · click tool/task rows or Ctrl-O to expand.";
 
 pub(super) const SLASH_COMMANDS: &[(&str, &str)] = &[
@@ -25,6 +25,7 @@ pub(super) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/effort", "choose reasoning effort for the current model"),
     ("/mode", "choose a permission mode"),
     ("/status", "show runtime status"),
+    ("/context", "inspect local task context and request shape"),
     ("/doctor", "diagnose configuration"),
     ("/agents", "list or select an agent"),
     ("/skills", "list skills"),
@@ -99,6 +100,7 @@ pub(super) fn live_command(line: &str) -> bool {
         "/help"
             | "/config"
             | "/status"
+            | "/context"
             | "/doctor"
             | "/mode"
             | "/tokens"
@@ -271,6 +273,27 @@ pub(super) async fn handle_slash(
             Some(value) => set_permission_mode(value, cfg, approval, app),
         },
         "/status" => app.push(status_text(cfg, slot.peek(), approval, app)),
+        "/context" => {
+            if parts.next().is_some() {
+                app.push_error("usage: /context");
+            } else if let Some(session) = slot.peek() {
+                let state = session.agent.state.lock().unwrap();
+                let window = cfg
+                    .model
+                    .as_deref()
+                    .and_then(|model| cfg.model_context_window(model));
+                let report = match &session.controls {
+                    Some(controls) => controls.context.render(&state, window),
+                    None => crate::context_compiler::render_disabled(&state, window),
+                };
+                match report {
+                    Ok(report) => app.push(report),
+                    Err(error) => app.push_error(error.to_string()),
+                }
+            } else {
+                app.push("Context inspector: the local session is not initialized yet.");
+            }
+        }
         "/doctor" => app.push(doctor_text(cfg, slot.peek())),
         "/queue" => show_queue_modal(app),
         "/diff" => {

@@ -85,6 +85,7 @@ struct TurnInputState {
     cancel_requested: bool,
     cancellation: Option<crate::TurnCancellation>,
     finishing: bool,
+    control_settled: bool,
 }
 
 /// Resets the active-turn bit on every exit path, including model/tool errors
@@ -98,6 +99,7 @@ enum TurnBoundaryAction {
     Continue,
     Finish,
     Cancel,
+    Failed(AgentError),
 }
 
 impl Drop for TurnActivityGuard {
@@ -108,6 +110,7 @@ impl Drop for TurnActivityGuard {
         state.cancel_requested = false;
         state.cancellation = None;
         state.finishing = false;
+        state.control_settled = false;
     }
 }
 
@@ -125,6 +128,7 @@ pub struct Agent {
     max_rounds: usize,
     finish_on_round_limit: bool,
     completion_check: Option<Arc<dyn crate::CompletionCheck>>,
+    boundary_policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
     completion_sequence: Arc<AtomicU64>,
     /// Shared subagent registry: the `task` tool records spawned children here so
     /// the app (and peers) can list/poll them. Every dispatched `ToolCtx` clones
@@ -203,6 +207,18 @@ impl Agent {
         defs
     }
 
+    /// Compare a trusted tool handle with the actual immutable registry entry.
+    /// A model-supplied name or an overriding host tool does not establish type.
+    pub fn registered_tool_matches(&self, name: &str, expected: &Arc<dyn Tool>) -> bool {
+        self.tools
+            .get(name)
+            .is_some_and(|actual| Arc::ptr_eq(actual, expected))
+    }
+
+    pub fn registered_tool_names(&self) -> impl Iterator<Item = &str> {
+        self.tools.keys().map(String::as_str)
+    }
+
     /// Comma-joined, sorted list of available tool names (for error messages).
     fn tool_names(&self) -> String {
         let mut names: Vec<&str> = self.tools.keys().map(|s| s.as_str()).collect();
@@ -256,12 +272,25 @@ impl Agent {
         // 1. Commit the user message.
         let user_msg = Msg::user(user_input);
         self.journal("user", serde_json::to_value(&user_msg).unwrap_or_default());
-        {
+        let input_error = {
             let mut committed = self.state.lock().unwrap();
             if self.durable_turn_checkpoints {
                 reconcile_recovered_calls(&mut committed, None);
             }
+            let message_index = committed.messages.len();
             committed.messages.push(user_msg);
+            self.boundary_policy.as_ref().and_then(|policy| {
+                policy
+                    .user_input(
+                        &mut committed,
+                        message_index,
+                        crate::HumanInputKind::Initial,
+                    )
+                    .err()
+            })
+        };
+        if let Some(error) = input_error {
+            return self.save_boundary_input_error(error).await;
         }
         self.save_progress_checkpoint(None).await?;
 
@@ -288,15 +317,71 @@ impl Agent {
             // Same-turn steering and addressed subagent notifications are
             // committed before taking the round snapshot, so neither can be
             // silently lost behind an in-flight model request.
-            self.drain_steering_into_state();
+            if let Err(error) = self.drain_steering_into_state() {
+                return self.save_boundary_input_error(error).await;
+            }
             self.drain_agent_notifications_into_state();
             self.save_progress_checkpoint(None).await?;
             let mut working = self.snapshot();
 
+            if let Some(policy) = &self.boundary_policy {
+                if self.drain_selected_inbox_into_state() {
+                    self.save_progress_checkpoint(None).await?;
+                    working = self.snapshot();
+                }
+                loop {
+                    let action = match policy.before_model(&working) {
+                        Ok(action) => action,
+                        Err(error) => return self.save_boundary_input_error(error).await,
+                    };
+                    let crate::ModelBoundaryAction::Stop { reason } = action else {
+                        break;
+                    };
+                    match self.controlled_boundary_action() {
+                        TurnBoundaryAction::Cancel => return self.finish_cancelled().await,
+                        TurnBoundaryAction::Failed(error) => {
+                            return self.save_boundary_input_error(error).await;
+                        }
+                        TurnBoundaryAction::Continue => {
+                            self.save_progress_checkpoint(None).await?;
+                            working = self.snapshot();
+                        }
+                        TurnBoundaryAction::Finish => {
+                            self.finish_state().await?;
+                            if self.checkpoint_failed() {
+                                return Err(checkpoint_save_error());
+                            }
+                            // Final cancellation and settled admission share one
+                            // authoritative decision before receipt observation.
+                            let cancelled = {
+                                let mut input = self.turn_input.lock().unwrap();
+                                let cancelled = input.cancel_requested
+                                    || input
+                                        .cancellation
+                                        .as_ref()
+                                        .is_some_and(|turn| turn.is_cancelled());
+                                // Keep the activity guard until observation and
+                                // return; seal only late cancellation admission.
+                                input.control_settled = true;
+                                input.cancel_requested = false;
+                                cancelled
+                            };
+                            if cancelled {
+                                return Err(AgentError::Cancelled);
+                            }
+                            policy.stop_committed(&self.snapshot());
+                            return Err(AgentError::State(reason));
+                        }
+                    }
+                }
+            }
+
             // Round-boundary mailbox injection: drain any messages a peer sent
             // via `send_message` into this (background) agent's inbox and splice
             // them into the transcript as `user` turns before we call the model.
-            self.drain_inbox(&mut working);
+            if self.boundary_policy.is_none() {
+                self.drain_inbox(&mut working);
+            }
 
             // Rebuild the per-turn system additions from scratch each round.
             working.system_extras.clear();
@@ -388,6 +473,9 @@ impl Agent {
                     match self.turn_boundary_action() {
                         TurnBoundaryAction::Continue => continue,
                         TurnBoundaryAction::Cancel => return self.finish_cancelled().await,
+                        TurnBoundaryAction::Failed(error) => {
+                            return self.save_boundary_input_error(error).await;
+                        }
                         TurnBoundaryAction::Finish => {}
                     }
                     if let Some(result) = self.finish_model(assistant, round).await? {
@@ -405,6 +493,9 @@ impl Agent {
                         match self.turn_boundary_action() {
                             TurnBoundaryAction::Continue => continue,
                             TurnBoundaryAction::Cancel => return self.finish_cancelled().await,
+                            TurnBoundaryAction::Failed(error) => {
+                                return self.save_boundary_input_error(error).await;
+                            }
                             TurnBoundaryAction::Finish => {}
                         }
                         if let Some(result) = self.finish_model(assistant, round).await? {
@@ -460,7 +551,9 @@ impl Agent {
                         .is_some_and(|turn| turn.is_cancelled());
                 if cancelled {
                     input.cancel_requested = false;
-                    input.pending.clear();
+                    if self.boundary_policy.is_none() {
+                        input.pending.clear();
+                    }
                     (true, Vec::new())
                 } else {
                     (false, input.pending.drain(..).collect())
@@ -469,7 +562,9 @@ impl Agent {
             if cancelled {
                 return self.finish_cancelled().await;
             }
-            self.append_steering_messages(pending);
+            if let Err(error) = self.append_human_steering_messages(pending) {
+                return self.save_boundary_input_error(error).await;
+            }
             self.drain_agent_notifications_into_state();
             self.finish_state().await?;
         }
@@ -605,6 +700,11 @@ impl Agent {
         }
 
         // Continue the model↔tool loop from the next round.
+        if let Some(policy) = &self.boundary_policy {
+            // The explicitly resolved call bypassed ordinary tool observers;
+            // its actual result remains authoritative and derived views reset.
+            policy.runtime_input();
+        }
         self.drive_from_round(round + 1).await
     }
 
@@ -638,6 +738,9 @@ impl Agent {
                 match self.completion_boundary_action() {
                     TurnBoundaryAction::Continue => return Ok(None),
                     TurnBoundaryAction::Cancel => return self.finish_cancelled().await.map(Some),
+                    TurnBoundaryAction::Failed(error) => {
+                        return self.save_boundary_input_error(error).await;
+                    }
                     TurnBoundaryAction::Finish => {}
                 }
                 self.finish(message).await.map(Some)
@@ -714,7 +817,9 @@ impl Agent {
             input.idle_operation = true;
             input.pending.drain(..).collect()
         };
-        self.append_steering_messages(pending);
+        if let Err(error) = self.append_human_steering_messages(pending) {
+            return self.save_boundary_input_error(error).await;
+        }
         let message = Msg::assistant(
             "The declared completion check did not accept this turn. Completed effects and check results are retained.",
         );
@@ -783,13 +888,32 @@ impl Agent {
     }
 
     async fn finish_cancelled(&self) -> Result<TurnResult, AgentError> {
+        if self.boundary_policy.is_some() {
+            let pending = {
+                let mut input = self.turn_input.lock().unwrap();
+                input.idle_operation = true;
+                input.pending.drain(..).collect()
+            };
+            // Callers have balanced every committed call before this boundary.
+            // Accepted human input belongs after those actual/cancelled results
+            // and before its derived bookkeeping and final required save.
+            if let Err(error) = self.append_human_steering_messages(pending) {
+                return self.save_boundary_input_error(error).await;
+            }
+            self.drain_agent_notifications_into_state();
+            self.drain_selected_inbox_into_state();
+        }
         let message = Msg::assistant("Stopped by the user.");
         self.journal(
             "assistant",
             serde_json::to_value(&message).unwrap_or_default(),
         );
         self.state.lock().unwrap().messages.push(message.clone());
-        self.finish(message).await
+        let result = self.finish(message).await?;
+        if self.boundary_policy.is_some() && self.checkpoint_failed() {
+            return Err(checkpoint_save_error());
+        }
+        Ok(result)
     }
 
     fn append_cancelled_tool_results(&self, assistant: &Msg) {
@@ -933,11 +1057,17 @@ impl Agent {
     /// Skipped committed tool calls receive cancelled results.
     pub fn request_cancel(&self) -> bool {
         let mut input = self.turn_input.lock().unwrap();
-        if !input.active {
+        if !input.active || input.control_settled {
             return false;
         }
         input.cancel_requested = true;
-        input.pending.clear();
+        if self.boundary_policy.is_none() {
+            input.pending.clear();
+        } else {
+            // Selected observers retain already accepted originals. Reject new
+            // steering immediately while actual cancellation owns its cleanup.
+            input.idle_operation = true;
+        }
         if let Some(turn) = &input.cancellation {
             turn.cancel();
         }
@@ -1009,18 +1139,19 @@ impl Agent {
         input.cancel_requested = false;
         input.cancellation = cancellation;
         input.finishing = false;
+        input.control_settled = false;
         drop(input);
         Ok(TurnActivityGuard {
             state: self.turn_input.clone(),
         })
     }
 
-    fn drain_steering_into_state(&self) {
+    fn drain_steering_into_state(&self) -> Result<(), AgentError> {
         let pending = {
             let mut input = self.turn_input.lock().unwrap();
             input.pending.drain(..).collect::<Vec<_>>()
         };
-        self.append_steering_messages(pending);
+        self.append_human_steering_messages(pending)
     }
 
     fn take_cancel_request(&self) -> bool {
@@ -1032,7 +1163,11 @@ impl Agent {
                 .is_some_and(|turn| turn.is_cancelled());
         input.cancel_requested = false;
         if requested {
-            input.pending.clear();
+            if self.boundary_policy.is_none() {
+                input.pending.clear();
+            } else {
+                input.idle_operation = true;
+            }
         }
         requested
     }
@@ -1062,8 +1197,12 @@ impl Agent {
                     .is_some_and(|turn| turn.is_cancelled())
             {
                 input.cancel_requested = false;
-                input.pending.clear();
-                input.active = false;
+                if self.boundary_policy.is_none() {
+                    input.pending.clear();
+                    input.active = false;
+                } else {
+                    input.idle_operation = true;
+                }
                 return TurnBoundaryAction::Cancel;
             }
             if input.pending.is_empty() && !received_notification {
@@ -1077,19 +1216,115 @@ impl Agent {
             }
             input.pending.drain(..).collect::<Vec<_>>()
         };
-        self.append_steering_messages(pending);
-        TurnBoundaryAction::Continue
+        match self.append_human_steering_messages(pending) {
+            Ok(()) => TurnBoundaryAction::Continue,
+            Err(error) => TurnBoundaryAction::Failed(error),
+        }
     }
 
-    fn append_steering_messages(&self, messages: Vec<String>) {
+    fn controlled_boundary_action(&self) -> TurnBoundaryAction {
+        let received_notification =
+            self.drain_agent_notifications_into_state() | self.drain_selected_inbox_into_state();
+        let pending = {
+            let mut input = self.turn_input.lock().unwrap();
+            if input.cancel_requested
+                || input
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(|turn| turn.is_cancelled())
+            {
+                input.cancel_requested = false;
+                input.idle_operation = true;
+                return TurnBoundaryAction::Cancel;
+            }
+            if input.pending.is_empty() && !received_notification {
+                // The activity guard remains held through real hooks/save.
+                // Closing admission does not impersonate user cancellation.
+                input.idle_operation = true;
+                return TurnBoundaryAction::Finish;
+            }
+            input.pending.drain(..).collect()
+        };
+        match self.append_human_steering_messages(pending) {
+            Ok(()) => TurnBoundaryAction::Continue,
+            Err(error) => TurnBoundaryAction::Failed(error),
+        }
+    }
+
+    fn append_human_steering_messages(&self, messages: Vec<String>) -> Result<(), AgentError> {
+        if self.boundary_policy.is_none() {
+            self.append_steering_messages(messages);
+            return Ok(());
+        }
+        // Commit every already accepted input before any fallible observer.
+        // An observer failure must not drop the remainder of a drained queue.
+        let (start, count) = self.append_steering_messages(messages);
+        if count == 0 {
+            return Ok(());
+        }
+        let mut first_error = None;
+        let mut observed_bytes = 0usize;
+        for index in start..start + count {
+            let mut state = self.state.lock().unwrap();
+            let bytes = match state.messages.get(index) {
+                Some(Msg::User { content }) => content.len(),
+                _ => 0,
+            };
+            observed_bytes = observed_bytes.saturating_add(bytes);
+            if index - start >= 32 || observed_bytes > 8 * 1024 * 1024 {
+                first_error = Some(AgentError::State(
+                    "Selected input observation exceeds its batch work limit.".into(),
+                ));
+                break;
+            }
+            if let Some(policy) = &self.boundary_policy {
+                if let Err(error) =
+                    policy.user_input(&mut state, index, crate::HumanInputKind::Steering)
+                {
+                    first_error = Some(error);
+                    break;
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    async fn save_boundary_input_error<T>(&self, error: AgentError) -> Result<T, AgentError> {
+        let pending = {
+            let mut input = self.turn_input.lock().unwrap();
+            input.idle_operation = true;
+            input.pending.drain(..).collect()
+        };
+        // Do not invoke another failed observer. Retain every accepted original
+        // input before returning the local policy error.
+        self.append_steering_messages(pending);
+        self.drain_agent_notifications_into_state();
+        // This exceptional opted-in path saves the real accepted input even
+        // when ordinary progress checkpoints are disabled. Save errors keep
+        // their original precedence; no end/stop success is manufactured.
+        self.save_checkpoint(None).await?;
+        if self.checkpoint_failed() {
+            return Err(checkpoint_save_error());
+        }
+        Err(error)
+    }
+
+    fn append_steering_messages(&self, messages: Vec<String>) -> (usize, usize) {
         if messages.is_empty() {
-            return;
+            return (0, 0);
         }
         let user_messages = messages.into_iter().map(Msg::user).collect::<Vec<_>>();
         for message in &user_messages {
             self.journal("user", serde_json::to_value(message).unwrap_or_default());
         }
-        self.state.lock().unwrap().messages.extend(user_messages);
+        let mut state = self.state.lock().unwrap();
+        let start = state.messages.len();
+        let count = user_messages.len();
+        state.messages.extend(user_messages);
+        (start, count)
     }
 
     /// Drain notifications addressed to this agent and append them as runtime
@@ -1124,18 +1359,53 @@ impl Agent {
             return false;
         }
         self.append_steering_messages(messages);
+        if let Some(policy) = &self.boundary_policy {
+            policy.runtime_input();
+        }
         true
     }
 
     /// Drain any pending inbox messages into `working` as `user` messages. A
     /// no-op when no inbox is set (the foreground path) or nothing is queued.
-    fn drain_inbox(&self, working: &mut AgentState) {
+    fn drain_inbox(&self, working: &mut AgentState) -> bool {
         let mut guard = self.inbox.lock().unwrap();
+        let mut received = false;
         if let Some(rx) = guard.as_mut() {
             while let Ok(message) = rx.try_recv() {
                 working.messages.push(Msg::user(message));
+                received = true;
             }
         }
+        drop(guard);
+        if received {
+            if let Some(policy) = &self.boundary_policy {
+                policy.runtime_input();
+            }
+        }
+        received
+    }
+
+    fn drain_selected_inbox_into_state(&self) -> bool {
+        let messages = {
+            let mut inbox = self.inbox.lock().unwrap();
+            let mut messages = Vec::new();
+            if let Some(receiver) = inbox.as_mut() {
+                while let Ok(message) = receiver.try_recv() {
+                    messages.push(message);
+                }
+            }
+            messages
+        };
+        if messages.is_empty() {
+            return false;
+        }
+        // Append only. A stale round snapshot must not replace concurrent
+        // files, todos or custom state while accepting runtime input.
+        self.append_steering_messages(messages);
+        if let Some(policy) = &self.boundary_policy {
+            policy.runtime_input();
+        }
+        true
     }
 
     /// Reset the per-task plumbing at the start of a subagent task: install the
@@ -1157,6 +1427,7 @@ impl Agent {
         turn_input.cancel_requested = false;
         turn_input.cancellation = None;
         turn_input.finishing = false;
+        turn_input.control_settled = false;
     }
 
     /// Clone the committed state into a working copy.
@@ -1505,6 +1776,7 @@ pub struct AgentBuilder {
     max_rounds: usize,
     finish_on_round_limit: bool,
     completion_check: Option<Arc<dyn crate::CompletionCheck>>,
+    boundary_policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
     interrupt_model_on_cancel: bool,
     cancellation_session: Option<crate::SessionCancellation>,
     state: Option<Arc<Mutex<AgentState>>>,
@@ -1529,6 +1801,7 @@ impl AgentBuilder {
             max_rounds: 50,
             finish_on_round_limit: false,
             completion_check: None,
+            boundary_policy: None,
             interrupt_model_on_cancel: false,
             cancellation_session: None,
             state: None,
@@ -1586,6 +1859,13 @@ impl AgentBuilder {
     /// The policy is not consulted on cancellation or round-limit closure.
     pub fn completion_check(mut self, policy: Arc<dyn crate::CompletionCheck>) -> Self {
         self.completion_check = Some(policy);
+        self
+    }
+
+    /// Select bounded local input bookkeeping and sampling admission. Absent
+    /// by default; it never replaces completion verification or cancellation.
+    pub fn boundary_policy(mut self, policy: Arc<dyn crate::AgentBoundaryPolicy>) -> Self {
+        self.boundary_policy = Some(policy);
         self
     }
 
@@ -1719,6 +1999,7 @@ impl AgentBuilder {
             max_rounds: self.max_rounds,
             finish_on_round_limit: self.finish_on_round_limit,
             completion_check: self.completion_check,
+            boundary_policy: self.boundary_policy,
             completion_sequence: Arc::new(AtomicU64::new(0)),
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,
@@ -1743,6 +2024,10 @@ impl AgentBuilder {
 
 #[path = "agent_idle_compaction.rs"]
 mod idle_compaction;
+
+#[cfg(test)]
+#[path = "agent_boundary_tests.rs"]
+mod boundary_tests;
 
 #[cfg(test)]
 #[path = "agent_continuation_tests.rs"]

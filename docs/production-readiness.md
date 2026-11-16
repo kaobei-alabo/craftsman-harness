@@ -103,9 +103,9 @@ adds terminal monitoring; native Orca chat registration remains host work. See
 ./scripts/verify.sh
 ```
 
-The script selects an installed Python 3.11+ interpreter and runs all 12 checks:
+The script selects an installed Python 3.11+ interpreter and runs all 14 checks:
 formatting, locked core/default builds, accepted exec conformance, benchmark
-contracts, CI-cache/workflow contracts, coding-budget/scope contracts,
+contracts, CI-cache/workflow contracts, coding-budget/scope/preflight/options contracts,
 provenance, both full workspace feature modes and unchanged goldens. A failed
 core mode does not hide the gadget mode. Default builds include voice/gadgets.
 
@@ -172,9 +172,11 @@ records, not checks performed against today's source.
 
 ## Next engineering gates
 
-1. Implement bounded task/file context and an explainable `/context` view.
-2. Add safe repeated-failure escalation and semantic test-integrity review beyond
-   existing declared checks/protected-content approval.
+1. Complete delivery validation of the explicitly opted-in bounded task/file
+   context and exact failure-budget/structural-review slice; retain default
+   requests, native history, actual effects/input and approvals.
+2. Extend typed context/cache and broader semantic test/effectful-loop controls
+   only with their own source authority and behavior/quality evidence.
 3. Analyze retained failures offline, then run a fresh full/repeated evaluation
    across larger projects, long sessions and additional models within an explicit
    budget. Keep historical grades and the same retained accounting intact.

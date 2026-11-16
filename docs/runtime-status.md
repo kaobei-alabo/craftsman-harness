@@ -106,7 +106,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | File checkpoints and long turns | Merged and locally installed | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
-| Context compilation and stronger failure controls | Planned | Pinned task/file state, explainable /context, safe stuck escalation and semantic test-integrity review; [progress](harness-improvements.md) |
+| Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
 | Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
@@ -237,9 +237,12 @@ No live calls were made for OSC or splash changes. See
 [verifier comparison](live-verification-evaluation.md) and
 [live starter gadgets](live-gadget-evaluation.md).
 
-Next coding-quality work is context compilation, safe repeated-failure
-escalation, semantic test-integrity review and a fresh full/repeated evaluation
-on larger repositories, longer sessions and more models. Current priority and
+The next bounded context/failure-control slice is implemented in the maintained
+checkout behind explicit settings; its native and live delivery checks are
+separate from the verified main recorded above. Full typed context artifacts,
+read-cache/result eviction, semantic test adjudication, broader effectful-loop
+controls and a fresh full/repeated evaluation remain work. Larger repositories,
+longer sessions and additional models need their own comparisons. Current priority and
 completion state are in [harness-improvements.md](harness-improvements.md).
 Public headless execution/gadgets, native containment and full typed events /
 Session API keep their separate roadmap gates.

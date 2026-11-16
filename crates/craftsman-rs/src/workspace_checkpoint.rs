@@ -136,6 +136,46 @@ impl SourceObservation {
         !self.snapshot.partial
     }
 
+    /// Bounded borrowed originals for optional review notes. This does not
+    /// reopen paths, grant access or parse repository-controlled review labels.
+    pub(crate) fn visit_protected_changes(
+        &self,
+        after: &Self,
+        protected: &[String],
+        mut visitor: impl FnMut(&str, Option<&[u8]>, Option<&[u8]>),
+    ) -> Result<(), &'static str> {
+        if self.root_identity != after.root_identity {
+            return Err("Verification root changed between observations.");
+        }
+        let names: BTreeSet<_> = self
+            .snapshot
+            .files
+            .keys()
+            .chain(after.snapshot.files.keys())
+            .collect();
+        let mut bytes = 0usize;
+        for path in names {
+            if !protected.iter().any(|scope| within_directory(path, scope)) {
+                continue;
+            }
+            let before = self.snapshot.files.get(path);
+            let now = after.snapshot.files.get(path);
+            if before.map(|file| (&file.hash, file.mode)) == now.map(|file| (&file.hash, file.mode))
+            {
+                continue;
+            }
+            let before_bytes = protected_review_bytes(before)?;
+            let after_bytes = protected_review_bytes(now)?;
+            bytes = bytes
+                .checked_add(before_bytes.map_or(0, <[u8]>::len))
+                .and_then(|count| count.checked_add(after_bytes.map_or(0, <[u8]>::len)))
+                .filter(|count| *count <= 1024 * 1024)
+                .ok_or("Protected changes exceed the verification review limit.")?;
+            visitor(path, before_bytes, after_bytes);
+        }
+        Ok(())
+    }
+
     pub(crate) fn protected_contents(
         &self,
         protected: &[String],
@@ -211,6 +251,22 @@ impl SourceObservation {
             detail.push_str(&section);
         }
         Ok((format!("{:x}", digest.finalize()), detail))
+    }
+}
+
+fn protected_review_bytes(file: Option<&SnapshotFile>) -> Result<Option<&[u8]>, &'static str> {
+    match file {
+        None => Ok(None),
+        Some(file) => {
+            let bytes = file
+                .content
+                .as_deref()
+                .ok_or("Protected changes exceed the verification review limit.")?;
+            if bytes.len() > 64 * 1024 {
+                return Err("Protected changes exceed the verification review limit.");
+            }
+            Ok(Some(bytes))
+        }
     }
 }
 

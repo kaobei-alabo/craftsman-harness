@@ -8,6 +8,8 @@ import urllib.parse
 import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from budget import Budget, Refused, checked_request
+from preflight_continuation import read_json
+import re
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -54,13 +56,24 @@ class Usage:
                     self.usage = response.get('usage') if isinstance(response,dict) else None
 
 
+def checked_budget(config):
+    expected=config.get('expected_ledger_sha256')
+    if expected is not None:
+        if not isinstance(expected,str) or not re.fullmatch(r'[0-9a-f]{64}',expected):
+            raise Refused('Invalid continuation ledger binding.')
+        _,actual=read_json(Path(config['ledger']),4*1024*1024)
+        if actual!=expected:
+            raise Refused('Continuation ledger changed before gateway admission.')
+    return Budget(config['ledger'], config['prices'], config['cap_usd'], config.get('prices_verified'))
+
+
 def serve(config):
     endpoint = config['endpoint']
     parsed = urllib.parse.urlsplit(endpoint)
     synthetic = config.get('synthetic') is True
     if parsed.username or parsed.password or parsed.query or parsed.fragment or (parsed.scheme != 'https' and not (synthetic and parsed.hostname in {'127.0.0.1','localhost','fixture'})):
         raise Refused('Invalid evaluation endpoint.')
-    budget = Budget(config['ledger'], config['prices'], config['cap_usd'], config.get('prices_verified'))
+    budget = checked_budget(config)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     tokens = config['tokens']
     if not isinstance(tokens, dict) or not 1 <= len(tokens) <= 256:

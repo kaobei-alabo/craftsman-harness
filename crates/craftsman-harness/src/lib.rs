@@ -25,6 +25,9 @@ pub use agent::{Agent, AgentBuilder, TurnOutput, TurnResult};
 pub mod completion;
 pub use completion::{CompletionAction, CompletionAfterCheck, CompletionCheck};
 
+pub mod boundary;
+pub use boundary::{AgentBoundaryPolicy, HumanInputKind, ModelBoundaryAction};
+
 pub mod interrupt;
 pub use interrupt::{HitlAction, HitlRequest, Suspension, SuspensionFrame};
 
