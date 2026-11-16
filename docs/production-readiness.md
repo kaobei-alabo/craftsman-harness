@@ -1,8 +1,8 @@
 # Craftsman production readiness
 
 Updated November 16, 2026. The maintained repository is
-`kaobei-alabo/craftsman-harness`; the latest independently verified implementation
-is `9c5774d`. This is a working terminal/ACP agent with extensive source and
+`kaobei-alabo/craftsman-harness`. Earlier independent runtime proof at `9c5774d`
+and subsequent continuation evidence are recorded below. This working terminal/ACP agent has extensive source and
 native regression coverage plus bounded live task/gadget evidence. Full
 unattended execution, native OS containment and release readiness remain open.
 
@@ -10,7 +10,7 @@ unattended execution, native OS containment and release readiness remain open.
 
 | Area | Current implementation | Remaining production work |
 | --- | --- | --- |
-| Terminal / ACP coding agent | Streaming file/shell/web tools, approvals, steering, owned cancellation, durable turns and model changes, task guidance and declared verification | Context compilation, stronger failure/test-integrity controls, broader live and exceptional recovery evaluation |
+| Terminal / ACP coding agent | Streaming file/shell/web tools, approvals, steering, owned cancellation, durable turns and model changes, task guidance, declared verification and opt-in bounded context/failure controls | Typed context/cache, broader semantic test/effectful-loop controls, live and exceptional recovery evaluation |
 | Terminal UX | Gray/turquoise 匠 splash, small hammer/label, grouped model → effort menus, mutation-driven file checkpoints and saved 200-round pauses | Continued long-session usability measurement |
 | Host monitoring | OSC 7501 lifecycle and bounded delegated-task records, verified in an actual Orca terminal | Native host chat registration is separate ACP client integration |
 | Self-built gadgets | Embedded Rust SDK, create-only scaffolding, native builds, atomic component replacement, capability approvals and change-only discovery | Keep user opt-in and separate build/load approvals; expand representative live evaluation |

@@ -201,7 +201,7 @@ independent full validation before local fast-forward/install. Windows is
 required. Draft checks are intentionally light and never substitute for ready-PR
 validation. See [CI controls](ci.md).
 
-Latest verified implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
+Earlier verified runtime: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
 PR run [43797314382](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43797314382),
 independent main run [43799188076](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43799188076)
 at `9c5774d`.
