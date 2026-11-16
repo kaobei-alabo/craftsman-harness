@@ -1,9 +1,11 @@
 # Craftsman runtime — current implementation and remaining work
 
 Updated November 16, 2026 (Asia/Taipei). This page describes maintained runtime
-behavior and its remaining boundaries. The latest independently verified main
-is `9c5774d`, including the 匠 splash and OSC 7501. Source validation, live coding
-results and published releases are separate evidence.
+behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
+at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
+main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
+The context/failure continuation is recorded below. Source validation, live
+coding results and published releases are separate evidence.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -186,8 +188,8 @@ requires CMake, plus ALSA development headers/pkg-config/clang on Linux.
 ```
 
 The verification script selects an installed python 3.11 or newer runtime
-and runs 12 checks: formatting, locked core/default builds, exec-contract,
-benchmark-driver, CI-cache/workflow, coding-budget and scope contracts,
+and runs 14 checks: formatting, locked core/default builds, exec-contract,
+benchmark-driver, CI-cache/workflow, coding-budget/scope/preflight/options contracts,
 provenance, both complete native modes and unchanged goldens. A failed core mode
 does not hide the gadget mode.
 
