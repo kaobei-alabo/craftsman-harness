@@ -9,8 +9,8 @@ use super::input::{VoiceRequest, VoiceUiState, handle_terminal_event};
 use super::modals::{AppAction, Modal};
 use super::program_status::Status;
 use super::render::{
-    BANNER, ScreenSelection, ScreenSnapshot, TranscriptRenderCache, clamp_point_to_rect, draw,
-    startup_splash_data, subagent_activity,
+    SPLASH_ART_ROWS, ScreenSelection, ScreenSnapshot, TranscriptRenderCache, clamp_point_to_rect,
+    draw, startup_splash_data, subagent_activity,
 };
 use super::session_bridge::{
     AgentSlot, UiBridge, UiEvent, apply_turn_cancellation, drain_notifications,
@@ -98,7 +98,7 @@ impl TranscriptItem {
 
     pub(super) fn rows(&self) -> usize {
         match (&self.kind, &self.block) {
-            (TranscriptKind::Splash, _) => BANNER.lines().count() + self.text.lines().count() + 4,
+            (TranscriptKind::Splash, _) => SPLASH_ART_ROWS + self.text.lines().count() + 3,
             (_, Some(block)) if !block.collapsed => {
                 self.text.lines().count().max(1) + block.details.lines().count().max(1) + 2
             }

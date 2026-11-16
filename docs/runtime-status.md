@@ -26,6 +26,11 @@
 > remain delivery gates. This enables terminal monitoring, not automatic native
 > host chat registration or OS/model-billing containment. See `terminal-status.md`.
 
+> **Terminal splash (November 16):** the startup card uses a block-drawn 匠 mark,
+> a small lowercase Craftsman label and a filled miniature hammer in the existing
+> gray/turquoise palette. Narrow layouts retain the mark and available connection
+> details; the standard card remains 15 rows. See [terminal splash](terminal-splash.md).
+
 > **Declared verification (November 14):** TUI/ACP main agents select explicit
 > user/project verification plans with declared source and protected paths.
 > Source observation is lazy and bounded; normal completion schedules the
