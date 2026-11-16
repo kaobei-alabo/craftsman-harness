@@ -25,6 +25,8 @@ current failures or pending merges unless explicitly stated here.
 | `craftsman service-agent` | Restricted request-scoped virtual resources and selected public-web tools | No real filesystem, native shell, local database/memory/LSP/project discovery |
 | `craftsman exec` | Not exposed | Accepted contract and private implementation foundations only |
 
+The `craftsman-rs` forwarding executable is removed; `craftsman` is the sole app
+binary. The app's internal Cargo package/directory remains `craftsman-rs`.
 The former `serve` and `desktop-serve` commands are removed. Platform onboarding,
 inbox polling and remote skill browsing are retired. Storage, sessions and
 skills are local; model, MCP and search traffic uses explicit configuration.

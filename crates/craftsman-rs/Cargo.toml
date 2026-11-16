@@ -2,6 +2,7 @@
 name = "craftsman-rs"
 version = "0.4.0"
 default-run = "craftsman"
+autobins = false
 edition = "2024"
 rust-version = "1.99"
 description = "Terminal coding agent and workspace runtime with reusable WASM gadgets"
@@ -10,10 +11,6 @@ license = "MIT"
 [[bin]]
 name = "craftsman"
 path = "src/main.rs"
-
-[[bin]]
-name = "craftsman-rs"
-path = "src/bin/craftsman-rs.rs"
 
 [features]
 default = ["voice", "gadgets"]

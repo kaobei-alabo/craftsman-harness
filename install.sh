@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Install or upgrade the Craftsman CLI.
 #
-# Installs the primary `craftsman` binary plus the legacy `craftsman-rs` compatibility
-# launcher into ~/.cargo/bin via `cargo install`.
+# Installs the `craftsman` binary into ~/.cargo/bin via `cargo install`.
 # Re-running upgrades in place. Only a Rust toolchain is required — the build
 # has no private git dependencies.
 set -euo pipefail
@@ -27,8 +26,8 @@ while [[ $# -gt 0 ]]; do
             cat <<EOF
 Usage: $(basename "$0") [-u|--upgrade] [--no-locked]
 
-Installs or upgrades the Craftsman CLI (primary binary: \`craftsman\`) via cargo install
-into ~/.cargo/bin. The legacy \`craftsman-rs\` command remains available.
+Installs or upgrades the Craftsman CLI (binary: \`craftsman\`) via cargo install
+into ~/.cargo/bin.
 
 Options:
   -u, --upgrade    Upgrade an existing install (adds --force so cargo replaces
@@ -92,6 +91,7 @@ fi
 cargo install \
     ${FORCE[@]+"${FORCE[@]}"} \
     ${LOCKED[@]+"${LOCKED[@]}"} \
+    --bin craftsman \
     --path "$SCRIPT_DIR/crates/craftsman-rs"
 
 # 4. Confirm it's on PATH.
@@ -99,7 +99,6 @@ BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 echo
 if [[ -x "$BIN_DIR/craftsman" ]]; then
     echo "✓ Installed: $BIN_DIR/craftsman ($("$BIN_DIR/craftsman" --version 2>/dev/null || echo '?'))"
-    echo "  Compatibility command: $BIN_DIR/craftsman-rs"
     if [[ "$(command -v craftsman 2>/dev/null || true)" != "$BIN_DIR/craftsman" ]]; then
         echo "  Note: another 'craftsman' appears earlier in PATH. Remove it or place $BIN_DIR first."
     fi
