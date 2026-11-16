@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -407,6 +408,161 @@ class Cases(unittest.TestCase):
         with mock.patch.object(preflight.os, "read", side_effect=mutate):
             with self.refuses("input_changed"):
                 preflight.read_json(source, 1024)
+
+    def test_raw_crlf_json_digest_preserves_exact_native_bytes(self):
+        source = self.root / "native-crlf.json"
+        raw = b'{\r\n  "active": true,\r\n  "label": "native bytes"\r\n}\r\n'
+        source.write_bytes(raw)
+        value, digest = preflight.read_json(source, len(raw))
+        self.assertEqual(value, {"active": True, "label": "native bytes"})
+        self.assertEqual(digest, hashlib.sha256(raw).hexdigest())
+        self.assertNotEqual(digest, hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest())
+        self.assertEqual(source.read_bytes(), raw)
+        with self.refuses("input_too_large"):
+            preflight.read_json(source, len(raw) - 1)
+
+    def test_raw_ctrl_z_cannot_hide_bytes_after_a_valid_json_prefix(self):
+        source = self.root / "native-ctrl-z.json"
+        raw = b'{}\x1a{"trailing":"must not disappear"}'
+        source.write_bytes(raw)
+        with self.refuses("input_unavailable_or_invalid"):
+            preflight.read_json(source, len(raw))
+        self.assertEqual(source.read_bytes(), raw)
+
+    def test_actual_native_metadata_pairs_keep_all_unmodified_tuple_fields(self):
+        source = self.root / "native-metadata.json"
+        raw = b'{"native_metadata":true}\r\n'
+        source.write_bytes(raw)
+        # Change only this owned fixture's real LastWriteTime. The observations
+        # below use returned native values, not an assumed kernel precision.
+        os.utime(source, ns=(1770000000123456700, 1770000000123456700))
+        before = source.lstat()
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(source, flags)
+        try:
+            actual = os.fstat(fd)
+            read = bytearray()
+            while chunk := os.read(fd, 65536):
+                read.extend(chunk)
+            after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        final = source.lstat()
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")
+        common = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_nlink")
+        values = lambda info: {field: getattr(info, field) for field in fields}
+        observation = {"native_own_file_metadata": True, "platform": sys.platform,
+                       "path_before": values(before), "handle_actual": values(actual),
+                       "handle_after": values(after), "path_final": values(final),
+                       "cross_source_ctime_delta_ns": actual.st_ctime_ns - before.st_ctime_ns,
+                       "raw_bytes": len(read), "raw_sha256": hashlib.sha256(read).hexdigest()}
+        # Bounded, actual metadata only: no environment, user paths or body text.
+        print(json.dumps(observation, sort_keys=True))
+        self.assertEqual(values(before), values(final))
+        self.assertEqual(values(actual), values(after))
+        self.assertEqual(tuple(getattr(before, field) for field in common), tuple(getattr(actual, field) for field in common))
+        self.assertEqual(tuple(getattr(final, field) for field in common), tuple(getattr(after, field) for field in common))
+        self.assertEqual(bytes(read), raw)
+        value, digest = preflight.read_json(source, len(raw))
+        self.assertEqual(value, {"native_metadata": True})
+        self.assertEqual(digest, hashlib.sha256(raw).hexdigest())
+
+    def test_actual_same_size_timestamp_change_is_not_hidden_by_an_identical_digest(self):
+        source = self.root / "same-size-version.json"
+        raw = b'{"unchanged_body":true}'
+        source.write_bytes(raw)
+        before = source.lstat()
+        real_read = preflight.os.read
+        changed = False
+        def mutate(fd, count):
+            nonlocal changed
+            value = real_read(fd, count)
+            if not changed:
+                changed = True
+                os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
+            return value
+        with mock.patch.object(preflight.os, "read", side_effect=mutate):
+            with self.refuses("input_changed"):
+                preflight.read_json(source, len(raw))
+        self.assertTrue(changed)
+        self.assertEqual(source.read_bytes(), raw)
+        self.assertEqual(source.stat().st_size, len(raw))
+
+    def test_simulated_same_source_version_difference_in_each_field_is_refused(self):
+        source = self.root / "same-source-fields.json"
+        source.write_bytes(b'{"stable":true}')
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")
+        attrs = fields + ("st_mode",)
+        for origin in ("path", "handle"):
+            for field in fields:
+                with self.subTest(origin=origin, field=field):
+                    calls = 0
+                    if origin == "handle":
+                        original = preflight.os.fstat
+                        def alter(fd):
+                            nonlocal calls
+                            info = original(fd)
+                            calls += 1
+                            if calls != 2:
+                                return info
+                            changed = SimpleNamespace(**{name: getattr(info, name) for name in attrs})
+                            setattr(changed, field, getattr(changed, field) + 1)
+                            return changed
+                        patcher = mock.patch.object(preflight.os, "fstat", side_effect=alter)
+                    else:
+                        original = Path.lstat
+                        def alter(path):
+                            nonlocal calls
+                            info = original(path)
+                            calls += 1
+                            if calls != 2:
+                                return info
+                            changed = SimpleNamespace(**{name: getattr(info, name) for name in attrs})
+                            setattr(changed, field, getattr(changed, field) + 1)
+                            return changed
+                        patcher = mock.patch.object(Path, "lstat", alter)
+                    with patcher:
+                        with self.refuses():
+                            preflight.read_json(source, 1024)
+                    self.assertEqual(calls, 2)
+
+    def test_simulated_common_initial_fields_are_exact_even_with_stable_handle_values(self):
+        source = self.root / "common-source-fields.json"
+        source.write_bytes(b'{"stable":true}')
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_nlink")
+        attrs = fields + ("st_ctime_ns", "st_mode")
+        original = preflight.os.fstat
+        for field in fields:
+            with self.subTest(field=field):
+                def alter(fd):
+                    info = original(fd)
+                    changed = SimpleNamespace(**{name: getattr(info, name) for name in attrs})
+                    setattr(changed, field, getattr(changed, field) + 1)
+                    return changed
+                with mock.patch.object(preflight.os, "fstat", side_effect=alter):
+                    with self.refuses():
+                        preflight.read_json(source, 1024)
+
+    def test_simulated_ctime_sources_may_differ_without_rounding_either_value(self):
+        source = self.root / "different-ctime-sources.json"
+        raw = b'{"stable":true}'
+        source.write_bytes(raw)
+        attrs = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink", "st_mode")
+        original = preflight.os.fstat
+        observed = []
+        def alter(fd):
+            info = original(fd)
+            changed = SimpleNamespace(**{name: getattr(info, name) for name in attrs})
+            changed.st_ctime_ns += 123456789
+            observed.append(changed.st_ctime_ns)
+            return changed
+        with mock.patch.object(preflight.os, "fstat", side_effect=alter):
+            value, digest = preflight.read_json(source, len(raw))
+        self.assertEqual(value, {"stable": True})
+        self.assertEqual(digest, hashlib.sha256(raw).hexdigest())
+        self.assertEqual(len(observed), 2)
+        self.assertEqual(observed[0], observed[1])
+        self.assertNotEqual(observed[0], source.lstat().st_ctime_ns)
 
     def cli(self, output):
         command = [sys.executable, "-I", "-B", str(Path(preflight.__file__)),

@@ -103,14 +103,20 @@ def read_json(path, maximum):
     require(path.name.casefold() not in FORBIDDEN_INPUT_NAMES and not path.name.casefold().startswith(".env."),
             "configuration_input_refused")
     try:
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                                 info.st_ctime_ns, info.st_nlink)
+        common = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_nlink)
         before = path.lstat()
         require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1, "nonregular_input")
         require(before.st_size <= maximum, "input_too_large")
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        # Windows CRT text descriptors translate CRLF and treat Ctrl-Z as EOF.
+        # Hash and validate the actual file bytes without changing global mode.
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         try:
             actual = os.fstat(fd)
             require(stat.S_ISREG(actual.st_mode) and actual.st_nlink == 1, "nonregular_input")
-            require((before.st_dev, before.st_ino) == (actual.st_dev, actual.st_ino), "input_changed")
+            require(common(before) == common(actual), "input_changed")
             data = bytearray()
             while True:
                 chunk = os.read(fd, min(65536, maximum + 1 - len(data)))
@@ -122,9 +128,13 @@ def read_json(path, maximum):
         finally:
             os.close(fd)
         final = path.lstat()
-        identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-                                 info.st_ctime_ns, info.st_nlink)
-        require(identity(before) == identity(after) == identity(final), "input_changed")
+        require(stat.S_ISREG(after.st_mode) and after.st_nlink == 1
+                and stat.S_ISREG(final.st_mode) and final.st_nlink == 1, "nonregular_input")
+        # python 3.12 Windows path ctime is creation time, while fstat ctime
+        # is ChangeTime. Retain every field within its actual metadata source;
+        # exact common physical/version fields still match across both sources.
+        require(identity(before) == identity(final) and identity(actual) == identity(after), "input_changed")
+        require(common(final) == common(after), "input_changed")
         value = json.loads(bytes(data).decode("utf-8"), object_pairs_hook=unique_object, parse_constant=no_constant)
         return value, hashlib.sha256(data).hexdigest()
     except Refused:

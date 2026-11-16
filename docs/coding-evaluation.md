@@ -136,6 +136,14 @@ configuration; the script never guesses credentials or silently substitutes a
 model. All paid stages are operator-invoked. CI checks the offline admission,
 stream parsing and scope contracts without using model credentials.
 
+The first Windows continuation-contract run rejected unchanged files because
+python 3.12 path and handle `ctime` represent creation and change time
+respectively. The corrected reader checks every full version field within each
+source and exact identity/size/modification-time/link fields across them, with
+owned binary reads for unchanged CRLF bytes and genuine EOF. Original bounds,
+JSON/digest/changed-file checks remain intact. The failed run and its skipped
+Windows core step are retained; fresh full platform validation gates delivery.
+
 The evaluation design follows [official evaluation guidance](https://developers.openai.com/api/docs/guides/evaluation-best-practices):
 define task-specific criteria, use reproducible graders, inspect failure traces,
 and compare a candidate on the same cases. Infrastructure failures, transport
