@@ -18,27 +18,26 @@ use std::sync::{Arc, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub(super) const BANNER: &str = r#" ████ ████   ███  █████ █████  ████ █   █  ███  █   █
-█     █   █ █   █ █       █   █     ██ ██ █   █ ██  █
-█     ████  █████ ████    █    ███  █ █ █ █████ █ █ █
-█     █  █  █   █ █       █       █ █   █ █   █ █  ██
- ████ █   █ █   █ █       █   ████  █   █ █   █ █   █"#;
-
-const HAMMER: [&str; 6] = [
-    "  ████████████",
-    "██████████████",
-    "████████████  ",
-    "     ████     ",
-    "     ████     ",
-    "     ████     ",
+// 匠: the open enclosure surrounds 斤. Half blocks keep the strokes distinct
+// while preserving the six-row startup layout on a standard 80×24 terminal.
+const JIANG_MARK: [&str; 6] = [
+    "██▀▀▀▀▀▀▀▀▀▀▀▀",
+    "██  ▄▄▄▄██▀▀  ",
+    "██  ██        ",
+    "██  ████████  ",
+    "██ ▄█▀  ██    ",
+    "██▄▄▄▄▄▄▄▄▄▄▄▄",
 ];
-const SMALL_HAMMER: [&str; 5] = [
-    " █████████",
-    "██████████",
-    "████████  ",
-    "   ███    ",
-    "   ███    ",
+const COMPACT_JIANG_MARK: [&str; 6] = [
+    "██▀▀▀▀▀▀▀▀",
+    "██ ▄▄██▀  ",
+    "██ ██     ",
+    "██ █████  ",
+    "██▄▀ ██   ",
+    "██▄▄▄▄▄▄▄▄",
 ];
+const HAMMER: [&str; 3] = ["▄███", " █  ", " █  "];
+pub(super) const SPLASH_ART_ROWS: usize = JIANG_MARK.len();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ScreenSelection {
@@ -195,7 +194,7 @@ fn splash_value_style(label: &str, value: &str) -> Style {
 
 fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
     if width < 4 {
-        return vec![Line::raw(truncate_visible("CRAFTSMAN", width))];
+        return vec![Line::raw(truncate_visible("匠", width))];
     }
     let available = width;
     let box_width = if available >= 24 {
@@ -221,86 +220,95 @@ fn render_splash_card(data: &str, width: usize) -> Vec<Line<'static>> {
     ])];
 
     let inner_width = box_width.saturating_sub(4);
-    let banner_width = BANNER
-        .lines()
-        .map(UnicodeWidthStr::width)
-        .max()
-        .unwrap_or(0);
+    let mark_width = JIANG_MARK[0].width();
     let hammer_width = HAMMER[0].width();
-    let full_width = hammer_width + 3 + banner_width;
-    let compact = ["", "CRAFTSMAN", "", "Build your own", "WASM gadgets.", ""];
-    let compact_width = hammer_width + 3 + compact.iter().map(|s| s.width()).max().unwrap_or(0);
-    if inner_width >= compact_width {
-        let full = inner_width >= full_width;
-        let wordmark: Vec<_> = BANNER
-            .lines()
-            .chain(std::iter::once("A coding agent that builds its own tools."))
-            .collect();
-        let art_width = if full { full_width } else { compact_width };
-        let left_pad = inner_width.saturating_sub(art_width) / 2;
-        let hammer_colors = [252, 250, 248, 80, 80, 73];
-        let wordmark_colors = [252, 252, 250, 250, 248, 245];
-        for (index, hammer) in HAMMER.iter().enumerate() {
-            let caption = if full {
-                wordmark[index]
-            } else {
-                compact[index]
-            };
-            lines.push(splash_box_line(
-                margin,
-                box_width,
-                vec![
-                    Span::raw(" ".repeat(left_pad)),
-                    Span::styled(
-                        *hammer,
-                        Style::default()
-                            .fg(Color::Indexed(hammer_colors[index]))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("   "),
-                    Span::styled(
-                        caption.to_string(),
-                        Style::default()
-                            .fg(Color::Indexed(wordmark_colors[index]))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ],
-            ));
-        }
+    let brand_width = hammer_width + 2 + "craftsman".width();
+    let with_caption = inner_width >= mark_width + 3 + brand_width;
+    let full_caption = "A coding agent that builds its own tools.";
+    let wide = inner_width >= mark_width + 3 + full_caption.width();
+    let captions = if wide {
+        ["", "", "", full_caption, "Build your own WASM gadgets.", ""]
     } else {
-        if inner_width >= SMALL_HAMMER[0].width() {
-            let colors = [252, 250, 248, 80, 73];
-            for (index, hammer) in SMALL_HAMMER.iter().enumerate() {
-                lines.push(splash_box_line(
-                    margin,
-                    box_width,
-                    vec![
-                        Span::raw(" ".repeat((inner_width - hammer.width()) / 2)),
-                        Span::styled(
-                            *hammer,
-                            Style::default()
-                                .fg(Color::Indexed(colors[index]))
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ],
-                ));
-            }
-        }
-        let caption = truncate_visible("CRAFTSMAN", inner_width);
-        let left_pad = inner_width.saturating_sub(caption.width()) / 2;
-        lines.push(splash_box_line(
-            margin,
-            box_width,
+        ["", "", "", "Build your own", "WASM gadgets.", ""]
+    };
+    let compact_width = COMPACT_JIANG_MARK[0].width();
+    let with_hammer = !with_caption && inner_width >= compact_width + 2 + hammer_width;
+    let mark = if with_caption || (!with_hammer && inner_width >= mark_width) {
+        &JIANG_MARK
+    } else {
+        &COMPACT_JIANG_MARK
+    };
+    let fits_mark = inner_width >= mark[0].width();
+    let side_width = if with_caption {
+        brand_width.max(captions.iter().map(|s| s.width()).max().unwrap_or(0))
+    } else if with_hammer {
+        hammer_width
+    } else {
+        0
+    };
+    let gap = if with_caption {
+        3
+    } else if with_hammer {
+        2
+    } else {
+        0
+    };
+    let art_width = mark[0].width() + gap + side_width;
+    let left_pad = inner_width.saturating_sub(art_width) / 2;
+    let mark_colors = [252, 252, 250, 250, 248, 248];
+    let hammer_colors = [250, 80, 73];
+    for index in 0..SPLASH_ART_ROWS {
+        let mut content = if fits_mark {
             vec![
                 Span::raw(" ".repeat(left_pad)),
                 Span::styled(
-                    caption,
+                    mark[index],
                     Style::default()
-                        .fg(crate::theme::TURQUOISE)
+                        .fg(Color::Indexed(mark_colors[index]))
                         .add_modifier(Modifier::BOLD),
                 ),
-            ],
-        ));
+            ]
+        } else {
+            let text = match index {
+                2 => "匠",
+                4 => "craftsman",
+                _ => "",
+            };
+            let text = truncate_visible(text, inner_width);
+            vec![
+                Span::raw(" ".repeat(inner_width.saturating_sub(text.width()) / 2)),
+                Span::styled(text, title_style),
+            ]
+        };
+        if with_caption {
+            content.push(Span::raw(" ".repeat(gap)));
+            if index < HAMMER.len() {
+                content.push(Span::styled(
+                    HAMMER[index],
+                    Style::default()
+                        .fg(Color::Indexed(hammer_colors[index]))
+                        .add_modifier(Modifier::BOLD),
+                ));
+                if index == 1 {
+                    content.push(Span::raw("  "));
+                    content.push(Span::styled("craftsman", title_style));
+                }
+            } else {
+                content.push(Span::styled(
+                    captions[index],
+                    Style::default().fg(crate::theme::TEXT),
+                ));
+            }
+        } else if with_hammer && (1..=HAMMER.len()).contains(&index) {
+            content.push(Span::raw(" ".repeat(gap)));
+            content.push(Span::styled(
+                HAMMER[index - 1],
+                Style::default()
+                    .fg(Color::Indexed(hammer_colors[index - 1]))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(splash_box_line(margin, box_width, content));
     }
 
     lines.push(splash_box_line(margin, box_width, Vec::new()));
@@ -1049,12 +1057,13 @@ mod tests {
             .join("\n");
         assert!(plain.contains('╭') && plain.contains('╯'));
         assert!(plain.contains("CRAFTSMAN CLI"));
-        assert!(plain.contains("██████████████"));
-        assert!(plain.contains(BANNER.lines().next().unwrap()));
+        assert!(plain.contains("craftsman"));
+        assert!(plain.contains(JIANG_MARK[0]));
+        assert!(plain.contains(JIANG_MARK[4]));
         let hammer = lines
             .iter()
             .flat_map(|line| &line.spans)
-            .find(|span| span.content == HAMMER[1])
+            .find(|span| span.content == HAMMER[0])
             .expect("filled hammer head");
         assert_eq!(hammer.style.fg, Some(Color::Indexed(250)));
         assert!(plain.contains("VERSION"));
@@ -1081,9 +1090,11 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(plain.contains("CRAFTSMAN"));
-        assert!(plain.contains("██████████████"));
+        assert!(plain.contains("craftsman"));
+        assert!(plain.contains(JIANG_MARK[0]));
+        assert!(plain.contains(HAMMER[0]));
         assert!(plain.contains("WASM gadgets."));
-        assert!(!plain.contains(BANNER.lines().next().unwrap()));
+        assert!(!plain.contains("A coding agent that builds its own tools."));
         assert!(lines.iter().all(|line| {
             line.spans
                 .iter()
