@@ -1,491 +1,114 @@
 # Craftsman runtime — current implementation and remaining work
 
-> **Updated:** November 15, 2026 (Asia/Taipei). This page describes the maintained checkout,
-> including private implementation foundations. It is not a release announcement.
-> **Design/evidence:** `craftsman-harness-plan.md` retains the October 16 baseline,
-> target architecture and historical measurements. Its baseline “today” boxes
-> are not this page's current runtime. `headless-mode.md` is the accepted v1
-> specification and records partial implementation separately from CLI availability.
-> **Current acceptance:** #97's token-admission representation/v1 compatibility was
-> explicitly approved November1 (`token-admission.md`), not inferred from CI. Earlier
-> dated slice evidence describing that then-open gate is historical. A private
-> shared request-only cap is selected by default (`request-admission.md`); separate
-> private bounded token reservations are implemented (`token-reservations.md`).
-> Private admission-correlated send/header observations now exist (`admission-receipts.md`);
-> usage/settlement/public producers remain unwired.
+Updated November 16, 2026 (Asia/Taipei). This page describes maintained runtime
+behavior and its remaining boundaries. The latest independently verified main
+is `9c5774d`, including the 匠 splash and OSC 7501. Source validation, live coding
+results and published releases are separate evidence.
 
-> **Terminal status (November 15):** the interactive TUI emits change-only OSC
-> 7501 root and bounded delegated-task records with fixed messages and numeric
-> ids. Actual approval/question waits, returned completion/error, paused turns
-> and cancellation/cleanup determine status; text never determines authority.
-> Reporting defaults on, with `terminal.osc7501: false` as an opt-out. Normal
-> rendering retains SafeBackend, and ACP/noninteractive/private output stays
-> unchanged. Isolated actual builder/HTTP/file/SQLite and newly owned PTY cases
-> validate the event path, opt-out, control safety and restoration. Full local/
-> all-four/every-step/both-mode/inventory/warning/tree and independent-main proof
-> remain delivery gates. This enables terminal monitoring, not automatic native
-> host chat registration or OS/model-billing containment. See `terminal-status.md`.
-
-> **Terminal splash (November 16):** the startup card uses a block-drawn 匠 mark,
-> a small lowercase Craftsman label and a filled miniature hammer in the existing
-> gray/turquoise palette. Narrow layouts retain the mark and available connection
-> details; the standard card remains 15 rows. See [terminal splash](terminal-splash.md).
-
-> **Declared verification (November 14):** TUI/ACP main agents select explicit
-> user/project verification plans with declared source and protected paths.
-> Source observation is lazy and bounded; normal completion schedules the
-> registered verifier through existing approvals, durable saves and owned shell
-> execution. Actual zero exits plus unchanged complete source observations are
-> required for acceptance. Failures feed normal model repairs under a three-round
-> bound; denied/unperformed checks stop further sampling. Protected content review
-> is independent of bypass switches, and stale approvals do not authorize later
-> changes. Terminal review puts protected changes first and pages through all
-> bounded details while preserving the composer draft. The first PR #22 Windows
-> failures and clipped native review capture remain retained; corrected PR #22
-> run 43612457680 and merged-main run 43614462838 completed all four jobs and
-> both native modes with inventories/warnings audited. Unfinished observations survive explicit
-> follow-ups, and model transfers require fresh verification while preserving
-> the transferred checkpoint sequence without replay. The subsequent Windows
-> direct-helper/shell divergence and Linux package endpoint timeout remain separate
-> failed evidence. Read-only/empty-policy and legacy/private/frozen/delegated defaults
-> remain. This is an app-only scoped completion gate, not OS containment or the
-> public headless receipt producer. See `verification.md`; full local/all-four/
-> every-step/both-mode/inventory/warning/tree and independent-main proof gate
-> delivery, separately from live model-quality evidence. A matched model check
-> records an actual candidate verification result and preserves correctness;
-> `live-verification-evaluation.md` labels that composition evidence and its
-> $23.153274/$25 cumulative conservative accounting.
-
-> **Task workflow (November 14):** TUI/ACP main agents explicitly select
-> proportional planning/delegation, required verification and prompt completion
-> guidance. A bounded observer inside existing approvals adds fixed recovery
-> guidance after repeated identical returned tool errors; successes, changed
-> errors and typed permission/cancellation outcomes retain normal iteration.
-> Original results/usage/native continuations stay intact, and legacy/private/
-> frozen/delegated policies remain. This is advisory guidance, not the full
-> verification or stuck-governor gate. Native and live quality evidence are
-> separate; full local/all-four/every-step/both-mode/inventory/warning/tree and
-> independent-main validation remain delivery gates. Five selected matched
-> instances preserve correctness while reducing observed work/accounted cost;
-> original failures, contract clarification and repeat variation remain recorded.
-> See `task-workflow.md` and `live-workflow-evaluation.md`.
-
-> **Terminal turn limits (November 14):** the owned TUI main agent uses a
-> configurable 200-round default instead of inheriting the framework's 50-round
-> cutoff. Exhaustion closes the last fully executed round, runs end hooks and
-> saves the actual transcript before displaying a chat activity pause. A user
-> follow-up continues from that history without automatic replay or approval
-> bypass. Final-save failures remain errors; last-round accepted input is retained
-> and cancellation keeps its existing outcome. Framework/other-frontend/delegated
-> defaults and native operation limits remain. New framework and marked actual
-> builder/HTTP/approved-file/SQLite/UI tests accompany the implementation; full
-> local/all-four/every-step/both-mode and independent-main checks gate delivery.
-> See [terminal turn limits](terminal-turn-limits.md).
-
-> **Workspace file checkpoints (November 14):** read-only turns do no automatic
-> workspace snapshot work. Direct writes/edits capture their selected files;
-> shell snapshots use actual file/directory tool context and bounded fallback
-> scans. Folder access does not require Git or exclude home/multi-project folders.
-> Permission-denied paths and scan limits produce partial coverage, never inferred
-> creation/deletion. Existing checkpoint content/retention, conflict checks and
-> conversation recovery remain. TUI notices use its activity queue and SafeBackend,
-> so background diagnostics do not write over the composer. New local-file and
-> marked builder/HTTP/SQLite/draft tests accompany the implementation; full local,
-> all-four/every-step/both-mode and independent-main checks gate delivery.
-> See [workspace file checkpoints](workspace-checkpoints.md).
-
-> **Terminal theme (November 13):** the TUI uses a neutral gray/light-gray
-> palette with restrained turquoise accents, including the filled hammer,
-> grouped model/effort menus, chat, task/tool states and composer. Indexed colors
-> support Terminal.app. Text and symbols distinguish errors and waiting states;
-> rendering still passes through SafeBackend. Theme changes do not alter
-> model requests, permissions, recovery, native cleanup or dependency contracts.
-
-> **Coding-quality work (November 14):** a 30-task corpus and external local
-> Docker/ACP runner provide held-out grading, a separate credential/budget
-> gateway and source snapshots. The initial live cycle selects GPT-6.1 Sol
-> under a confirmed $25 cap. TUI/ACP explicitly select task-focused memory
-> guidance; legacy/private/frozen policies remain. Native tests and live coding
-> results are independent; the first live cycle records 30 baseline tasks and
-> paired six-case memory/Codex checks in `live-coding-evaluation.md`.
-> See `coding-evaluation.md` and `terminal-memory.md`. Public exec, headless
-> gadget registration, native containment and publication gates remain separate.
-
-> **CI prerequisites (November 14):** Linux APT setup selects IPv4 and three
-> bounded transport retries after merged-main package downloads failed on an
-> unavailable IPv6 route. Incomplete indexes still fail; all four jobs, default
-> voice/gadget build and both full native modes remain required. Passing native
-> suites do not waive a failed setup step; see `ci.md`.
-
-> **Local services and model menus (November 13):** `/model` reads the configured
-> catalog, groups models by provider, then asks for the chosen model's effort or
-> budget. The final selection saves/applies both without replay; opening/cancelling
-> a menu makes no model request or configuration change. Explicit `/model --refresh`
-> retains bounded configured discovery. Platform setup, remote skill browsing and
-> the ACP bridge's inbox worker are retired. `/skills` lists local files; model,
-> MCP and search services use configured connections. Missing voice models require
-> `voice.allow_model_download: true`; cached models remain local. Legacy platform
-> fields/secret capture remain compatibility data, not active services. Existing
-> permissions, native limits, SDK/WIT/pins and retained goldens are unchanged.
-> See [connections](connections.md).
-
-> **Terminal branding (November 13):** startup uses Craftsman block lettering
-> beside a solid colored hammer, with a compact layout for narrow terminals.
-> Indexed art colors work in Terminal.app. The status rows describe the selected
-> named model connection or legacy direct connection, without showing API keys
-> or resolving credentials/contacting providers. Configured keys remain explicitly
-> unverified. The README shows a native terminal preview from isolated configuration;
-> [provider configuration](provider-models.md) explains the status semantics.
-
-> **Public repository validation (November 13):** after the owner made the MIT
-> repository public, main run 43367914846 attempt 2 passed all four jobs/every
-> mandatory step and both full native modes at `0389716`. Native inventories and
-> warning signatures match the reviewed baseline plus the recorded ACP additions.
-> Dependency cache staging/saving succeeded on all three platforms. Earlier
-> billing-blocked attempts remain failed evidence. The concise README introduces
-> the product; current technical limits and historical validation remain here
-> and in the feature docs. Binary/container publication stays on hold.
-
-> **MIT license decision (November 13):** the owner selected MIT for the project's
-> original work. A root `LICENSE` and application package metadata now match the
-> existing MIT declarations of the framework, gadget SDK and macros. Commercial
-> use is permitted without a project royalty; notices must be retained. Existing
-> third-party licenses/attribution and unresolved provenance review remain
-> separate. Repository visibility and binary/container publication policies are
-> unchanged by this license decision.
-
-> **Live starter gadgets (November 13):** the user authorized importing their
-> existing GPT/Claude connections and running actual authoring tests. Four pure
-> gadgets were built and invoked by real `gpt-6.1-sol` / Claude Fable 5.2 sessions;
-> all 30 independent cases and installed-copy checks passed. Native operations
-> used approve-once replies and guest calls used reviewed ephemeral grants;
-> manual permissions/live shell limits stayed intact. This does not establish
-> universal model quality, OS containment or a public headless runtime. The
-> obsolete platform example is removed. See [the live evaluation](live-gadget-evaluation.md).
-
-> **CI cost controls (November 12):** the owner approved light draft checks and
-> selective Cargo dependency caching. Ready PRs, main and manual runs retain the
-> full four-context/default-build/both-native-mode gate. Cache keys bind platform,
-> architecture, toolchain and lock/manifests; successful main platform jobs alone save
-> bounded dependency artifacts. Workspace binaries and gadget fixtures are not
-> cached. Contract tests and an actual offline Cargo cache round-trip passed;
-> hosted reuse/timing remain unverified while account billing blocks startup.
-> See [CI validation and cost controls](ci.md). No runtime/SDK/WIT/pin/native-limit
-> or publication setting changes follow from these optimizations.
-
-> **ACP transport consolidation (November 11):** the owner retired `serve` and
-> `desktop-serve`, their custom v2/v4 implementations, desktop-only tests/golden
-> and uploaded-PCM voice runtime. ACP retains its existing methods, messages,
-> A2UI resource blocks and bridge HTTP/auth behavior through extracted helpers.
-> Terminal voice/setup/editing and stored user data remain. Legacy clients must
-> migrate their messages to ACP; this is not automatic replacement for every desktop feature or a new
-> OS-isolation guarantee. Retained ACP goldens are unchanged.
-> Cleaned local verification passes all nine checks, warning-free: core
-> 1882/0/17 and gadgets 2038/0/20. Exactly 51 old inventory entries are retired
-> or moved and six moved/new entries appear per mode; unrelated coverage remains.
-> All 17 retained voice unit tests pass in the default build. First compilation
-> and warning-rejected records remain separate; fresh all-four hosted and
-> independent main checks still gate delivery.
-
-> **ACP compatibility repairs (November 11):** the original strict stable-v1
-> audit found session, permission, MCP, replay/identity and completion defects.
-> The corrected source-built adapter passes the same 39 local checks. Seven
-> additional native regressions test real effects, SQLite reopen, delegated
-> permissions, EOF and model transfer. [The audit](acp-compatibility-audit.md)
-> preserves original failures; [ACP behavior](acp.md) records supported paths,
-> intentional golden diffs and cooperative/native limits. All-four hosted and
-> independent-main verification remain separate delivery gates. The first hosted
-> Ubuntu job failed package-repository DNS and skipped required default/core
-> steps; its gadget pass is separate evidence. CI now selects kernel.org's HTTPS
-> Ubuntu package endpoint while retaining signing keys, suites and package/test
-> requirements; fresh all-four verification remains required.
-
-> **Durable manual compaction (November 10):** the owned terminal saves its
-> original state before `/compact` sampling and its replacement before success.
-> Active turns/pending approvals refuse; cancellation and concurrent message
-> changes retain the original. Failed saves retain the summary in memory and
-> prevent saved-session claims. Activity/final-save ownership lasts through
-> actual return; reopening never retries tools or compaction. See
-> [terminal compaction](terminal-compaction.md).
-
-> **Previous verified main:** PR #9 and independent merged-main run
-> [42841802167](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/42841802167)
-> at `5e4f271` pass all four jobs/every applicable step/both native modes.
-> Fresh local verification passes all nine checks (core 2005/0/17; gadgets
-> 2161/0/20). The earlier Windows failure at 957b004 is retained separately;
-> the corrected fixture keeps the shell/Job path and original assertions/bounds.
-> **Shell diagnostic retirement (November 11):** temporary test-only phase
-> recorders, native snapshots and sampling hooks have been removed at the owner's
-> request. Actual output, timeout, invalid-byte and approval-stop behavior checks
-> remain. This maintenance does not establish the cause of historical shell stalls.
-> Fresh local verification passes all nine checks: core 1927/0/17 and gadgets
-> 2083/0/20, warning-free. Inventory differences are exactly 81 retired diagnostic
-> entries and three converted behavior cases per macOS mode; unrelated tests and
-> ignored/doctest entries are retained. Fresh hosted and independent main proof
-> still gate delivery of this changed source.
-> The first retirement CI run passed all four jobs and both modes, but its warning
-> audit found a newly unused Windows test-only PID accessor. That accessor is now
-> Unix-only, matching its remaining native test callers; production process code
-> and limits are unchanged. The first run remains a separate warning-rejected
-> delivery record pending fresh corrected-source verification.
-
-> **Provider-aware setup (November 10):** `/setup` and `craftsman setup` edit a
-> configured named connection instead of writing ignored flat fields and an
-> invalid model selection. Candidates validate before save; failures retain the
-> current config/session. Other connections/settings and committed conversation
-> survive the existing no-replay rebuild. Keys stay masked and oversized paste
-> is refused whole. See [provider setup](provider-setup.md).
-
-> **New ownership and implementation:** `kaobei-alabo/craftsman-harness`
-> starts with a fresh source-only Git history. The new private
-> [request-budget arguments](request-budget-arguments.md) select `--max-rounds`
-> before preparation and use the shared main/delegate/compaction meter. Default
-> 50, range 1..10000; existing routes and public exec availability are unchanged.
-> The app declares Rust 1.99 with the existing 1.99.1 pin. The new CI requires all
-> three platforms, uses actual macOS 15 labels and checks the default build.
-> [Production readiness](production-readiness.md) records current validation and
-> the working self-built gadget path; older check/issue records below are historical.
-
-> **Publication hold (November 6):** the owner requested no agent binary
-> publication and removal of the obsolete workspace/service-agent image workflows.
-> All three publishing workflows (including release binary artifacts) are disabled
-> in GitHub and removed from source. Validation CI and JSON-only gadget benchmark
-> reports remain available. Re-enabling publication needs explicit owner approval
-> and a reviewed implementation change.
-
-> **Terminal prompt cancellation (November 6):** Ctrl-C now requests a stop from
-> approval/question dialogs and other modals. The actual agent receives the
-> cooperative stop before synchronous waiters receive denial/absence; queued and
-> late prompts cannot keep that stopping turn waiting for input. Unrelated drafts
-> survive and next-turn prompts work normally. The TUI now opts in to dropping
-> pending main-model HTTP/stream waits. Running tools, compaction and children
-> retain their owned work. The continuation below adds shared scopes and signal
-> routing; other frontends keep their existing cooperative behavior.
-> See [terminal cancellation](terminal-cancellation.md) for implementation and tests.
-
-> **Owned terminal lifecycle (November 6 continuation):** turn/session scopes now
-> reach compaction, foreground helpers and native commands; background stops
-> retain running status until actual cleanup. Inline shell/manual compaction work
-> uses owned tasks. Signals/quit close the session and its waiters; raw-mode and
-> panic restoration are owned. Native 5 s kill/reap and 2 s drain bounds are
-> unchanged, with a truthful overall shutdown timeout. Legacy/private/frozen
-> agents mask ambient scopes. [Terminal lifecycle](terminal-lifecycle.md) records
-> tests and remaining OS/recovery/live-quality gates. PR #5 and independent main
-> run 42170055307 passed all four jobs/every step and both native modes.
-
-> **Terminal recovery (November 6 continuation):** the owned terminal selects
-> required user/round/tool-result checkpoints. Failed saves stop further work;
-> reopening keeps durable results and warns about unknown effects without
-> automatic replay. Local metadata/state/pruning writes share a transaction on a
-> separate connection with FULL WAL synchronization. [Terminal recovery](terminal-recovery.md)
-> records failure/crash tests and remaining concurrent-owner, native, diagnostic
-> and live-quality limits. Stable local verification passes all nine checks,
-> core 1947/0/13 and gadgets 2103/0/16, with no warnings and all original cases
-> retained. Hosted and independent main checks remain separate from PR #5.
-
-> **Current shell maintenance:** the November2 post-merge main run `41398538418`
-> failed one feature-off Windows partial-output test, despite an informational
-> overall success and a later green gadget-host step. A narrow Windows fixture
-> correction now uses direct flushed Console writes before blocking, with three
-> additive native cases and unchanged old 2s assertions/limits. All four jobs AND
-> every mandatory step/both modes remain the gate; no generic badge/PR-pass
-> substitution. See `windows-shell-fixtures.md` for the distinct original evidence.
-
-## Complete identity migration — November 4, 2026
-
-The November 10 [provider/catalog implementation](provider-models.md) adds named
-connections and models nested under each provider, using actual API IDs instead
-of aliases. Explicit protocols select Responses, Claude Messages, Gemini
-GenerateContent or the existing compatible client. Nested effort/budget settings
-and provider-qualified selections retain conversation and durable metadata;
-opaque/signed continuation data stays bound to its connection identity. Scripted
-HTTP and real terminal-builder/file/SQLite tests exercise all four protocols,
-cancelled requests and no-replay switching. Full local and hosted verification
-are recorded separately; live quality, public exec, containment and publishing
-gates remain open. Organization-owned main 42629991063 independently verifies the
-earlier terminal model controls across all four jobs/every step/both native modes.
-
-The November 4 canonical repository was `trend-mgai/craftsman-harness`. The source rebrand
-also changes CLI/crate/config/environment/ACP/WIT/schema/image and file names
-to Craftsman. This is a breaking identity migration, not merely a repository
-folder change. Existing user data, Git history, grants, releases and sealed
-evidence are not mutated; old failure outcomes remain failures. Historical
-names in docs are translated labels, not new evidence or producer claims.
-See [repository-name.md](repository-name.md) for the interface table, explicit
-configuration handling and external source/secret/publication prerequisites.
-The identity migration merged as PR145 and is independently verified on main
-CI41808669282 (November 4, UTC): all four jobs/every setup, mandatory and post step,
-both modes, exact old/new inventories, warning locations and merged tree. This
-completes source migration validation, not the unfinished public-exec/callable-
-gadget/accounting/live/release gates below or external publishing prerequisites.
-
-The first renamed local full invocations are retained as failures (1585/6/7
-feature-off;1728/6/9 gadgets), including five native shell cases and one
-renamed-token collation expectation. Production capture was unchanged; only
-that exact two-name expected order was corrected and passes both focused
-modes. No unchanged broad retry or root-cause claim. Corrected-head CI41803187695
-and independent merged-main CI41808669282 are fully audited, with actual macOS15
-behind the retained context and unchanged Windows9 warning signatures/17
-occurrences. The migration note records the completed validation checkpoint.
+The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
+October 16 baseline and target architecture. Feature docs retain the relevant
+failed/corrected implementation evidence. Those dated records do not describe
+current failures or pending merges unless explicitly stated here.
 
 ## 1. What users can run now
 
-The November 9 [terminal model controls](terminal-models.md) continuation adds
-provider/config model catalogs, per-model reasoning effort and conversation-
-preserving reconfiguration. Thread ids, checkpoint sequence and actual main
-usage survive a switch; old cleanup finishes before the new agent is ready.
-Discovery is cancellable, and failed initialization retains history and stops
-sampling. Private/frozen/legacy controls, API transport, SDK/WIT, schema/frames/
-goldens and publication gates stay unchanged. Full native local tests pass
-1965/0/14 and 2121/0/17 with no warnings and all prior cases retained. The first
-full script fails only new documentation provenance; its correction passes
-separately. Hosted and independent main verification remain separate.
-
 | Surface | Current behavior | Important limit |
-|---|---|---|
-| `craftsman` TUI | Streaming conversation, steering/queue, owned cancellation/terminal restoration, HITL, host/web tools, required per-tool checkpoints, recovery warnings, memory/LSP/skills, opt-in gadgets | Host tools are not an OS sandbox; escaping/uninterruptible work, concurrent owners, remaining recovery and live task/console-event quality need evaluation |
-| `craftsman -m PROMPT` | Legacy argument-only one-shot; main content streams to stdout; activity goes to stderr | Still inherits legacy user-config permissions/storage; not the v1 unattended contract |
-| `craftsman gadgets …` | Inspect/call, create/build/doctor, create-only legacy migration | Build/native-code permission is separate from first guest-load permission |
-| `acp-serve`, `acp-bridge` | Retained ACP stdio server and WebSocket relay with HTTP health/stats | Standard v1 session/permission/replay corrections; existing extensions, proxy authentication and native limits; custom v2/v4 servers are retired |
-| `service-agent` | Request-scoped virtual resources and explicitly selected public-web tools | No real filesystem, native shell, local DB/memory/LSP/project discovery |
-| `craftsman exec` | **Not exposed** | Accepted contract plus partial private implementation, not a runnable command |
+| --- | --- | --- |
+| `craftsman` | Streaming terminal conversation, file/shell/web tools, approvals, steering, saved work, local skills/memory, configured MCP/LSP and opt-in gadgets | Host tools are not an OS sandbox; supervised coding and general folder work are supported |
+| `craftsman -m PROMPT` | Legacy argument-only one-shot; main content on stdout, activity on stderr | Inherits legacy user-config permissions/storage; not the accepted unattended headless contract |
+| `craftsman setup` | Edit/select a configured model connection with masked keys and validated settings | Other connections and existing data remain preserved |
+| `craftsman gadgets …` | Inspect/call, create/build/doctor and create-only legacy migration | Native build approval and first guest-load capability approval are separate |
+| `craftsman acp-serve` | Standard ACP over stdio | Detailed session/tool/permission interface; native host registration is the client's responsibility |
+| `craftsman acp-bridge` | WebSocket relay of ACP JSON-RPC plus HTTP health/stats | Existing proxy authentication and bounded transport behavior |
+| `craftsman service-agent` | Restricted request-scoped virtual resources and selected public-web tools | No real filesystem, native shell, local database/memory/LSP/project discovery |
+| `craftsman exec` | Not exposed | Accepted contract and private implementation foundations only |
 
-Source implementation is not publication: gadget model visibility remains user
-opt-in, and merging migration code does not complete a published plugin-deprecation
-cycle. `gadget-validation.md` records the independent runtime,
-live-evaluation and release gates.
+The former `serve` and `desktop-serve` commands are removed. Platform onboarding,
+inbox polling and remote skill browsing are retired. Storage, sessions and
+skills are local; model, MCP and search traffic uses explicit configuration.
+Cached voice models remain local, and missing models need explicit download
+opt-in. See [connections](connections.md).
+
+The startup card uses a block-drawn 匠, small `craftsman` label and miniature
+hammer in gray/turquoise. The standard card remains 15 rows and compacts at
+narrow widths. Its metadata describes the selected model connection and key
+presence without exposing keys or submitting a model task.
+
+`/model` opens the grouped local catalog, then the selected model's effort or
+budget picker. Only the final selection saves/applies; `/model --refresh`
+explicitly requests bounded configured discovery. Model changes preserve
+committed conversation, files, todos, custom state, approvals, thread identity
+and checkpoint sequencing without replay.
+
+OSC 7501 reports actual terminal work, approval/question waits, returned
+completion/error and bounded delegated-task records. It is enabled by default;
+`terminal.osc7501: false` opts out. Trusted fixed metadata is written by the
+owned terminal guard; normal rendering stays behind SafeBackend. Orca terminal
+monitoring was exercised with the installed CLI. Native Orca chat registration
+through ACP remains separate.
 
 ## 2. Current architecture
 
-```text
-CLI / TUI / existing transport adapters
-  |
-  +-- local paths: agent::build_session_ext
-  |     route + model/provider profiles + prompts + extensions
-  |     main, delegated and compaction model providers
-  |     middleware + host/web/MCP/LSP tools
-  |       |
-  |       +-- craftsman-harness::Agent
-  |       |     six middleware stages, model/tool loop, task registry,
-  |       |     notifications, state and persistence interfaces
-  |       |     no app HTTP/database/UI dependencies
-  |       |
-  |       +-- app resources
-  |             RealFs + optional /memories StoreFs
-  |             ShellRunner -> platform_os::ProcessTree
-  |             local libsql threads/checkpoints + JSONL journal
-  |             optional gadget host + deterministic catalog middleware
-  |
-  +-- service-agent: separate restricted construction, virtual backend
-  |
-  +-- private headless foundations (not a CLI route)
-        exec::permissions: immutable explicit invocation policy
-        exec::confined_fs: bounded handle-relative ORIGINAL IO authority
-          -> actual builder FilesystemScope -> TextFs backend + bound filesystem host tools
-             complete original-byte coverage before page/hit selection; original lines/queries/mutations
-             safe name labels (never authority aliases), typed FsError observation, no raw spill
-        accepted schemas/reference + native conformance tests
-          + accepted #97 detail; private request cap + optional bounded token reservations
-             checked-source clamped body before atomic charge; allocation remains unsettled, not usage
-             actual-admitted two-slot first-poll/send-error/header facts; no body/usage/billing inference
-        exec::input: argument/file admission; those old routes still refuse stdin
-          -> construction::PreparedInput: read-only bootstrap + SAME retained ConfinedFs
-             whole UTF-8 instruction/files/framing BEFORE session ID/store assignment
-          -> input::Invocation: SAME Runtime builder, one original model-data turn
-             private source facts + original partial state/outcome; not grants/public receipts
-        exec::input::scopes: explicit launch-base normal-relative scope + output-file admission
-             untouched source/values; same old complete syntax BEFORE effects, no public formats
-             selected-workspace task/output paths; SAME old physical/publisher owners, no new grant
-        exec::input::frontend: supported absolute scope/permission/env/session controls
-             whole syntax/source + old grammar preflight BEFORE IO; explicit Defaults
-             authoritative old Bootstrap credential/root/session checks -> old argv factories
-        exec::input::arguments: bounded native argv; source/attachment flags ONLY
-             whole grammar BEFORE config/stdin -> SAME four old invocation factories
-             old Run/FileRun returned unchanged; no new runtime/terminal/writer/CLI
-        exec::input::output::stdin: exact '-' + original guarded Destination; capture BEFORE stdin
-             complete native/attachment admission -> retained-target recheck BEFORE IDs/store/providers
-             same old actual FileInvocation/FileRun/FileTerminal/Record; no new reader/writer/CLI
-        exec::input::stdin: separate exact '-' native pipe/owned-mode or original-rights availability polling
-          -> SAME Bootstrap; original1MiB /10s-first-byte/30s-total / genuine EOF / UTF-8
-             restore/close source -> old attachment/frame admission BEFORE sessions/store
-             actual input Run, no public stdin/console/file/outcome/usage producer
-        exec::construction: explicit config/discovery + session preparation
-          + captured known credentials/frozen provider route -> private redactor seed set
-          -> exec::runtime -> the SAME agent session builder (no credential re-expansion)
-             retained ConfinedFs; immutable tool gate + all-role fail latch
-             scoped context; no MCP/LSP/memory/background/guest callables
-             silent sinks; raw checkpoint/journal writers disconnected
-        gadgets::confined: private byte-safe filesystem facet over the SAME authority
-        gadgets::sources: retained config/workspace + owned source/approval/original-policy snapshot
-          -> opaque exec::runtime::GuestScope -> private gadgets::headless::GuestHost
-             SAME original filesystem and all-role fail latch; typed import observation
-             empty-capability describe; bounded WASI/HTTP/logs; no inherited ambient resources
-             frozen-seed guest JSON + shared stdout/stderr/log capture BEFORE retention cuts
-             direct synchronous WASIp2 writes; SAME-gate checks, no queued post-finalization writes
-             NOT registered as model tools/catalog; original metadata/provenance remain private
-        exec::redaction: bounded literal matching + abort and rendered-match verification
-                         selected by guest/shell/filesystem/web/concrete-framework views and fixed gate denials
-        exec::shell: actual builder ShellScope, ORIGINAL command and captured scrub policy
-                     redaction/verification before head-tail cuts; raw byte/status facts retained
-                     no raw spill, strict UTF-8, unsupported post-capture clean_output rejected
-        exec::web: actual builder WebScope, frozen literal search auth, ORIGINAL URLs/queries
-                   no ambient proxy/auth/cookie defaults; manual rechecked fetch redirects
-                   original-byte checks before body cuts, bounded HTML, complete structured search views
-        exec::framework: actual builder FrameworkScope + SAME-gate opaque concrete subagent source
-                         known todo/task/message results before framework cuts; original typed state/delivery
-                         checked whole todo JSON + todo context; NOT registry/inbox/all-profile/state publication
-        exec::provider: actual builder ProviderScope; all-role copied request views before argument/HTTP encoding
-                        original state/control/auth; exact checked bytes + source identity, per-attempt gate rechecks
-                        source/schema constraints unchanged or refuse
-          -> diagnostics: actual-client Sent/Received + per-checked-request lease
-                          original error-body UTF-8 before 100k view / 400-scalar cuts; fixed unsafe failures
-                          original attempt/status/body observations; same latch, bounded last failure only
-                          success SSE/control/arguments and transport authority remain original/private
-        exec::messages: only actual Runtime MessageScope; whole retained message admission
-                        under SAME state lock BEFORE copies; frozen finite text/argument views
-                        role/order/id/name/key/scalar/flags preserved or refuse; no aliases
-                        checked snapshot bytes/count, SAME latch/binding; other state unselected
-        exec::messages::selection: consume ONLY admitted View; newest whole-message suffix
-                                   exact encoded budget/counts; no raw-source rescue or repair
-                                   SAME gate and final literal check; original outcome unchanged
-        exec::terminal: ONLY consumed actual Run; deny-only SAME execution seal
-                        independent revocable lease/typed approval epoch; original return retained
-                        checked original final text + whole retained messages, no raw state clone
-                        not public outcome/IO/ASCII/shutdown/usage or all-role quiescence
-        exec::terminal::selection: both channels admitted before combined-budget selection
-                                   original checked answer/facts kept; newest whole-message suffix
-                                   exact count/framing/lease/epoch checks, no unadmitted rescue
-        exec::terminal::ascii: complete admitted channels -> bounded ASCII projection/verification
-                               mapped whole-record offsets; post-escape budget/newest suffix
-                               original output/facts and SAME lease/seal; no public schema/IO
-        exec::terminal::human: actual immutable final answer + fixed private-fact diagnostics
-                               whole original redaction/checks -> control/runner-safe UTF-8/LF
-                               exact complete budget/lease/epoch; no state copy/public outcomes/IO
-        exec::output: FileInvocation pre-session explicit external target -> actual FileRun/FileTerminal
-                      only actual-terminal checked Record, fixed pre-run format/budget, one attempt
-                      guarded private staging + create-only link, actual-link observation; no public/stdio/usage
-        pending: guest tool/catalog/provenance integration, successful-response/alternative-state outputs,
-                 full stdin/frontend ownership/console/file integration, usage/receipt settlement, storage/output/trace producers
+```mermaid
+flowchart TD
+    UI[Terminal / legacy one-shot / ACP] --> Session[App session construction]
+    Config[Local config, instructions and skills] --> Session
+    Session --> Models[Configured model adapters and protected native history]
+    Session --> Harness[craftsman-harness agent loop]
+    Harness --> Tools[Permission and verification gates]
+    Tools --> Files[App filesystem and local memory]
+    Tools --> Shell[ShellRunner / ProcessTree]
+    Tools --> Remote[Explicit MCP, LSP, web and search connections]
+    Tools --> Gadgets[Opt-in Wasmtime gadget host]
+    Harness --> Store[Local libsql threads and checkpoints]
+    Session --> Terminal[SafeBackend rendering / owned OSC metadata]
+    Private[Private headless preparation and runtime] --> Harness
 ```
 
-`crates/craftsman-harness` is the framework. `crates/craftsman-rs` owns HTTP, config,
-filesystem authority, subprocesses, libsql, transports and TUI. Gadget SDK/WIT
-and proc macros are separate `craftsman-gadget` / `craftsman-gadget-macros` crates; the
-harness does not gain those app dependencies.
+`crates/craftsman-harness` owns the model/tool loop, middleware interfaces,
+registry, notifications and state/persistence interfaces. It remains free of
+app-layer HTTP, database and UI dependencies. `crates/craftsman-rs` owns the
+configuration, providers, filesystem authority, native processes, local libsql,
+ACP and TUI. The gadget SDK/WIT and proc macros remain separate crates.
 
-Terminal drawing remains behind `tui/terminal.rs::SafeBackend`. Do not route
-model/tool/repository-controlled cells around it. Frozen frame and model-request
-goldens are compatibility guards, not files to regenerate casually. Bridge IO
-regressions use a native ready/echo/exit fixture: startup is separate from the
-bounded final-frame/close assertion, which fails on timeout rather than silently
-passing. This test-only change does not add or alter production frames.
+Explicit named connections support Responses, Claude Messages, Gemini
+GenerateContent and the compatible chat-completions transport. Actual API ids
+are selected as `provider/model-id`; catalog metadata never becomes generation
+options, and unselected credentials are not resolved during construction.
+Protected native history retains signed/opaque provider items paired with their
+committed portable messages and bound to the original connection identity.
+
+The app selects task-focused memory/workflow guidance for TUI/ACP. The declared
+verifier reviews bounded user/project policies and protected content, executes
+checks through existing approvals and ShellRunner, and requires actual zero
+exits plus complete unchanged source observations. Failed checks feed bounded
+repairs; unavailable or denied checks cannot become a passing result. These
+controls retain their legacy/private/frozen defaults and are not a general
+semantic test-integrity or stuck-governor implementation.
+
+Terminal read-only turns perform no automatic workspace snapshot. Mutating tools
+capture selected files or bounded context-derived shell scopes. Git is optional;
+large, home and multi-project folders are supported. Partial scans never imply
+creation/deletion. Conversation checkpoints save real input/tool results and
+retain unknown-effect warnings on reopen without automatic replay.
+
+Owned native work retains the 120-second shell default, five-second kill/reap,
+two-second drain and truthful 30-second session shutdown error bound. Running
+background tasks retain their real status until cleanup returns. These bounds
+are not proof of OS containment or blocking-worker quiescence.
 
 ## 3. Implemented, private, or still planned
 
 | Area | Current state | Evidence / next boundary |
 |---|---|---|
+| Terminal usability and reporting | Merged and locally installed | Gray/turquoise 匠 splash, grouped model → effort menus, OSC 7501; [splash](terminal-splash.md), [status](terminal-status.md) |
+| Terminal lifecycle and recovery | Merged | Actual turn/session ownership, cancellation, final saves and unknown-effect recovery; [lifecycle](terminal-lifecycle.md), [recovery](terminal-recovery.md) |
+| File checkpoints and long turns | Merged and locally installed | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
+| Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
+| Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
+| Context compilation and stronger failure controls | Planned | Pinned task/file state, explainable /context, safe stuck escalation and semantic test-integrity review; [progress](harness-improvements.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
-| Shell hardening | Implemented mechanisms; model-visible options stay gated | `ProcessTree`, scrub, timeout/output metadata and tests; Unix groups default off pending signal routing |
+| Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
@@ -523,864 +146,108 @@ passing. This test-only change does not add or alter production frames.
 | Headless frontend/stdin input, guest tool integration and persistence | Still open | Complete named-stdin exclusive ownership/console/file and flag/output-path integration; other tool/provider/storage redaction and compatible origin publication before callable registration; checkpoint/journal writers stay disconnected |
 | Shared admission/usage | Private request default, separate atomic token-reservation opt-in and admission-correlated send/header observations; usage/settlement ledger still unwired | Actual-builder1..10000/default50 cap, source-bound bounded estimates/clamped reply before atomic charge; active/retained-unsettled observations, not measured usage;40 request +50 reservation +40 receipt-observation tests; #133/#97 accepted/merged, not public producer enforcement; `request-admission.md` / `token-reservations.md` / `admission-receipts.md` / `token-admission.md` |
 | Real headless result/event output + redaction/trace | Still open | ASCII schema-backed production, create-only publication, seeded chunk/error/tool/storage redaction, trace-v1 instrumentation |
-| Native OS sandbox / headless shutdown / verification | Separately planned | P2f / P2g / P4c; no current guarantee inferred from private filesystem checks or mock tests |
+| Native OS sandbox / public headless shutdown and verification receipts | Separately planned | TUI declared verification is implemented; public headless receipts and OS containment retain their own gates |
 | Full Session API/events/content blocks/governed policies | Separately planned | P6/P7; existing callbacks/journal are not that future typed stream |
 
-A private builder passing tests does not clear the whole P2a phase. Current
-terminal gadget-host reads/writes still use their own capability adapter; they do
-not inherit `ConfinedFs` merely because the module exists. A private guest filesystem
-facet now reuses that authority and returns typed errors/binary bytes, but neither
-legacy `GadgetRuntime` nor terminal `HostState` chooses it. Private source authority
-retains preparation's config/workspace handles and returns owned approval snapshots
-with the original filesystem/policy. The separate private `GuestHost` now consumes
-those bytes and selects strict imports through the actual runtime's opaque scope,
-with typed import/inner-tool failure observation on the SAME all-role latch.
-The bridge golden also separates a bounded, real cold stats-cache setup from its
-unchanged 30 s recorded HTTP checks after an initial Windows cold-walk failure;
-all auth/shape/relay assertions, seven-step golden and 120 s scenario remain.
-The stop assertion begins only after bounded cold guest setup/instantiation;
-Linux/Windows caught and drove that fixture correction, without changing runtime
-limits or bypassing a failed check. It
-never writes grants/cache/SDK and does not register tools/catalog. Guest JSON and
-shared logs now use preparation's frozen redactor before cuts; original descriptions/
-approval metadata remain private, not a public schema. The profile still advertises
-no callable gadgets before other tool/provider/storage adapters, compatible
-provenance publication and builder registration are ready. The
-authoring skill cannot be advertised headlessly if its user-directory/project-config workflow violates confinement.
+Private headless components are available only through their reviewed typed
+owners. Existing terminal tools and gadget hosts do not inherit private
+`ConfinedFs`, redaction, usage or publication authority merely because those
+modules exist. Headless gadget callable registration, successful-response and
+alternative-state/output/storage adapters, real usage settlement and public
+result/event/trace production remain unfinished. See
+[headless-mode.md](headless-mode.md) for the accepted contracts and per-slice
+bounds; those contracts and their failed/corrected evidence remain unchanged.
 
 ## 4. Legacy one-shot versus accepted headless v1
 
-`-m` remains compatible apart from its three mandated safety fixes. Its round
-cap still exits 2, its ordinary completion exits 0, it takes input from the
-argument, and existing broad user-config approvals are still honored. Fixing
-piped approval reads does not turn it into an explicit-only job runner, make its
-file tools workspace-confined, or suppress durable local state.
+Legacy `-m` retains its argument input, configured permissions/storage and exit
+behavior. Its non-TTY approval input denies without reading, and output-closed
+provider guards prevent further same-response dispatch. It is not an
+explicit-only unattended execution boundary.
 
-The future `exec` contract instead fixes invocation-only permissions, canonical
-workspace scope, input/output/resource bounds, recorded role usage, fresh or
-explicitly selected sessions, seeded redaction and machine output. Deadline /
-signal / final-result shutdown is P2g; filesystem checks do not OS-contain native
-shell or Cargo build scripts (P2f). Exit 0 will mean end of turn, not task
-correctness; verification receipts are P4c. No unsupported flag may be accepted
-and silently ignored during staged delivery.
-
-Current frontend `skills::search_dirs_at` still starts from the home directory.
-The new private preparation loader instead uses only the explicitly selected
-config root and trusted project roots, supplying bounded skill guidance directly.
-The private runtime now consumes that bounded snapshot without repeating
-ambient discovery, including for declared foreground agents. Existing frontend
-construction remains unchanged. This is not the full headless input/output/run
-producer or a license to advertise inaccessible user-directory skill paths.
-
-The headless shell runner uses captured credential sources (including disabled
-services), removes those sources even if their names normally pass the legacy
-toolchain scrub, and uses bounded memory-only capture under either output format.
-It never creates raw spill files, including formatting/timeout paths. Silent
-sinks and disconnected checkpoint/journal writers prevent those legacy fallbacks;
-they are not seeded redaction of model/tool/state data. Private captured-credential
-seeds and literal streaming/structured redaction merged as #104. Private guest
-JSON/stdout/stderr/log views, scoped shell pipe/model-result text, scoped filesystem
-views, scoped web fetch/search text, concrete built-in todo/task/message results,
-todo context, copied provider request views and fixed gate denials now select them.
-Original dispatch/state/registry/inbox remain private; their outgoing request copies
-are selected, not persistence. Private HTTP/error diagnostics now select bounded original
-body UTF-8 before view/diagnostic cuts and retain source-bound original observations separately.
-Successful SSE/control/arguments, transport authority and alternative-state/storage/output
-adapters remain unselected. Raw shell commands,
-exit codes, duration and observed bytes remain original facts. Post-capture terminal
-cleanup is explicitly rejected by this private shell path, not silently applied. The all-role provider key is frozen at
-preparation and shares the seed snapshot instead of later environment expansion.
-Only synthetic tests use this unfinished adapter, not live-quality evaluation.
+The accepted headless v1 contract requires invocation-only permissions,
+canonical scopes, input/output/resource bounds, truthful all-role usage,
+seeded redaction, explicit session selection, machine output and signal/deadline
+shutdown. Many private foundations are implemented, but no public `exec` route
+ships until the remaining boundaries are wired and validated. Filesystem path
+checks and the gadget WASM sandbox do not OS-contain host shell/build scripts.
 
 ## 5. Toolchain, builds and verification
 
-Use the exact toolchain in `rust-toolchain.toml` (**1.99.1** at this update), not
-a floating `stable`. The declared app `rust-version = 1.85` is not proof that
-all current dependencies build there; the standalone SDK/macros retain their
-separately tested 1.85 floor. The optional Wasmtime host has a higher minimum.
-A read-only check of the official stable-channel manifest on October 23, 2026
-matched this exact 1.99.1 pin (manifest date October 15); no toolchain installation,
-floating pin, dependency or lockfile update was needed for this slice.
+The workspace is pinned to Rust **1.99.1**. The app declares its tested **1.99**
+floor; standalone framework/SDK/macros retain their separate **1.85**
+declarations. Wasmtime/wasmtime-wasi remain pinned to **48.0.8**. Default builds
+include voice and gadgets; gadget model visibility is user opt-in. Native voice
+requires CMake, plus ALSA development headers/pkg-config/clang on Linux.
 
 ```sh
-cargo build --release --locked -p craftsman-rs
-cargo check --locked --no-default-features -p craftsman-rs
-cargo test --locked --no-default-features --workspace --no-fail-fast
-cargo test --locked --no-default-features --features craftsman-rs/gadgets --workspace --no-fail-fast
-cargo fmt --all -- --check
-python3 -I docs/schemas/check_exec.py --self-test
-scripts/check-lineage.sh
+./install.sh --upgrade
+./scripts/verify.sh
 ```
 
-Default voice builds also need the native dependencies listed in the README.
-No-default-features excludes voice and Wasmtime; it now retains the app's small
-filesystem-authority dependencies so confinement can be tested independently.
-CI tests both feature sets on Linux/macOS/Windows. Cold authoring integration
-fixtures explicitly select a 240 s native-build limit with a 300 s outer command
-bound; they test safety/authoring behavior, not cold-compiler speed. Production
-shell defaults stay at 120 s. Windows remains formally informational until P2d;
-implementation merges nevertheless verify its exact-head
-result instead of hiding failures behind that setting.
-
-The initial #110 Windows gadget-enabled suite failed three real shell/FS startup or
-partial-output fixtures (878 passed / 3 failed / 3 ignored), not a green platform result.
-Those private Windows commands now flush ORIGINAL stdout, write their actual ready file
-through `IO.File.WriteAllText` and wait through `Threading.Thread.Sleep`, without cold
-PowerShell ready/sleep cmdlet discovery. Unix commands, six-second partial-call budgets,
-20-second startup / ten-second post-readiness stop bounds, original-byte assertions and
-all production `ProcessTree` behavior remain unchanged. Fresh ALL-FOUR final-head CI and
-every mandatory step, including Windows, are required; see `headless-mode.md` §24.
-The post-correction local request22/dedicated filesystem-stop1 checks passed, while the
-focused shell module had 12 passed / 1 failed (three zero-byte Unix partial-startup attempts).
-That local failure is not relabeled green or Windows fixture proof. #110's corrected
-final head nevertheless passed all FOUR jobs and mandatory steps independently: main-unit
-counts Linux/macOS770 feature-off /911 gadgets, Windows751 /881, all with zero failures.
-The three formerly failing Windows fixtures passed both builds; review was the sole admin
-override and tested/merged tree identity was verified. Section 24 retains the failed history.
-
-Section 25 adds private HTTP/error diagnostic views only. An over-budget/UTF-8/rendering/
-marker conflict discards ALL detail; genuine EOF alone finishes holdback. Original observed
-counts/status/attempts are not inferred from views. One bounded last failure per client is
-retained after fixed framework error conversion, not a role ledger, durable event or billing
-receipt. Source/request identity and the same typed latch govern access and retries. No
-successful SSE admission, transport sandbox, public output, raw storage or meter follows.
-Its implemented-source diagnostics25 (both feature sets), runtime42, request22 and legacy
-LLM10 suites passed; both production checks/reference126/driver9 and protected-source/
-document audits passed. The one full local run was NOT green (main795/3/2, then600 s
-alias/native stall abort124). The final test-only read-readiness adjustment's compile240 s
-and test-typecheck120 s attempts also stalled/aborted; final-source hosted CI is required,
-not assumed from earlier focused passes. No native/legacy deadline or assertion is relaxed.
-
-The independent `exec::input` / `PreparedInput` adapter now validates instruction
-and attachment-file sources before durable session selection or runtime construction.
-It uses the same retained confined filesystem and immutable denies, preserves original
-UTF-8 data/source bytes and passes model-only input through the existing builder.
-A consumed invocation retains the original outcome/partial state, not a public safe
-result. Those old routes still refuse stdin; the separate private byte-pipe route
-now adds native reader/deadline/ownership before the same admission. Complete
-console/file/exclusive frontend input/flag/output-path integration still gates `exec`. `headless-input.md` records private
-resource ceilings and the stricter, unchanged later provider budgets. This branch does
-not include or imply a merge/check override of pending provider response PR #112.
-Its input30 suite passed with gadgets off/on; existing filesystem38/runtime42/
-provider47/LLM10 and both warning-free production checks passed. Reference126,
-driver9, formatting/lineage/document and protected-source audits passed; no full
-local workspace/native retry or live-model/default-on/release proof is inferred.
-Initial exhaustive error-map compilation failures and two incorrect fixture
-assumptions were corrected without changing older error kinds, deny rules, source
-bounds or assertions; `headless-input.md` retains that evidence. ALL FOUR exact-head
-CI jobs/every mandatory step, Windows included, still gate merge.
-
-#115 subsequently passed all FOUR exact-head jobs and mandatory steps (main units
-Linux/macOS828 feature-off /969 gadgets, Windows805 /935; zero failures). Missing
-review alone was overridden after fresh rules/comment/thread/base/head audit;
-CI-tested and merged tree identity was verified. Pending #112 remains separate.
-
-The actual runtime now selects a finite `exec::messages` snapshot before any raw
-state clone: original message/argument admission, frozen data views and bounded
-encoding share the state lock, while ids/names/keys/scalars/flags remain original or
-refuse. `input::Run` selects it too. Late typed stops hide views; whole-message
-omission/terminal/public output and other state fields remain unselected. See
-`retained-message-views.md` for scope, private bounds and remaining producer gates.
-Local bounded verification after adopting main's security lockfile update passed
-28 retained-message cases in each feature mode, existing runtime42/input30/provider47/
-LLM10 suites, both production checks, offline contract126/driver9 and source/docs
-checks. The first 26/2 run's new adjacent-marker fixture corrections are retained
-in that feature doc; no full local workspace/strict-Clippy/live rollout is claimed.
-All FOUR exact-final-head CI jobs and every mandatory step remain merge gates.
-
-#119 subsequently passed all FOUR exact-head jobs/mandatory steps: Linux/macOS
-main856/997, Windows833/963, zero failed; all28 snapshot cases passed in both builds
-on all three OSes. Missing review alone was overridden after a fresh audit, and
-squash6a43802's tree/parent matched the actual four-job checkout/base evidence.
-
-A separate private selector now consumes only those admitted snapshots, keeping the
-largest newest whole-message suffix under an exact private byte budget, with truthful
-omission counts and final framing verification. Original source admission/caps remain;
-unsafe old messages cannot be omitted around those checks. Original state/outcome,
-terminal publication and public R2/ASCII/result/storage gates remain separate. See
-`message-selection.md`; documentation and all-four exact-head CI remain required.
-Local bounded selection39 cases passed with gadgets off/on; unchanged snapshot28,
-runtime42/input30/provider47/LLM10 suites and both warning-free production checks
-passed. Offline contract126/driver9, formatting/whitespace/lineage and protected-source/
-Markdown audits passed. The first38 run was green before the added boundary/outcome
-checks; no failed attempt, full local workspace or strict-Clippy claim is hidden.
-
-#120 subsequently passed all FOUR exact-head jobs/mandatory steps: Linux/macOS
-main895/1036, Windows872/1002; zero failed, all39 selection cases in both builds
-on all three OSes. Missing review alone was overridden after a fresh audit; squash
-f99ef83 matched the four-job checkout tree and audited base/parent.
-
-A separate private terminal authority now consumes the actual returned input Run,
-closes its SAME execution gate without inventing/clearing approval, and retains
-original runtime/outcome under a separate revocable publication lease. A typed late
-approval epoch supersedes old fragments; fresh capture retains real return/stop
-observations. Final text comes from the original outcome, not the retained last
-message. Whole-message/raw-output source/copy/framing limits remain private; there
-is no public status/IO/ASCII/meter/storage or all-role/process-quiescence claim.
-`terminal-publication.md` records source/binding/bounds and the new-fixture compiler
-correction; docs and all FOUR exact-head jobs/mandatory steps remain merge gates.
-Local bounded terminal43 cases passed with gadgets off/on; unchanged view28/selection39,
-runtime42/input30/provider47/LLM10 and both warning-free production checks passed.
-Offline contract126/driver9 and source/format/lineage/Markdown checks passed. Only a
-new StateFs fixture-constructor compile error was corrected; no older assertion,
-native deadline, full local workspace/strict-Clippy or live rollout claim is hidden.
-
-#121 subsequently passed all FOUR exact-head jobs/mandatory steps: Linux/macOS
-main938/1079, Windows915/1045, zero failed; all43 terminal-authority cases passed
-in both builds on all OSes. Missing review alone was overridden after fresh rules/
-head/base/review/thread audit; squash7d48ddd has the identical four-job checked tree
-and audited base as sole parent.
-
-A separate `Terminal::selection` now preserves original checked answer and private
-return/approval facts, admitting BOTH channels before reducing only whole newest
-messages to an exact combined budget. Unadmitted old messages/outputs still refuse;
-whole Snapshot, live selector/layout and terminal lease/seal semantics are unchanged.
-`terminal-message-selection.md` records private bounds/limitations and new-warning
-history; documentation and all-four exact-head CI remain mandatory.
-Local bounded terminal-selector43 cases passed with gadgets off/on; unchanged
-terminal43/live-selector39/view28/runtime42/input30/provider47/LLM10 suites and both
-warning-free production checks passed. Offline contract126/driver9, format/lineage
-and source/Markdown checks passed. The initial42 run had only a new unused-export
-warning, corrected by API placement; no full local workspace/strict-Clippy/live
-rollout or older assertion/native-limit change is claimed.
-
-#122 subsequently passed all FOUR exact-head jobs/mandatory steps: Linux/macOS
-main981/1122, Windows958/1088, zero failed; all43 terminal-selector cases in both
-builds on all OSes. Only missing review was overridden after a fresh audit; squash
-825cf09 matched the actual four-job checkout tree/audited sole parent.
-
-A separate private terminal ASCII encoder now preserves checked output/facts and
-projects complete admitted channels before post-escape whole-message selection.
-DEL/non-ASCII UTF-16 escapes, strict scalar/offset checks, bounded6MiB/channel staging,
-unchanged KMP verification and exact <=1MiB final framing remain under the SAME
-publication lease/typed epoch and deny-only seal. Original source caps/codecs/live
-views/UTF-8 selector stay unchanged; this encoder supplies no human rendering,
-OS redirection or public schema/IO/outcomes/R2/#97/P2g/provenance completion.
-`terminal-ascii.md` documents
-scope/limitations/evidence; docs and all-four exact-head CI remain required.
-Local bounded ASCII47 cases passed with gadgets off/on; unchanged UTF-8 terminal
-selector43/authority43/live-selector39/view28/runtime42/input30/provider47/LLM10 and
-both warning-free production checks passed. Offline contract126/driver9 and source/
-format/lineage/Markdown audits passed. No first-run failure/warning fix, full local
-workspace/strict-Clippy/human/OS/public rollout is inferred.
-
-#123 subsequently passed all FOUR exact-head jobs/every mandatory step: Linux/macOS
-main1028 feature-off /1169 gadgets, Windows1005 /1135, zero failed. All47 ASCII
-fixtures passed in both builds on all OSes. Fresh rules/head/base/review/comment/
-thread audit permitted only missing-review override; squashb901d6f has the identical
-four-job tested tree and audited base825cf09 as sole parent (`terminal-ascii.md`).
-
-A separate private human renderer now consumes only the immutable actual final
-answer and fixed original-return/approval/presence diagnostics, not retained/raw
-state or JSON decoding. Complete source redaction/checks precede visible control/
-backslash/overlapping colon/hash defanging; exact combined UTF-8/LF budget precedes
-rendered allocation. Whole-channel/new-join KMP checks in both fixed orders and
-SAME publication lease/typed epoch guard every release. No answer truncation,
-fact aliases, raw errors, stdout/stderr eligibility, writers, TTY/PowerShell/OS or
-public outcome/usage claim is added. Source caps/old codecs/ASCII/live selectors/
-terminal seal/SafeBackend and other frameworks/hosts/frontends/deps/contracts stay
-unchanged. `terminal-human.md` records bounds, attempted/final evidence and remaining
-IO/public/R2/storage/provenance/#97/P2g/live/release gates; all-four exact-head CI and
-documentation remain required in this partial slice.
-Local bounded human60 fixtures passed in both feature modes, with unchanged
-ASCII47/UTF-8-selector43/authority43/live-selector39/view28/runtime42/input30/
-provider47/LLM10 and both warning-free production checks. Offline contract126/
-driver9 and source/format/lineage/Markdown audits passed. The initial54/55 fixture
-run and empty provider filter are recorded, not counted as target coverage. No
-full local native workspace/strict-Clippy/runner/TTY/OS/public rollout is inferred.
-
-#124 subsequently passed all FOUR exact-final-head jobs/every mandatory step:
-Linux/macOS main1088 feature-off /1229 gadgets, Windows1065 /1195, zero failed;
-all60 human fixtures in both builds on all OSes. Fresh unchanged head/base/rules/
-review/comment/thread audit allowed only missing-review override; squash875056f
-has the identical four-job tested tree/auditedb901d6f sole parent. Both additional
-full local default-feature-free workspace builds passed too, without warnings.
-`terminal-human.md` records the verified evidence separately from earlier attempts.
-
-A new private FileInvocation route now captures immutable external directory/name/
-format/budget before session IDs/store creation, then consumes only its actual Run
-into a one-attempt FileTerminal. Old source/codec checks and new whole LF/framing
-checks precede native staging. Bounded guarded writes/flush/sync/content/identity
-checks plus create-only link preserve existing entries; late stop/failure retains
-only actual own-link return observation, never fake complete delivery or usage.
-Private random staging/cleanup, inherited-ACL/Windows best-effort/native blocking/
-external-race/CAS/P2g limits are explicit in `guarded-output.md`. Old routes/Options/
-FS permissions/codecs/lease/epochs/deps/contracts/SafeBackend remain unchanged.
-Public exec/stdio/inside-workspace output/R2/outcomes/results/events/storage/#97/
-provenance/P2g/live/release gates stay separate and disabled. Docs/all-four exact-
-head CI accompany this partial boundary, not a public runner.
-Earlier bounded file64 fixtures passed in both modes, with old human60/ASCII47/
-selectors/authority/runtime/input/construction/FS/provider/LLM and production checks
-green. Earlier full local units1152/1293 passed with integration binaries unchanged.
-Initial legacy startup failures and a stale baseline Cargo-artifact rerun are
-recorded as failures/non-current evidence in `guarded-output.md`, not hidden or
-fixed by relaxing old source/assertions/deadlines. All-four final-head CI remains
-required before merge. Initial PR125 Windows failed staging-handle cleanup and
-new literal-path/rename fixtures; those failures are recorded, with explicit
-staging handle closure/retained verified final-handle reads and preserved scope
-assertions. The second Windows run cleared the IO failures but still failed three
-new rename fixtures (1124/3 feature-off,1254/3 gadgets): native sharing denial32
-was not PermissionDenied, and retained directory handles prevented actual movement.
-The test-only correction accepts only exact Windows access/sharing codes5/32,
-checks unchanged original identity/no movement or preserves all successful-rebind
-refusal assertions, and never loosens production directory opens. No failure is
-bypassed; ALL FOUR final-head jobs and mandatory steps remain required before merge
-(`guarded-output.md`). The second correction's default-parallelism local feature-off
-full run had1149 passes/3 unchanged shell startup/timeout failures; its gadget full
-run passed1293 plus all integration binaries. One four-test-thread feature-off full
-run then passed1152 plus all integration binaries with the same actual assertions/
-deadlines; no default-concurrency cold-start claim. These outcomes are recorded
-separately, not conflated with earlier green runs or final-head CI.
-The final content-pass audit found seek/EOF outside the loop counter: a real
-boundary test reproduced over-ceiling publication, then the same4096 cap was
-tightened to include seek/payload/EOF without widening source/public budgets.
-Private coverage is now66 native fixtures (64 Windows); read-size/attempt observers
-are test-only, not public usage/receipts. All-four fresh final-head CI is still
-required for this additional correction.
-The final native-result audit also found failed cleanup bypassing its post-result
-check: a real foreign-identity fixture reproduced Changed instead of a late-stop
-result. Cleanup now retains the native result before SAME ready check, and the
-actual paired controller rechecks after all early results/Drop cleanup. Native
-failure without stop stays Changed; actual approval/lease revocation overrides it,
-without deleting foreign/final entries or faking absence, usage or delivery.
-All66 final focused cases pass in both builds;21 bounded/source checks are green
-without warnings. Final full four-thread feature-off was NOT green (1151/3 in
-unchanged FS/shell real-startup/invalid-UTF8 fixtures); gadget full1295 plus all
-integration binaries passed. The failure is preserved, not retried/hidden through
-old source/assertion/deadline changes or a fictitious default-cold-start claim.
-Fresh ALL-FOUR exact-final-head full CI/every mandatory step remains required.
-
-Keep source/runtime tests, hosted live-quality evidence and published-release
-compatibility separate. These changes do not install the CLI, modify real user
-config/grants, publish a release, flip gadget visibility, remove the legacy loader,
-or rewrite the old fixture corpus, protocol/request goldens or trace-v1 contract.
-
-## 6. Documentation maintenance during incomplete implementation
-
-Every implementation PR updates this status page, README entry points/layout and
-its relevant contract/feature docs **in the same change**. Mark each surface as
-implemented, private-but-unwired, or planned; name the remaining prerequisites and
-truthful limitations. Do not wait for phase completion to document code changes,
-and do not describe an accepted proposal, mock run or merged source as a shipped
-CLI, containment boundary or live-quality gate. Historical baseline evidence and
-target diagrams stay labelled as such rather than being silently rewritten.
-
-
-## 7. Private explicit native stdin progress — October25 (Asia/Taipei)
-
-#125's guarded-file boundary merged as63395cf after ALL FOUR exact-final-head jobs
-and every mandatory step, Windows included. Main counts Linux/macOS1154/1295 and
-Windows1129/1259 were zero failed; only missing review was overridden. The tested
-current-main merge tree/sole audited squash parent and all original scoped blobs
-were verified. Local feature-off1151/3 native-startup failures remain preserved.
-
-A separate private `StdinInvocation` now selects only positional `-` after whole
-count/path grammar, then uses SAME Bootstrap/ConfinedFs/captured credentials. A
-retained native byte-pipe handle and owned-mode/readiness-bounded polling admit the original
-1MiB stream with10s first-byte/30s absolute total-read clocks, no background reader.
-Strict EOF/UTF-8/preamble/attachment/frame admission plus owned mode restoration
-precede sessions/IDs/store/provider construction. Existing argument/file/FileInvocation
-APIs still refuse stdin; no normal frontend/CLI/STDout/result/meter is enabled.
-
-This initial private subset refuses console/TTY/devices/sockets/regular files and
-unsupported read/query/synchronous rights, rather than faking a bounded blocking
-reader. Native read-only polling uses existing grants, not an access upgrade. Original
-source bytes/facts and all old source/read/codec/permission limits stay separate
-from public usage/receipts. Mode sharing/external native races and restoration/OS
-limits are explicit; cancellation owns no pending read thread. Fixtures, corrected
-first-attempt diagnostics and all-four fresh CI gates are tracked in
-[named-stdin.md](named-stdin.md), not inferred from the earlier file CI. #97/remaining
-public outcomes/results/trace/provenance/gadget/P2g/live/release gates stay open/off.
-
-
-Collected local evidence for this new stdin source:39 normal native fixtures passed
-per feature build, one argv-only helper intentionally ignored;22 bounded/old-suite/
-production/contract/format/source checks passed warning-free. Full local four-thread
-feature-off1191/2 failed unchanged FS/shell real-startup assertions (no-fail-fast
-continued all other binaries green); gadgets1334 plus all other binaries passed.
-The failed run is preserved, not retried or hidden by changed deadlines/assertions.
-Current fences/55 local links and all older source/SDK/framework/host/frontend/
-protocol/lock/pin scopes are verified; fresh all-four final-head CI remains required.
-
-### Native Windows correction (PR128)
-
-The first stdin revision50cec5/CI40113876534 passed fmt/Linux/macOS but failed
-Windows **Test and Test gadget host**:1156/12/3 and1286/12/4
-(passed/failed/ignored). The informational aggregate is not all-platform success;
-no merge was performed. Corrective native code preserves Pending versus genuine
-EOF with direct ReadFile; that first corrective attempt requested read/mode
-attributes without data-write rights,
-and refuses asynchronous/non-byte/non-readable handles before reads. Two added
-regressions bring the inventory to41 normal cases plus the same ignored argv-only
-helper. Old real-stdin/deadline assertions/limits and all public/dependency gates
-stay unchanged. See [named-stdin.md](named-stdin.md) for the preserved failure
-history and exact-revision verification requirements; earlier39 local passes are
-not final corrected-source or successful Windows evidence.
-
-The correction's22 bounded source-local rows passed without warnings (native41
-normal cases in both modes; old suites and both locked production checks intact),
-with66 resolving local Markdown links. This is separate macOS/local evidence,
-not a successful Windows access request or a final all-platform CI claim.
-
-### Original-rights native read-only polling after the second failed revision
-
-Second revision3c0f3da/CI40121387466 passed fmt/Linux/macOS but failed both
-Windows steps:1165/5/3 and1295/5/4 (passed/failed/ignored). The former false-EOF
-cases passed; five unchanged actual inherited-stdin fixtures still failed per
-build. Current same-access duplication never requests additional rights. Actual
-HANDLE metadata selects owned NOWAIT where available or unchanged-mode native
-availability polling for blocking read-only pipes. Open-empty sources never
-start a blind data read; readiness/peer closure is not EOF or consumed-byte fact,
-and actual ReadFile probes preserve queued bytes and complete only at real EOF.
-Seven added read-only cases bring the inventory to48 normal/one ignored without
-changing any earlier42 assertion/helper bodies or native/source limits. No generic
-reader/thread/reopen/configured-strategy/error fallback is added. Synchronous
-peek/foreign-reader/native-call limits and the missing public exclusive-input
-lifecycle are explicit in [named-stdin.md](named-stdin.md). No merge or full Windows
-success follows from either earlier revision/local suite; require every mandatory
-step in ALL FOUR fresh exact-final-head jobs, with public/callable/meter gates OFF.
-
-Current original-rights source-local verification passed22 warning-free bounded
-rows, including48 normal native cases in EACH feature mode and both locked
-production checks;68 local Markdown links/fences and exact protected scope pass.
-No duplicate full native-shell retry was used; earlier full/local/hosted failures
-remain historical, not current-source Windows or full-suite success.
-
-## 8. Private stdin/guarded-file composition — October25 (Asia/Taipei)
-
-The native-stdin foundation #128 merged as72abf26 on October24 UTC after all
-FOUR final-head jobs/every mandatory step and raw tested-tree/parent proof. All48
-native cases passed BOTH builds on Linux/macOS/Windows; old Windows warnings were
-identical, not suppressed/new stdin warnings. Two earlier failed Windows heads
-remain documented, not successful source evidence. No public frontend was enabled.
-
-New StdinFileInvocation prepares complete source/destination grammar, SAME
-Bootstrap/captured credentials/retained roots, and read-only original output target
-BEFORE stdin inspection. Complete native EOF/UTF8/preamble/attachments/framing and
-closed/restored native input precede a second retained identity/absence check,
-then original session/store/runtime core. Only that opaque pre-run preparation
-constructs the existing paired file invocation in its private descendant. Run,
-terminal/record/publisher and all native/source bounds remain unchanged. A target
-planted during input waiting refuses before IDs/provider effects; bytes cannot
-be rewound, and this is not an external-writer CAS. Test-only readiness/pipe/fault
-hooks act on the actual owner, never supply production authority. See
-[stdin-file-output.md](stdin-file-output.md), [named-stdin.md](named-stdin.md) and
-[guarded-output.md](guarded-output.md). Public exec/flags/R2/stdio/fullstdin/
-trace/storage/provenance/callables/catalog/#97/P2g/live/release stay separate/off.
-First smoke passes and later NEW fixture failures are preserved; full final-head
-all-platform/every-step evidence is still required independently before merging.
-
-Current composed-source bounded verification passed all24 rows warning-free:
-new42 and unchanged native48 normal cases in BOTH modes, old suites and both
-locked production checks intact, reference126/driver9/fmt/whitespace/lineage.
-The exact24-path protected audit and86 resolving Markdown links pass. This is
-local/synthetic evidence only; latest-head full all-platform/every-step CI remains
-independent and mandatory. No public exec/stdio/usage/OS/default-on claim follows.
-
-The first composition CI40147790277 at d869ff7 passed fmt/Linux/macOS but failed
-BOTH Windows test steps: feature-off1216/3failed/4ignored and gadgets1348/1failed/
-5ignored. Run-level success is insufficient because Windows is informational.
-ONLY the NEW dot/parent fixture is corrected: raw OsString appends preserve its
-original spellings instead of Windows verbatim PathBuf::join normalization.
-All older production/test bodies remain exact. The TWO unchanged feature-off
-shell failures (partial-output2s/PID-before-timeout) remain failed evidence;
-no deadline/assertion weakening or unchanged full retry is used. The corrected
-head must independently pass EVERY mandatory step in ALL FOUR jobs, old shell
-cases included, before review-only admin merge. See `stdin-file-output.md`.
-
-Corrected-source local verification repeated the SAME24 bounded rows warning-free,
-including new42/native48 in BOTH modes. The exact24-path protected scope and86
-Markdown links/fences pass; separate correction logs preserve earlier attempts.
-No source/deadline/assertion fallback or full local workspace retry was used.
-
-PR #129 subsequently merged as87b357d after all FOUR corrected-head jobs and
-EVERY mandatory step in CI40155545193. All42 composed/all48 unchanged native
-cases passed BOTH builds on all three OSes; Linux/macOS main1244/1385 and Windows
-1219/1349 passed. Tested/merged tree213d428 and audited sole parent72abf26 match;
-only missing review was overridden. The first failed Windows head stays preserved,
-with no old shell assertion/deadline/process change or unchanged full-CI retry.
-Ten Windows warning signatures/19 occurrences remained identical across both
-#128 attempts, its final run and both #129 runs; no warning-free-Windows claim.
-
-## 9. Private instruction argv routing — October25 (Asia/Taipei)
-
-`ArgumentInvocation` and `ArgumentFileInvocation` first validate bounded ORIGINAL
-native argv using only positional instruction/exact-`-`, `--prompt-file`, repeated
-`--file`, joined values and end-of-options. Complete grammar precedes bootstrap,
-source/target inspection, native input, IDs/store and providers. Borrowed native
-lengths/counts precede decoding/retention; old complete input/path/count admission
-is reused, never normalized into a grant. Unsupported full frontend flags refuse
-instead of being silently accepted. Explicit Options and guarded Destination stay
-pre-run typed inputs; this does not implement their public flag parser.
-
-Only the original four factories construct actual runtime/source/target ownership.
-The new opaque wrappers consume into EXISTING Run/FileRun, not caller Runtime/Run/
-seeds/gates/bytes, a new terminal/record/publisher or post-run format/path switch.
-Old native pipe rights/modes/EOF/1MiB/10s/30s and guarded-file epoch/create-only/
-cleanup/OS limits stay unchanged. No stdout/stderr/exec/result/event/trace/storage/
-headless-gadget visibility/#97/P2g/live/release gate is enabled. See
-[input-arguments.md](input-arguments.md) for subset syntax and actual native fixtures.
-
-The initial production check completed with one NEW private-interface warning;
-only the fixed-text SelectionError visibility was corrected, not suppressed.
-The initial57 normal cases passed with one unused NEW fixture import warning.
-Adding actual-bootstrap coverage uses that import; strengthening the native helper
-keeps BOTH actual literal/stdin requests without mock/history resets. The current
-inventory is58 normal plus one argv-only ignored helper; its source-local/all-
-platform evidence is independent of the earlier57/#129 results and must meet
-ALL FOUR exact-final-head jobs/EVERY mandatory step before review-only admin merge.
-
-Collected current-source evidence: all26 bounded local rows passed warning-free,
-including new58, unchanged composition42 and native48 normal cases in EACH feature
-mode, every selected older suite, both locked production checks, reference126/
-driver9/fmt/whitespace/lineage. Exact14-path protected audit keeps older bodies
-unchanged after one input-module append;68 local Markdown links/fences pass.
-This is local/synthetic source evidence, not a substitute for ALL FOUR fresh
-exact-final-head jobs/EVERY mandatory step, both Windows feature builds included.
-
-
-## Guest fixture load follow-up — October25 (Asia/Taipei)
-
-PR #130's first CI40165049917 at ed0c2c9 stayed unmerged: fmt/macOS/Windows
-passed but Linux gadget main1441/2failed/6ignored. All58 new argv/old48 native/
-old42 composition cases passed BOTH modes/EACH OS; the two unchanged guest tests
-observed loading Timeout instead of reaching their denial/post-instantiation
-assertions. The exact failure logs/tested tree are preserved, not waived/retried.
-
-The new focused SOURCE input retains actual dynamic binary read/write, original
-spin/WASIp2 sleep/entered logs and all malicious describe probes. Only those TWO
-old tests choose it; their complete assertions and original30s load/default,
-1s post-instantiation and5s outer budgets stay exact. Broad19-function source,
-SDK/WIT, production host/compiler/cache/limits and native reader/publisher bodies
-remain unchanged. Coordinated source builds happen before guest budgets; actual
-Wasmtime load/approval/instantiate/IO still use the SAME existing operation path.
-New fixture-only size/LTO settings are not a runtime optimization/approval/cache.
-See [guest-fixture-loads.md](guest-fixture-loads.md) for first attempts, advisory
-local141598-vs340104 byte/137-vs360ms load observations and truthful limitations.
-New exact export/describe-denial/dynamic256-byte roundtrip checks do not invent
-status/bytes/zero counts or skip failure; only the NEW sorted-export expectation
-was corrected after its first failure. Fresh bounded verification/ALL FOUR exact-
-final-head jobs/EVERY mandatory step still gate merge, Windows included. Public
-exec/wholeflags/stdin/stdio/R2/results/events/storage/trace/provenance/gadgets/
-usage/#97/P2g/live/release remain separate/off.
-
-Current corrected-source evidence: all30 bounded rows passed warning-free,
-including all37 guest cases at four test threads, new58 argv/old48 native/old42
-composition in BOTH modes, every selected older suite, both production checks,
-actual marked/unmarked compile probes, fixture/root fmt, reference126/driver9/
-whitespace/lineage. The exact22-path source/old-assertion/30s-1s-5s audit and74
-local Markdown links/fences pass. Source branches/probe payload strings are
-byte-exact, not only token-normalized. This is not final-head all-platform CI;
-ALL FOUR fresh jobs/EVERY mandatory step still independently gate merge.
-
-
-## Private control/source argv follow-up — October26 (Asia/Taipei)
-
-The new [control-arguments.md](control-arguments.md) factories now combine ONLY
-supported absolute workspace/config, trust, manual/plan/deny/fail, explicit
-allow/deny/env-pass and mutually exclusive fresh/ephemeral/resume/continue controls
-with the old original source/attachment argv grammar. Whole native bounds/strict
-UTF8/syntax/old provisional selector and session-ID/scope admission precede IO.
-Unsupported relative/ambiguous scope, output/trace/request/token/wall/gadget/full
-flags refuse, never accept-and-ignore or guess ambient directories.
-
-Explicit caller Defaults are raw absolute inputs, not physical authority. Old
-Bootstrap remains authoritative for config/credential-source env denies, retained
-ConfinedFs, selected sessions and actual all-role policy/gate; the preliminary
-syntax policy is dropped. Original Options/source arguments are captured into old
-ArgumentInvocation/ArgumentFileInvocation, returning existing Run/FileRun without
-new caller Runtime/Run/target/data/seeds/gates/record/IO constructors or post-run
-format/path switching. EVERY old body/assertion/reader/writer/codec/lease/limit/
-fixture/SDK/WIT/framework/dependency/lock/pin/frontend/frame/schema/golden/trace
-stays exact after narrow declarations/grammar-bound aliases. The initial58 normal
-cases plus one argv-only ignored helper and locked production check passed on
-source-local builds; no user config/SDK/global env mutation or raw history reset.
-No public exec/full flags/stdin/stdio/R2/results/events/storage/trace/provenance/
-headless gadgets/usage/#97/P2g/live/release enablement. Fresh all-four exact-head/
-every-mandatory-step/both-mode/Windows evidence is a separate merge requirement.
-
-Collected current-source evidence: all32 bounded local rows passed warning-free,
-including new58 controls and old58 source argv/48 native/42 composition in BOTH
-modes, old37 guest tests locally (35 compiled on Windows), every selected prior
-suite, both locked production checks, marked/unmarked existing compile probes,
-fixture/root fmt/reference126/driver9/whitespace/lineage. The exact17-path audit
-keeps EVERY older Rust body/test/fixture/host/read/write/codec/limit unchanged after
-four narrow append-only declarations/old grammar helpers;78 local links/fences
-pass. This is source-local/synthetic evidence, not fresh all-platform CI or a
-public/default-on/live/usage/source-OS guarantee. ALL FOUR exact-final-head jobs
-AND EVERY mandatory step/both modes/Windows still independently gate merge.
-
-
-## Private relative-scope/output-file argv follow-up — October29 (Asia/Taipei)
-
-The separate [scope-output-arguments.md](scope-output-arguments.md) adapter resolves
-ONLY bounded normal-relative cwd/config scopes against ORIGINAL explicit launch
-Defaults, independent of option order. Task/output paths use the SELECTED workspace;
-no ambient cwd/HOME/env/chdir, canonicalization or dot/parent/drive/UNC/device repair.
-The old absolute control adapter remains unchanged and still refuses relative input.
-
-One original `--output-file` becomes a typed pre-run Destination through SAME old
-ControlFileInvocation. Physical workspace/config output still refuses, including
-relative output; use an existing absolute external directory for this private
-publisher. FileOptions selects only old private ASCII/human previews, NOT public
-text/JSON/JSONL. Public format/trace/usage/gadget/wall/legacy flags refuse before
-effects, never accept-and-ignore or rename preview data into public schema fields.
-Source/attachment values and after-`--` tokens remain original task data.
-
-Whole native/default bounds/UTF8 and complete new+old syntax precede effects.
-Provisional old policy/destination selections are DROPPED; actual Bootstrap alone
-revalidates configured credential sources and captures original auth/ConfinedFs/
-source roots/session selection. Existing Run/FileRun, native rights/read clocks,
-record/lease/epoch/create-only single-attempt publisher and OS caveats stay exact.
-Only two narrow old input-module/preflight declarations are appended; ALL older
-Rust bodies/tests/fixtures/hosts/limits and framework/SDK/WIT/deps/lock/pin/frontend/
-SafeBackend/frames/schemas/goldens/trace/corpus remain unchanged.
-
-The first locked production check passed warning-free. The first NEW fixture
-compile recorded an accessor typo/unused NEW import, corrected only in new tests
-with actual source-before-store coverage; its log is preserved, not called green.
-Isolated grammar/runtime/native fixtures retain original input/request history,
-without real user config/SDK/global env mutation. Unmarked/unknown helper scenarios
-return before fixture/config/stdin work. Current-source bounded checks/links and
-ALL FOUR fresh exact-head jobs/EVERY mandatory step/BOTH modes/Windows independently
-gate merge; no old assertions/deadlines/process workaround or unchanged full-CI retry.
-Public exec/full parent/ambiguous paths/stdin/stdio/R2/results/events/storage/trace/
-provenance/headless gadgets/shared usage/#97/P2g/live/default-on/release stay open/off.
-
-
-Collected current-source evidence: all **34 bounded local rows** passed warning-free,
-including new60 scope/output cases and unchanged58 controls/58 source argv/48 native/
-42 composition cases in BOTH modes, old37 guest cases locally (35 compiled on Windows),
-every selected older suite, both locked production checks, actual marked/unmarked
-existing compile probes, fixture/root fmt/reference126/driver9/whitespace/lineage.
-The exact17-path source audit keeps EVERY older Rust body/assertion unchanged after
-TWO narrow append-only module/preflight declarations; all91 local Markdown links and
-fences pass. The first NEW accessor/import compile failure remains preserved, not
-passing evidence; corrected60 and final34 source rows are independent. This is not
-fresh all-platform CI, public exec/full path/format/R2/usage/live/OS/release approval.
-ALL FOUR fresh exact-final-head jobs/EVERY mandatory step/BOTH modes/Windows remain
-independent prerequisites before a missing-review-only admin merge.
-
-
-## Token-admission clarification — accepted November1 (Asia/Taipei)
-
-The new [token-admission.md](token-admission.md) review artifacts address #97's
-truthful30-used/100-budget refusal before an81-token reservation. Optional
-`_meta.craftsman.limit.admission` holds estimated input/requested reply/remaining,
-without changing measured role usage, logical call counts, existing outcomes,
-units or standard ACP stops. Exhausted/overrun observations keep their old mode;
-pre-exhaustion requires coherent context and STRICT insufficient remaining room.
-
-Original25 fixtures/126 reference entries retain values/serialized text;70 new
-record/stream/wire cases and eight independent native counter/ledger tests make196
-reference cases/11 native tests. Integer/role/event/partial-output constraints are
-not weakened. First NEW fixture null-output/missing-run-start failures are preserved;
-corrections are NEW data only, not loosened old requirements/assertions/limits.
-
-The user explicitly accepted this narrow contract and compatibility judgment
-November1, replying "yes approve" to the specific field/strict reservation/v1/
-older-validator/collision proposal. Legacy semantic validators still need an update;
-recognizing the optional field can still collide with old unspecified metadata.
-Neither risk is erased by acceptance. R1–R7's October20 acceptance is unchanged;
-October31's general continue/CI/admin evidence is not retroactive acceptance.
-Runtime/native readers/publishers/guest/SDK/WIT/framework/deps/lock/pin/frontends/
-SafeBackend/ACP/v4/trace/goldens/corpus remain unchanged. #97's contract question
-is resolved; exact-head all-four/every-step/both-mode/Windows verification gates
-accepted-artifact merge. Shared meter/public producer/live/release stay unwired/off.
-
-
-Historical pre-acceptance source-local evidence: all38 valid bounded rows passed warning-free,
-including native11 in BOTH modes, reference196, all protected scope/control/source/
-native/composition/runtime/guest suites, both locked production checks, existing
-marked/unmarked compile probes, source/CLI/compatibility/Markdown/fmt/lineage checks.
-The exact12-path audit preserves runtime/framework/SDK/WIT/deps/lock/pin/frontends/
-protocols/goldens/trace/corpus and original25/126 serialized entries;62 local links
-and balanced fences pass. Initial NEW fixture errors, a NEW comment-wording lineage
-failure, and an unsupported EXTRA trace-driver switch are preserved, not called
-passing evidence. Only new fixture/comment/driver setup was corrected; no old
-check/allow-list/trace/source/limit was relaxed and no full suite/CI retry was used.
-These are historical pre-acceptance source-local results, not fresh tests of the
-November1 documentation-only acceptance update. Runtime/test/schema/checker/vector
-bytes stay exact and fresh exact-head CI/document/source proof gates this update.
-The explicit contract decision above is separate; shared meter/public producer/
-live/release remain unwired/off.
-
-
-## Private shared logical-request admission — November1 (Asia/Taipei)
-
-[request-admission.md](request-admission.md) records the next bounded R5 slice after
-#133's accepted-contract merge/#97 decision closure. One actual-builder source and
-opaque ORIGINAL-provider/concrete-role bindings enforce1..10000/default50 calls
-across main/subagent/compaction before supplied-inner entry. Same-gate cap refusal
-closes execution deny-only, never fake NeedsApproval; true approval dominates the
-private runtime before/after classification. Active/actual inner-return/drop facts
-never refund admitted calls, and foreign/equal sources and poisoned state refuse.
-
-Forty additive tests (27 owned-builder synthetic +13 actual input/loopback/runtime)
-cover all roles, concurrent cap/last-response boundaries, failures/drop/refusal,
-source identity, real approval and later same-response tool denial. Original request
-histories and partial state/registry stay private, not reset or promoted into usage.
-This is NOT token allowance/clamping/usage classification/HTTP receipt/unknown billing,
-public flags/results/events/trace/storage/provenance/callables/catalog/P2g/live/release.
-An admitted wrapper can fail before traffic; public token admission must combine
-both reservations BEFORE the charge point, not refund/hide a refused call later.
-
-Docs/source/tests accompany the incomplete implementation. Old tests/assertions/
-readers/writers/native/guest/host limits, SDK/WIT/framework/deps/lock/pin/frontends/
-SafeBackend/schemas/frames/goldens/trace/corpus remain unchanged. Initial new adapter
-warning/scope/privacy/input-constructor setup failures are retained; fixes do not
-suppress warnings, broaden production visibility or weaken old checks/deadlines.
-ALL FOUR fresh exact-head jobs/EVERY mandatory step/BOTH modes/Windows and source/
-warning/review proof gate merge, not the older #133 contract CI. No independently
-blocked provider correction is inspected, executed, changed, retried or worked around.
-
-
-## Private atomic token reservations — November2 (Asia/Taipei)
-
-[token-reservations.md](token-reservations.md) records a private R5 opt-in foundation.
-The SAME builder binds concrete scoped clients/roles to one meter; bounded whole
-checked-input estimates and final reply-body checks precede ONE request/token
-allocation decision. Default request-only paths remain unchanged; only a separate
-typed private factory opts in, with no public flags/CLI. Allocations stay active or
-retained unsettled, never inferred measured usage, refunded calls or #97 public
-observed/remaining facts. Fifty additive tests cover27 actual-builder/source/client/
-concurrency cases,12 real input/runtime/child/compaction cases and11 arithmetic/
-estimator cases. Real histories stay intact; initial NEW `--lib` driver failure is
-preserved, corrected only by selecting the binary test target.
-
-Receipt/partial-output witnesses, usage-presence/fallback, concurrent settlement/
-public ledger and all other producer/P2g/gadget/live/release gates remain separate.
-All old assertions, source codecs/response control/native limits/framework/SDK/WIT/
-deps/lock/pin/frontends/protocols/schemas/goldens/trace/history remain protected;
-additive tests/docs and ALL FOUR fresh exact-head CI jobs/every mandatory step/both
-modes/Windows plus source/warning/review proof precede any missing-review-only merge.
-
-
-### CI image correction — November2 (Asia/Taipei)
-
-The first #135 head's macOS job was cancelled in four seconds BEFORE runner
-assignment/checkout/any test. GitHub's official runner-images#13518 and check
-annotation identify the macOS14 retirement brownout (November1 14:00–November2
-00:00 UTC); full retirement is November2, 2026. That cancellation is preserved,
-not a source-test failure or green evidence, and is DISTINCT from the unchanged
-local partial-shell readiness failure above.
-
-`ci.yml` now separates stable check ids from actual images: required
-`test (macos-14)` retains its exact context name but runs on explicit `macos-15`.
-Ubuntu24.04/Windows2025 names/images and EVERY action/test/build/limit/condition
-remain unchanged; no ruleset/branch protection mutation, macos-latest alias,
-old assertion relaxation or unchanged full-CI retry. Only real image selection
-and current docs change; every Rust byte from the50-case implementation/local
-rows is identical. Fresh corrected-head ALL FOUR jobs/every mandatory/setup step/
-both modes/Windows plus ACTUAL macOS15 labels/raw logs/source/warning/review proof
-are required. Do not call the legacy name macOS14 test coverage or reuse the
-cancelled original head's status as coverage of the corrected workflow.
-
-
-## Private admission-correlated send/header observations — November2 (Asia/Taipei)
-
-[admission-receipts.md](admission-receipts.md) records the next private R5 slice after
-#135. Only actual token-admitted body/permit/checked-client identity mints the scope;
-SAME builder/meter/gate and concrete main/subagent/compaction keys bind bounded
-<=10000 calls/two slots. Client-only witnesses record ACTUAL first send-future poll,
-awaited send error or returned HTTP headers; preparation/no-poll, abandonment and
-late stop retain truthful distinct facts. No socket/wire/billing/body completion/
-usage/settlement inference, extra retry request charge, fake status/bytes or refund.
-Default request-only/frontends/flags remain unchanged; only actual Run selects
-non-Debug/non-Serialize historical source-bound observations. Forty additive tests
-(10 builder/identity,20 actual runtime/loopback,10 coherence/bounds) and docs accompany
-the incomplete adapter. Initial5 NEW unused test interfaces are preserved/corrected
-only by completing new actual-owner coverage; no suppression/old assertions changed.
-
-Original successful SSE/control/usage/retry/diagnostics, source codecs, native/guest/
-input/writer/host limits, framework/SDK/WIT/deps/lock/pin/frontends/SafeBackend/v4/ACP/
-schemas/vectors/goldens/trace/history stay unchanged. No independently blocked provider
-inspection/execution/workaround. Actual bounded successful response/usage presence/
-partial-output, billing/settlement/overrun/public producers/provenance/P2g remain
-separate; exec/callable headless gadgets/catalog/live/default-on/release stay OFF.
-ALL FOUR fresh exact-head CI jobs/every mandatory/setup step/both modes/Windows plus
-actual macOS15 label/source-warning-tree-review proof precede missing-review-only merge.
-
-
-### Required engine security patch — November2 (Asia/Taipei)
-
-During this slice GitHub surfaced two critical manifest/lock alerts for the SAME
-Wasmtime AArch64/large-br_table advisory GHSA-mghf-wjfp-p5xm. The advisory/48.0.7 fix
-were published October19, 2026; our repository alerts appeared November1 at20:06UTC.
-This is newly surfaced evidence, not a new November2 advisory or proof that earlier
-48.0.6 was safe. Vendor48.0.8 (October29) additionally fixes component/WASI issues;
-both direct host pins now use exact48.0.8. Rust stays1.99.1, SDK/WIT/guest-host policy/
-capabilities/production limits/defaults/assertions and CI/check names remain unchanged.
-
-A separate necessary dependency commit updates ONLY the two host pins and30 existing
-Wasmtime/Pulley/Cranelift version/checksum entries; no dependency edges/features/
-registry sources, unrelated libraries, standalone gadget SDK sources/lockfiles or
-Rust toolchain changes are bundled.
-Three additive offline guards pin the reviewed matching runtime/WASI versions/family
-and original feature/model-opt-in shape; no exploit or unpatched guest is executed
-by these guards. The local machine is nativeARM64. Fresh patched-head locked checks,
-all43 NEW receipt/security tests, protected native/guest/SDK/WIT suites and ALL FOUR
-CI jobs/every mandatory/setup step/both modes/Windows/actual macOS15 evidence gate merge.
-
-All15 earlier bounded local rows passed warning-free BEFORE this prerequisite; they
-are retained as pre-security evidence, NOT relabeled patched-head coverage. No whole
-unchanged retry/empty commit/assertion/deadline weakening; only the real dependency
-security update justifies fresh source validation. Other open advisories, public
-exec/usage settlement, full containment/P2g/live/default-on/release remain separate.
-
-### November 3: existing Windows partial-output fixture maintenance
-
-[windows-shell-fixtures.md](windows-shell-fixtures.md) records the November2
-post-merge feature-off Windows failure separately from #136's green exact-head PR
-checks. Only the test command removes `Write-Output`/native `ping` in favor of
-original stdout/stderr, explicit flushes and a direct 60s block. The old 2s call,
-30s outer and 2s drain limits, assertion bodies, Unix input, production shell and
-Job Object/group semantics are unchanged. Three Windows-only cases check input
-order, real two-format 33-byte partial capture, and genuine zero-observed-output
-refusal before the first write; no retry/warmup/fabricated output is selected.
-
-Native Windows/all-job/every-step/both-mode evidence is still required, even
-while Windows is formally informational. This is not the private headless six-second
-readiness fixture, usage/settlement, public exec, OS shutdown or live acceptance;
-those remaining gates and independently blocked provider work are unchanged.
-
-## Windows Job/PID fixture follow-up — November4,2026 Asia/Taipei
-
-PR142's separately audited merged-main41668514031 is NOT all-four green:
-Windows feature-off1532/2/7 failed the ORIGINAL2s partial-output and3s Job/PID
-cases; gadgets1666/0/9 passed, but the interpreter post step was skipped.
-All other jobs/inventories and original Windows9 warning signatures/17 occurrences
-remain verified. Preserve that failure separately from green PR142 CI, never
-substitute the later gadget pass or retry unchanged CI to manufacture green.
-
-Only the old Windows Job/PID fixture input now removes Start-Process/Write-Output:
-construct one actual System.Diagnostics.Process, keep UseShellExecute false and
-child streams redirected to that Process, Start without implicit Boolean output,
-flush its ORIGINAL positive PID through Console, then actual WaitForExit. The
-SAME existing PowerShell/ProcessTree/Job Object path and original3s timeout/30s
-outer/2s drain/PID/grandchild assertions stay exact. Child creation/output is not
-mocked, no startup readiness/bytes/PID/completion is fabricated. Two additive
-native Windows cases check exact input order/no cmdlets and actual PID/raw bytes/
-typed Timeout/no exit/real duration/grandchild kill under the SAME3s bound.
-
-The ordinary2s PRINT_THEN_HANG/direct Console fixture and ALL its older/new test
-bodies remain byte-exact. Its missing-output cause is NOT established or fixed
-by this narrower PID-input implementation; no universal cold-start latency is
-promised. Production runner/capture/process/defaults/clocks/timers, framework/
-SDK/WIT/provider/input/guest/permissions/publishers/frontends/deps/lock/pin/
-workflow/frames/schemas/goldens/trace/corpus stay exact. Current implementation
-is incomplete pending native Windows verification; local macOS checks with zero
-selected Windows cases are NOT Windows execution evidence. Documentation must
-accompany every partial slice; historical plan/Appendix A/R1–R7/#97 stay intact.
-ALL FOUR fresh exact-head jobs/every setup/mandatory/post step/both modes/actual
-macOS15+Windows/old+2-new-inventory/warning/source/tree proof precede review-only
-merge. No warmup/unchanged retry/deadline/assertion/launcher workaround, real model
-call/user config/env/SDK mutation or blocked-provider work.
-public exec/usage/settlement/callables/P2g/live/default-on/release remain off.
-
-
-## Immutable environment test fixtures
-
-Config, MCP, route and HTTP/WS auth tests preserve their original assertions
-using immutable child environments and per-router state. See
-[environment-test isolation](test-environment-isolation.md) for the maintained contract.
+The verification script selects an installed python 3.11 or newer runtime
+and runs 12 checks: formatting, locked core/default builds, exec-contract,
+benchmark-driver, CI-cache/workflow, coding-budget and scope contracts,
+provenance, both complete native modes and unchanged goldens. A failed core mode
+does not hide the gadget mode.
+
+Required CI contexts are `fmt`, `test (ubuntu-24.04)`, `test (macos-15)` and
+`test (windows-2025)`. Each test platform checks the default voice/gadget build
+and both full native modes. Every mandatory step and the tested source/tree,
+inventory and warning signatures are audited before merge; merged main receives
+independent full validation before local fast-forward/install. Windows is
+required. Draft checks are intentionally light and never substitute for ready-PR
+validation. See [CI controls](ci.md).
+
+Latest verified implementation: [PR #24](https://github.com/kaobei-alabo/craftsman-harness/pull/24),
+PR run [43797314382](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43797314382),
+independent main run [43799188076](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43799188076)
+at `9c5774d`.
+
+| Platform | Core passed | Gadget mode passed | Compiler warning baseline |
+| --- | ---: | ---: | --- |
+| macOS 15 | 1,962 | 2,120 | None |
+| Ubuntu 24.04 | 1,961 | 2,119 | None |
+| Windows 2025 | 1,925 | 2,072 | Five core / eight gadget occurrences, unchanged |
+
+All four jobs, every required step and both modes passed. Local verification
+passed all 12 checks with 1,962 core / 2,120 gadget-mode tests. The installed
+splash passed five isolated native terminal captures at 24/40/80/120 columns
+using GPT/Claude fixture configurations, with clean exit, restored modes,
+preserved config and no model requests. Earlier failed runs remain failed
+records in their feature docs, Git and local evidence.
+
+## 6. Coding quality and remaining work
+
+The first full 30-task baseline records **17/30 normally completed successful
+turns** and **21/30 behavior-passing workspaces**. Selected memory, workflow and
+verifier comparisons show working composition and limited-sample improvements;
+they do not establish a full latest-runtime score or broad performance
+comparisons with other coding products.
+Four starter gadgets were built and used in live GPT/Claude sessions, with all
+30 independent cases passing. Runtime tests, gadget tests and coding-task grades
+remain distinct evidence.
+
+The original evaluation ledger accounts for **$23.153274 of $25**, including
+**40 retained unknown-usage reservations**. That is conservative admission
+accounting, not an invoice or permission to reset/refund unknown requests.
+No live calls were made for OSC or splash changes. See
+[coding evaluations](coding-evaluation.md), [live coding](live-coding-evaluation.md),
+[workflow comparison](live-workflow-evaluation.md),
+[verifier comparison](live-verification-evaluation.md) and
+[live starter gadgets](live-gadget-evaluation.md).
+
+Next coding-quality work is context compilation, safe repeated-failure
+escalation, semantic test-integrity review and a fresh full/repeated evaluation
+on larger repositories, longer sessions and more models. Current priority and
+completion state are in [harness-improvements.md](harness-improvements.md).
+Public headless execution/gadgets, native containment and full typed events /
+Session API keep their separate roadmap gates.
+
+The repository is public and MIT licensed for its original work. Standard public
+GitHub-hosted runner compute is free; storage/concurrency limits remain. The
+former account-billing startup blocks are historical, and hosted cache
+restore/save has been exercised. Binary/container publication remains disabled
+by owner request. Remaining attribution/provenance/distribution review is
+separate from the resolved MIT choice; see [NOTICE](../NOTICE) and
+[OSS review](oss-review.md).

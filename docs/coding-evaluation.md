@@ -19,8 +19,8 @@ The [first live cycle](live-coding-evaluation.md) records the baseline, grader
 corrections, six-case memory-guidance comparison, pinned Codex comparison,
 repeat variation and conservative accounting under the approved $25 cap.
 
-The next candidate adds [task-workflow guidance](task-workflow.md) for TUI/ACP
-main agents. Its baseline is the merged first-cycle runtime; paired runs retain
+The merged [task-workflow guidance](task-workflow.md) for TUI/ACP main agents
+was compared against the merged first-cycle runtime; paired runs retain
 the same model, effort, corpus, graders, limits and admission ledger. The full
 verification/stuck/context roadmap remains separate from this advisory slice.
 The [workflow comparison](live-workflow-evaluation.md) records selected paired

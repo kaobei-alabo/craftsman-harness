@@ -86,6 +86,7 @@ documents and folders containing several projects are supported too.
 [ACP integration](docs/acp.md) ·
 [Terminal status reporting](docs/terminal-status.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
+[Harness improvement progress](docs/harness-improvements.md) ·
 [Coding evaluations](docs/coding-evaluation.md) ·
 [Task workflow](docs/task-workflow.md) ·
 [Declared verification](docs/verification.md) ·

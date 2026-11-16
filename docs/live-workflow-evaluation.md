@@ -87,7 +87,9 @@ under `target/verification/task-workflow/`; the original ledger remains under
 were preserved. No paid Claude/comparison-product calls, binary uploads or image
 publication were added.
 
-[Task workflow](task-workflow.md) remains advisory. Automatic verification,
-test-integrity decisions, broader stuck detection and context compilation need
-their own implementation and evaluations. Native CI and independent-main checks
-remain delivery requirements, separate from these live model results.
+[Task workflow](task-workflow.md) remains advisory. The subsequently merged
+[declared verifier](verification.md) implements scoped completion checks and
+protected-content review; its [matched live check](live-verification-evaluation.md)
+is separate evidence. Broader semantic test-integrity, safe stuck escalation and
+context compilation remain work with their own evaluations. Native CI and
+independent-main checks remain delivery requirements, separate from live quality.
