@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "kind": "latest_runtime_offline_plan",
+  "is_live_authorization": false,
+  "source": {
+    "commit": "33a80d99431fd707b148485cb714f365b1946803",
+    "tree": "ddee5694698835c48c9c7bbf37b4140b64d721dc",
+    "runtime_inventory_sha256": "8923bed731142a37f5d9842f920e45793d91cb2e1b1fc3aa04e3dd9950610b1a",
+    "image_id": null
+  },
+  "settings": {
+    "model": "gpt-6.1-sol",
+    "protocol": "openai_responses",
+    "effort": "xhigh",
+    "max_output_tokens": 8192,
+    "max_requests_per_run": 20,
+    "task_wall_seconds": 300
+  },
+  "limits": {
+    "request_body_bytes": 262144,
+    "input_reservation_tokens": 270000,
+    "response_bytes": 8388608,
+    "event_bytes": 1048576,
+    "captured_output_bytes": 8388608,
+    "agent_memory_bytes": 805306368,
+    "agent_pids": 128,
+    "agent_cpus": 2,
+    "grader_wall_seconds": 90
+  },
+  "corpus": {
+    "path": "evals/coding/tasks.json",
+    "sha256": "5d45038dca136245f090d2e2ed83a3e99f7a7c18eff19f2c4ba2d750d71d89f7"
+  },
+  "feature_options": {
+    "path": "evals/coding/latest-runtime-v1/feature-options.json",
+    "sha256": "0f065bea4a3c995f7cc0bab6314cb0a2e1073c5a510d8a385a4b0d1d839e46a8"
+  },
+  "long_session_corpus": {
+    "path": "evals/coding/latest-runtime-v1/long-session.json",
+    "sha256": "1ccacdb5c38accd8fe02b34f463cec2690927a37eacf5fc05c74289043e58be7"
+  },
+  "ledger": {
+    "path": "/Users/ymc/orca/workspaces/craftsman-harness/loggerhead/target/verification/coding-quality/live-budget/ledger.json",
+    "sha256": "53e1884f68bc6ad7faacb40818f16cbec3c01bea86744e0008e3c8c5ff376676",
+    "request_count": 915,
+    "accounted_micros": 24285934,
+    "unknown_requests": 40
+  },
+  "checkpoint": {
+    "path": "/Users/ymc/orca/workspaces/craftsman-harness/loggerhead/target/verification/harness-continuation/preflight-original-ledger-checkpoint.json",
+    "sha256": "c327389fe2e9f682a9e82683ac49c5e1a72ab44c50c914764493c685b2bf50a6"
+  },
+  "full_suite": {
+    "label": "latest-full-v1",
+    "tasks": [
+      "py-page-boundaries",
+      "py-expiring-cache",
+      "js-event-dispatch",
+      "js-retry-attempts",
+      "rs-character-clip",
+      "rs-inclusive-range",
+      "py-config-merge",
+      "py-dependency-plan",
+      "js-bounded-map",
+      "js-json-line-chunks",
+      "rs-version-order",
+      "rs-stock-transfer",
+      "py-normalization-refactor",
+      "py-money-refactor",
+      "js-url-refactor",
+      "js-ledger-refactor",
+      "rs-word-normalization",
+      "rs-histogram-refactor",
+      "py-decimal-csv",
+      "py-sqlite-upsert",
+      "js-utc-day",
+      "js-stable-cache-key",
+      "rs-stable-dedup",
+      "rs-newline-repair",
+      "py-dry-run-wiring",
+      "py-create-only-export",
+      "js-timeout-wiring",
+      "js-json-cli-errors",
+      "rs-timeout-config",
+      "rs-report-skips"
+    ],
+    "report_as_new_run": true,
+    "edit_historical_grades": false
+  },
+  "noise_check": {
+    "kind": "repeated_selected_cases",
+    "selected_tasks": [
+      "py-page-boundaries",
+      "js-json-line-chunks",
+      "rs-report-skips"
+    ],
+    "batches": [
+      {
+        "label": "latest-aa1-v1",
+        "tasks": [
+          "py-page-boundaries",
+          "js-json-line-chunks",
+          "rs-report-skips"
+        ]
+      },
+      {
+        "label": "latest-aa2-v1",
+        "tasks": [
+          "rs-report-skips",
+          "js-json-line-chunks",
+          "py-page-boundaries"
+        ]
+      }
+    ],
+    "use_full_suite_as_first_observation": true
+  },
+  "budget_proposal": {
+    "additional_micros": 25000000,
+    "proposed_total_micros": 50000000,
+    "authorized": false,
+    "allocations_micros": {
+      "full_suite": 18500000,
+      "selected_repeats": 3000000,
+      "long_sessions": 3000000
+    }
+  },
+  "historical_scores": {
+    "successful_turns": "17/30",
+    "behavior_checks": "21/30",
+    "modified_by_this_plan": false
+  }
+}

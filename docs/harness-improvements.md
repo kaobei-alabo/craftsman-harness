@@ -1,6 +1,6 @@
 # Coding-harness improvement progress
 
-Updated November 16, 2026. The initial implementation/evaluation cycle and the
+Updated November 17, 2026. The initial implementation/evaluation cycle and the
 subsequent terminal fixes are merged and installed. The broader goal of
 competitive coding-agent quality remains ongoing. Small synthetic repositories
 and selected paired cases do not establish performance across large projects
@@ -18,7 +18,7 @@ or additional models.
 | Declared verification | Merged and locally installed | Reviewed scoped checks, actual results, bounded repair and content-bound protected review; one matched live composition check |
 | Bounded task context | Implemented, explicit opt-in | Actual input/file observations, stale/uncertain labels and local `/context`; original messages/native items preserved |
 | Exact failure budgets and structural test review | Implemented, explicit opt-in | Actual owned sampling pause after saved results; protected-source notes preserve legitimate progress/approvals |
-| Fresh and broader quality evaluation | Planned | Full latest-runtime suite, repeated comparisons, larger repositories, longer sessions and more models |
+| Fresh and broader quality evaluation | Offline preparation added; live run pending | Fixed latest-source full suite, six repeats and three bounded terminal scenarios; larger repositories and more models remain planned |
 
 The original $25 evaluation ledger accounts for **$24.285934**, including
 **40 retained unknown-usage reservations**. Its stages remain separately recorded:
@@ -29,6 +29,12 @@ The original $25 evaluation ledger accounts for **$24.285934**, including
 No unknown reservation was reset/refunded, and failed attempts/contract
 corrections retain their original evidence. These are conservative admission
 amounts, not a provider invoice or an additional allowance.
+
+[Fresh evaluation preparation](coding-evaluation-preparation.md) proposes $25
+additional / $50 total on this same ledger for the next bounded cycle. It makes
+no model calls or cap change. The remaining $0.714066 cannot fund a full fresh
+run; budget approval, exact-source image binding, explicit admission/cohort
+selection and isolated terminal capture proof remain required.
 
 The first full 30-task score is historical. Subsequent selected comparisons do
 not create a full score for the current runtime. [Task workflow](task-workflow.md)

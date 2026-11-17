@@ -1,0 +1,10 @@
+{
+  "context": {
+    "enabled": true,
+    "max_bytes": 12288
+  },
+  "failure_control": {
+    "repeat_limit": 5,
+    "test_review_signals": false
+  }
+}

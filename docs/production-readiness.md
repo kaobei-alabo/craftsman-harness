@@ -177,6 +177,13 @@ runtime or broad comparison with other coding products. The original allowance a
 $24.285934/$25, retaining all 40 unknown-usage reservations; these are conservative
 admission amounts, not an invoice.
 
+The [fresh evaluation preparation](coding-evaluation-preparation.md) fixes the
+November 17 source/corpus/settings, six selected-case repeats and three bounded
+owned-terminal scenarios. Its $25 additional / $50 total proposal uses the same
+ledger and is not authorization. Offline preflight and grader checks do not
+provide a fresh quality score or exceptional recovery evidence; explicit budget
+approval, source/image binding and isolated terminal captures remain gates.
+
 Failed early fixture/build/CI attempts remain failed evidence in their feature
 docs, Git and local records. Current passing runs do not diagnose or erase those
 historical failures. Old repository hashes and platform labels are inherited
