@@ -1045,6 +1045,10 @@ async fn abrupt_exit_after_reused_id_effect_preserves_old_result_and_marks_new_e
         info["facts"]["sequence_before_exit"].as_u64().unwrap()
     );
     drop(fresh);
+    // The earlier scripted continuation remains a state/sequence comparison.
+    // A separate real owned builder must first reopen the abrupt checkpoint
+    // with registered host tools and inspect both files without write dispatch.
+    run_registered_recovery_child(directory.path(), &["inspect"]).await;
     let model = Arc::new(craftsman_harness::testing::ScriptedModel::new(vec![
         Msg::assistant("Inspection completed without retrying either write."),
     ]));
@@ -1814,4 +1818,465 @@ async fn actual_gemini_native_ids_survive_failed_cancel_save_recovery_and_fresh_
     assert!(!guard.path().join("config/threads.db").exists());
     let directory = run_signed_child(&["gemini"]).await;
     verify_signed_reopen(directory.path(), SignedProtocol::Gemini).await;
+}
+
+const REGISTERED_HELPER: &str =
+    "tui::session_bridge::reliability_tests::owned_registered_recovery_fixture";
+const REGISTERED_MARKER: &str = "craftsman-registered-recovery=";
+const REGISTERED_DONE: &str = "actual registered recovery inspection and write witnesses completed";
+const INSPECT_INPUT: &str =
+    "Read first.txt and second.txt without replaying unknown calls or changing either file.";
+const WITNESS_FILE: &str = "registered-witness-control.txt";
+const WITNESS_CONTENT: &str = "separately approved registered writer control";
+
+fn activity_count(events: &[ToolActivityEvent], tool_name: &str, finished: bool) -> usize {
+    events
+        .iter()
+        .filter(|event| match event {
+            ToolActivityEvent::Started { tool, .. } => !finished && tool == tool_name,
+            ToolActivityEvent::Finished { tool, is_error, .. } => {
+                if finished && tool == tool_name {
+                    assert!(
+                        !is_error,
+                        "the actually dispatched control operation must succeed"
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+        })
+        .count()
+}
+
+fn assert_original_reused_history(messages: &[Msg]) {
+    assert_group_results(messages);
+    let results: Vec<_> = messages.iter().filter(|message|
+        matches!(message, Msg::Tool { tool_call_id, .. } if tool_call_id == "reused-write"))
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert!(
+        matches!(results[0], Msg::Tool { content, is_error:false, .. }
+        if content == "first physical write returned and was committed")
+    );
+    assert!(
+        matches!(results[1], Msg::Tool { content, is_error:true, .. }
+        if content.contains("may have had effects"))
+    );
+    assert!(messages.iter().any(|message| matches!(message,
+        Msg::Tool { tool_call_id, content, is_error:true }
+        if tool_call_id == "never-started" && content.contains("may have had effects"))));
+    assert!(messages.contains(&Msg::user(
+        "Perform the second effect; retain β and the earlier result."
+    )));
+}
+
+async fn registered_recovery_inspection(directory: &Path) {
+    let info: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("recovery-evidence.json")).unwrap())
+            .unwrap();
+    let thread = info["thread"].as_str().unwrap().to_owned();
+    let server = MockServer::start().await;
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let captured = requests.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer isolated-recovery-key"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let ordinal = {
+                let mut requests = captured.lock().unwrap();
+                let ordinal = requests.len();
+                requests.push(body.clone());
+                ordinal
+            };
+            assert_eq!(body["model"], "recovery-old");
+            assert!(
+                body["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|tool| tool["name"] == "write_file")
+            );
+            let inputs = body["input"].as_array().unwrap();
+            assert!(has_string(
+                &body["input"],
+                "Perform the second effect; retain β and the earlier result."
+            ));
+            let reused: Vec<_> = inputs
+                .iter()
+                .filter(|item| {
+                    item["type"] == "function_call_output" && item["call_id"] == "reused-write"
+                })
+                .collect();
+            assert_eq!(reused.len(), 2);
+            assert_eq!(
+                reused[0]["output"],
+                "first physical write returned and was committed"
+            );
+            assert!(
+                reused[1]["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("may have had effects")
+            );
+            assert!(inputs.iter().any(|item| {
+                item["type"] == "function_call_output"
+                    && item["call_id"] == "never-started"
+                    && item["output"]
+                        .as_str()
+                        .unwrap()
+                        .contains("may have had effects")
+            }));
+            match ordinal {
+                0 => {
+                    assert!(has_string(&body["input"], INSPECT_INPUT));
+                    response(vec![
+                        call(
+                            "registered-inspect-first",
+                            "read_file",
+                            json!({"file_path":"first.txt"}),
+                        ),
+                        call(
+                            "registered-inspect-second",
+                            "read_file",
+                            json!({"file_path":"second.txt"}),
+                        ),
+                    ])
+                }
+                1 => {
+                    for (id, text) in [
+                        ("registered-inspect-first", "first actual effect"),
+                        ("registered-inspect-second", "second effect before return"),
+                    ] {
+                        assert!(
+                            inputs
+                                .iter()
+                                .any(|item| item["type"] == "function_call_output"
+                                    && item["call_id"] == id
+                                    && item["output"].as_str().unwrap().contains(text))
+                        );
+                    }
+                    text_response("Registered owner read both physical effects without replay.")
+                }
+                2 => response(vec![call(
+                    "registered-write-control",
+                    "write_file",
+                    json!({"file_path":WITNESS_FILE,"content":WITNESS_CONTENT}),
+                )]),
+                3 => {
+                    assert!(
+                        inputs
+                            .iter()
+                            .any(|item| item["type"] == "function_call_output"
+                                && item["call_id"] == "registered-write-control"
+                                && item["output"].as_str().unwrap().contains("Updated file"))
+                    );
+                    text_response("Registered write and approval witnesses completed.")
+                }
+                _ => panic!("reopen or inspection must not replay or make an extra request"),
+            }
+        })
+        .expect(4)
+        .mount(&server)
+        .await;
+
+    let cfg = config(&server, 3, false);
+    let approval = Arc::new(Mutex::new(ApprovalState::default()));
+    let activity = Arc::new(Mutex::new(Vec::<ToolActivityEvent>::new()));
+    let events = activity.clone();
+    let approvals = Arc::new(AtomicUsize::new(0));
+    let approved = approvals.clone();
+    let (tx, _events) = mpsc::unbounded_channel();
+    let mut extras = UiBridge { tx }.session_extras();
+    let owner = craftsman_harness::SessionCancellation::new();
+    extras.cancellation_session = Some(owner.clone());
+    extras.tool_activity_sink = Some(Arc::new(move |event| events.lock().unwrap().push(event)));
+    extras.call_approval_prompt = Some(Arc::new(move |call, _, _| {
+        approved.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(call.name, "write_file");
+        assert_eq!(call.id, "registered-write-control");
+        assert_eq!(
+            call.args,
+            json!({"file_path":WITNESS_FILE,"content":WITNESS_CONTENT})
+        );
+        ApprovalPromptResult::Approve
+    }));
+    assert!(
+        extras.extra_tools.is_empty(),
+        "use the production registered host tools"
+    );
+    let mut session = agent::build_session_ext(
+        &cfg,
+        approval.clone(),
+        "",
+        false,
+        false,
+        Some(thread.clone()),
+        extras,
+    )
+    .await
+    .unwrap();
+    assert!(session.agent.durable_turn_checkpoints_enabled());
+    for name in ["write_file", "read_file"] {
+        assert!(
+            session
+                .agent
+                .registered_tool_names()
+                .any(|registered| registered == name)
+        );
+    }
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(activity.lock().unwrap().is_empty());
+    assert_eq!(approvals.load(Ordering::SeqCst), 0);
+    let store = session.checkpointer.as_ref().unwrap().clone();
+    let (before_seq, before_state, _) = store.load_latest(&thread).await.unwrap().unwrap();
+    assert_eq!(
+        before_seq,
+        info["facts"]["sequence_before_exit"].as_u64().unwrap()
+    );
+    assert_eq!(before_state.custom[RECOVERY]["in_progress"], true);
+
+    assert!(session.load_thread(&thread).await.unwrap());
+    assert!(session.agent.recovery_info().unwrap().unfinished_turn);
+    assert_eq!(
+        session.agent.recovery_info().unwrap().unresolved_tool_calls,
+        2
+    );
+    let restored = session.agent.state.lock().unwrap().messages.clone();
+    assert_original_reused_history(&restored);
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(
+        activity.lock().unwrap().is_empty(),
+        "reopen must not dispatch registered tools"
+    );
+    assert_eq!(approvals.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store.load_latest(&thread).await.unwrap().unwrap().0,
+        before_seq
+    );
+    let modified = ["first.txt", "second.txt"].map(|name| {
+        std::fs::metadata(directory.join(name))
+            .unwrap()
+            .modified()
+            .unwrap()
+    });
+    let result = tokio::time::timeout(WAIT, session.agent.run_turn(INSPECT_INPUT))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, TurnResult::Done(output)
+        if output.final_text() == "Registered owner read both physical effects without replay."));
+    let inspected = session.agent.state.lock().unwrap().messages.clone();
+    assert!(inspected.starts_with(&restored));
+    assert_original_reused_history(&inspected);
+    let inspected_activity = activity.lock().unwrap().clone();
+    assert_eq!(inspected_activity.len(), 4);
+    assert_eq!(activity_count(&inspected_activity, "read_file", false), 2);
+    assert_eq!(activity_count(&inspected_activity, "read_file", true), 2);
+    assert_eq!(activity_count(&inspected_activity, "write_file", false), 0);
+    assert_eq!(activity_count(&inspected_activity, "write_file", true), 0);
+    let inspection_approvals = approvals.load(Ordering::SeqCst);
+    assert_eq!(inspection_approvals, 0);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    for (id, text) in [
+        ("registered-inspect-first", "first actual effect"),
+        ("registered-inspect-second", "second effect before return"),
+    ] {
+        assert!(inspected.iter().any(|message| matches!(message,
+            Msg::Tool { tool_call_id, content, is_error:false }
+            if tool_call_id == id && content.contains(text))));
+    }
+    let (inspection_seq, inspection_saved, _) = store.load_latest(&thread).await.unwrap().unwrap();
+    assert!(inspection_seq > before_seq);
+    assert_eq!(inspection_saved.custom[RECOVERY]["in_progress"], false);
+    assert_eq!(inspection_saved.messages, inspected);
+
+    // A separately requested positive control follows the read-only proof.
+    // Counters never reset: the real registered writer and approval hook must
+    // now both observe exactly one actual write to a different fixture file.
+    let result = tokio::time::timeout(
+        WAIT,
+        session.agent.run_turn(
+            "Explicitly write registered-witness-control.txt only to verify the live witnesses.",
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(matches!(result, TurnResult::Done(output)
+        if output.final_text() == "Registered write and approval witnesses completed."));
+    let final_activity = activity.lock().unwrap().clone();
+    assert_eq!(final_activity.len(), 6);
+    assert_eq!(activity_count(&final_activity, "write_file", false), 1);
+    assert_eq!(activity_count(&final_activity, "write_file", true), 1);
+    assert_eq!(activity_count(&final_activity, "read_file", false), 2);
+    assert_eq!(activity_count(&final_activity, "read_file", true), 2);
+    assert_eq!(approvals.load(Ordering::SeqCst), 1);
+    assert!(!approval.lock().unwrap().auto_approve);
+    assert_eq!(
+        std::fs::read_to_string(directory.join(WITNESS_FILE)).unwrap(),
+        WITNESS_CONTENT
+    );
+    for ((name, content), prior) in [
+        ("first.txt", b"first actual effect".as_slice()),
+        ("second.txt", b"second effect before return".as_slice()),
+    ]
+    .into_iter()
+    .zip(modified)
+    {
+        assert_eq!(std::fs::read(directory.join(name)).unwrap(), content);
+        assert_eq!(
+            std::fs::metadata(directory.join(name))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            prior
+        );
+    }
+    assert!(!directory.join("never.txt").exists());
+    let (final_seq, final_state, _) = store.load_latest(&thread).await.unwrap().unwrap();
+    assert!(final_seq > inspection_seq);
+    assert_eq!(final_state.custom[RECOVERY]["in_progress"], false);
+    assert!(final_state.messages.starts_with(&inspected));
+    assert_original_reused_history(&final_state.messages);
+    assert_eq!(*session.usage.lock().unwrap(), (12, 8));
+    assert_eq!(requests.lock().unwrap().len(), 4);
+    std::fs::write(
+        directory.join("registered-recovery-evidence.json"),
+        serde_json::to_vec(&json!({"thread":thread,"before_sequence":before_seq,
+            "inspection_sequence":inspection_seq,"final_sequence":final_seq,
+            "reopen_http_requests":0,"inspection_http_requests":2,
+            "inspection_read_starts":activity_count(&inspected_activity,"read_file",false),
+            "inspection_write_starts":activity_count(&inspected_activity,"write_file",false),
+            "inspection_approvals":inspection_approvals,
+            "final_write_starts":activity_count(&final_activity,"write_file",false),
+            "final_write_finishes":activity_count(&final_activity,"write_file",true),
+            "final_approvals":approvals.load(Ordering::SeqCst),
+            "total_http_requests":requests.lock().unwrap().len()}))
+        .unwrap(),
+    )
+    .unwrap();
+    owner.cancel();
+    session.lsp.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "registered recovery witness; explicit unique marker required before path/config access"]
+async fn owned_registered_recovery_fixture() {
+    let markers: Vec<_> = std::env::args_os()
+        .filter_map(|arg| {
+            arg.to_str()
+                .and_then(|arg| arg.strip_prefix(REGISTERED_MARKER))
+                .map(str::to_owned)
+        })
+        .collect();
+    if markers.len() != 1 || markers[0] != "inspect" {
+        return;
+    }
+    let directory = std::env::current_dir().unwrap();
+    registered_recovery_inspection(&directory).await;
+    eprintln!("{REGISTERED_DONE}");
+}
+
+async fn run_registered_recovery_child(directory: &Path, markers: &[&str]) {
+    let workspace = directory.join("workspace");
+    let config = directory.join("config");
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--ignored",
+        "--exact",
+        REGISTERED_HELPER,
+        "--test-threads=1",
+        "--nocapture",
+    ]);
+    for marker in markers {
+        command
+            .arg("--skip")
+            .arg(format!("{REGISTERED_MARKER}{marker}"));
+    }
+    command
+        .current_dir(&workspace)
+        .env_clear()
+        .env("HOME", directory)
+        .env("USERPROFILE", directory)
+        .env("CRAFTSMAN_CONFIG_DIR", &config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
+    let mut child = command.spawn().unwrap();
+    let mut stdout = child.stdout.take().unwrap().take(65537);
+    let mut stderr = child.stderr.take().unwrap().take(65537);
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let (status, _, _) = tokio::try_join!(
+            child.wait(),
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err)
+        )?;
+        Ok::<_, std::io::Error>((status, out, err))
+    })
+    .await;
+    let (status, out, err) = match result {
+        Ok(Ok(value)) => value,
+        _ => {
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.kill()).await;
+            panic!("registered recovery child exceeded execution/cleanup bounds");
+        }
+    };
+    assert!(out.len() <= 65536 && err.len() <= 65536);
+    assert!(status.success(), "{}", std::str::from_utf8(&err).unwrap());
+    assert!(
+        std::str::from_utf8(&out)
+            .unwrap()
+            .contains("1 passed; 0 failed")
+    );
+    let selected = markers.len() == 1 && markers[0] == "inspect";
+    assert_eq!(
+        std::str::from_utf8(&err)
+            .unwrap()
+            .lines()
+            .filter(|line| *line == REGISTERED_DONE)
+            .count(),
+        usize::from(selected)
+    );
+    if selected {
+        let facts: Value = serde_json::from_slice(
+            &std::fs::read(workspace.join("registered-recovery-evidence.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(facts["reopen_http_requests"], 0);
+        assert_eq!(facts["inspection_http_requests"], 2);
+        assert_eq!(facts["inspection_read_starts"], 2);
+        assert_eq!(facts["inspection_write_starts"], 0);
+        assert_eq!(facts["inspection_approvals"], 0);
+        assert_eq!(facts["final_write_starts"], 1);
+        assert_eq!(facts["final_write_finishes"], 1);
+        assert_eq!(facts["final_approvals"], 1);
+        assert_eq!(facts["total_http_requests"], 4);
+        eprintln!("registered-recovery-observation {facts}");
+    }
+}
+
+#[tokio::test]
+async fn registered_recovery_helper_rejects_unmarked_unknown_and_duplicate_selection() {
+    for markers in [vec![], vec!["unknown"], vec!["inspect", "inspect"]] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("workspace")).unwrap();
+        std::fs::create_dir(directory.path().join("config")).unwrap();
+        run_registered_recovery_child(directory.path(), &markers).await;
+        assert!(!directory.path().join("config/threads.db").exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path().join("workspace"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
 }

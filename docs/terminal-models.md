@@ -123,7 +123,12 @@ pause, cancelled manual compaction and completed manual compaction. Accepted
 steering, the retained tool group,
 checkpoint sequence and main usage totals survive; the retired owner is closed
 and the replacement remains usable. Its loopback request excludes the old
-model's opaque native item. A later question cancellation and reopen preserve
+model's opaque native item, but compaction can already make that item's original
+message index ineligible on the old connection. This absence alone is not a
+causal identity-isolation control. The existing uncompacted
+[four-protocol transfer fixture](../crates/craftsman-rs/src/tui/model_commands/provider_tests.rs)
+checks original-connection eligibility before transfer and exclusion on the
+next connection. A later question cancellation and reopen preserve
 the new accepted input without replaying the earlier write.
 
 Separate Claude/Gemini recovery cases construct a fresh owned session on the

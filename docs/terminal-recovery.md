@@ -88,6 +88,17 @@ first committed result and labels both the second call and its unstarted sibling
 UNKNOWN. The physical second file does not turn an unrecorded result into a
 completed result. Reopen and an explicit inspection turn repeat neither write.
 
+The strengthened reused-id follow-up first reopens that abrupt checkpoint
+through a distinct owned app builder with the production registered read/write
+tools. Actual tool-activity and approval witnesses remain zero during load;
+the separately requested inspection executes two real file reads with no write
+invocation or approval. The original results, UNKNOWN/sibling group, accepted
+input, file bytes, modification times and checkpoint sequence remain checked.
+A separately requested write to a different fixture file then proves the same
+witnesses observe one actual approved write without resetting their counters.
+The earlier scripted final text remains only a state/sequence comparison and
+is not counted as an actual read or a registered-tool no-dispatch witness.
+
 The input-preservation cases explicitly enable the app context controls.
 Another case rejects the final cancellation checkpoint with an actual SQLite
 trigger. The completed write stays durable, while two identical accepted steering

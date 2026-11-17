@@ -70,6 +70,12 @@ tail. Model rebuild, later cancellation and fresh-owner reopen then use that
 saved state without repeating the write. This checks transitions across the
 features; it does not measure live summary quality or portable native latency.
 
+Native cache eligibility also depends on the original portable-message index.
+The observed old opaque-item absence after compaction/rebuild can follow stale
+index pruning on the original connection, so it is not a causal identity control.
+The separate uncompacted four-protocol transfer coverage supplies that control;
+see [terminal model controls](terminal-models.md).
+
 All credentials, providers, config and files are synthetic and isolated. No
 parent environment, user config, installed gadget or paid account is changed.
 Initial new-test import/usage-type failures and the parent fixture's noncanonical
