@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 16, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 18, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
@@ -111,6 +111,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
+| Coding-evaluation preparation and reliability evidence | Local frozen-source validation and production-TUI synthetic v2 | Unchanged original/reference graders and scoped external observations; full combined-source/native/hosted/live-budget gates remain; [preparation](coding-evaluation-preparation.md), [owned-terminal v2](owned-terminal-evaluation.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
 | Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
@@ -190,10 +191,16 @@ requires CMake, plus ALSA development headers/pkg-config/clang on Linux.
 ```
 
 The verification script selects an installed python 3.11 or newer runtime
-and runs 14 checks: formatting, locked core/default builds, exec-contract,
+and runs 17 discoverable checks: all 14 original checks plus latest evaluation
+preflight, long-session and owned-TUI tests. The original checks retain formatting,
+locked core/default builds, exec-contract,
 benchmark-driver, CI-cache/workflow, coding-budget/scope/preflight/options contracts,
 provenance, both complete native modes and unchanged goldens. A failed core mode
 does not hide the gadget mode.
+
+The three additive evaluation tests are also discovered in existing CI contract
+steps. This entrypoint count does not claim that all 17 checks or hosted/native
+gates have passed at the latest combined source.
 
 Required CI contexts are `fmt`, `test (ubuntu-24.04)`, `test (macos-15)` and
 `test (windows-2025)`. Each test platform checks the default voice/gadget build
@@ -250,6 +257,27 @@ longer sessions and additional models need their own comparisons. Current priori
 completion state are in [harness-improvements.md](harness-improvements.md).
 Public headless execution/gadgets, native containment and full typed events /
 Session API keep their separate roadmap gates.
+
+The local [owned-terminal synthetic v2](owned-terminal-evaluation.md) ran the
+production TUI at frozen source `33a80d9` in immutable image
+`sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b`.
+It records real one-call approvals, stored-row/pin evidence, actual OSC/PTY
+lifecycle, cancellation, manual compaction and quit/reopen, with an
+independently observed native probe child. Original task behavior, completed
+external observations and unverified private callbacks/typed returns/live
+recovery/outer ToolMeta or whole-activity absence remain separate criteria.
+This synthetic evidence is not a new full live-model score, production-readiness
+decision or OS-containment proof. New combined runtime source/image rebinding
+and coordinator full local/native/hosted/independent-main validation remain
+pending; additional live-budget approval is still required.
+
+The full unchanged v5 corpus was also validated in that same frozen image:
+all 30 original workspaces failed their independent held-out grades and all
+30 reference workspaces passed. Complete outputs retain all 20 Rust full-grade
+commands and 20 separate original/reference `--doc` diagnostics. This is the
+offline corpus prerequisite for source `33a80d9`; it does not supply model
+answers, revise historical scores, diagnose an older candidate's doctest failure,
+or validate a newer combined source/image automatically.
 
 The repository is public and MIT licensed for its original work. Standard public
 GitHub-hosted runner compute is free; storage/concurrency limits remain. The

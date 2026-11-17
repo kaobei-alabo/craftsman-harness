@@ -91,11 +91,15 @@ documents and folders containing several projects are supported too.
 [Local state and connections](docs/connections.md) ·
 [File checkpoints and rewind](docs/workspace-checkpoints.md) ·
 [Long tasks and turn limits](docs/terminal-turn-limits.md) ·
+[Terminal lifecycle and recovery](docs/terminal-recovery.md) ·
+[Durable manual compaction](docs/terminal-compaction.md) ·
 [ACP integration](docs/acp.md) ·
 [Terminal status reporting](docs/terminal-status.md) ·
 [Architecture and current limits](docs/runtime-status.md) ·
 [Harness improvement progress](docs/harness-improvements.md) ·
 [Coding evaluations](docs/coding-evaluation.md) ·
+[Fresh evaluation preparation](docs/coding-evaluation-preparation.md) ·
+[Owned-terminal synthetic evaluation v2](docs/owned-terminal-evaluation.md) ·
 [Task workflow](docs/task-workflow.md) ·
 [Declared verification](docs/verification.md) ·
 [Task context](docs/context.md) ·

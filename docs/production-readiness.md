@@ -105,11 +105,17 @@ adds terminal monitoring; native Orca chat registration remains host work. See
 ./scripts/verify.sh
 ```
 
-The script selects an installed Python 3.11+ interpreter and runs all 14 checks:
+The script selects an installed Python 3.11+ interpreter and discovers 17 checks:
+all 14 original checks plus latest evaluation preflight, long-session and
+owned-TUI tests. The original checks retain
 formatting, locked core/default builds, accepted exec conformance, benchmark
 contracts, CI-cache/workflow contracts, coding-budget/scope/preflight/options contracts,
 provenance, both full workspace feature modes and unchanged goldens. A failed
 core mode does not hide the gadget mode. Default builds include voice/gadgets.
+
+The added evaluation tests run in the existing CI contract steps. This count
+describes the verification entrypoint; full latest combined-source local/native/
+hosted results still require coordinator validation.
 
 Required hosted contexts are `fmt`, `test (ubuntu-24.04)`, `test (macos-15)` and
 `test (windows-2025)`. Every platform must complete every mandatory setup/build/
@@ -178,11 +184,24 @@ $24.285934/$25, retaining all 40 unknown-usage reservations; these are conservat
 admission amounts, not an invoice.
 
 The [fresh evaluation preparation](coding-evaluation-preparation.md) fixes the
-November 17 source/corpus/settings, six selected-case repeats and three bounded
-owned-terminal scenarios. Its $25 additional / $50 total proposal uses the same
-ledger and is not authorization. Offline preflight and grader checks do not
-provide a fresh quality score or exceptional recovery evidence; explicit budget
-approval, source/image binding and isolated terminal captures remain gates.
+original corpus/settings, six selected-case repeats and three bounded scenarios.
+[Owned-terminal synthetic v2](owned-terminal-evaluation.md) now provides local
+production-TUI observations at frozen source `33a80d9` and its immutable image:
+actual manual approvals, stored rows/pins, OSC/PTY lifecycle, cancellation,
+compaction, quit/reopen and an independently observed native probe child. It
+separates original behavior and completed external criteria from unverified
+private callbacks, typed returns/live recovery/outer ToolMeta and whole-activity
+absence. This is not a new full live quality score or broad recovery proof.
+Its $25 additional / $50 total proposal uses the same ledger and is not
+authorization. Coordinator combined-source/image review and full local/native/
+hosted/independent-main gates, plus live-budget/admission approval, remain.
+
+The full unchanged original/reference v5 corpus prerequisite was completed
+offline in that frozen source/image: all 30 originals failed held-out grades
+and all 30 references passed. Complete outputs include the 20 Rust full-grade
+commands and separate original/reference doctest diagnostics. This validates
+the existing fixture/grader contract for `33a80d9`, not a full latest model
+score, a diagnosed historical doctest defect or a newer combined-runtime image.
 
 Failed early fixture/build/CI attempts remain failed evidence in their feature
 docs, Git and local records. Current passing runs do not diagnose or erase those
