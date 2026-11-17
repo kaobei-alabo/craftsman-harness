@@ -185,13 +185,18 @@ admission amounts, not an invoice.
 
 The [fresh evaluation preparation](coding-evaluation-preparation.md) fixes the
 original corpus/settings, six selected-case repeats and three bounded scenarios.
-[Owned-terminal synthetic v2](owned-terminal-evaluation.md) now provides local
+[Owned-terminal synthetic v3](owned-terminal-evaluation.md) provides local
 production-TUI observations at frozen source `33a80d9` and its immutable image:
 actual manual approvals, stored rows/pins, OSC/PTY lifecycle, cancellation,
-compaction, quit/reopen and an independently observed native probe child. It
-separates original behavior and completed external criteria from unverified
-private callbacks, typed returns/live recovery/outer ToolMeta and whole-activity
-absence. This is not a new full live quality score or broad recovery proof.
+compaction, quit/reopen and an independently requested fixed native child with
+verified executed bytes and bounded actual wait/EOF. Retained whole SQLite
+bytes are recovered only in a private copy with current-step expectations;
+new duplicate/read conditions are bound after the actual owned return. Live
+writer hold stays quarantined, and historical v2 gaps/first repair failures
+remain. It separates original behavior and completed external criteria from
+unverified private callbacks, typed returns/live recovery/outer invocation/
+ToolMeta and whole-activity absence. This is not a new full live quality score
+or broad recovery proof.
 Its $25 additional / $50 total proposal uses the same ledger and is not
 authorization. Coordinator combined-source/image review and full local/native/
 hosted/independent-main gates, plus live-budget/admission approval, remain.

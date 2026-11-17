@@ -53,11 +53,14 @@ The present $25 allowance cannot fund a fresh full run; the image, explicit
 budget/admission extension and isolated terminal capture driver remain separate
 gates. Historical 17/30 and 21/30 grades remain unchanged.
 
-The [owned-terminal v2 driver](owned-terminal-evaluation.md) now supplies
-credential-free synthetic external observations with actual source/image and
-producer authority. It separates original behavior, observed criteria and
-unverified private callbacks/live state/outer ToolMeta; it does not authorize a
-paid run or cap extension.
+The [owned-terminal v3 driver](owned-terminal-evaluation.md) supplies
+credential-free production-TUI observations at the frozen source/image, with
+retained whole SQLite bytes queried in a private copy and a separately owned
+fixed native child collector. New duplicate/read negatives require the actual
+owned return and new saved result/count delta before issuance. Historical v2
+capture gaps and first failed repair attempts stay intact; live writer hold is
+quarantined. Private callbacks/typed returns/live state/outer invocation and
+ToolMeta remain unverified, and this does not authorize a paid run or cap change.
 
 ## Runner boundary
 

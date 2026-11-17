@@ -395,4 +395,8 @@ class ActualGatewayBoundary(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    # Keep the 17 discoverable entrypoints; the owned-TUI entrypoint also runs
+    # the independently reviewed retained-SQLite/collector rejection cases.
+    from test_owned_tui_boundaries import (NegativeIssuanceBoundaries, RetainedWriteBoundaries,
+        SqliteSnapshotBoundaries, NativeCollectorBoundaries, CleanupAndMarkerBoundaries, SnapshotChannelBoundaries)
     unittest.main()

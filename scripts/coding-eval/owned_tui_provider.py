@@ -116,6 +116,42 @@ class Engine:
             elif index == 1:
                 if not all(call["id"] in text_view for call in actions):
                     raise ValueError("fixture_actual_results_missing")
+                if phase in {"duplicate", "reread"} or phase == "setup" and scenario == "retained-results-v1":
+                    call = actions[0]
+                    matches = []
+                    def walk(value):
+                        if isinstance(value, dict):
+                            if value.get("type") == "function_call_output" and value.get("call_id") == call["id"]:
+                                matches.append(value.get("output"))
+                            for child in value.values():walk(child)
+                        elif isinstance(value, list):
+                            for child in value:walk(child)
+                    walk(body)
+                    if len(matches) != 1 or not isinstance(matches[0], str):
+                        raise ValueError("fixture_specific_negative_result_missing")
+                    output = matches[0]
+                    if phase == "setup":
+                        expected = self.bootstrap["native_expected_result_sha256"]
+                        if hashlib.sha256(output.encode()).hexdigest() != expected:
+                            raise ValueError("fixture_native_relay_result_mismatch")
+                        self.emit("fixture_native_relay_result_verified", ordinal=ordinal, phase=phase, phase_index=index,
+                            call_sha256=hashlib.sha256(json.dumps(call, sort_keys=True, ensure_ascii=False,
+                                separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+                            output_sha256=hashlib.sha256(output.encode()).hexdigest())
+                        condition = None
+                    elif phase == "duplicate":
+                        if "FileExistsError" not in output or "[exit code 1]" not in output:
+                            raise ValueError("fixture_duplicate_refusal_missing")
+                        condition = "recorded_file_exists_refusal"
+                    else:
+                        if "changed after the original observation" not in output:
+                            raise ValueError("fixture_current_read_result_missing")
+                        condition = "recorded_current_probe_read"
+                    if condition is not None:
+                        self.emit("fixture_negative_result_verified", ordinal=ordinal, phase=phase, phase_index=index,
+                                  call_sha256=hashlib.sha256(json.dumps(call, sort_keys=True, ensure_ascii=False,
+                                      separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
+                                  output_sha256=hashlib.sha256(output.encode()).hexdigest(), condition=condition)
                 self.emit("fixture_results_observed", ordinal=ordinal, phase=phase,
                           call_ids_sha256=hashlib.sha256(encoded([call["id"] for call in actions])).hexdigest())
                 items = [{"type": "message", "id": "returned-" + str(ordinal), "role": "assistant", "phase": "final", "content": [{"type": "output_text", "text": "Fixture turn returned after the requested tools."}]}]

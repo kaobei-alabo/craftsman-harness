@@ -22,11 +22,13 @@ from preflight_continuation import canonical, read_json, require, Refused, valid
 from grade_long_session import validate_extension, updates, grade_capture
 import grade_long_session as observation_source
 import preflight_continuation as primitives
-from coding_eval_anchors import ORIGINAL_CORPUS_COMMIT, ORIGINAL_CORPUS_SHA256, SYNTHETIC_IMAGE_ID, SYNTHETIC_BINARY_SHA256, BASE_SCENARIO_SHA256, V2_SCENARIO_SHA256
-from owned_tui_files import read_leaf, snapshot_retained
+import owned_tui_client as client_source
+from coding_eval_anchors import ORIGINAL_CORPUS_COMMIT, ORIGINAL_CORPUS_SHA256, SYNTHETIC_IMAGE_ID, SYNTHETIC_BINARY_SHA256, BASE_SCENARIO_SHA256, V2_SCENARIO_SHA256, V3_SCENARIO_SHA256
+from owned_tui_files import read_leaf, snapshot_retained, write_retained_leaf
 from run_suite import agent_configuration, snapshot_files
 from check_corpus import grade
-from owned_tui_receipt import DockerRunIssuer, seal_actual_driver, require_authenticated
+from owned_tui_receipt import DockerRunIssuer, seal_actual_driver, require_authenticated, validate_negative_condition
+from owned_tui_snapshot import PRIVATE_KINDS, SnapshotTransport
 
 
 class JsonProcess:
@@ -41,6 +43,7 @@ class JsonProcess:
         self.total = 0
         self.stderr_bytes = 0
         self.stderr_hash = hashlib.sha256()
+        self.snapshot_service = None
 
     def send(self, value):
         data = canonical(value) + b"\n"
@@ -54,9 +57,9 @@ class JsonProcess:
             if not data:
                 self.selector.unregister(key.fileobj)
                 continue
-            self.total += len(data)
-            require(self.total <= 8 * 1024 * 1024, "private_observation_stream_bound")
             if key.data == "stderr":
+                self.total += len(data)
+                require(self.total <= 8 * 1024 * 1024, "private_observation_stream_bound")
                 self.stderr_bytes += len(data)
                 self.stderr_hash.update(data)
                 continue
@@ -66,6 +69,14 @@ class JsonProcess:
                 line, _, rest = self.pending.partition(b"\n")
                 self.pending = bytearray(rest)
                 value = json.loads(line)
+                if value.get("kind") in PRIVATE_KINDS:
+                    require(self.snapshot_service is not None, "unexpected_raw_snapshot_transport")
+                    observed = self.snapshot_service.receive(value, self.send)
+                    if observed is not None:
+                        self.history.append(observed)
+                    continue
+                self.total += len(line) + 1
+                require(self.total <= 8 * 1024 * 1024, "private_observation_stream_bound")
                 self.values.append(value)
                 if value.get("kind") != "poll":
                     self.history.append(value)
@@ -110,6 +121,38 @@ def docker(*args, timeout=60):
     return result.stdout.decode().strip()
 
 
+def cleanup_object(kind, name):
+    """Preserve query/removal outcomes; a nonzero query is never absence."""
+    filter_value = "name=^/" + name + "$" if kind == "container" else "name=^" + name + "$"
+    query = ["docker", kind, "ls"]
+    if kind == "container":
+        query += ["--all", "--no-trunc"]
+    query += ["--filter", filter_value, "--format", "{{.ID}}"]
+    observations = []
+    def run(argv):
+        try:
+            result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+            require(len(result.stdout) <= 65536 and len(result.stderr) <= 65536, "cleanup_observation_bound")
+            observations.append({"operation": argv[1:3], "exit": result.returncode,
+                "stdout_bytes": len(result.stdout), "stderr_bytes": len(result.stderr),
+                "stdout_sha256": hashlib.sha256(result.stdout).hexdigest(), "stderr_sha256": hashlib.sha256(result.stderr).hexdigest()})
+            return result
+        except (OSError, subprocess.SubprocessError, Refused) as error:
+            observations.append({"operation": argv[1:3], "error": type(error).__name__})
+            return None
+    before = run(query)
+    query_ok = before is not None and before.returncode == 0
+    if query_ok and not before.stdout.strip():
+        return {"kind": kind, "owned_name": name, "absence_confirmed": True,
+                "cleanup_passed": True, "observations": observations}
+    mutation = run(["docker", kind, "rm", *( ["--force"] if kind == "container" else []), name])
+    after = run(query)
+    absent = after is not None and after.returncode == 0 and not after.stdout.strip()
+    return {"kind": kind, "owned_name": name, "absence_confirmed": absent,
+            "cleanup_passed": bool(query_ok and mutation is not None and mutation.returncode == 0 and absent),
+            "observations": observations}
+
+
 def scenario_actions(task, scenario):
     original = [{"id": "original-" + str(index), "name": "edit_file", "args": {"file_path": path, "old_string": task["files"][path], "new_string": text}}
                 for index, (path, text) in enumerate(task["reference"].items())]
@@ -124,19 +167,39 @@ def scenario_actions(task, scenario):
 
 
 def client_bundle(path, source):
-    prefix = 'import sys\nif __name__ == "__main__" and (not sys.argv[1:] or sys.argv[1] not in {"--owned-tui-client-v1", "--owned-tui-keeper-v1"}): raise SystemExit(0)\n'
+    prefix = 'import sys\n' + inspect.getsource(client_source._valid_marker) + '\nif __name__ == "__main__" and not _valid_marker(sys.argv[1:]): raise SystemExit(0)\n'
     prefix += 'import json, hashlib, re\nfrom collections import Counter\nclass Refused(ValueError): pass\nLONG_LIMITS = {"checkpoint_capture_bytes": 8388608}\n'
     for name in ("require", "keys", "integer", "digest", "text_size", "canonical", "canonical_sha256"):
         prefix += inspect.getsource(getattr(primitives, name)) + '\n'
     for name in ("checkpoint", "completed_groups", "command_count", "results_for_command", "owned_input_observation", "durable_observation", "group_positions", "safe_checkpoint_observation"):
         prefix += inspect.getsource(getattr(observation_source, name)) + '\n'
     prefix += '_capture_checkpoint = safe_checkpoint_observation\n'
+    snapshot_source = (source.parent / "sqlite_snapshot.py").read_text()
+    prefix += '_snapshot_module={"__name__":"owned_snapshot_source"}\nexec(compile(' + repr(snapshot_source) + ',"<owned-snapshot-source>","exec"),_snapshot_module)\n'
+    prefix += '_snapshot_acquire=_snapshot_module["acquire"]\n_snapshot_signature=_snapshot_module["signature"]\n'
     with path.open("x") as output:
         output.write(prefix + source.read_text())
     return path
 
 
+def collector_bundle(path, directory):
+    native_source = (directory / "native_probe_wrapper.py").read_text()
+    prefix = 'import sys\nif __name__ == "__main__" and sys.argv[1:] != ["--owned-native-collector-v3"]: raise SystemExit(0)\n'
+    prefix += '_native_source_sha256=' + repr(hashlib.sha256(native_source.encode()).hexdigest()) + '\n'
+    prefix += '_native={"__name__":"owned_native_source"}\nexec(compile(' + repr(native_source) + ',"<owned-native-source>","exec"),_native)\n'
+    with path.open("x") as output:
+        output.write(prefix + (directory / "owned_tui_collector.py").read_text())
+    return path
+
+
+NEGATIVE_PROMPTS = {
+    "duplicate-create": "Explicit negative control: request a new duplicate create-only call and retain its refusal without a repair retry.",
+    "forbidden-reread": "Explicit negative control: read the changed probe input once and retain the actual read result.",
+}
+
+
 def run_case(root, case, task, scenario, extension, image, build, contract, variant="normal"):
+    require(variant != "save-refusal", "live_writer_connection_unverified_quarantined")
     workspace = case / "workspace"
     workspace.mkdir()
     for relative, text in {**task["files"], **scenario["fixture_files"]}.items():
@@ -151,26 +214,45 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
     nonce = secrets.token_hex(6)
     network = "owned-eval-" + nonce
     agent_name, gateway_name, fixture_name = ("owned-eval-" + name + "-" + nonce for name in ("agent", "gateway", "fixture"))
-    paths = root / "scripts/coding-eval"
+    source_paths = root / "scripts/coding-eval"
+    paths = case / "trusted-driver-source"
+    paths.mkdir(mode=0o700)
+    source_manifest = {}
+    for original in sorted(source_paths.glob("*.py")):
+        data = original.read_bytes()
+        with (paths / original.name).open("xb") as output:
+            output.write(data)
+        source_manifest[original.name] = hashlib.sha256(data).hexdigest()
+    with (case / "trusted-source-manifest.json").open("xb") as output:
+        output.write(canonical(source_manifest))
     client_path = client_bundle(case / "trusted-client.py", paths / "owned_tui_client.py")
+    collector_path = collector_bundle(case / "trusted-collector.py", paths) if scenario["id"] == "retained-results-v1" else None
     budget = case / "synthetic-budget"
     budget.mkdir()
     run_name = "owned-" + scenario["id"]
     actions = scenario_actions(task, scenario)
-    client = gateway = fixture = None
+    client = gateway = fixture = collector = issuer = snapshots = None
     started = time.monotonic()
     returns, captures, effects = [], {}, {}
     last_poll = None
     removed = False
     native_child = None
     probe_input_observations = []
+    collector_name = "owned-eval-collector-" + nonce
+    native_intent = None
+    collector_released = False
     try:
         docker("network", "create", "--internal", network)
         common = ["--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "128", "--memory", "768m", "--cpus", "2", "--user", str(os.getuid()) + ":" + str(os.getgid())]
         fixture = JsonProcess(["docker", "run", "--rm", "--interactive", "--name", fixture_name, "--network", network, "--network-alias", "fixture", *common,
             "--mount", "type=bind,src=" + str(paths / "owned_tui_provider.py") + ",dst=/driver/provider.py,readonly",
             "--entrypoint", "python3", image, "-I", "-B", "/driver/provider.py", "--owned-tui-provider-v1"])
-        fixture.send({"scenario": scenario["id"], "actions": actions})
+        fixture_bootstrap = {"scenario": scenario["id"], "actions": actions}
+        if scenario["id"] == "retained-results-v1":
+            answer = scenario["expected_answer"]
+            original_result = answer["stdout"] + "\n--- stderr ---\n" + answer["stderr"] + "\n[exit code 7]"
+            fixture_bootstrap["native_expected_result_sha256"] = hashlib.sha256(original_result.encode()).hexdigest()
+        fixture.send(fixture_bootstrap)
         fixture.wait_kind("fixture_ready")
         gateway = JsonProcess(["docker", "run", "--rm", "--interactive", "--name", gateway_name, "--network", network, "--network-alias", "gateway", *common,
             "--mount", "type=bind,src=" + str(paths) + ",dst=/runner,readonly",
@@ -185,6 +267,19 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
         while not any(value.get("ready") is True for value in gateway.values):
             gateway.pump(0.02)
             require(time.monotonic() < end and gateway.process.poll() is None, "gateway_readiness_failed")
+        collector_bootstrap = None
+        if collector_path is not None:
+            collector = JsonProcess(["docker", "run", "--rm", "--interactive", "--name", collector_name,
+                "--network", network, "--network-alias", "collector", *common,
+                "--tmpfs", "/private:rw,nosuid,nodev,uid=" + str(os.getuid()) + ",gid=" + str(os.getgid()) + ",size=8m",
+                "--mount", "type=bind,src=" + str(workspace) + ",dst=/workspace",
+                "--mount", "type=bind,src=" + str(collector_path) + ",dst=/driver/collector.py,readonly",
+                "--workdir", "/workspace", "--entrypoint", "python3", image, "-I", "-B", "/driver/collector.py", "--owned-native-collector-v3"])
+            collector_bootstrap = {"source_commit": build["source_commit"], "image_id": image,
+                "binary_sha256": build["binary_sha256"], "scenario_sha256": hashlib.sha256(canonical(scenario)).hexdigest(),
+                "run_sha256": hashlib.sha256(nonce.encode()).hexdigest(), "native_wrapper_sha256": contract["native_wrapper_sha256"]}
+            collector.send(collector_bootstrap)
+            collector.wait_kind("collector_ready")
         docker("run", "--detach", "--name", agent_name, "--network", network, *common,
             "--tmpfs", "/home/eval:rw,nosuid,nodev,uid=" + str(os.getuid()) + ",gid=" + str(os.getgid()) + ",size=128m",
             "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m", "--env", "HOME=/home/eval", "--env", "CRAFTSMAN_CONFIG_DIR=/home/eval/.craftsman",
@@ -202,22 +297,68 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
         bindings = {"source_commit": build["source_commit"], "source_tree": build["source_tree"], "image_id": image,
             "binary_sha256": build["binary_sha256"], "scenario_sha256": hashlib.sha256(canonical(scenario)).hexdigest(),
             "extension_sha256": hashlib.sha256((root / "evals/coding/latest-runtime-v1/long-session.json").read_bytes()).hexdigest(),
-            "v2_contract_sha256": V2_SCENARIO_SHA256, "native_wrapper_sha256": contract["native_wrapper_sha256"],
+            "v2_contract_sha256": V2_SCENARIO_SHA256, "v3_contract_sha256": V3_SCENARIO_SHA256,
+            "native_wrapper_sha256": contract["native_wrapper_sha256"],
             "actual_config_model_settings_sha256": ready["actual_config_model_settings_sha256"],
             "mounted_client_sha256": hashlib.sha256(client_path.read_bytes()).hexdigest(),
-            "driver_files": {name: hashlib.sha256((paths / name).read_bytes()).hexdigest() for name in ["run_owned_tui.py", "owned_tui_client.py", "owned_tui_provider.py", "owned_tui_receipt.py", "owned_tui_files.py", "native_probe_wrapper.py", "gateway.py", "gateway_observations.py", "grade_long_session.py"]}}
-        issuer = DockerRunIssuer(client, gateway, fixture, agent_name, bindings, workspace, workspace_fd)
+            "mount_sources": {"workspace": str(workspace.resolve()), "client": str(client_path.resolve()),
+                              "collector": None if collector_path is None else str(collector_path.resolve())},
+            "network_name": network, "collector_bootstrap": collector_bootstrap,
+            "native_expected_call_sha256": hashlib.sha256(canonical(actions["setup"][0])).hexdigest() if collector is not None else None,
+            "native_expected_streams": None if collector is None else {
+                "stdout_bytes": len(scenario["expected_answer"]["stdout"].encode()),
+                "stderr_bytes": len(scenario["expected_answer"]["stderr"].encode()),
+                "stdout_sha256": hashlib.sha256(scenario["expected_answer"]["stdout"].encode()).hexdigest(),
+                "stderr_sha256": hashlib.sha256(scenario["expected_answer"]["stderr"].encode()).hexdigest()},
+            "mounted_collector_sha256": None if collector_path is None else hashlib.sha256(collector_path.read_bytes()).hexdigest(),
+            "negative_conditions": {variant: {"input_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                "call_sha256": hashlib.sha256(canonical(actions[phase][0])).hexdigest(), "effect_file": scenario["effect_file"],
+                "phase": phase, "condition": condition} for variant, phase, condition, prompt in [
+                    ("duplicate-create", "duplicate", "recorded_file_exists_refusal", NEGATIVE_PROMPTS["duplicate-create"]),
+                    ("forbidden-reread", "reread", "recorded_current_probe_read", NEGATIVE_PROMPTS["forbidden-reread"])]},
+            "driver_source_snapshot_sha256": hashlib.sha256(canonical(source_manifest)).hexdigest(),
+            "driver_files": source_manifest}
+        def native_hook(observation, acquisition):
+            nonlocal native_intent
+            if collector is None or native_intent is not None or acquisition["root_state"] != "blocked":
+                return
+            call_sha = hashlib.sha256(canonical(actions["setup"][0])).hexdigest()
+            pending = [group for group in observation["group_positions"] if group["call_sha256"] == call_sha and group["result_index"] is None]
+            if not pending:
+                return
+            require(len(pending) == 1, "native_intended_group_ambiguous")
+            fixture.pump()
+            gateway.pump()
+            requests = [value for value in fixture.history if value.get("kind") == "fixture_request_observed"
+                        and value.get("phase") == "setup" and value.get("phase_index") == 0]
+            require(len(requests) == 1 and any(value.get("phase") == "admitted" and value.get("ordinal") == requests[0]["ordinal"]
+                    for value in gateway.history), "native_actual_request_not_observed")
+            native_intent = {"op": "arm", "request_ordinal": requests[0]["ordinal"], "request_sha256": requests[0]["request_sha256"],
+                "call_sha256": call_sha, "snapshot_id": acquisition["snapshot_id"], "session_sha256": observation["session_sha256"],
+                "checkpoint_seq": observation["seq"], "assistant_index": pending[0]["assistant_index"], "call_ordinal": pending[0]["call_ordinal"]}
+            collector.send(native_intent)
+            collector.wait_kind("collector_intent_reserved")
+        snapshots = SnapshotTransport(case / "private-snapshot-query", workspace, scenario, native_hook)
+        client.snapshot_service = snapshots
+        issuer = DockerRunIssuer(client, gateway, fixture, agent_name, bindings, workspace, workspace_fd,
+                                 collector=collector, collector_container=collector_name if collector is not None else None)
         client.send({"op": "start"})
         client.wait_kind("owner_started")
 
         def poll():
-            nonlocal last_poll
+            nonlocal last_poll, collector_released
             require(time.monotonic() - started <= 900, "scenario_wall_limit")
             gateway.pump()
             fixture.pump()
+            if collector is not None:
+                collector.pump()
             require(not any(value.get("kind") == "fixture_request_failed" for value in fixture.values), "actual_fixture_failed")
             client.send({"op": "poll"})
             last_poll = client.wait_kind("poll")
+            if collector is not None and not collector_released and native_intent is not None and last_poll.get("approval_once_observed") == native_intent["call_sha256"]:
+                collector.send({"op": "allow_fixture", "call_sha256": native_intent["call_sha256"]})
+                collector.wait_kind("collector_fixture_released")
+                collector_released = True
             return last_poll
 
         def until(predicate, timeout=30):
@@ -233,15 +374,30 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
             fixture.send({"op": "phase", "phase": name})
             fixture.wait_kind("fixture_phase_selected")
             if prompt is not None:
-                client.send({"op": "input", "text": prompt})
+                if name == "compact":
+                    snapshots.expect_control("compact")
+                else:
+                    snapshots.expect_input(name, prompt, actions.get(name, []))
+                client.send({"op": "input", "text": prompt,
+                             "capture_after_owned_return": name in {"duplicate", "reread"}})
                 client.wait_kind("input_sent")
 
         def turn(name, prompt):
             prior = last_poll.get("checkpoint", {}).get("seq", -1) if last_poll else -1
             phase(name, prompt)
-            return until(lambda value: value.get("root_state") == "done"
-                and value.get("durable_in_progress") is False and value.get("checkpoint", {}).get("seq", -1) > prior
-                and value.get("checkpoint", {}).get("owned_input", {}).get("last_sha256") == hashlib.sha256(prompt.encode()).hexdigest())
+            if name in {"duplicate", "reread"}:
+                # The scoped negative row is acquired after a genuine owned
+                # return. OSC activity only decides when to quit; it cannot
+                # substitute for the later actual saved input/result predicate.
+                completed = until(lambda value: value.get("root_state") == "done"
+                    and value.get("observed_current_input_activity") is True
+                    and value.get("submitted_input_sha256") == hashlib.sha256(prompt.encode()).hexdigest())
+            else:
+                completed = until(lambda value: value.get("root_state") == "done"
+                    and value.get("durable_in_progress") is False and value.get("checkpoint", {}).get("seq", -1) > prior
+                    and value.get("checkpoint", {}).get("owned_input", {}).get("last_sha256") == hashlib.sha256(prompt.encode()).hexdigest())
+                snapshots.finish_expected_step()
+            return completed
 
         def request_count():
             gateway.pump()
@@ -251,8 +407,8 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
             gateway.pump()
             return sum(value.get("phase") == "attempted" for value in gateway.values)
 
-        def snapshot(stage):
-            client.send({"op": "capture", "stage": stage, "allow_error_observation": variant != "normal"})
+        def snapshot(stage, closed=False):
+            client.send({"op": "capture_closed" if closed else "capture", "stage": stage, "allow_error_observation": variant != "normal"})
             value = client.wait_kind("checkpoint_captured")
             require((value.get("durable_in_progress") is False or variant != "normal" and value.get("root_state") == "error")
                     and not value.get("suspension_present"), "checkpoint_not_finished")
@@ -265,8 +421,12 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
         turn("original", task["prompt"])
         turn("setup", scenario["setup_prompt"])
         if scenario["id"] == "retained-results-v1":
-            native_child = json.loads(read_leaf(workspace_fd, "native_probe_witness.json", 2048))
-            require(native_child["kind"] == "observed_native_probe_child" and native_child["actual_wait_returned"] is True
+            collector.pump()
+            native_children = [value for value in collector.history if value.get("kind") == "native_child_completed"]
+            require(len(native_children) == 1, "independently_owned_native_child_required")
+            native_child = native_children[0]
+            require(native_child["classification"] == "independently_requested_fixed_fixture_child"
+                    and native_child["complete"] is True and native_child["actual_wait_returned"] is True
                     and native_child["actual_child_exit"] == 7 and native_child["outer_toolmeta_observed"] is False,
                     "native_child_witness_incomplete")
             answer = scenario["expected_answer"]
@@ -275,7 +435,7 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
                     and native_child["stdout_bytes"] == len(answer["stdout"].encode())
                     and native_child["stderr_bytes"] == len(answer["stderr"].encode()), "native_child_stream_observation_mismatch")
             probe_input_observations.append({"stage": "original_native_child_completed", "sha256": hashlib.sha256(read_leaf(workspace_fd, "probe_input.txt")).hexdigest()})
-            (workspace / "probe_input.txt").write_bytes(b"changed after the original observation\n")
+            write_retained_leaf(workspace_fd, "probe_input.txt", b"original observation\n", b"changed after the original observation\n", named_root=workspace)
             probe_input_observations.append({"stage": "operator_changed_input", "sha256": hashlib.sha256(read_leaf(workspace_fd, "probe_input.txt")).hexdigest()})
         for value in updates(scenario):
             turn("update", value)
@@ -305,24 +465,35 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
                 expected_failure = "root_error_after_actual_provider_eof"
             elif variant == "duplicate-create":
                 require(scenario["id"] == "interruption-reopen-v1", "duplicate_case_requires_create_only_fixture")
-                turn("duplicate", "Explicit negative control: request a new duplicate create-only call and retain its refusal without a repair retry.")
-                value = poll()
-                require(value["checkpoint"]["seq"] > before_seq, "duplicate_result_not_saved")
+                turn("duplicate", NEGATIVE_PROMPTS["duplicate-create"])
                 expected_failure = "explicit_duplicate_result_recorded_original_effect_unchanged"
             elif variant == "forbidden-reread":
                 require(scenario["id"] == "retained-results-v1", "reread_case_requires_probe_fixture")
-                turn("reread", "Explicit negative control: read the changed probe input once and retain the actual read result.")
+                turn("reread", NEGATIVE_PROMPTS["forbidden-reread"])
                 expected_failure = "observed_direct_probe_read_rejects_positive_criterion"
             else:
                 raise Refused("unknown_negative_case")
-            snapshot("after")
+            if variant in {"duplicate-create", "forbidden-reread"}:
+                client.send({"op": "quit"})
+                returns.append(client.wait_kind("owner_returned", 35))
+                snapshot("after", closed=True)
+                snapshots.finish_expected_step()
+                require(captures["after"]["seq"] > before_seq, "duplicate_or_read_result_not_saved")
+            else:
+                snapshot("after")
+            if variant == "provider-eof":
+                snapshots.finish_expected_step()
             require(effects["after"] == effects["before"], "negative_control_changed_original_effect")
-            client.send({"op": "quit"})
-            returns.append(client.wait_kind("owner_returned", 35))
+            if variant not in {"duplicate-create", "forbidden-reread"}:
+                client.send({"op": "quit"})
+                returns.append(client.wait_kind("owner_returned", 35))
             client.send({"op": "finish"})
             finished = client.wait_kind("client_finished")
             docker("rm", "--force", agent_name)
             removed = True
+            if collector is not None:
+                collector.close()
+                require(collector.process.returncode == 0, "actual_collector_exit_failed")
             gateway.pump(0.05)
             fixture.pump(0.05)
             files = snapshot_retained(workspace_fd)
@@ -330,15 +501,17 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
                        "checkpoints": captures, "owned_input_receipts": finished["owned_input_receipts"],
                        "expected_failure": expected_failure, "effect_sha256_by_stage": effects}
             manifest = {name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in files.items()}
+            negative_condition = validate_negative_condition(capture, fixture.history, bindings, manifest) if variant in {"duplicate-create", "forbidden-reread"} else None
             authority = seal_actual_driver(issuer, case, bindings, capture,
                 [value for value in gateway.history if value.get("kind") == "private_gateway_observation"], fixture.history,
                 returns, workspace, manifest)
             try:
                 require_authenticated(authority, bindings)
-                result = {"kind": "scoped_owned_tui_negative_result_v2", "variant": variant,
+                result = {"kind": "scoped_owned_tui_negative_result_v3", "variant": variant,
                           "expected_negative_observations": "observed", "positive_saved_success": False,
                           "observed_failure": expected_failure, "receipt_authenticated": True, "paid_model_calls": 0,
-                          "source_commit": build["source_commit"], "image_id": image,
+                          "source_commit": build["source_commit"], "image_id": image, "specific_negative_condition": negative_condition,
+                          "negative_saved_observation_stage": "after_actual_owned_return" if negative_condition is not None else "live_error_observation",
                           "stronger_private_criteria": {name: {"status": "unverified"} for name in contract["criteria_unverified"]}}
                 with (case / "result.json").open("x") as output:json.dump(result, output, indent=2)
                 return result
@@ -349,6 +522,7 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
             phase("compact", "/compact")
             until(lambda value: value.get("root_state") == "idle" and value.get("durable_in_progress") is False
                   and value.get("checkpoint", {}).get("seq", -1) > before)
+            snapshots.finish_expected_step()
             action = "manual_compaction_saved"
         elif scenario["id"] == "interruption-reopen-v1":
             phase("pending", "Wait for the explicitly interrupted synthetic model call; do not repeat the completed effect.")
@@ -360,6 +534,7 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
             client.wait_kind("cancel_key_sent")
             until(lambda value: value.get("root_state") == "idle" and value.get("stopping_observed")
                   and value.get("durable_in_progress") is False)
+            snapshots.finish_expected_step()
             fixture.send({"op": "release"})
             fixture.wait_kind("fixture_pending_release")
             end = time.monotonic() + 15
@@ -372,6 +547,7 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
         returns.append(client.wait_kind("owner_returned", 35))
         before_reopen = request_count()
         attempts_before_reopen = attempt_count()
+        snapshots.expect_control("reopen")
         client.send({"op": "start"})
         client.wait_kind("owner_started")
         until(lambda value: value.get("root_state") == "idle" and value.get("durable_in_progress") is False)
@@ -390,6 +566,9 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
         client.wait_kind("client_finished")
         docker("rm", "--force", agent_name)
         removed = True
+        if collector is not None:
+            collector.close()
+            require(collector.process.returncode == 0, "actual_collector_exit_failed")
         gateway.pump(0.05)
         fixture.pump(0.05)
         files = snapshot_retained(workspace_fd)
@@ -418,7 +597,7 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
                     destination.write_bytes(value)
                 behavior = grade(task, candidate, grader, image)
             require(behavior["passed"], "actual_independent_grader_failed")
-            result = {"kind": "scoped_owned_tui_external_result_v2", "scenario": scenario["id"],
+            result = {"kind": "scoped_owned_tui_external_result_v3", "scenario": scenario["id"],
                       "external_observation_criteria": "completed", "original_task_behavior": "passed",
                       "receipt_authenticated_before_grading": True, "paid_model_calls": 0, "synthetic_provider_requests": final_requests,
                       "is_live_quality_score": False, "source_commit": build["source_commit"], "image_id": image,
@@ -434,11 +613,13 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
             return result
         finally:
             authority.close()
-    except Exception:
+    except Exception as error:
         failure = {"kind": "actual_driver_failure", "scenario": scenario["id"], "passed": False,
+                   "refusal": str(error) if isinstance(error, Refused) else type(error).__name__,
                    "agent_removed_before_grading": removed, "last_safe_poll": last_poll,
                    "gateway_observations": [] if gateway is None else [value for value in gateway.values if value.get("kind") == "private_gateway_observation"],
-                   "fixture_observations": [] if fixture is None else fixture.values, "paid_model_calls": 0}
+            "fixture_observations": [] if fixture is None else fixture.values, "paid_model_calls": 0,
+            "collector_observations": [] if collector is None else collector.history}
         failure["client_observations"] = [] if client is None else client.values
         failure["private_stderr_observations"] = {name: {"bytes": process.stderr_bytes, "sha256": process.stderr_hash.hexdigest()}
             for name, process in (("client", client), ("gateway", gateway), ("fixture", fixture)) if process is not None}
@@ -447,13 +628,28 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
             json.dump(failure, output, indent=2)
         raise
     finally:
-        for name in (agent_name, gateway_name, fixture_name):
-            subprocess.run(["docker", "rm", "--force", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
-        for process in (client, gateway, fixture):
-            if process is not None:
-                process.close()
-        subprocess.run(["docker", "network", "rm", network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
-        os.close(workspace_fd)
+        cleanups = []
+        close_errors = []
+        try:
+            for name in (agent_name, gateway_name, fixture_name, collector_name):
+                cleanups.append(cleanup_object("container", name))
+            for name, process in (("client", client), ("gateway", gateway), ("fixture", fixture), ("collector", collector)):
+                if process is not None:
+                    try:
+                        process.close()
+                    except (OSError, subprocess.SubprocessError) as error:
+                        close_errors.append({"owner": name, "error": type(error).__name__})
+            cleanups.append(cleanup_object("network", network))
+        finally:
+            if issuer is not None:
+                issuer.close()
+            if snapshots is not None:
+                snapshots.close()
+            os.close(workspace_fd)
+            with (case / "cleanup.json").open("x") as output:
+                json.dump({"kind": "owned_driver_cleanup_observations", "objects": cleanups,
+                    "process_close_errors": close_errors, "passed": not close_errors and all(item["cleanup_passed"] for item in cleanups)}, output, indent=2)
+        require(not close_errors and all(item["cleanup_passed"] for item in cleanups), "owned_driver_cleanup_failed")
 
 
 def main(argv=None):
@@ -465,6 +661,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         require(os.name == "posix", "owned_pty_driver_requires_unix_docker_host")
+        require(args.negative_case != "save-refusal", "live_writer_connection_unverified_quarantined")
         args.output = args.output.resolve()
         root = Path(__file__).resolve().parents[2]
         build, _ = read_json(args.image_build_record, 65536)
@@ -481,10 +678,15 @@ def main(argv=None):
         extension, base_hash = read_json(root / "evals/coding/latest-runtime-v1/long-session.json", 262144)
         require(base_hash == BASE_SCENARIO_SHA256, "frozen_base_scenario_changed")
         validate_extension(extension, corpus, corpus_hash)
-        contract, contract_hash = read_json(root / "evals/coding/owned-terminal-v2/scenarios.json", 262144)
-        require(contract_hash == V2_SCENARIO_SHA256 and contract["version"] == 2
+        previous, previous_hash = read_json(root / "evals/coding/owned-terminal-v2/scenarios.json", 262144)
+        require(previous_hash == V2_SCENARIO_SHA256, "historical_v2_contract_changed")
+        contract, contract_hash = read_json(root / "evals/coding/owned-terminal-v3/scenarios.json", 262144)
+        require(contract_hash == V3_SCENARIO_SHA256 and contract["version"] == 3
+                and contract["previous_v2_contract_sha256"] == previous_hash
                 and contract["base_scenario_sha256"] == base_hash and contract["original_corpus_sha256"] == corpus_hash
-                and contract["image_id"] == image, "v2_frozen_contract_changed")
+                and contract["image_id"] == image
+                and contract["native_wrapper_sha256"] == hashlib.sha256((root / "scripts/coding-eval/native_probe_wrapper.py").read_bytes()).hexdigest(),
+                "v3_frozen_contract_changed")
         require(build["source_tree"] == extension["source_tree"], "source_tree_binding_changed")
         plan, _ = read_json(root / "evals/coding/latest-runtime-v1/plan.json", 262144)
         ledger = Path(plan["ledger"]["path"])
@@ -492,6 +694,8 @@ def main(argv=None):
         require(before == plan["ledger"]["sha256"], "real_ledger_digest_changed")
         args.output.mkdir(parents=True, exist_ok=False)
         args.output.chmod(0o700)
+        with (args.output / "scenarios.json").open("xb") as output:
+            output.write((root / "evals/coding/owned-terminal-v3/scenarios.json").read_bytes())
         results = []
         for scenario in contract["scenarios"]:
             if args.scenario not in {"all", scenario["id"]}:
@@ -502,9 +706,10 @@ def main(argv=None):
             results.append(run_case(root, case, task, scenario, extension, image, build, contract, args.negative_case or "normal"))
         _, after = read_json(ledger, 4 * 1024 * 1024)
         require(after == before, "real_ledger_modified")
-        report = {"kind": "owned_tui_external_observation_suite_v2", "external_observation_criteria": "completed",
+        report = {"kind": "owned_tui_external_observation_suite_v3", "external_observation_criteria": "completed",
                   "paid_model_calls": 0, "real_ledger_sha256": after, "all_stronger_private_criteria_verified": False,
-                  "real_ledger_modified": False, "image_build_record": build, "v2_contract_sha256": contract_hash, "results": results}
+                  "real_ledger_modified": False, "image_build_record": build, "v2_contract_sha256": previous_hash,
+                  "v3_contract_sha256": contract_hash, "writer_hold_save_refusal": contract["writer_hold_save_refusal"], "results": results}
         with (args.output / "summary.json").open("x") as output:
             json.dump(report, output, indent=2)
             output.write("\n")

@@ -5,7 +5,25 @@ checkpoint text stays in memory; only bounded actual metadata leaves stdout.
 """
 import sys
 
-if __name__ == "__main__" and (not sys.argv[1:] or sys.argv[1] not in {"--owned-tui-client-v1", "--owned-tui-keeper-v1"}):
+
+def _valid_marker(arguments):
+    if arguments in (["--owned-tui-client-v1"], ["--owned-native-relay-v3"]):
+        return True
+    if len(arguments) != 4 or arguments[0] != "--owned-tui-keeper-v1":
+        return False
+    if not all(1 <= len(value) <= 9 and all(char in "0123456789" for char in value) for value in arguments[1:3]):
+        return False
+    if int(arguments[1]) <= 2 or int(arguments[2]) <= 2 or arguments[1] == arguments[2]:
+        return False
+    if arguments[3] == "new":
+        return True
+    parts = arguments[3].split("-")
+    return (len(parts) == 3 and 1 <= len(parts[0]) <= 20 and all(char in "0123456789" for char in parts[0])
+            and 1 <= len(parts[1]) <= 8 and all(char in "0123456789abcdef" for char in parts[1])
+            and len(parts[2]) == 4 and all(char in "0123456789abcdef" for char in parts[2]))
+
+
+if __name__ == "__main__" and not _valid_marker(sys.argv[1:]):
     raise SystemExit(0)
 
 import base64
@@ -16,6 +34,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import secrets
 import sqlite3
 import stat
 import struct
@@ -166,7 +185,7 @@ def safe_state(thread, sequence, state, once_command):
 
 
 class RetainedStore:
-    def __init__(self):
+    def __init__(self, exchange=None):
         self.directory = Path("/home/eval/.craftsman")
         self.directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         self.file_fd = None
@@ -176,62 +195,67 @@ class RetainedStore:
         self.owner_generation = 0
         self.group_witnesses = []
         self.group_keys = set()
-        self.writer_hold = None
+        self.exchange = exchange
+        self.cached = None
+        self.cached_signature = None
+        self.epoch = 0
+        self.last_members = None
+        self.last_generation = None
 
-    def checkpoint(self, once_command):
+    def checkpoint(self, once_command, stage):
+        # No sqlite3 connection ever opens the live store. Independently held
+        # retained bytes are queried only by the external private-copy reader.
+        if "_snapshot_acquire" in globals():
+            acquire, signature = _snapshot_acquire, _snapshot_signature
+        else:
+            from sqlite_snapshot import acquire, signature
+        require(self.exchange is not None, "private_snapshot_reader_required")
         if self.file_fd is None:
-            self.file_fd = os.open("threads.db", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.directory_fd)
+            self.file_fd = os.open("threads.db", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.directory_fd)
             info = os.fstat(self.file_fd)
             require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, "nonregular_checkpoint_store")
             self.identity = (info.st_dev, info.st_ino)
-        before = os.stat("threads.db", dir_fd=self.directory_fd, follow_symlinks=False)
-        require((before.st_dev, before.st_ino) == self.identity and before.st_nlink == 1, "checkpoint_store_rebound")
-        conn = sqlite3.connect(self.directory.joinpath("threads.db").as_uri() + "?mode=ro", uri=True, timeout=5)
-        try:
-            version = conn.execute("PRAGMA user_version").fetchone()
-            if version == (0,) and self.thread is None and not self.input_receipts:
-                raise ClientFailure("checkpoint_initializing")
-            require(version == (1,), "checkpoint_schema_changed")
-            if self.thread is None:
-                row = conn.execute("SELECT thread_id,seq,state_json,suspension_json FROM checkpoints ORDER BY seq DESC LIMIT 1").fetchone()
-            else:
-                row = conn.execute("SELECT thread_id,seq,state_json,suspension_json FROM checkpoints WHERE thread_id=? ORDER BY seq DESC LIMIT 1", (self.thread,)).fetchone()
-        finally:
-            conn.close()
-        after = os.stat("threads.db", dir_fd=self.directory_fd, follow_symlinks=False)
-        require((after.st_dev, after.st_ino) == self.identity and after.st_nlink == 1, "checkpoint_store_rebound")
-        require(row is not None and type(row[1]) is int and 0 <= row[1] <= 2**63 - 1, "checkpoint_missing")
-        require(len(row[2].encode()) <= 8 * 1024 * 1024, "checkpoint_state_bound")
-        self.thread = row[0]
-        observation, pending, progress = safe_state(row[0], row[1], json.loads(row[2]), once_command)
+        named_directory = os.stat(self.directory, follow_symlinks=False)
+        actual_directory = os.fstat(self.directory_fd)
+        require((named_directory.st_dev, named_directory.st_ino) == (actual_directory.st_dev, actual_directory.st_ino),
+                "checkpoint_directory_rebound")
+        current = signature(self.directory_fd, self.file_fd)
+        if self.cached is not None and self.cached_signature == current:
+            return self.cached
+        # Every acquisition opens the newly observed optional WAL generation
+        # relative to the retained root; old handles are never silently reused.
+        membership = {name: None if value is None else tuple(value[:2]) for name, value in current.items()}
+        acquired = acquire(self.directory_fd, self.file_fd, named_root=self.directory)
+        generation = (membership, acquired["pair"]["wal_generation_sha256"])
+        if generation != self.last_generation:
+            self.epoch += 1
+            self.last_generation = generation
+            self.last_members = membership
+        result = self.exchange(acquired, stage, self.epoch, self.thread)
+        self.thread = result.pop("thread")
+        observation = result["checkpoint"]
+        result["retained_store_identity"] = list(self.identity)
+        self.cached, self.cached_signature = result, acquired["versions"]
         for group in observation.get("group_positions", []):
             key = (self.owner_generation, group["assistant_index"], group["call_ordinal"], group["call_sha256"])
             if key not in self.group_keys:
                 require(len(self.group_witnesses) < 512, "group_witness_bound")
                 self.group_keys.add(key)
-                self.group_witnesses.append({"owner_generation": self.owner_generation, "first_seen_checkpoint_seq": row[1],
+                self.group_witnesses.append({"owner_generation": self.owner_generation, "first_seen_checkpoint_seq": observation["seq"],
                     "assistant_index": group["assistant_index"], "call_ordinal": group["call_ordinal"], "call_sha256": group["call_sha256"],
                     "source": "first_seen_stored_row", "dispatch_observed": False})
-        return {"checkpoint": observation, "pending_call_sha256": pending, "durable_in_progress": progress,
-                "suspension_present": row[3] is not None, "retained_store_identity": list(self.identity)}
+        return result
 
     def hold_store_writer(self):
-        require(self.file_fd is not None, "checkpoint_store_missing")
-        require(self.writer_hold is None, "duplicate_store_writer_hold")
-        self.writer_hold = sqlite3.connect(self.directory / "threads.db", timeout=5)
-        self.writer_hold.execute("BEGIN IMMEDIATE")
+        raise ClientFailure("live_writer_connection_unverified_quarantined")
 
     def release_store_writer(self):
-        require(self.writer_hold is not None, "store_writer_hold_missing")
-        self.writer_hold.rollback()
-        self.writer_hold.close()
-        self.writer_hold = None
+        raise ClientFailure("live_writer_connection_unverified_quarantined")
 
     def close(self):
-        if self.writer_hold is not None:
-            self.release_store_writer()
         if self.file_fd is not None:
             os.close(self.file_fd)
+            self.file_fd = None
         os.close(self.directory_fd)
 
 
@@ -289,6 +313,11 @@ class TuiOwner:
         self.child_exit = None
         self.ready = False
         self.sent = None
+        self.current_input_sha256 = None
+        self.input_status_start = 0
+        self.capture_after_owned_return = False
+        self.last_return = None
+        self.approval_status_start = None
         env = {"HOME": "/home/eval", "CRAFTSMAN_CONFIG_DIR": "/home/eval/.craftsman", "TERM": "xterm-256color", "PATH": os.defpath}
         self.process = subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__).resolve()),
             "--owned-tui-keeper-v1", str(status_write), str(control_read), store.thread or "new"],
@@ -326,16 +355,18 @@ class TuiOwner:
                 else:
                     raise ClientFailure("invalid_keeper_status")
 
-    def input(self, text):
+    def input(self, text, capture_after_owned_return=False):
         require(isinstance(text, str) and len(text.encode()) <= 98304, "input_bound")
+        require(type(capture_after_owned_return) is bool, "invalid_capture_stage_selection")
         data = b"\x1b[200~" + text.encode() + b"\x1b[201~\r"
         if not text.startswith("/"):
-            try:
-                prior = self.store.checkpoint(self.once_command)["checkpoint"]
-            except (OSError, sqlite3.Error, ClientFailure):
-                prior = {}
+            self.capture_after_owned_return = capture_after_owned_return
+            self.current_input_sha256 = hashlib.sha256(text.encode()).hexdigest()
+            self.input_status_start = len(self.facts.records)
+            prior = {} if self.store.cached is None else self.store.cached["checkpoint"]
             self.sent = {"sha256": hashlib.sha256(text.encode()).hexdigest(), "before_count": prior.get("message_count", 0),
-                         "before_revision": prior.get("owned_input", {}).get("last_revision", 0)}
+                         "before_revision": prior.get("owned_input", {}).get("last_revision", 0),
+                         "after_status_index": len(self.facts.records)}
         position = 0
         while position < len(data):
             position += os.write(self.master, data[position:position + 4096])
@@ -345,17 +376,61 @@ class TuiOwner:
         self.pump(0.02)
         result = {"root_state": self.facts.state, "root_kind": self.facts.kind,
                   "stopping_observed": self.facts.stopping, "child_exit": self.child_exit,
-                  "approval_count": len(self.approved), "terminal_bytes": self.facts.bytes}
+                  "approval_count": len(self.approved), "terminal_bytes": self.facts.bytes,
+                  "submitted_input_sha256": self.current_input_sha256,
+                  "observed_current_input_activity": any(record["is_root"] and record["state"] in {"working", "blocked"}
+                      for record in self.facts.records[self.input_status_start:])}
         try:
-            checkpoint = self.store.checkpoint(self.once_command)
-            result.update(checkpoint)
+            stage = {"root_state": self.facts.state, "root_kind": self.facts.kind,
+                     "owner_generation": self.store.owner_generation}
+            safe_stage = self.checkpoint_stage_available()
+            if self.sent is not None and len(self.facts.records) <= self.sent["after_status_index"]:
+                safe_stage = False
+            if self.capture_after_owned_return and self.facts.state != "blocked":
+                safe_stage = False
+            checkpoint = self.store.checkpoint(self.once_command, stage) if safe_stage else None
+            self.pump()
+            require(not safe_stage or (stage["root_state"], stage["root_kind"]) == (self.facts.state, self.facts.kind),
+                    "snapshot_scoped_quiescent_stage_changed")
+            if checkpoint is not None:
+                result.update(checkpoint)
         except (OSError, sqlite3.Error):
             checkpoint = None
         except ClientFailure as error:
             if self.store.input_receipts or str(error) not in {"checkpoint_missing", "checkpoint_initializing", "owned_input_provenance_missing", "owned_original_input_missing", "owned_input_stamp_missing"}:
                 raise
             checkpoint = None
-        if checkpoint is not None and self.sent is not None:
+        if checkpoint is not None:
+            self.observe_input(checkpoint)
+        result["owned_input_receipts"] = self.store.input_receipts
+        if self.facts.state == "blocked" and self.facts.kind == "permission" and checkpoint is not None:
+            pending = checkpoint["pending_call_sha256"]
+            if pending:
+                value = pending[0]
+                require(value in self.allowed_calls, "unreviewed_approval_refused")
+                if value not in self.approved:
+                    # The actual modal is initialized at choice zero; this
+                    # driver never sends selection-down or an Always action.
+                    require(os.write(self.master, b"\r") == 1, "approval_key_write_incomplete")
+                    self.approved.add(value)
+                    self.approval_status_start = len(self.facts.records)
+                    result["approval_once_observed"] = value
+        return result
+
+    def checkpoint_stage_available(self):
+        # An Enter key may release real work before the corresponding OSC
+        # update reaches the PTY. The old blocked display is not quiescence.
+        # Wait for an actual later root transition before another acquisition.
+        if self.approval_status_start is not None:
+            changed = any(record["is_root"] and record["state"] != "blocked"
+                          for record in self.facts.records[self.approval_status_start:])
+            if not changed:
+                return False
+            self.approval_status_start = None
+        return self.facts.state in {"idle", "done", "error"} or self.facts.state == "blocked" and self.facts.kind == "permission"
+
+    def observe_input(self, checkpoint):
+        if self.sent is not None:
             observed = checkpoint["checkpoint"]
             owned = observed.get("owned_input", {})
             if owned.get("last_sha256") == self.sent["sha256"] and owned.get("last_revision", 0) > self.sent["before_revision"]:
@@ -370,19 +445,18 @@ class TuiOwner:
                     "checkpoint_seq": observed["seq"], "session_sha256": observed["session_sha256"], "scope_sha256": owned["scope_sha256"],
                     "message_index": matches[0], "original_bytes": pin["original_bytes"], "source": "actual_owned_context_stamp"})
                 self.sent = None
-        result["owned_input_receipts"] = self.store.input_receipts
-        if self.facts.state == "blocked" and self.facts.kind == "permission" and checkpoint is not None:
-            pending = checkpoint["pending_call_sha256"]
-            if pending:
-                value = pending[0]
-                require(value in self.allowed_calls, "unreviewed_approval_refused")
-                if value not in self.approved:
-                    # The actual modal is initialized at choice zero; this
-                    # driver never sends selection-down or an Always action.
-                    os.write(self.master, b"\r")
-                    self.approved.add(value)
-                    result["approval_once_observed"] = value
-        return result
+
+    def closed_capture(self):
+        require(self.capture_after_owned_return and self.last_return is not None
+                and self.process.poll() == 0 and self.last_return["child_exit"] == 0
+                and self.last_return["keeper_exit"] == 0 and self.last_return["modes_restored"] is True
+                and self.last_return["root_state"] == "done", "actual_completed_owned_return_required")
+        stage = {"root_state": self.last_return["root_state"], "root_kind": self.facts.kind,
+                 "owner_generation": self.store.owner_generation, "after_owned_return": True}
+        value = self.store.checkpoint(self.once_command, stage)
+        self.observe_input(value)
+        return {**value, "root_state": self.last_return["root_state"], "root_kind": self.facts.kind,
+                "owned_input_receipts": self.store.input_receipts, "after_owned_return": True}
 
     def quit(self):
         self.input("/quit")
@@ -401,6 +475,7 @@ class TuiOwner:
         require(self.child_exit == 0 and keeper_exit == 0 and restored, "owned_exit_or_restore_failed")
         for fd in (self.master, self.slave, self.status_read, self.control_write):
             os.close(fd)
+        self.last_return = result
         return result
 
     def fail_cleanup(self):
@@ -434,13 +509,31 @@ def main():
     config_digest = hashlib.sha256(path.read_bytes()).hexdigest()
     settings_digest = sha(provider["models"]["gpt-6.1-sol"]["settings"])
     binary_digest = hashlib.sha256(Path("/usr/local/bin/craftsman").read_bytes()).hexdigest()
-    store = RetainedStore()
     owner = None
+    returned_owner = None
     def emit(value):
         data = canonical(value)
         require(len(data) <= 1024 * 1024, "client_metadata_bound")
         sys.stdout.buffer.write(data + b"\n")
         sys.stdout.buffer.flush()
+    def exchange(acquisition, stage, epoch, thread):
+        identity = secrets.token_hex(16)
+        emit({"kind": "private_snapshot_begin", "snapshot_id": identity, **stage,
+              **{key: value for key, value in acquisition.items() if key != "files"},
+              "source_epoch": epoch, "thread": thread})
+        for name, data in acquisition["files"].items():
+            for offset in range(0, len(data), 49152):
+                emit({"kind": "private_snapshot_chunk", "snapshot_id": identity, "name": name, "offset": offset,
+                      "data": base64.b64encode(data[offset:offset + 49152]).decode("ascii")})
+        emit({"kind": "private_snapshot_end", "snapshot_id": identity})
+        reply_raw = sys.stdin.buffer.readline(1024 * 1024 + 1)
+        require(len(reply_raw) <= 1024 * 1024, "snapshot_reply_bound")
+        reply = json.loads(reply_raw)
+        require(reply.get("op") == "private_snapshot_reply" and reply.get("snapshot_id") == identity,
+                "private_snapshot_reply_instance_changed")
+        require(reply.get("ok") is True, reply.get("reason", "private_snapshot_reader_refused"))
+        return {key: value for key, value in reply.items() if key not in {"op", "ok", "snapshot_id"}}
+    store = RetainedStore(exchange)
     try:
         emit({"kind": "client_ready", "binary_sha256": binary_digest, "config_sha256": config_digest,
               "actual_config_model_settings_sha256": settings_digest})
@@ -454,7 +547,7 @@ def main():
                 emit({"kind": "owner_started"})
             elif op == "input":
                 require(owner is not None, "owner_missing")
-                owner.input(request["text"])
+                owner.input(request["text"], request.get("capture_after_owned_return", False))
                 emit({"kind": "input_sent", "input_sha256": hashlib.sha256(request["text"].encode()).hexdigest()})
             elif op == "poll":
                 require(owner is not None, "owner_missing")
@@ -471,6 +564,13 @@ def main():
                 allow_error = request.get("allow_error_observation") is True and value.get("root_state") == "error"
                 require((value.get("durable_in_progress") is False or allow_error) and not value.get("suspension_present"), "unfinished_capture_refused")
                 emit({"kind": "checkpoint_captured", "stage": request["stage"], **value})
+            elif op == "capture_closed":
+                require(owner is None and returned_owner is not None and request.get("stage") == "after",
+                        "closed_capture_without_actual_owned_return")
+                value = returned_owner.closed_capture()
+                require(value.get("durable_in_progress") is False and not value.get("suspension_present"),
+                        "unfinished_closed_capture_refused")
+                emit({"kind": "checkpoint_captured", "stage": "after", **value})
             elif op == "cancel":
                 require(owner is not None, "owner_missing")
                 os.write(owner.master, b"\x03")
@@ -478,14 +578,13 @@ def main():
             elif op == "quit":
                 require(owner is not None, "owner_missing")
                 result = owner.quit()
+                returned_owner = owner
                 owner = None
                 emit({"kind": "owner_returned", **result})
             elif op == "hold_store_writer":
                 store.hold_store_writer()
-                emit({"kind": "owned_store_writer_hold_started"})
             elif op == "release_store_writer":
                 store.release_store_writer()
-                emit({"kind": "owned_store_writer_hold_released"})
             elif op == "finish":
                 require(owner is None, "live_owner_on_finish")
                 require(hashlib.sha256(path.read_bytes()).hexdigest() == config_digest, "isolated_configuration_changed")
@@ -500,15 +599,46 @@ def main():
         store.close()
 
 
+def relay():
+    """One local forwarding attempt from the independently owned collector.
+
+    This fixed route conveys synthetic fixture bytes. It is not outer runtime
+    approval/dispatch authority and does not claim receiver exactly-once delivery.
+    """
+    import urllib.request
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_):
+            raise ClientFailure("fixture_relay_redirect_refused")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    request = urllib.request.Request("http://collector:9877/fixed-probe", data=b"", method="POST")
+    with opener.open(request, timeout=25) as response:
+        payload = response.read(196609)
+    require(len(payload) <= 196608, "fixture_relay_payload_bound")
+    value = json.loads(payload)
+    require(set(value) == {"version", "kind", "stdout", "stderr", "exit", "instance", "source_sha256"}
+            and value["version"] == 3 and value["kind"] == "independent_fixed_fixture_bytes"
+            and type(value["exit"]) is int and value["source_sha256"] == "4ca33bc733f3498c6817bf3a628bb0875b7b7cb17a3a35bc4e69d1c7d9ea6c87",
+            "fixture_relay_contract_refused")
+    stdout, stderr = (base64.b64decode(value[name], validate=True) for name in ("stdout", "stderr"))
+    require(len(stdout) <= 65536 and len(stderr) <= 65536, "fixture_relay_stream_bound")
+    require(sys.stdout.buffer.write(stdout) == len(stdout), "fixture_relay_stdout_partial")
+    sys.stdout.buffer.flush()
+    require(sys.stderr.buffer.write(stderr) == len(stderr), "fixture_relay_stderr_partial")
+    sys.stderr.buffer.flush()
+    return value["exit"] if value["exit"] >= 0 else 128 - value["exit"]
+
+
 if __name__ == "__main__":
     try:
-        if sys.argv[1] == "--owned-tui-keeper-v1":
+        if sys.argv[1:] == ["--owned-native-relay-v3"]:
+            raise SystemExit(relay())
+        elif sys.argv[1] == "--owned-tui-keeper-v1":
             keeper()
         else:
             require(sys.argv[1:] == ["--owned-tui-client-v1"], "invalid_client_marker")
             main()
     except (ClientFailure, OSError, sqlite3.Error, KeyError, TypeError, ValueError, subprocess.TimeoutExpired) as error:
-        reason = str(error) if isinstance(error, ClientFailure) else type(error).__name__
+        reason = str(error) if isinstance(error, ClientFailure) or type(error).__name__ == "SnapshotFailure" else type(error).__name__
         sys.stdout.write(json.dumps({"kind": "client_failed", "reason": reason}) + "\n")
         sys.stdout.flush()
         raise SystemExit(2)

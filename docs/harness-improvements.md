@@ -18,7 +18,7 @@ or additional models.
 | Declared verification | Merged and locally installed | Reviewed scoped checks, actual results, bounded repair and content-bound protected review; one matched live composition check |
 | Bounded task context | Implemented, explicit opt-in | Actual input/file observations, stale/uncertain labels and local `/context`; original messages/native items preserved |
 | Exact failure budgets and structural test review | Implemented, explicit opt-in | Actual owned sampling pause after saved results; protected-source notes preserve legitimate progress/approvals |
-| Fresh and broader quality evaluation | Local synthetic v2 evidence; live run pending | Frozen-source corpus prerequisite, three actual production-TUI synthetic scenarios and scoped external observations; full model run, larger repositories and more models remain planned |
+| Fresh and broader quality evaluation | Local synthetic v3 evidence; live run pending | Frozen-source corpus prerequisite, three production-TUI synthetic scenarios, private SQLite snapshots and independently requested fixed child; combined-source/native/hosted/live-budget gates remain |
 
 The original $25 evaluation ledger accounts for **$24.285934**, including
 **40 retained unknown-usage reservations**. Its stages remain separately recorded:
@@ -37,12 +37,16 @@ run; budget approval, reviewed future combined-source/image rebinding and
 explicit live admission/cohort selection remain required. The separate scoped
 synthetic capture evidence is described below.
 
-[Owned-terminal v2](owned-terminal-evaluation.md) now supplies local synthetic
+[Owned-terminal v3](owned-terminal-evaluation.md) supplies local synthetic
 evidence from the production TUI at frozen source `33a80d9`: real one-call
 approvals, stored rows, cancellation, manual compaction, quit/reopen and an
-independently observed native probe child. It distinguishes passed original
-behavior and completed external observations from unverified private callbacks,
-typed returns/live recovery/outer ToolMeta and whole-activity absence. Its
+independently requested fixed native child. Retained whole SQLite bytes are
+queried only in a private copy; duplicate/read negatives bind the actual owned
+return and new saved condition, and unbound live writer hold is quarantined.
+Historical v2 capture gaps and first repair failures remain. It distinguishes
+passed original behavior and completed external observations from unverified
+private callbacks, typed returns/live recovery/outer invocation/ToolMeta and
+whole-activity absence. Its
 synthetic fixture ledger does not extend the real allowance or create a full
 latest-runtime model score. Coordinator integration and full local/native/
 hosted/independent-main validation remain separate gates.

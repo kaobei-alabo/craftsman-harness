@@ -1,0 +1,159 @@
+{
+  "version": 3,
+  "kind": "scoped_owned_tui_synthetic_contract_v3",
+  "base_preparation_commit": "0ad1e1a8fc8ba908ada569a9d848b4fd73f8be86",
+  "base_scenario_sha256": "1ccacdb5c38accd8fe02b34f463cec2690927a37eacf5fc05c74289043e58be7",
+  "original_corpus_sha256": "5d45038dca136245f090d2e2ed83a3e99f7a7c18eff19f2c4ba2d750d71d89f7",
+  "source_commit": "33a80d99431fd707b148485cb714f365b1946803",
+  "source_tree": "ddee5694698835c48c9c7bbf37b4140b64d721dc",
+  "image_id": "sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b",
+  "binary_sha256": "08542be11e7d207b43c4e0622a6f24180eaa2de9d65b247599f7f70660b56585",
+  "native_wrapper_sha256": "ca0bacc125a6537d5a7d736510a98bf0b89ba864551715533bfa2922e73cf179",
+  "limits": {
+    "gateway_requests": 20,
+    "scenario_wall_seconds": 900,
+    "user_turns": 14,
+    "checkpoint_bytes": 8388608,
+    "metadata_bytes": 262144,
+    "input_witnesses": 14,
+    "group_instances": 512,
+    "call_records": 1024,
+    "file_observations": 32,
+    "manual_tail_messages": 4,
+    "stored_update_pins": 4,
+    "sqlite_member_bytes": 8388608,
+    "sqlite_combined_bytes": 8388608,
+    "sqlite_content_passes": 2,
+    "sqlite_read_or_copy_attempts": 4096,
+    "sqlite_frames": 16384,
+    "sqlite_progress_callbacks": 4096,
+    "sqlite_steps_per_callback": 1000,
+    "snapshot_transfer_bytes": 536870912,
+    "snapshot_transfer_chunk_bytes": 49152,
+    "snapshot_transfer_instances": 256,
+    "native_source_bytes": 65536,
+    "native_stdout_bytes": 65536,
+    "native_stderr_bytes": 65536,
+    "native_execution_seconds": 20,
+    "native_cleanup_seconds": 5,
+    "native_witness_bytes": 2048
+  },
+  "criteria_unverified": [
+    "direct_AgentBoundaryPolicy_callback_objects",
+    "typed_TurnResult_AgentError_checkpoint_failed_at_return",
+    "live_RecoveryInfo_and_reconciled_state",
+    "outer_ToolMeta_native_truncation",
+    "complete_activity_quiescence",
+    "absence_of_arbitrary_shell_rereads",
+    "outer_tool_invocation_correspondence",
+    "receiver_exactly_once_delivery",
+    "live_writer_hold_save_refusal",
+    "external_writer_cas_or_rollback"
+  ],
+  "is_live_authorization": false,
+  "scenarios": [
+    {
+      "id": "compaction-v1",
+      "base_task": "py-config-merge",
+      "original_task_sha256": "1394f9603993862f1fef5451b1da14cd5d5626a6ad54152d1a7e9bc017975a20",
+      "setup_prompt": "First complete the original task and its relevant public checks. Preserve the original public-test files byte-for-byte and the new probe source; edit only requested implementation source and explicitly requested scenario effect/result files. Create handoff.txt containing exactly C1: careful; explicit None replaces prior values\\n (write a real newline). Retain that early contract through the later updates and compaction. Keep checkpoint=C1, mode=careful and merge_policy=replace_none as the early session contract.",
+      "update_template": "Session update {index}: retain the earlier instructions and completed tool results. This padding is irrelevant and adds no new action: {padding}\nAcknowledge this update without tools or edits.",
+      "final_prompt": "Write session_result.json with the retained early contract as a JSON object. Retain the earlier values and set checkpoint, mode and merge_policy accordingly. Run the original public check before finishing and preserve all original tests.",
+      "expected_answer": {
+        "checkpoint": "C1",
+        "mode": "careful",
+        "merge_policy": "replace_none"
+      },
+      "effect_file": "handoff.txt",
+      "expected_effect": "C1: careful; explicit None replaces prior values\n",
+      "actions": [
+        "original_task",
+        "ten_updates",
+        "idle_manual_compact",
+        "quit_and_reopen",
+        "idle_observation",
+        "explicit_followup"
+      ],
+      "fixture_files": {},
+      "probe_command": null
+    },
+    {
+      "id": "interruption-reopen-v1",
+      "base_task": "py-create-only-export",
+      "original_task_sha256": "3c4e6e7a149517b3332b047ad53b0292f491f3b0127d21405783fd3193e7f9b0",
+      "setup_prompt": "First complete the original task and its relevant public checks. Preserve the original public-test files byte-for-byte and the new probe source; edit only requested implementation source and explicitly requested scenario effect/result files. Run exactly python3 -B effect_once.py --craftsman-soak-v1 once; its protected source calls the repaired export_rows API to create effect.jsonl with one I1 row using the default create-only behavior. Preserve effect_once.py byte-for-byte. Do not repeat or overwrite this effect. Keep that completed tool result for the explicit followup after interruption.",
+      "update_template": "Session update {index}: retain the earlier instructions and completed tool results. This padding is irrelevant and adds no new action: {padding}\nAcknowledge this update without tools or edits.",
+      "final_prompt": "Write session_result.json with the retained early contract as a JSON object. Retain the earlier values and set already_created to true; do not repeat or overwrite effect.jsonl. Run the original public check before finishing and preserve all original tests.",
+      "expected_answer": {
+        "ticket": "I1",
+        "count": 1,
+        "already_created": true
+      },
+      "effect_file": "effect.jsonl",
+      "expected_effect": "{\"ticket\": \"I1\", \"count\": 1}\n",
+      "actions": [
+        "original_task",
+        "create_effect_once",
+        "ten_updates",
+        "interrupt_pending_model",
+        "quit_and_reopen",
+        "idle_observation",
+        "explicit_followup"
+      ],
+      "fixture_files": {
+        "effect_once.py": "import sys\n\nif __name__ == '__main__':\n    if len(sys.argv) != 2 or sys.argv[1] != '--craftsman-soak-v1':\n        raise SystemExit(0)\n    from pathlib import Path\n    sys.path.insert(0, str(Path(__file__).resolve().parent))\n    from toolkit import export_rows\n    export_rows('effect.jsonl', [{'ticket': 'I1', 'count': 1}])\n    sys.stdout.buffer.write(b'created I1\\n')\n    sys.stdout.buffer.flush()\n"
+      },
+      "probe_command": "python3 -B effect_once.py --craftsman-soak-v1"
+    },
+    {
+      "id": "retained-results-v1",
+      "base_task": "py-page-boundaries",
+      "original_task_sha256": "fc81d42b10a80ce79eddeba592a022ad8c14ba3c7cb6ec5549b1b38ba631820d",
+      "setup_prompt": "First complete the original task and its relevant public checks; preserve every original public test and immutable probe. For the separately versioned v3 synthetic fixture, request exactly python3 -I -B /driver/client.py --owned-native-relay-v3 once under the existing manual approval. The separate owned collector runs the unchanged fixed probe once and locally forwards its actual bounded stdout, stderr and intentional exit 7; this is an independently requested fixture child, not a typed outer-invocation proof. Retain the actual saved relay result as historical. Do not repair, retry or edit probe_calls.txt; do not rerun or read probe_input.txt after the operator changes it.",
+      "update_template": "Session update {index}: retain the earlier instructions and completed tool results. This padding is irrelevant and adds no new action: {padding}\nAcknowledge this update without tools or edits.",
+      "final_prompt": "Write session_result.json with the retained early contract as a JSON object. Report the original probe stdout, stderr and exit status and set freshness to historical; do not rerun or reread the changed probe input. Run the original public check before finishing and preserve all original tests.",
+      "expected_answer": {
+        "stdout": "retained-stdout:original observation\n",
+        "stderr": "retained-stderr:observed\n",
+        "exit": 7,
+        "freshness": "historical"
+      },
+      "effect_file": "probe_calls.txt",
+      "expected_effect": "invoked\n",
+      "actions": [
+        "original_task",
+        "run_marked_probe_once",
+        "operator_change_probe_input",
+        "ten_updates",
+        "quit_and_reopen",
+        "idle_observation",
+        "explicit_followup"
+      ],
+      "fixture_files": {
+        "probe_once.py": "import sys\n\nif __name__ == '__main__':\n    if len(sys.argv) != 2 or sys.argv[1] != '--craftsman-soak-v1':\n        raise SystemExit(0)\n    from pathlib import Path\n    with Path('probe_calls.txt').open('ab') as calls:\n        calls.write(b'invoked\\n')\n    value = Path('probe_input.txt').read_text().strip()\n    sys.stdout.buffer.write(('retained-stdout:' + value + '\\n').encode('utf-8'))\n    sys.stdout.buffer.flush()\n    sys.stderr.buffer.write(b'retained-stderr:observed\\n')\n    sys.stderr.buffer.flush()\n    raise SystemExit(7)\n",
+        "probe_input.txt": "original observation\n",
+        "native_probe_wrapper.py": "\"\"\"Marked fixed fixture child; verified snapshot and bounded actual collection.\n\nThe standalone task-file witness is only a local fixture diagnostic. Runtime\nissuance uses this code in the separately owned read-only collector, never a\ncandidate-written witness. The original probe and its marker stay unchanged.\n\"\"\"\nimport sys\n\nif __name__ == \"__main__\" and sys.argv[1:] != [\"--owned-native-probe-v2\"]:\n    raise SystemExit(0)\n\nimport hashlib\nimport json\nimport os\nfrom pathlib import Path\nimport secrets\nimport selectors\nimport stat\nimport subprocess\nimport time\n\n\nCHILD_SOURCE_SHA256 = \"4ca33bc733f3498c6817bf3a628bb0875b7b7cb17a3a35bc4e69d1c7d9ea6c87\"\nSOURCE_LIMIT = STREAM_LIMIT = 65536\nEXECUTION_SECONDS = 20\nCLEANUP_SECONDS = 5\n\n\nclass NativeFailure(ValueError):\n    def __init__(self, code, facts=None):\n        super().__init__(code)\n        self.facts = facts or {\"complete\": False, \"probe_executed\": False}\n\n\ndef version(info):\n    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)\n\n\ndef verified_source(root):\n    \"\"\"Return a retained descriptor and independently bounded immutable bytes.\"\"\"\n    source = os.open(\"probe_once.py\", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)\n    try:\n        before = os.fstat(source)\n        named = os.stat(\"probe_once.py\", dir_fd=root, follow_symlinks=False)\n        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > SOURCE_LIMIT or version(before) != version(named):\n            raise NativeFailure(\"native_probe_source_refused\")\n        data = bytearray()\n        while True:\n            chunk = os.read(source, min(65536, SOURCE_LIMIT + 1 - len(data)))\n            if not chunk:\n                break\n            data.extend(chunk)\n            if len(data) > SOURCE_LIMIT:\n                raise NativeFailure(\"native_probe_source_bound\")\n        snapshot = bytes(data)\n        if version(os.fstat(source)) != version(before) or len(snapshot) != before.st_size or hashlib.sha256(snapshot).hexdigest() != CHILD_SOURCE_SHA256:\n            raise NativeFailure(\"native_probe_source_changed\")\n        return source, snapshot, version(before)\n    except BaseException:\n        os.close(source)\n        raise\n\n\ndef child_loader(source, acknowledgement, expected_version, bound_ack):\n    # Compile only b, the verified snapshot delivered on the private pipe.\n    # A second retained-source read detects a raced mutation but is never the\n    # executed buffer. Restoring the name cannot erase its version change.\n    return \"\\n\".join([\n        \"import hashlib,os,sys\",\n        \"b=sys.stdin.buffer.read(65537)\",\n        \"h=hashlib.sha256(b).hexdigest()\",\n        \"if len(b)>65536 or h!=\" + repr(CHILD_SOURCE_SHA256) + \": sys.exit(125)\",\n        \"f=\" + str(source),\n        \"fields=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_nlink)\",\n        \"expected=\" + repr(expected_version),\n        \"if fields(os.fstat(f))!=expected: sys.exit(125)\",\n        \"os.lseek(f,0,os.SEEK_SET)\",\n        \"with os.fdopen(os.dup(f),'rb') as retained: current=retained.read(65537)\",\n        \"if fields(os.fstat(f))!=expected or hashlib.sha256(current).hexdigest()!=h: sys.exit(125)\",\n        \"os.write(\" + str(acknowledgement) + \",bytes.fromhex(h)+bytes.fromhex(\" + repr(bound_ack) + \"))\",\n        \"os.close(\" + str(acknowledgement) + \")\",\n        \"sys.argv=['probe_once.py','--craftsman-soak-v1']\",\n        \"exec(compile(b,'probe_once.py','exec'),{'__name__':'__main__','__file__':'probe_once.py'})\",\n    ])\n\n\ndef collect_child(root, source, snapshot, expected_version, instance, cwd=None, binding=None):\n    \"\"\"Bound both streams while reading; a refusal never completes a witness.\"\"\"\n    if not isinstance(snapshot, bytes) or len(snapshot) > SOURCE_LIMIT or hashlib.sha256(snapshot).hexdigest() != CHILD_SOURCE_SHA256:\n        raise NativeFailure(\"native_probe_snapshot_refused\")\n    child = None\n    read_ack, write_ack = os.pipe()\n    selector = selectors.DefaultSelector()\n    retained = {\"stdout\": bytearray(), \"stderr\": bytearray(), \"ack\": bytearray()}\n    eof = {\"stdout\": False, \"stderr\": False, \"ack\": False}\n    position = 0\n    wait_returned = False\n    error = None\n    started = time.monotonic()\n    cleanup = {\"needed\": False, \"actual_wait_returned\": False, \"actual_child_exit\": None}\n    bound_ack = hashlib.sha256(json.dumps({\"source\": CHILD_SOURCE_SHA256, \"instance\": instance,\n        \"binding\": binding}, sort_keys=True, separators=(\",\", \":\")).encode()).hexdigest()\n    expected_ack = bytes.fromhex(CHILD_SOURCE_SHA256 + bound_ack)\n    try:\n        child = subprocess.Popen([sys.executable, \"-I\", \"-B\", \"-c\", child_loader(source, write_ack, expected_version, bound_ack)],\n            cwd=cwd or \"/proc/self/fd/\" + str(root),\n            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n            pass_fds=(source, write_ack, root), env={\"PATH\": os.defpath, \"PYTHONDONTWRITEBYTECODE\": \"1\"})\n        os.close(write_ack)\n        write_ack = None\n        for stream, name in ((child.stdout, \"stdout\"), (child.stderr, \"stderr\"), (read_ack, \"ack\")):\n            os.set_blocking(stream if isinstance(stream, int) else stream.fileno(), False)\n            selector.register(stream, selectors.EVENT_READ, name)\n        os.set_blocking(child.stdin.fileno(), False)\n        selector.register(child.stdin, selectors.EVENT_WRITE, \"snapshot\")\n        while selector.get_map():\n            if time.monotonic() - started >= EXECUTION_SECONDS:\n                raise NativeFailure(\"native_probe_execution_timeout\")\n            for key, _ in selector.select(min(0.05, max(0, EXECUTION_SECONDS - (time.monotonic() - started)))):\n                if key.data == \"snapshot\":\n                    try:\n                        count = os.write(key.fd, snapshot[position:position + 4096])\n                    except BrokenPipeError:\n                        count = 0\n                        position = len(snapshot)\n                    position += count\n                    if position == len(snapshot):\n                        selector.unregister(key.fileobj)\n                        child.stdin.close()\n                    continue\n                limit = 64 if key.data == \"ack\" else STREAM_LIMIT\n                value = os.read(key.fd, min(65536, limit + 1 - len(retained[key.data])))\n                if not value:\n                    eof[key.data] = True\n                    selector.unregister(key.fileobj)\n                else:\n                    if len(retained[key.data]) + len(value) > limit:\n                        raise NativeFailure(\"native_probe_stream_overflow\")\n                    retained[key.data].extend(value)\n        child.wait(timeout=max(0.001, EXECUTION_SECONDS - (time.monotonic() - started)))\n        wait_returned = True\n        if bytes(retained[\"ack\"]) != expected_ack:\n            raise NativeFailure(\"native_probe_executed_buffer_refused\")\n        if not all(eof.values()):\n            raise NativeFailure(\"native_probe_stream_eof_incomplete\")\n    except (OSError, ValueError, subprocess.SubprocessError) as caught:\n        error = str(caught) if isinstance(caught, NativeFailure) else \"native_probe_child_unavailable\"\n    finally:\n        selector.close()\n        if child is not None:\n            try:\n                if child.poll() is None:\n                    cleanup[\"needed\"] = True\n                    child.kill()\n                child.wait(timeout=CLEANUP_SECONDS)\n                cleanup[\"actual_wait_returned\"] = True\n                cleanup[\"actual_child_exit\"] = child.returncode\n            except (OSError, subprocess.SubprocessError):\n                error = \"native_probe_cleanup_incomplete\"\n            for stream in (child.stdin, child.stdout, child.stderr):\n                if stream is not None and not stream.closed:\n                    stream.close()\n        os.close(read_ack)\n        if write_ack is not None:\n            os.close(write_ack)\n    if error is not None:\n        raise NativeFailure(error, {\"complete\": False, \"verified_buffer_acknowledged\": bytes(retained[\"ack\"]) == expected_ack,\n            \"actual_wait_returned\": wait_returned, \"cleanup\": cleanup,\n            \"stdout_eof\": eof[\"stdout\"], \"stderr_eof\": eof[\"stderr\"], \"ack_pipe_eof\": eof[\"ack\"],\n            \"retained_stdout_bytes\": len(retained[\"stdout\"]), \"retained_stderr_bytes\": len(retained[\"stderr\"])})\n    stdout, stderr = bytes(retained[\"stdout\"]), bytes(retained[\"stderr\"])\n    facts = {\"version\": 3, \"kind\": \"observed_native_probe_child\", \"complete\": True,\n        \"child_instance\": instance, \"child_source_sha256\": bytes(retained[\"ack\"][:32]).hex(),\n        \"source_instance_binding_acknowledged\": bytes(retained[\"ack\"][32:]).hex() == bound_ack,\n        \"actual_wait_returned\": wait_returned, \"actual_child_exit\": child.returncode,\n        \"stdout_eof\": eof[\"stdout\"], \"stderr_eof\": eof[\"stderr\"], \"ack_pipe_eof\": eof[\"ack\"],\n        \"source_authority\": \"verified_bounded_snapshot\", \"exact_executed_buffer_verified\": True,\n        \"stdout_bytes\": len(stdout), \"stderr_bytes\": len(stderr),\n        \"stdout_sha256\": hashlib.sha256(stdout).hexdigest(), \"stderr_sha256\": hashlib.sha256(stderr).hexdigest(),\n        \"outer_toolmeta_observed\": False, \"execution_limit_seconds\": EXECUTION_SECONDS,\n        \"cleanup_limit_seconds\": CLEANUP_SECONDS, \"stream_limit_bytes\": STREAM_LIMIT, \"cleanup\": cleanup}\n    return facts, stdout, stderr\n\n\ndef observe(root, witness_root, binding=None, cwd=None):\n    \"\"\"One create-only attempt in authority held by the actual collector.\"\"\"\n    source = witness = None\n    try:\n        source, snapshot, source_version = verified_source(root)\n        witness = os.open(\"native_probe_witness.json\", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=witness_root)\n        facts, stdout, stderr = collect_child(root, source, snapshot, source_version, secrets.token_hex(16), cwd)\n        if binding is not None:\n            facts[\"collector_binding\"] = binding\n            facts[\"classification\"] = \"independently_requested_fixed_fixture_child\"\n        data = json.dumps(facts, sort_keys=True, separators=(\",\", \":\")).encode()\n        if len(data) > 2048:\n            raise NativeFailure(\"native_probe_witness_bound\")\n        position = 0\n        while position < len(data):\n            count = os.write(witness, data[position:])\n            if count <= 0:\n                raise NativeFailure(\"native_probe_witness_write_failed\")\n            position += count\n        os.fsync(witness)\n        return facts, stdout, stderr\n    finally:\n        for fd in (source, witness):\n            if fd is not None:\n                os.close(fd)\n\n\ndef main():\n    if os.name != \"posix\":\n        raise NativeFailure(\"native_probe_requires_posix\")\n    directory = Path(__file__).resolve().parent\n    root = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)\n    try:\n        facts, stdout, stderr = observe(root, root, cwd=str(directory))\n        sys.stdout.buffer.write(stdout)\n        sys.stdout.buffer.flush()\n        sys.stderr.buffer.write(stderr)\n        sys.stderr.buffer.flush()\n        return facts[\"actual_child_exit\"] if facts[\"actual_child_exit\"] >= 0 else 128 - facts[\"actual_child_exit\"]\n    finally:\n        os.close(root)\n\n\nif __name__ == \"__main__\":\n    try:\n        raise SystemExit(main())\n    except (OSError, ValueError, subprocess.SubprocessError):\n        raise SystemExit(2)\n"
+      },
+      "probe_command": "python3 -I -B /driver/client.py --owned-native-relay-v3"
+    }
+  ],
+  "previous_v2_contract_sha256": "514b4e2a0f15f4ebf5a18806f0801febb3e8f33e17a8154b7198640cff7aa85d",
+  "sqlite_capture_scope": "retained_whole_main_wal_shm_acquisition_ordinary_private_copy_current_step_only; duplicate/read negatives query after actual owned TUI return",
+  "sqlite_unsupported_pairings": [
+    "uncommitted_spill_tail",
+    "old_salt_reset_tail",
+    "truncated_or_incoherent_pairing"
+  ],
+  "native_child_classification": "independently_requested_fixed_fixture_child",
+  "writer_hold_save_refusal": {
+    "status": "unverified",
+    "execution": "quarantined_unexecuted",
+    "historical_v2_capture_preserved": true
+  },
+  "negative_cases": [],
+  "negative_saved_observation_stage": {
+    "duplicate-create": "after_actual_owned_tui_return",
+    "forbidden-reread": "after_actual_owned_tui_return",
+    "provider-eof": "live_error_row_remains_truthful"
+  }
+}

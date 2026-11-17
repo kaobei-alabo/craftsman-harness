@@ -280,6 +280,7 @@ def group_positions(state):
             values.append({"assistant_index": index, "call_ordinal": ordinal, "call_sha256": canonical_sha256(call),
                            "result_index": matched[0][0] if matched else None,
                            "result_sha256": canonical_sha256(matched[0][1]) if matched else None,
+                           "result_content_sha256": hashlib.sha256(matched[0][1]["content"].encode()).hexdigest() if matched else None,
                            "is_error": matched[0][1]["is_error"] if matched else None})
     return values
 
@@ -339,7 +340,7 @@ def safe_checkpoint(value):
     require(sum(group.get("count", 0) for group in value["completed_groups"]) <= value["message_roles"].count("tool"), "original_tool_result_lost_or_replayed")
     require(isinstance(value["group_positions"], list), "group_instance_lineage_missing")
     for group in value["group_positions"]:
-        keys(group, ("assistant_index", "call_ordinal", "call_sha256", "result_index", "result_sha256", "is_error"))
+        keys(group, ("assistant_index", "call_ordinal", "call_sha256", "result_index", "result_sha256", "result_content_sha256", "is_error"))
         integer(group["call_ordinal"], 0, 255)
         position = integer(group["assistant_index"], 0, value["message_count"] - 1)
         require(value["message_roles"][position] == "assistant", "invalid_group_instance")
@@ -348,6 +349,10 @@ def safe_checkpoint(value):
             result = integer(group["result_index"], position + 1, value["message_count"] - 1)
             require(value["message_roles"][result] == "tool" and type(group["is_error"]) is bool, "invalid_group_instance")
             digest(group["result_sha256"])
+            digest(group["result_content_sha256"])
+        else:
+            require(group["result_sha256"] is None and group["result_content_sha256"] is None and group["is_error"] is None,
+                    "incoherent_unresolved_group_observation")
     seen = set()
     for group in value["completed_groups"]:
         keys(group, ("sha256", "count"))

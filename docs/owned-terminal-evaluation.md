@@ -1,155 +1,205 @@
-# Owned-terminal synthetic evaluation v2 — November 18, 2026
+# Owned-terminal synthetic evaluation v3 — November 18, 2026
 
-The isolated driver now runs the production owned TUI, with real manual
-one-call approvals, checkpoint reads, cancellation, `/compact`, quit and
-same-session reopen. Its result is a **scoped external-observation result**;
-it is not a live coding score or verification of every private runtime fact.
-The original preparation commit `0ad1e1a8fc8ba908ada569a9d848b4fd73f8be86`,
-original v5 corpus, historical grades and failed review evidence remain intact.
+The isolated driver runs the production owned TUI at frozen source 33a80d9,
+using a synthetic provider, real manual one-call approval keys and ordinary
+quit/reopen. Three bounded scenarios pass their unchanged original held-out
+graders. The synthetic provider supplies fixed reference edits, so these passes
+validate the fixture/capture boundary; they are not a full live coding score.
 
-The [v2 scenarios](../evals/coding/owned-terminal-v2/scenarios.json) separately
-version the corrected capture/scoring boundary and native-child wrapper.
-The [original v1 scenarios](../evals/coding/latest-runtime-v1/long-session.json)
-are unchanged. v2 preserves the original task and held-out grader assertions;
-only the newly proposed scenario/capture criteria and fixture change.
+The [v3 contract](../evals/coding/owned-terminal-v3/scenarios.json) is separate
+from the unchanged [v1 preparation](../evals/coding/latest-runtime-v1/long-session.json)
+and [v2 contract](../evals/coding/owned-terminal-v2/scenarios.json).
+Preparation 0ad1e1a, v2 implementation 96b6f68, the original v5 corpus, historical
+17/30 and 21/30 grades, seven v2 captures and every failed attempt remain intact.
+Independent v2 reviews found unverified executed-buffer rereads, live SQLite
+path reopening, task-witness producer identity, post-collection stream limits,
+negative-condition issuance and host-write/cleanup gaps. Those historical
+captures are not retrospectively authenticated by v3.
 
-## Exact source and isolation
+## Source, settings and isolation
 
 Runtime source is `33a80d99431fd707b148485cb714f365b1946803`, tree
-`ddee5694698835c48c9c7bbf37b4140b64d721dc`. It was built with actual
-`cargo build --locked --release --no-default-features -p craftsman-rs --bin craftsman`
-from a tracked Git archive mounted read-only. The unique artifact target ends
-`cargo-targets/evaluation`. The working tree is never the compiler input;
-untracked automatic `build.rs`/`.cargo` inputs cannot gain build attestation.
+`ddee5694698835c48c9c7bbf37b4140b64d721dc`. The actual tracked-archive build used
+`cargo build --locked --release --no-default-features -p craftsman-rs --bin craftsman`;
+its artifact target ends `cargo-targets/evaluation`. Archive SHA-256 is
+`366970a77173141c6c8317764e85c703e1882e780d472efb552a845722c4e594`.
 
-The immutable local image is
-`sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b`,
-with binary SHA-256
+The immutable image is
+`sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b`;
+Craftsman binary SHA-256 is
 `08542be11e7d207b43c4e0622a6f24180eaa2de9d65b247599f7f70660b56585`.
-The independently frozen original v5 corpus SHA-256 is
+The unchanged v5 corpus SHA-256 is
 `5d45038dca136245f090d2e2ed83a3e99f7a7c18eff19f2c4ba2d750d71d89f7`.
-Caller-selected runtime records cannot retarget this original-corpus anchor.
+A future combined runtime needs a separately reviewed source/image binding.
 
-The agent mounts only its disposable task and one read-only client bundle.
-The bundle contains capture functions, not graders, references or signing keys.
-Provider/gateway processes, driver roots and signing authority stay outside
-that mount. Actual Docker inspection verifies image, two mounts, read-only
-root, dropped capabilities, no-new-privileges, 128 processes, 768 MiB memory,
-two CPUs and an internal network. No host config, key or Docker socket is
-mounted into the agent.
+The agent mounts only its disposable task and a read-only client bundle.
+The separately owned collector mounts that task and its own read-only bundle;
+its private capture directory and stdin/stdout authority are outside candidate
+access. Provider, gateway, copied-query directories, source snapshots, original
+graders/references and signing keys remain outside the agent mount. Actual
+Docker inspection checks image, mount destinations **and Source paths**,
+read-only root/client, dropped capabilities, no-new-privileges, 128 processes,
+768 MiB, two CPUs, and the actual network ID/Internal property. No host config,
+real key or Docker socket is mounted. Public Craftsman exec and headless gadget
+callables remain absent.
 
-The driver accepts only the fixed synthetic provider route and fake keys.
-The real ledger is read before/after and is never mounted or written. A separate
-zero-price fixture ledger uses the unchanged **$25 cap and 20-request gateway
-limit**. The v1 long-run proposal's 40-request upper limit is not enabled.
-Actual emitted configuration/settings and received synthetic request model,
-effort and output ceiling are checked: Sol 6.1 Responses, `xhigh`, 8,192 tokens,
-12,288-byte compiled context, repeat limit five, review signals off, manual
-permissions, `auto_approve=false`, voice/gadgets/MCP/LSP disabled.
+Actual settings and received requests are checked: Sol 6.1 Responses, `xhigh`,
+8,192 output tokens, 20 gateway requests, 900 seconds per scenario, 14 user
+turns, ten 8,192-byte updates, 12,288-byte context, repeat limit five, review
+signals off, manual permissions and `auto_approve=false`. Voice/gadgets/MCP/LSP
+are disabled. Only fixed synthetic routes/fake keys are used. A separate
+zero-price fixture ledger retains the existing $25 and 20-request limits;
+it is not another real allowance. The real ledger is read before/after,
+never mounted/written.
 
-## Observed and unverified channels
+Every run uses fresh create-only output, retains exact scenario bytes, copies
+the evaluation Python source before starting producers, and binds its source
+manifest and actual mounted bundle hashes into the receipt. Changed source
+copies, bundles or observation files refuse authentication.
 
-| Channel | What v2 records |
+## Captured facts and scope
+
+| Channel | v3 evidence |
 | --- | --- |
-| Input | Actual per-submission saved context pin/stamp, expected submitted digest, observed appended position, monotonic event and first observed stored-row sequence; captured before lawful eviction |
-| Stored conversation | Typed messages/groups, exact ordered message digests, group-local ids and actual error booleans; first-seen owner generation/checkpoint/index/call ordinal is historical stored evidence |
-| TUI lifecycle | Fixed actual OSC 7501 states, own PTY/keeper wait returns and terminal-mode restoration; no rendered prompt/body export |
-| Storage | Retained scoped SQLite directory/file identity and consistent row queries; raw stored rows are kept distinct from unobserved live reconciliation |
-| Gateway | Actual validated arrival attempts, persisted admissions, actual refusals, received headers, genuine read EOF and settled/unknown usage; no fabricated historical 21st attempt |
-| Files | Independent finite no-follow reads through a directory retained before execution; source, effects, current probe input and final stopped-task snapshot are bound to the receipt |
-| Native probe child | One immutable marked child executed from a retained source descriptor; actual bounded captured streams and status after real wait, then forwarded once |
+| Input | Actual saved context pin/stamp, submitted digest, appended index, event/revision, session/scope and first observed row; witnesses precede lawful pin eviction |
+| Conversation | Typed messages/tool-error booleans, ordered digests and group-local call/result/content digests; first-seen stored positions retain `dispatch_observed=false` |
+| Lifecycle | Actual fixed OSC states, manual one-call key sends, owned PTY/keeper waits and terminal-mode restoration |
+| SQLite | Whole retained main/WAL/SHM acquisition, membership/WAL-generation epoch, ordinary private-copy recovery and held current-step/thread/workspace/input/sequence expectations |
+| Gateway | Actual attempts/admissions/refusals, headers, genuine provider EOF and settlement/unknown facts; no invented historical 21st attempt |
+| Files | Finite no-follow observations, retained-leaf operator writes and stopped-task/source/effect/current-input hashes |
+| Native fixture | Separately owned actual Popen, verified executed snapshot and instance/intended-request acknowledgement, bounded wait/genuine EOF/status/stream digests and one local forwarding attempt |
 
-Direct `AgentBoundaryPolicy` callback objects, typed `TurnResult`/`AgentError`
-and `checkpoint_failed` at return, live `RecoveryInfo`, outer `ToolMeta`/
-native-truncation facts, complete activity/quiescence and absence of arbitrary
-shell rereads are **unobserved/unverified**. Reports enumerate these criteria
-and set `all_stronger_private_criteria_verified=false`. They never predict
-UNKNOWN and call it observed live reconciliation. A root error or unfinished
-row is not converted into positive saved success.
+The SQLite reader never opens a live candidate pathname with sqlite3.
+It opens members relative to retained root authority, records optional absence,
+obtains all initial versions before reading, corroborates bytes in a second
+bounded pass, and fences every descriptor/path/root after the entire
+acquisition. Exact dev/ino/mode/size/mtime_ns/ctime_ns/nlink remain checked in
+the supported POSIX driver. Main/page/WAL headers, rolling checksums, frame
+salts and final commit markers are validated.
+An actual sent approval followed by a stale blocked OSC display is in-flight
+work, so it cannot start another acquisition until a later root transition
+is observed. A changed stage or whole-file fence still refuses capture.
 
-The stored context permits 32 KiB, first input plus four recent update pins,
-4 KiB whole pinned text and lawful omission/eviction. Ten 8 KiB updates can be
-accepted without retaining their plaintext or all ten pins. v2 retains separate
-per-input witnesses as those saved pins occur; event numbers include runtime
-activity and are not dense human-turn numbers.
+Each member and combined acquisition are capped at 8 MiB, reads/copy attempts
+at 4,096, WAL frames at 16,384, query progress at 4,096 callbacks of 1,000
+SQLite steps, and transient transfer at 512 MiB per scenario/48 KiB per
+chunk/256 instances. Raw rows/bodies never enter report history. Ordinary
+SQLite rebuilds journal/index state inside the private copied namespace;
+copied SHM is never committed authority, no committed WAL is omitted, and
+`immutable=1` is never used. Unsupported spill/uncommitted/old-salt reset
+tails refuse whole-snapshot completion; they are not necessarily corruption.
+Valid WAL checksums and integrity alone do not authenticate pairing: a
+compatible foreign WAL may recover another row, so current-step expectations
+are required.
 
-Manual `/compact` keeps up to **four** recent messages, expanding the cut to
-preserve a tool group. It differs from automatic message-count compaction's
-120-message trigger/20-message tail. v2 verifies the actual recent tail and
-replacement row/context count; it permits summarized old prefixes and does
-not demand strict message-count reduction. Earlier group witnesses remain
-historical after compaction. Noncompaction scenarios demonstrate a selected
-no-compaction interval before checking exact prefix/group positions.
+Manual `/compact` covers the fixed ten-update/ack tail and four kept messages.
+A general tool-expanded tail may omit its latest User message and is rejected;
+this is not a general compaction grader. Noncompaction cases retain the exact
+original ordered input/group instances.
 
-## Native wrapper and receipt authority
+Live writer-hold/save-refusal is **quarantined, unverified and unexecuted**.
+The selected Python boundary cannot anchor its actual live connection; a
+copied-file lock is not a live-store lock. Historical v2 held-writer captures
+and original registered-builder SQLite failure tests remain. Selecting
+`--negative-case save-refusal` refuses before image/config/model work.
 
-[native_probe_wrapper.py](../scripts/coding-eval/native_probe_wrapper.py)
-rejects absent, unknown and duplicate markers before path/config/import effects.
-Its marked mode opens and hashes the immutable v1 probe through a retained
-descriptor, reserves a create-only witness slot, starts exactly one child,
-collects bounded actual streams/status and writes complete metadata only after
-the wait returns. It forwards the real bytes once and preserves exit 7. An
-incomplete reserved witness is not success and a second invocation cannot
-rerun the child. This is child-process evidence, not outer ShellRunner metadata.
+## Native collector and receipt
 
-The wrapper source/call/witness and actual physical input before/after the
-operator change are bound to the external root. Its original observation is
-labelled historical after that change. A direct observed `read_file` of the
-changed probe or an explicit duplicate marked invocation rejects the positive
-criterion. This does not prove the absence of arbitrary shell/hidden activity;
-that broader no-reread instruction remains unverified.
+The [wrapper](../scripts/coding-eval/native_probe_wrapper.py) executes only the
+already verified bounded snapshot. The child hashes its exact received buffer
+before compile/exec, corroborates the retained source, and acknowledges source
+plus instance/intended binding on a private pipe closed before fixture code.
+Changed post-verification source/buffer data refuses with an incomplete witness
+and no probe execution; restoring the path later cannot erase the observation.
 
-The driver retains actual process/container/workspace authority. A seal can
-only be issued after matching real producer history, capture stages, input
-witnesses, waits, actual container removal and retained stopped file data.
-HMAC covers source/image/scenario/settings/client/code bindings and observation
-digests. The key remains outside the agent. The original grader is invoked
-only after this driver-held authority verifies those bindings. Caller JSON
-alone is not a runtime receipt; standalone data grading requires explicit
-`--synthetic-metadata-selfcheck` and reports no runtime result.
+The read-only [collector](../scripts/coding-eval/owned_tui_collector.py) owns
+the actual inner Popen/streams/wait. Docker CLI and child return are distinct.
+It reserves private create-only request/forwarding slots before effects;
+failed/partial/overflowed instances stay closed with no replay or transport
+retry/redirect. Both streams are collected concurrently with **pre-retention
+64 KiB bounds**, original **20-second execution and five-second cleanup**.
+Wait without genuine EOF for both streams is incomplete. Complete issuance
+requires source/instance/wait/EOF/status/cleanup and successful bounded local
+forwarding/witness writes. Candidate witness JSON and zero/foreign
+source/instance claims never authenticate a producer.
 
-The operator and Docker daemon remain trusted. This mechanism does not protect
-against an operator who rewrites the driver or reads its private signing key,
-and does not establish OS containment, remote billing termination or a session
-execution lease. Overflow/incomplete capture refuses positive grading; required
-evidence is not clipped to manufacture a pass.
+Classification is `independently_requested_fixed_fixture_child`. An intended
+call/request, stored pending group, OSC modal or Enter key constrains intent
+but cannot authenticate an actual outer runtime approval/dispatch. Local
+forwarding once is not receiver exactly-once delivery. Saved relay content
+is separately matched to an actual subsequent provider request/result digest.
+The unchanged probe, intentional exit seven and original effect remain
+historical after the operator changes its input.
 
-## Repeating the checks
+Duplicate-create and direct-reread negatives acquire their new saved row
+**after the actual completed owned TUI return**. Issuance requires that return
+before the snapshot, the new specific input/group/result, matching
+provider-observed content and command 1→2 or read 0→1 delta, while the original
+effect stays unchanged. Missing/wrong/stale/relocated results cannot be inferred
+from a variant or sequence increase. Earlier live-window acquisition refusals
+remain failed/unclassified evidence, not a diagnosed production failure or
+authenticated negative.
 
-The trusted build record is produced from the actual archive build, with
-source/tree/image/binary/archive identities; it cannot be an arbitrary runtime
-substitution. From this worktree:
+HMAC issuance follows matched actual producer histories, verified snapshots,
+owned returns, successful targeted container-absence queries and retained
+stopped file data. A nonzero Docker query is an observation failure, not
+confirmed absence. Cleanup query/removal/close outcomes are retained. Keys stay
+outside the agent. Caller JSON cannot obtain a runtime receipt; standalone
+metadata self-check remains explicitly non-runtime.
+
+Direct private callbacks, typed TurnResult/AgentError/checkpoint-failed returns,
+live RecoveryInfo/reconciliation, outer invocation/ToolMeta/truncation, whole
+activity/quiescence, arbitrary-shell no-reread, external-writer CAS/rollback
+and receiver exactly-once remain **unverified**.
+`all_stronger_private_criteria_verified=false`. The operator and Docker daemon
+are trusted; Python private tokens/HMAC do not protect against an operator
+who rewrites the driver or obtains its key. This does not establish OS
+containment, cross-process leases, remote billing termination or release readiness.
+
+## Reproducing the checks
 
 ```sh
 python3 -I -B scripts/coding-eval/run_owned_tui.py \
   --image-build-record /path/to/owned/image-build-record.json \
-  --output /path/to/fresh-v2-output
+  --output /path/to/fresh-v3-output
 python3 -I -B scripts/coding-eval/run_owned_tui.py \
   --image-build-record /path/to/owned/image-build-record.json \
-  --scenario interruption-reopen-v1 --negative-case save-refusal \
+  --scenario interruption-reopen-v1 --negative-case duplicate-create \
   --output /path/to/fresh-negative-output
 python3 -I -B scripts/coding-eval/test_preflight_latest.py
 python3 -I -B scripts/coding-eval/test_long_session.py
 python3 -I -B scripts/coding-eval/test_owned_tui.py
 ```
 
-Other negative cases are `provider-eof`, `duplicate-create` and
-`forbidden-reread`. A held `BEGIN IMMEDIATE` writer transaction exercises the
-existing five-second busy limit without schema/table changes; actual root error
-and unchanged prior row stay failure observations. EOF records actual no-terminal
-stream return and unknown usage; an in-progress row remains in-progress. Explicit
-duplicate controls are fresh requested actions, never automatic recovery replay.
+Other supported negatives are `provider-eof` and `forbidden-reread`. Genuine
+no-terminal provider EOF/unknown usage/root error stays a failure observation;
+an in-progress row is never saved success. The owned-TUI entrypoint also runs
+retained-file, SQLite/current-step, collector, negative-issuance and cleanup
+regressions, including real missing EOF and source/buffer races.
 
-Local/CI wiring adds these three test entrypoints while retaining every original
-14 local check, all four contexts, mandatory setup/default builds/both native
-modes, conditions and publication hold. The eleven frozen data-only false-accept
-counterexamples are rejection regressions. Earlier failed driver/bootstrap/
-fixture/unit attempts and the immutable preparation/review evidence remain
-preserved separately from the corrected runs.
+There are still **17 discoverable verification checks**: all 14 originals plus
+latest preflight, long-session and owned-TUI entrypoints. Every original
+context/setup/default-build/both-native-mode condition and publication hold
+remains exact. Source-bound synthetic proof does not replace coordinator
+fresh full 17/native/hosted/inventory/warning/tree/independent-main gates or
+independent driver/isolation review.
 
-No paid evaluation, cap-extension migration, real ledger write, global install,
-PR or publication is performed. The original $24.285934/$25 ledger and 40
-unknown reservations remain exact; the additional $25/$50-total request is
-still unanswered. Coordinator full local/native/hosted/inventory/warning/tree/
-independent-main integration gates and any stronger private assertion work
-remain separate from these synthetic external observations.
+The unchanged v1 preflight still refuses the current documentation checkout:
+its broad source inventory includes the previously authorised README Explore
+edits from e6dc4fd. The explicit frozen 33a80d9 checkout passes with the strict
+three-field build-record projection, which is metadata only. Both refusals and
+the frozen-source success are retained separately; no source-comparison check
+was weakened, and neither result authorises a mutable combined/live source.
+
+The unchanged v5 corpus prerequisite separately passed in this same frozen
+image: 30 originals failed independent held-out grades and 30 references
+passed, with complete Rust grade/doctest output. This is not a model run or
+a newer combined-source/image validation.
+
+No paid calls, cap migration, real-ledger write, global install, PR or
+publication occur. The original ledger remains **$24.285934/$25**, 915 rows,
+40 unknown reservations, with original 855 rows/bindings unchanged.
+The present $25 allowance cannot fund a fresh full run. The proposed $25 extra/
+$50 total on that same ledger remains unanswered and unauthorised; its full 30,
+six selected repeats and three long sessions still need budget/admission
+approval. Offline preflight is not live authorization.

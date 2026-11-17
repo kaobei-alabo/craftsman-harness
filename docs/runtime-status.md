@@ -111,7 +111,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
-| Coding-evaluation preparation and reliability evidence | Local frozen-source validation and production-TUI synthetic v2 | Unchanged original/reference graders and scoped external observations; full combined-source/native/hosted/live-budget gates remain; [preparation](coding-evaluation-preparation.md), [owned-terminal v2](owned-terminal-evaluation.md) |
+| Coding-evaluation preparation and reliability evidence | Local frozen-source validation and production-TUI synthetic v3 | Unchanged original/reference graders, private SQLite snapshots and independently requested fixed child; full combined-source/native/hosted/live-budget gates remain; [preparation](coding-evaluation-preparation.md), [owned-terminal v3](owned-terminal-evaluation.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
 | Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
@@ -258,14 +258,19 @@ completion state are in [harness-improvements.md](harness-improvements.md).
 Public headless execution/gadgets, native containment and full typed events /
 Session API keep their separate roadmap gates.
 
-The local [owned-terminal synthetic v2](owned-terminal-evaluation.md) ran the
+The local [owned-terminal synthetic v3](owned-terminal-evaluation.md) runs the
 production TUI at frozen source `33a80d9` in immutable image
 `sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b`.
 It records real one-call approvals, stored-row/pin evidence, actual OSC/PTY
 lifecycle, cancellation, manual compaction and quit/reopen, with an
-independently observed native probe child. Original task behavior, completed
+independently requested fixed native child with verified executed bytes, actual
+bounded wait/EOF and one local forwarding attempt. Whole retained SQLite bytes
+are queried only in an independently held private copy with current-step
+expectations. Duplicate/read negatives require a new saved condition after the
+actual owned return; live writer hold is quarantined. Historical v2 capture
+gaps and first failed repair attempts remain. Original task behavior, completed
 external observations and unverified private callbacks/typed returns/live
-recovery/outer ToolMeta or whole-activity absence remain separate criteria.
+recovery/outer invocation/ToolMeta or whole-activity absence remain separate criteria.
 This synthetic evidence is not a new full live-model score, production-readiness
 decision or OS-containment proof. New combined runtime source/image rebinding
 and coordinator full local/native/hosted/independent-main validation remain
