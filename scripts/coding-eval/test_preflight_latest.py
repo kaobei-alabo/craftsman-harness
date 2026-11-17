@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preflight_latest as latest
@@ -16,6 +17,19 @@ from test_preflight_continuation import appended_row, synthetic_ledger
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAN = ROOT / "evals/coding/latest-runtime-v1/plan.json"
+CORPUS_PATH = "evals/coding/tasks.json"
+
+
+def frozen_corpus_fixture(root):
+    """Seed source33 bytes from the current blob, never its checkout projection."""
+    data = latest.git(root, "cat-file", "blob", "HEAD:" + CORPUS_PATH)
+    header = b"blob " + str(len(data)).encode("ascii") + b"\0"
+    # Independently verified against 33a80d9; no caller/working-copy rehash.
+    original.require(len(data) == 80137
+                     and hashlib.sha256(data).hexdigest() == latest.ORIGINAL_CORPUS_SHA256
+                     and hashlib.sha1(header + data).hexdigest() == "95f8dd7a6336c68f844ec7decb61e92f189bb955",
+                     "source_corpus_differs")
+    return data
 
 
 class Cases(unittest.TestCase):
@@ -33,11 +47,14 @@ class Cases(unittest.TestCase):
         self.plan_path = self.root / "plan.json"
         self.corpus_path = self.root / self.plan["corpus"]["path"]
         self.corpus_path.parent.mkdir(parents=True)
-        self.corpus_path.write_bytes((ROOT / self.plan["corpus"]["path"]).read_bytes())
-        self.corpus = json.loads(self.corpus_path.read_text())
+        self.corpus_path.write_bytes(frozen_corpus_fixture(ROOT))
+        self.corpus = json.loads(self.corpus_path.read_bytes())
         self.options_path = self.root / self.plan["feature_options"]["path"]
         self.options_path.parent.mkdir(parents=True)
-        self.options_path.write_bytes((ROOT / self.plan["feature_options"]["path"]).read_bytes())
+        options = latest.git(ROOT, "cat-file", "blob", "HEAD:" + self.plan["feature_options"]["path"])
+        original.require(hashlib.sha256(options).hexdigest() == self.plan["feature_options"]["sha256"],
+                         "feature_options_digest_changed")
+        self.options_path.write_bytes(options)
         self.extension_path = self.root / self.plan["long_session_corpus"]["path"]
         self.extension = json.loads((ROOT / self.plan["long_session_corpus"]["path"]).read_text())
         self.runtime_file = self.root / "crates/fixture/src.txt"
@@ -238,6 +255,117 @@ class Cases(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertNotIn("synthetic-private-marker", result.stdout + result.stderr)
         self.assertFalse(output.exists())
+
+
+class FixtureSeeding(unittest.TestCase):
+    def setUp(self):
+        self.corpus = frozen_corpus_fixture(ROOT)
+        self.plan = json.loads(PLAN.read_bytes())
+        self.options = latest.git(ROOT, "cat-file", "blob", "HEAD:" + self.plan["feature_options"]["path"])
+        self.temporary = tempfile.TemporaryDirectory(prefix="craftsman-corpus-checkout-")
+        self.addCleanup(self.temporary.cleanup)
+        self.checkout = Path(self.temporary.name)
+        files = {
+            CORPUS_PATH: self.corpus,
+            str(PLAN.relative_to(ROOT)): PLAN.read_bytes(),
+            self.plan["feature_options"]["path"]: self.options,
+            self.plan["long_session_corpus"]["path"]: (ROOT / self.plan["long_session_corpus"]["path"]).read_bytes(),
+        }
+        for path, data in files.items():
+            target = self.checkout / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        self.command("init", "--quiet")
+        self.command("config", "core.autocrlf", "false")
+        self.commit()
+
+    def command(self, *arguments):
+        return subprocess.run(["git", "-C", str(self.checkout), *arguments],
+            check=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+
+    def commit(self):
+        self.command("add", "--all")
+        self.command("-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+            "-c", "user.name=Evaluation fixture", "-c", "user.email=fixture@localhost",
+            "commit", "--quiet", "--no-gpg-sign", "-m", "Owned corpus fixture")
+
+    def case(self):
+        case = Cases("test_read_only_preparation_has_no_live_grade_lease_or_new_allowance")
+        with mock.patch.multiple(sys.modules[__name__], ROOT=self.checkout,
+                PLAN=self.checkout / "evals/coding/latest-runtime-v1/plan.json"):
+            case.setUp()
+        self.addCleanup(case.tearDown)
+        return case
+
+    def test_actual_crlf_checkout_seeds_frozen_lf_corpus_and_options(self):
+        for path in (CORPUS_PATH, self.plan["feature_options"]["path"]):
+            (self.checkout / path).unlink()
+        self.command("-c", "core.autocrlf=true", "checkout-index", "--force", "--",
+            CORPUS_PATH, self.plan["feature_options"]["path"])
+        corpus_path = self.checkout / CORPUS_PATH
+        options_path = self.checkout / self.plan["feature_options"]["path"]
+        self.assertEqual(corpus_path.read_bytes(), self.corpus.replace(b"\n", b"\r\n"))
+        self.assertEqual(options_path.read_bytes(), self.options.replace(b"\n", b"\r\n"))
+        before = {path: path.read_bytes() for path in (corpus_path, options_path)}
+        case = self.case()
+        self.assertEqual(case.corpus_path.read_bytes(), self.corpus)
+        self.assertEqual(case.options_path.read_bytes(), self.options)
+        self.assertEqual(case.plan["corpus"]["sha256"], latest.ORIGINAL_CORPUS_SHA256)
+        report = case.prepare()
+        self.assertTrue(report["offline_checks_passed"])
+        self.assertFalse(report["live_execution_ready"])
+        self.assertEqual(report["paid_model_calls"], 0)
+        for path, data in before.items():self.assertEqual(path.read_bytes(), data)
+
+    def test_wrong_current_blob_refuses_with_rehashed_plan_and_original_working_bytes(self):
+        changed = json.loads(self.corpus)
+        changed["tasks"][0]["held_out"] = "print('changed synthetic grader')\n"
+        for data in (self.corpus.replace(b"\n", b"\r\n"), json.dumps(changed).encode()):
+            with self.subTest(sha256=hashlib.sha256(data).hexdigest()):
+                (self.checkout / CORPUS_PATH).write_bytes(data)
+                self.plan["corpus"]["sha256"] = hashlib.sha256(data).hexdigest()
+                (self.checkout / "evals/coding/latest-runtime-v1/plan.json").write_bytes(json.dumps(self.plan).encode())
+                self.commit()
+                (self.checkout / CORPUS_PATH).write_bytes(self.corpus)
+                with self.assertRaisesRegex(original.Refused, "source_corpus_differs"):
+                    frozen_corpus_fixture(self.checkout)
+                self.assertEqual((self.checkout / CORPUS_PATH).read_bytes(), self.corpus)
+
+    def test_rehashed_fixture_crlf_or_extra_byte_still_refuses(self):
+        for data in (self.corpus.replace(b"\n", b"\r\n"), self.corpus + b"\n"):
+            with self.subTest(sha256=hashlib.sha256(data).hexdigest()):
+                case = self.case()
+                before = case.ledger_path.read_bytes()
+                case.corpus_path.write_bytes(data)
+                case.refresh()
+                self.assertEqual(case.plan["corpus"]["sha256"], hashlib.sha256(data).hexdigest())
+                with self.assertRaisesRegex(original.Refused, "source_corpus_differs"):
+                    case.prepare()
+                self.assertEqual(case.corpus_path.read_bytes(), data)
+                self.assertEqual(case.ledger_path.read_bytes(), before)
+
+    def test_missing_current_blob_has_no_working_copy_fallback(self):
+        self.command("rm", "--quiet", "--", CORPUS_PATH)
+        self.commit()
+        (self.checkout / CORPUS_PATH).write_bytes(self.corpus)
+        with self.assertRaisesRegex(original.Refused, "source_record_unavailable"):
+            frozen_corpus_fixture(self.checkout)
+        self.assertEqual((self.checkout / CORPUS_PATH).read_bytes(), self.corpus)
+
+    def test_options_current_blob_must_match_declared_fixture_digest(self):
+        path = self.checkout / self.plan["feature_options"]["path"]
+        changed = self.options + b"\n"
+        path.write_bytes(changed)
+        self.commit()
+        case = Cases("test_read_only_preparation_has_no_live_grade_lease_or_new_allowance")
+        try:
+            with mock.patch.multiple(sys.modules[__name__], ROOT=self.checkout,
+                    PLAN=self.checkout / "evals/coding/latest-runtime-v1/plan.json"), \
+                    self.assertRaisesRegex(original.Refused, "feature_options_digest_changed"):
+                case.setUp()
+            self.assertFalse((case.root / "synthetic-budget/ledger.json").exists())
+        finally:case.tearDown()
+        self.assertEqual(path.read_bytes(), changed)
 
 
 if __name__ == "__main__":
