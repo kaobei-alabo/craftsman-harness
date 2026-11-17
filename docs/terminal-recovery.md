@@ -106,6 +106,27 @@ actual completed turns and crosses the existing 50-checkpoint retention window;
 no historical transcript or sequence is planted. Original tests and runtime
 contracts remain unchanged.
 
+Two additional owned-session cases use synthetic Claude Messages and Gemini
+GenerateContent after 26 actual completed turns and the existing 50-checkpoint
+retention window. Claude's original thinking/signature and redacted opaque blocks
+remain exact through question cancellation, the final durable save and a fresh
+owner's request on the same connection. The accepted input and committed write
+result remain portable; the cancelled question keeps its actual non-error
+no-answer result while the unstarted sibling keeps its cancellation error.
+
+The Gemini case refuses the final cancellation save with an actual SQLite
+trigger, distinguishes retained memory from the earlier incomplete checkpoint,
+and explicitly saves the retained originals after restoring storage. A fresh
+owner then continues on the original connection with the exact signed parts.
+API-returned call ids remain exact, while generated framework ids for id-less
+native calls are not invented in function responses. Both cases inspect the
+physical file and preserve the write without replay; reopened aggregate usage
+is not fabricated. Synthetic signatures test preservation, not authenticity or
+live provider compatibility. The first run's new fixture incorrectly expected
+the declined question to be an error; that failure is retained separately and
+the correction checks the actual existing tool outcome in portable and native
+history without changing the provider codec.
+
 Full local and fresh all-four/every-step/both-mode CI validation remain required
 before merge, with independent merged-main verification. These checks do not
 prove power-loss behavior, trustworthy disks, native containment or live model

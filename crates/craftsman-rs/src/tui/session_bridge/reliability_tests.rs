@@ -1127,3 +1127,691 @@ async fn recovery_fixture_rejects_unmarked_unknown_and_duplicate_selection_befor
         );
     }
 }
+
+// Separate marked fixture: the earlier Responses/crash helpers remain unchanged.
+const SIGNED_HELPER: &str = "tui::session_bridge::reliability_tests::owned_signed_recovery_fixture";
+const SIGNED_MARKER: &str = "craftsman-signed-recovery=";
+const SIGNED_DONE: &str = "actual owned signed recovery assertions completed";
+const NATIVE_HISTORY: &str = "_craftsman_native_model_history";
+const SIGNED_INITIAL: &str = "Create signed-effect.txt once, then ask before more work.";
+const SIGNED_NO_ANSWER: &str =
+    "The user did not provide an answer. Proceed with your best assumption.";
+const SIGNED_INPUTS: [&str; 2] = [
+    "Retain this accepted α input and the completed physical write.",
+    "保留已接受的原文。\nContinue only after inspecting the saved effects.",
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SignedProtocol {
+    Claude,
+    Gemini,
+}
+
+impl SignedProtocol {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Gemini => "gemini",
+        }
+    }
+    fn messages(self, body: &Value) -> &Value {
+        &body[match self {
+            Self::Claude => "messages",
+            Self::Gemini => "contents",
+        }]
+    }
+    fn output_tokens(self) -> u64 {
+        if self == Self::Gemini { 4 } else { 2 }
+    }
+}
+
+fn signed_write_args() -> Value {
+    json!({"file_path":"signed-effect.txt","content":"one original signed-history effect"})
+}
+
+fn signed_original_items(protocol: SignedProtocol) -> Vec<Value> {
+    let question = json!({"question":"May the signed-history task continue?"});
+    let forbidden = json!({"file_path":"signed-forbidden.txt","content":"must remain absent"});
+    match protocol {
+        SignedProtocol::Claude => vec![
+            json!({"type":"thinking","thinking":"owned fixture reasoning α","signature":"claude-owned-signature=="}),
+            json!({"type":"redacted_thinking","data":"owned opaque α\n=="}),
+            json!({"type":"tool_use","id":"native-signed-write","name":"write_file","input":signed_write_args()}),
+            json!({"type":"tool_use","id":"native-signed-question","name":"ask_user","input":question}),
+            json!({"type":"tool_use","id":"native-signed-never","name":"write_file","input":forbidden}),
+        ],
+        SignedProtocol::Gemini => vec![
+            json!({"thought":true,"text":"owned fixture reasoning α","thoughtSignature":"gemini-owned-thought=="}),
+            // No API id is returned for the actual write. Its framework id is
+            // retained portably, but must never be invented in native responses.
+            json!({"functionCall":{"name":"write_file","args":signed_write_args()},"thoughtSignature":"gemini-owned-write=="}),
+            json!({"functionCall":{"id":"native-signed-question","name":"ask_user","args":question},"thoughtSignature":"gemini-owned-question=="}),
+            json!({"functionCall":{"id":"native-signed-never","name":"write_file","args":forbidden}}),
+        ],
+    }
+}
+
+fn signed_response(protocol: SignedProtocol, items: Vec<Value>) -> ResponseTemplate {
+    let raw = match protocol {
+        SignedProtocol::Claude => {
+            let has_tools = items.iter().any(|part| part["type"] == "tool_use");
+            let mut events =
+                vec![json!({"type":"message_start","message":{"usage":{"input_tokens":3}}})];
+            for (index, part) in items.into_iter().enumerate() {
+                events
+                    .push(json!({"type":"content_block_start","index":index,"content_block":part}));
+                events.push(json!({"type":"content_block_stop","index":index}));
+            }
+            events.push(json!({"type":"message_delta","delta":{"stop_reason":if has_tools {"tool_use"} else {"end_turn"}},"usage":{"output_tokens":2}}));
+            events.push(json!({"type":"message_stop"}));
+            events
+                .iter()
+                .map(|event| format!("data: {event}\n\n"))
+                .collect()
+        }
+        SignedProtocol::Gemini => format!(
+            "data: {}\n\n",
+            json!({"candidates":[{"content":{"parts":items},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"thoughtsTokenCount":2}})
+        ),
+    };
+    ResponseTemplate::new(200).set_body_raw(raw, "text/event-stream")
+}
+
+fn signed_text(protocol: SignedProtocol, text: &str) -> ResponseTemplate {
+    signed_response(
+        protocol,
+        vec![match protocol {
+            SignedProtocol::Claude => json!({"type":"text","text":text}),
+            SignedProtocol::Gemini => json!({"text":text}),
+        }],
+    )
+}
+
+fn signed_config(server: &MockServer, protocol: SignedProtocol) -> Config {
+    serde_json::from_value(json!({"model":"fixture/signed-fixture","providers":{"fixture":{
+        "protocol":if protocol == SignedProtocol::Claude {"anthropic_messages"} else {"gemini_generate_content"},
+        "base_url":format!("{}/signed",server.uri()),"api_key":"isolated-signed-key",
+        "models":{"signed-fixture":{"settings":{"reasoning":null}}}}},
+        "context":{"enabled":true,"max_bytes":32768},"terminal":{"max_rounds":2},
+        "harness_profile":"general","permission_mode":"manual","mcp_servers":[],"lsp_servers":{},
+        "voice":{"enabled":false},"gadgets":{"enabled":false}})).unwrap()
+}
+
+fn assert_signed_record(state: &craftsman_harness::AgentState, protocol: SignedProtocol) {
+    let expected = Value::Array(signed_original_items(protocol));
+    let connections = state.custom[NATIVE_HISTORY]["connections"]
+        .as_object()
+        .unwrap();
+    assert_eq!(
+        connections.len(),
+        1,
+        "only the original configured connection was sampled"
+    );
+    let records = connections.values().next().unwrap().as_array().unwrap();
+    let record = records
+        .iter()
+        .find(|record| record["items"] == expected)
+        .expect("original signed/opaque items remain exact in the real checkpoint");
+    let index = record["index"].as_u64().unwrap() as usize;
+    let message = serde_json::to_value(&state.messages[index]).unwrap();
+    assert_eq!(record["message"], message);
+}
+
+fn assert_signed_request(protocol: SignedProtocol, body: &Value, write_result: &str) {
+    let field = if protocol == SignedProtocol::Claude {
+        "content"
+    } else {
+        "parts"
+    };
+    let role = if protocol == SignedProtocol::Claude {
+        "assistant"
+    } else {
+        "model"
+    };
+    let messages = protocol.messages(body).as_array().unwrap();
+    let original = Value::Array(signed_original_items(protocol));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["role"] == role && message[field] == original),
+        "the original connection receives the exact native group after recovery"
+    );
+    for input in SIGNED_INPUTS {
+        assert!(
+            has_string(protocol.messages(body), input),
+            "actual portable accepted input reaches the provider"
+        );
+    }
+    let parts: Vec<_> = messages
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .flat_map(|message| message[field].as_array().unwrap())
+        .collect();
+    if protocol == SignedProtocol::Claude {
+        assert!(parts.iter().any(|part| part["type"] == "tool_result"
+            && part["tool_use_id"] == "native-signed-write"
+            && part["content"] == write_result
+            && part["is_error"] == false));
+        assert!(parts.iter().any(|part| part["type"] == "tool_result"
+            && part["tool_use_id"] == "native-signed-question"
+            && part["content"] == SIGNED_NO_ANSWER
+            && part["is_error"] == false));
+        assert!(parts.iter().any(|part| part["type"] == "tool_result"
+            && part["tool_use_id"] == "native-signed-never"
+            && part["is_error"] == true));
+    } else {
+        let results: Vec<_> = parts
+            .iter()
+            .filter_map(|part| part.get("functionResponse"))
+            .collect();
+        assert!(
+            results.iter().any(|result| result["name"] == "write_file"
+                && result.get("id").is_none()
+                && result["response"]["result"] == write_result),
+            "a generated framework id is never echoed for the id-less original native write"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result["id"] == "native-signed-question"
+                    && result["response"]["result"] == SIGNED_NO_ANSWER)
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| result["id"] == "native-signed-never"
+                    && result["response"].get("error").is_some())
+        );
+        assert!(
+            !protocol
+                .messages(body)
+                .to_string()
+                .contains("craftsman-gemini-")
+        );
+    }
+}
+
+async fn signed_recovery_case(directory: &Path, protocol: SignedProtocol) {
+    let server = MockServer::start().await;
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let write_result = Arc::new(Mutex::new(None::<String>));
+    let captured = requests.clone();
+    let completed_write = write_result.clone();
+    let recovery_sample = usize::from(protocol == SignedProtocol::Gemini);
+    Mock::given(method("POST"))
+        .and(path(if protocol == SignedProtocol::Claude {
+            "/signed/messages"
+        } else {
+            "/signed/models/signed-fixture:streamGenerateContent"
+        }))
+        .and(header(if protocol == SignedProtocol::Claude { "x-api-key" } else { "x-goog-api-key" }, "isolated-signed-key"))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let ordinal = {
+                let mut requests = captured.lock().unwrap();
+                let ordinal = requests.len();
+                requests.push(body.clone());
+                ordinal
+            };
+            if protocol == SignedProtocol::Claude {
+                assert_eq!(body["model"], "signed-fixture");
+            } else {
+                assert_eq!(request.url.query(), Some("alt=sse"));
+            }
+            if ordinal < PRIOR_TURNS {
+                return signed_text(protocol, &format!("Completed signed-history fixture turn {ordinal}."));
+            }
+            let phase = ordinal - PRIOR_TURNS;
+            if phase == 0 {
+                return signed_response(protocol, signed_original_items(protocol));
+            }
+            assert_signed_request(protocol, &body, completed_write.lock().unwrap().as_ref().unwrap());
+            if protocol == SignedProtocol::Gemini && phase == 1 {
+                return signed_text(protocol, "The restored store saved the retained original input.");
+            }
+            match phase - recovery_sample {
+                1 => signed_response(protocol, vec![match protocol {
+                    SignedProtocol::Claude => json!({"type":"tool_use","id":"native-restored-read","name":"read_file","input":{"file_path":"signed-effect.txt"}}),
+                    SignedProtocol::Gemini => json!({"functionCall":{"name":"read_file","args":{"file_path":"signed-effect.txt"}}}),
+                }]),
+                2 => {
+                    assert!(protocol.messages(&body).to_string().contains("one original signed-history effect"));
+                    if protocol == SignedProtocol::Gemini {
+                        assert!(body["contents"].as_array().unwrap().iter()
+                            .flat_map(|message| message["parts"].as_array().unwrap())
+                            .filter_map(|part| part.get("functionResponse"))
+                            .any(|result| result["name"] == "read_file" && result.get("id").is_none()));
+                    }
+                    signed_text(protocol, "Fresh owner inspected the original effect without replay.")
+                }
+                _ => panic!("unexpected signed recovery request or replay"),
+            }
+        })
+        .expect((PRIOR_TURNS + 3 + recovery_sample) as u64)
+        .mount(&server).await;
+    let cfg = signed_config(&server, protocol);
+    let approval = Arc::new(Mutex::new(ApprovalState::default()));
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut slot = AgentSlot::spawn(
+        &cfg,
+        approval.clone(),
+        UiBridge { tx },
+        craftsman_harness::SessionCancellation::new(),
+    );
+    let retired_owner = slot.cancellation();
+    let session = slot.get().await.as_ref().unwrap();
+    for index in 0..PRIOR_TURNS {
+        let result = session
+            .agent
+            .run_turn(format!(
+                "Record original signed-history fixture turn {index}."
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(result, TurnResult::Done(output)
+            if output.final_text() == format!("Completed signed-history fixture turn {index}.")));
+    }
+    let store = session.checkpointer.as_ref().unwrap().clone();
+    assert_eq!(store.list_threads().await.unwrap()[0].checkpoints, 50);
+    let thread = session.thread_id.clone();
+    let mut app = draft(&cfg);
+    let (task, approvals) = until_question(session, &mut app, &mut events, SIGNED_INITIAL).await;
+    assert_eq!(approvals, 1);
+    let state = session.agent.state.lock().unwrap().clone();
+    let calls = state
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Msg::Assistant { tool_calls, .. } if tool_calls.len() == 3 => Some(tool_calls.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(calls[0].name, "write_file");
+    assert_eq!(calls[1].id, "native-signed-question");
+    assert_eq!(calls[2].id, "native-signed-never");
+    if protocol == SignedProtocol::Gemini {
+        assert!(calls[0].id.starts_with("craftsman-gemini-"));
+    } else {
+        assert_eq!(calls[0].id, "native-signed-write");
+    }
+    let completed = state
+        .messages
+        .iter()
+        .find_map(|message| match message {
+            Msg::Tool {
+                tool_call_id,
+                content,
+                is_error: false,
+            } if tool_call_id == &calls[0].id => Some(content.clone()),
+            _ => None,
+        })
+        .unwrap();
+    *write_result.lock().unwrap() = Some(completed.clone());
+    let modified = std::fs::metadata(directory.join("signed-effect.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    for input in SIGNED_INPUTS {
+        assert!(session.agent.steer(input));
+    }
+    if protocol == SignedProtocol::Gemini {
+        store.connection().execute(r#"CREATE TRIGGER reject_gemini_signed_final BEFORE INSERT ON checkpoints WHEN instr(NEW.state_json, '"in_progress":false') > 0 BEGIN SELECT RAISE(ABORT, 'private signed final failure'); END"#, ()).await.unwrap();
+    }
+    cancel_question(session, &mut app);
+    assert!(!session.agent.steer("late signed input is not accepted"));
+    let result = returned(task).await;
+    if protocol == SignedProtocol::Gemini {
+        assert!(
+            matches!(&result, Err(AgentError::State(text)) if text.contains("checkpoint could not be saved")
+            && !text.contains("private signed final failure"))
+        );
+        assert!(session.agent.checkpoint_failed());
+    } else {
+        assert!(
+            matches!(&result, Ok(TurnResult::Done(output)) if output.final_text() == "Stopped by the user.")
+        );
+        assert!(!session.agent.checkpoint_failed());
+    }
+    finish_ui(session, &mut app, &mut events, result);
+    assert_eq!(
+        app.current_program_status(false),
+        if protocol == SignedProtocol::Gemini {
+            Status::Error
+        } else {
+            Status::Idle
+        }
+    );
+    let live = session.agent.state.lock().unwrap().clone();
+    assert_group_results(&live.messages);
+    assert_signed_record(&live, protocol);
+    assert!(live.messages.iter().any(|message| matches!(message,
+        Msg::Tool { tool_call_id, content, is_error:false }
+        if tool_call_id == "native-signed-question" && content == SIGNED_NO_ANSWER)));
+    assert!(live.messages.iter().any(|message| matches!(message,
+        Msg::Tool { tool_call_id, content, is_error:true }
+        if tool_call_id == "native-signed-never" && content.contains("cancelled"))));
+    let accepted: Vec<_> = live
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Msg::User { content } if SIGNED_INPUTS.contains(&content.as_str()) => {
+                Some(content.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(accepted, SIGNED_INPUTS);
+    let (cancel_sequence, saved, _) = store.load_latest(&thread).await.unwrap().unwrap();
+    assert_signed_record(&saved, protocol);
+    if protocol == SignedProtocol::Gemini {
+        assert_eq!(saved.custom[RECOVERY]["in_progress"], true);
+        assert!(
+            saved
+                .messages
+                .iter()
+                .all(|message| !matches!(message, Msg::User { content }
+            if SIGNED_INPUTS.contains(&content.as_str())))
+        );
+        assert!(
+            app.transcript
+                .iter()
+                .all(|item| !item.text.contains("Session saved")
+                    && !item.text.starts_with("Paused after "))
+        );
+        let model = Arc::new(craftsman_harness::testing::ScriptedModel::new(vec![]));
+        let reader = Agent::builder(model.clone())
+            .checkpointer(store.clone())
+            .durable_turn_checkpoints(true)
+            .build();
+        assert!(reader.load_thread(&thread).await.unwrap());
+        assert_eq!(reader.recovery_info().unwrap().unresolved_tool_calls, 1);
+        assert!(reader.state.lock().unwrap().messages.iter().any(|message| matches!(message,
+            Msg::Tool { tool_call_id, content, is_error:true } if tool_call_id == "native-signed-never" && content.contains("may have had effects"))));
+        assert!(model.requests.lock().unwrap().is_empty());
+        drop(reader);
+        assert_eq!(requests.lock().unwrap().len(), PRIOR_TURNS + 1);
+        store
+            .connection()
+            .execute("DROP TRIGGER reject_gemini_signed_final", ())
+            .await
+            .unwrap();
+        let result = session.agent.run_turn("Save the retained original input after restoring local storage, without repeating the effect.").await.unwrap();
+        assert!(
+            matches!(result, TurnResult::Done(output) if output.final_text() == "The restored store saved the retained original input.")
+        );
+        assert!(!session.agent.checkpoint_failed());
+    } else {
+        assert_eq!(saved.custom[RECOVERY]["in_progress"], false);
+        assert_eq!(saved.messages, live.messages);
+    }
+    let (durable_sequence, durable, _) = store.load_latest(&thread).await.unwrap().unwrap();
+    assert_eq!(durable.custom[RECOVERY]["in_progress"], false);
+    for input in SIGNED_INPUTS {
+        assert_eq!(
+            durable
+                .messages
+                .iter()
+                .filter(|message| **message == Msg::user(input))
+                .count(),
+            1
+        );
+    }
+    let prior_requests = requests.lock().unwrap().len();
+    assert_eq!(
+        *session.usage.lock().unwrap(),
+        (
+            (PRIOR_TURNS as u64 + 1 + recovery_sample as u64) * 3,
+            (PRIOR_TURNS as u64 + 1 + recovery_sample as u64) * protocol.output_tokens()
+        )
+    );
+    slot.shutdown().await;
+    assert!(retired_owner.is_cancelled());
+
+    // Construct a distinct real owner on the exact original connection. Loading
+    // does no model work, and subsequent native continuation uses the saved cache.
+    let (tx, _events) = mpsc::unbounded_channel();
+    let mut replacement = AgentSlot::spawn(
+        &cfg,
+        approval.clone(),
+        UiBridge { tx },
+        craftsman_harness::SessionCancellation::new(),
+    );
+    let _ = replacement.get().await;
+    assert!(
+        replacement
+            .peek_mut()
+            .unwrap()
+            .load_thread(&thread)
+            .await
+            .unwrap()
+    );
+    let session = replacement.peek().unwrap();
+    assert!(session.agent.recovery_info().is_none());
+    assert_eq!(
+        session.agent.state.lock().unwrap().messages,
+        durable.messages
+    );
+    assert_signed_record(&session.agent.state.lock().unwrap(), protocol);
+    assert_eq!(requests.lock().unwrap().len(), prior_requests);
+    assert_eq!(
+        *session.usage.lock().unwrap(),
+        (0, 0),
+        "new owner does not fabricate recovered aggregate usage"
+    );
+    assert_eq!(
+        store.load_latest(&thread).await.unwrap().unwrap().0,
+        durable_sequence
+    );
+    let result = session
+        .agent
+        .run_turn("Inspect the original signed-history effect without repeating its write.")
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, TurnResult::Done(output) if output.final_text() == "Fresh owner inspected the original effect without replay.")
+    );
+    assert_eq!(
+        *session.usage.lock().unwrap(),
+        (6, protocol.output_tokens() * 2)
+    );
+    let (final_sequence, final_state, _) = store.load_latest(&thread).await.unwrap().unwrap();
+    assert!(final_sequence > durable_sequence);
+    assert_eq!(final_state.custom[RECOVERY]["in_progress"], false);
+    assert_signed_record(&final_state, protocol);
+    assert_group_results(&final_state.messages);
+    assert_eq!(store.list_threads().await.unwrap()[0].checkpoints, 50);
+    assert!(!approval.lock().unwrap().auto_approve);
+    assert_eq!(
+        std::fs::read(directory.join("signed-effect.txt")).unwrap(),
+        b"one original signed-history effect"
+    );
+    assert_eq!(
+        std::fs::metadata(directory.join("signed-effect.txt"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        modified
+    );
+    assert!(!directory.join("signed-forbidden.txt").exists());
+    std::fs::write(directory.join("signed-recovery-evidence.json"), serde_json::to_vec(&json!({
+        "thread":thread,"protocol":protocol.name(),"cancel_sequence":cancel_sequence,
+        "durable_sequence":durable_sequence,"final_sequence":final_sequence,
+        "requests":requests.lock().unwrap().len(),"observed_final_save_failure":protocol == SignedProtocol::Gemini})).unwrap()).unwrap();
+    replacement.shutdown().await;
+    assert!(!replacement.peek().unwrap().agent.checkpoint_failed());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "owned signed recovery fixture; explicit unique protocol marker required before path/config access"]
+async fn owned_signed_recovery_fixture() {
+    let selected: Vec<_> = std::env::args_os()
+        .filter_map(|arg| {
+            arg.to_str()
+                .and_then(|arg| arg.strip_prefix(SIGNED_MARKER))
+                .map(str::to_owned)
+        })
+        .collect();
+    if selected.len() != 1 || !matches!(selected[0].as_str(), "claude" | "gemini") {
+        return;
+    }
+    let protocol = if selected[0] == "claude" {
+        SignedProtocol::Claude
+    } else {
+        SignedProtocol::Gemini
+    };
+    let directory = std::env::current_dir().unwrap();
+    signed_recovery_case(&directory, protocol).await;
+    eprintln!("{SIGNED_DONE}");
+}
+
+async fn run_signed_child(markers: &[&str]) -> tempfile::TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let config = directory.path().join("config");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--ignored",
+        "--exact",
+        SIGNED_HELPER,
+        "--test-threads=1",
+        "--nocapture",
+    ]);
+    for marker in markers {
+        command
+            .arg("--skip")
+            .arg(format!("{SIGNED_MARKER}{marker}"));
+    }
+    command
+        .current_dir(&workspace)
+        .env_clear()
+        .env("HOME", directory.path())
+        .env("USERPROFILE", directory.path())
+        .env("CRAFTSMAN_CONFIG_DIR", &config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
+    let mut child = command.spawn().unwrap();
+    let mut stdout = child.stdout.take().unwrap().take(65537);
+    let mut stderr = child.stderr.take().unwrap().take(65537);
+    let outcome = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let (status, _, _) = tokio::try_join!(
+            child.wait(),
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err)
+        )?;
+        Ok::<_, std::io::Error>((status, out, err))
+    })
+    .await;
+    let (status, out, err) = match outcome {
+        Ok(Ok(result)) => result,
+        _ => {
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.kill()).await;
+            panic!("owned signed recovery fixture exceeded its execution/cleanup bound");
+        }
+    };
+    assert!(out.len() <= 65536 && err.len() <= 65536);
+    assert!(status.success(), "{}", std::str::from_utf8(&err).unwrap());
+    assert!(
+        std::str::from_utf8(&out)
+            .unwrap()
+            .contains("1 passed; 0 failed")
+    );
+    let completions = std::str::from_utf8(&err)
+        .unwrap()
+        .lines()
+        .filter(|line| *line == SIGNED_DONE)
+        .count();
+    let selected = markers.len() == 1 && matches!(markers[0], "claude" | "gemini");
+    assert_eq!(completions, usize::from(selected));
+    if !selected {
+        assert!(!config.join("threads.db").exists());
+        assert_eq!(std::fs::read_dir(&workspace).unwrap().count(), 0);
+    }
+    directory
+}
+
+async fn verify_signed_reopen(directory: &Path, protocol: SignedProtocol) {
+    let workspace = directory.join("workspace");
+    let info: Value = serde_json::from_slice(
+        &std::fs::read(workspace.join("signed-recovery-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(info["protocol"], protocol.name());
+    assert_eq!(
+        info["requests"],
+        PRIOR_TURNS + 3 + usize::from(protocol == SignedProtocol::Gemini)
+    );
+    let store = Arc::new(
+        crate::checkpoints::LibsqlCheckpointer::open_at_for_workspace(
+            directory.join("config/threads.db"),
+            workspace.canonicalize().unwrap().to_string_lossy().into(),
+        )
+        .await
+        .unwrap(),
+    );
+    let model = Arc::new(craftsman_harness::testing::ScriptedModel::new(vec![]));
+    let fresh = Agent::builder(model.clone())
+        .checkpointer(store.clone())
+        .durable_turn_checkpoints(true)
+        .build();
+    assert!(
+        fresh
+            .load_thread(info["thread"].as_str().unwrap())
+            .await
+            .unwrap()
+    );
+    assert!(fresh.recovery_info().is_none());
+    assert!(model.requests.lock().unwrap().is_empty());
+    let (sequence, saved, _) = store
+        .load_latest(info["thread"].as_str().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(sequence, info["final_sequence"].as_u64().unwrap());
+    assert_eq!(saved.custom[RECOVERY]["in_progress"], false);
+    assert_signed_record(&saved, protocol);
+    assert_group_results(&saved.messages);
+    for input in SIGNED_INPUTS {
+        assert_eq!(
+            saved
+                .messages
+                .iter()
+                .filter(|message| **message == Msg::user(input))
+                .count(),
+            1
+        );
+    }
+    assert_eq!(
+        std::fs::read(workspace.join("signed-effect.txt")).unwrap(),
+        b"one original signed-history effect"
+    );
+    assert!(!workspace.join("signed-forbidden.txt").exists());
+}
+
+#[tokio::test]
+async fn actual_claude_signed_and_opaque_blocks_survive_long_session_cancel_and_fresh_owner() {
+    let guard = run_signed_child(&[]).await;
+    assert!(!guard.path().join("config/threads.db").exists());
+    let unknown = run_signed_child(&["unknown"]).await;
+    assert!(!unknown.path().join("config/threads.db").exists());
+    let directory = run_signed_child(&["claude"]).await;
+    verify_signed_reopen(directory.path(), SignedProtocol::Claude).await;
+}
+
+#[tokio::test]
+async fn actual_gemini_native_ids_survive_failed_cancel_save_recovery_and_fresh_owner() {
+    let guard = run_signed_child(&["gemini", "gemini"]).await;
+    assert!(!guard.path().join("config/threads.db").exists());
+    let directory = run_signed_child(&["gemini"]).await;
+    verify_signed_reopen(directory.path(), SignedProtocol::Gemini).await;
+}

@@ -126,6 +126,14 @@ and the replacement remains usable. Its loopback request excludes the old
 model's opaque native item. A later question cancellation and reopen preserve
 the new accepted input without replaying the earlier write.
 
+Separate Claude/Gemini recovery cases construct a fresh owned session on the
+exact original connection after cancellation and save handling. Its next real
+loopback request retains the original signed or opaque parts with the committed
+portable tool group and accepted input. Gemini's mixed returned/id-less calls
+keep their native identity rules after a failed final save and explicit recovery.
+These cases complement connection-switching coverage; they do not forward signed
+data to another connection or infer recovered usage totals.
+
 Full local/all-four/every-step/both-mode hosted checks still gate merge, followed
 by independent merged-main validation before local fast-forwards. Tests do not
 measure live quality, billing or OS containment. Remaining
