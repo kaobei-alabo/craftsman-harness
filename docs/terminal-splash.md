@@ -22,7 +22,13 @@ and the splash continues through the normal SafeBackend renderer.
 
 The artwork and responsive layout live in
 `crates/craftsman-rs/src/tui/render.rs`; `tui/app.rs` accounts for the same six
-art rows when estimating transcript height. The README image is captured from
-the CLI in an isolated native terminal. Existing splash tests cover the border,
-mark, small hammer, metadata styles, narrow caption and widths from 0 to 144,
-including the unchanged standard startup height.
+art rows when estimating transcript height. The README's terminal screenshot is
+captured from the CLI in an isolated native terminal. Existing splash tests cover
+the border, mark, small hammer, metadata styles, narrow caption and widths from
+0 to 144, including the unchanged standard startup height.
+
+The README header uses a vector rendering of the same 匠 identity: solid gray
+strokes, a turquoise accent, outlined `craftsman` lettering and a miniature
+filled hammer. The [light](assets/craftsman-logo-light.svg) and
+[dark](assets/craftsman-logo-dark.svg) versions have transparent backgrounds;
+their lettering is stored as paths, so the logo needs no font download.
