@@ -1,8 +1,11 @@
-# Craftsman
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/craftsman-logo-dark.svg">
+    <img src="docs/assets/craftsman-logo-light.svg" alt="匠 — Craftsman" width="560">
+  </picture>
+</h1>
 
-**A coding agent that builds its own tools.**
-
-![Craftsman terminal with a block-drawn 匠 mark, small hammer and gray/turquoise model connection status](docs/assets/craftsman-splash.png)
+<p align="center"><strong>A coding agent that builds its own tools.</strong></p>
 
 Craftsman is a Rust terminal coding agent that reads your code, makes edits,
 runs commands and carries work across sessions. Bring your own GPT, Claude,
@@ -10,6 +13,8 @@ Gemini or OpenAI-compatible model connection.
 
 Its superpower: turn a useful routine into a **reusable WebAssembly gadget**,
 then use it as a tool in the next model round.
+
+![Craftsman terminal with a block-drawn 匠 mark, small hammer and gray/turquoise model connection status](docs/assets/craftsman-splash.png)
 
 ## From a task to a new tool
 
