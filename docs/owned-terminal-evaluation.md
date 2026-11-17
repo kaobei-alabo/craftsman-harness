@@ -53,7 +53,7 @@ it is not another real allowance. The real ledger is read before/after,
 never mounted/written.
 
 Every run uses fresh create-only output, retains exact scenario bytes, copies
-the evaluation Python source before starting producers, and binds its source
+the evaluation implementation before starting producers, and binds its source
 manifest and actual mounted bundle hashes into the receipt. Changed source
 copies, bundles or observation files refuse authentication.
 
@@ -98,7 +98,7 @@ this is not a general compaction grader. Noncompaction cases retain the exact
 original ordered input/group instances.
 
 Live writer-hold/save-refusal is **quarantined, unverified and unexecuted**.
-The selected Python boundary cannot anchor its actual live connection; a
+The selected evaluation boundary cannot anchor its actual live connection; a
 copied-file lock is not a live-store lock. Historical v2 held-writer captures
 and original registered-builder SQLite failure tests remain. Selecting
 `--negative-case save-refusal` refuses before image/config/model work.
@@ -152,7 +152,7 @@ live RecoveryInfo/reconciliation, outer invocation/ToolMeta/truncation, whole
 activity/quiescence, arbitrary-shell no-reread, external-writer CAS/rollback
 and receiver exactly-once remain **unverified**.
 `all_stronger_private_criteria_verified=false`. The operator and Docker daemon
-are trusted; Python private tokens/HMAC do not protect against an operator
+are trusted; private issuer tokens/HMAC do not protect against an operator
 who rewrites the driver or obtains its key. This does not establish OS
 containment, cross-process leases, remote billing termination or release readiness.
 

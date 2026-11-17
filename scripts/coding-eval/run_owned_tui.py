@@ -207,6 +207,16 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(text.encode())
     workspace_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        return _run_case_with_workspace(root, case, task, scenario, extension, image,
+                                        build, contract, variant, workspace, workspace_fd)
+    finally:
+        os.close(workspace_fd)
+
+
+def _run_case_with_workspace(root, case, task, scenario, extension, image, build,
+                             contract, variant, workspace, workspace_fd):
+    """Borrow the run_case-owned descriptor through preparation and cleanup."""
     git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Evaluation fixture", "-c", "user.email=fixture@localhost"]
     subprocess.run([*git, "init", "--quiet", str(workspace)], check=True)
     subprocess.run([*git, "-C", str(workspace), "add", "--all"], check=True)
@@ -645,7 +655,6 @@ def run_case(root, case, task, scenario, extension, image, build, contract, vari
                 issuer.close()
             if snapshots is not None:
                 snapshots.close()
-            os.close(workspace_fd)
             with (case / "cleanup.json").open("x") as output:
                 json.dump({"kind": "owned_driver_cleanup_observations", "objects": cleanups,
                     "process_close_errors": close_errors, "passed": not close_errors and all(item["cleanup_passed"] for item in cleanups)}, output, indent=2)

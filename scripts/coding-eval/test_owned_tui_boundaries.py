@@ -6,6 +6,7 @@ Synthetic data checks below do not mint runtime receipts.
 """
 import ast
 import base64
+import errno
 from copy import deepcopy
 import hashlib
 import json
@@ -32,6 +33,7 @@ from owned_tui_client import TuiOwner, ClientFailure
 from preflight_continuation import canonical, Refused
 from test_long_session import CORPUS, EXTENSION, synthetic_capture
 from run_owned_tui import NEGATIVE_PROMPTS, client_bundle, collector_bundle, scenario_actions
+import run_owned_tui as runtime_source
 
 ROOT = Path(__file__).resolve().parents[2]
 V3 = json.loads((ROOT / "evals/coding/owned-terminal-v3/scenarios.json").read_bytes())
@@ -862,6 +864,176 @@ class SnapshotChannelBoundaries(unittest.TestCase):
 
 
 class CleanupAndMarkerBoundaries(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "Retained descriptor cleanup requires POSIX")
+    def test_snapshot_cleanup_attempts_siblings_once_and_preserves_unknown_close_failure(self):
+        for phase in ("acquisition", "private_copy"):
+            for status in ("after_actual_close", "before_close_unknown"):
+                for primary_failure in (False, True):
+                    with self.subTest(phase=phase, status=status, primary=primary_failure), \
+                            tempfile.TemporaryDirectory(prefix="owned-close-failure-") as temporary:
+                        parent = Path(temporary)
+                        source = parent / "task"
+                        connection, directory, database = SqliteSnapshotBoundaries().prepare(source)
+                        acquisition = snapshots.acquire(directory, database, named_root=source)
+                        reader = snapshots.PrivateReader(parent / "private", [source])
+                        actual_helper, actual_close = snapshots.close_owned_once, os.close
+                        owners, attempted = [], []
+                        primary = snapshots.SnapshotFailure("injected_primary_snapshot_failure")
+                        def closing(values):
+                            values = list(values)
+                            owners.extend(values)
+                            def fault(descriptor):
+                                attempted.append(descriptor)
+                                if descriptor == values[0][1]:
+                                    if status == "after_actual_close":
+                                        actual_close(descriptor)
+                                    raise OSError(errno.EIO, "injected close outcome unknown")
+                                return actual_close(descriptor)
+                            # Only owned closes are instrumented; temporary
+                            # directory disposal may safely reuse fd numbers.
+                            with mock.patch.object(snapshots.os, "close", side_effect=fault):
+                                return actual_helper(values)
+                        try:
+                            with mock.patch.object(snapshots, "close_owned_once", side_effect=closing):
+                                with self.assertRaisesRegex(snapshots.SnapshotFailure, "snapshot_cleanup_incomplete") as failed:
+                                    if phase == "acquisition":
+                                        if primary_failure:
+                                            with mock.patch.object(snapshots, "validate_pair", side_effect=primary):
+                                                snapshots.acquire(directory, database, named_root=source)
+                                        else:
+                                            snapshots.acquire(directory, database, named_root=source)
+                                    elif primary_failure:
+                                        with mock.patch.object(reader, "_query_copy", side_effect=primary):
+                                            reader.query(acquisition, "owned-thread", "/workspace", 2)
+                                    else:
+                                        reader.query(acquisition, "owned-thread", "/workspace", 2)
+                            self.assertEqual(len(owners), 3)
+                            self.assertEqual(attempted, [descriptor for _, descriptor in owners])
+                            self.assertEqual(attempted.count(owners[0][1]), 1)
+                            self.assertEqual(failed.exception.cleanup_failures,
+                                ({"owner": owners[0][0], "errno": errno.EIO, "outcome": "unknown_not_retried"},))
+                            self.assertIs(failed.exception.primary_failure, primary if primary_failure else None)
+                            self.assertIs(failed.exception.__cause__, primary if primary_failure else None)
+                            for _, descriptor in owners[1:]:
+                                with self.assertRaises(OSError):
+                                    os.fstat(descriptor)
+                            if status == "after_actual_close":
+                                with self.assertRaises(OSError):
+                                    os.fstat(owners[0][1])
+                            else:
+                                # Before-close failure leaves the first outcome
+                                # uncertain. The tested code must not retry it.
+                                os.fstat(owners[0][1])
+                            self.assertFalse((parent / "receipt.json").exists())
+                        finally:
+                            if owners and status == "before_close_unknown":
+                                # Independent fixture-owner disposal, after all
+                                # no-retry assertions; not a production retry.
+                                actual_close(owners[0][1])
+                            reader.close()
+                            actual_close(database)
+                            actual_close(directory)
+                            connection.close()
+
+    @unittest.skipUnless(os.name == "posix", "Retained descriptor cleanup requires POSIX")
+    def test_private_reader_close_error_retires_owner_without_retry(self):
+        with tempfile.TemporaryDirectory(prefix="owned-reader-close-failure-") as temporary:
+            parent = Path(temporary)
+            source = parent / "task"
+            source.mkdir()
+            reader = snapshots.PrivateReader(parent / "private", [source])
+            descriptor = reader.fd
+            actual_close = os.close
+            attempts = []
+            def close(value):
+                attempts.append(value)
+                actual_close(value)
+                raise OSError(errno.EIO, "injected close error after release")
+            with mock.patch.object(snapshots.os, "close", side_effect=close):
+                with self.assertRaisesRegex(snapshots.SnapshotFailure, "snapshot_cleanup_incomplete"):
+                    reader.close()
+                reader.close()
+            self.assertEqual(attempts, [descriptor])
+            self.assertIsNone(reader.fd)
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    @unittest.skipUnless(os.name == "posix", "Retained directory ownership requires POSIX")
+    def test_preparation_failures_close_the_exact_acquired_workspace_descriptor(self):
+        scenario = V3["scenarios"][2]
+        task = next(value for value in CORPUS["tasks"] if value["id"] == scenario["base_task"])
+        source_directory = ROOT / "scripts/coding-eval"
+        for failure in ("first_git", "source_copy", "client_bundle", "collector_bundle"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="owned-preparation-failure-") as temporary:
+                case = Path(temporary) / "case"
+                case.mkdir()
+                acquired = []
+                actual_open = os.open
+                actual_read = Path.read_bytes
+                def track(path, flags, *args, **kwargs):
+                    descriptor = actual_open(path, flags, *args, **kwargs)
+                    if Path(path) == case / "workspace":
+                        acquired.append(descriptor)
+                    return descriptor
+                def read(path):
+                    if failure == "source_copy" and path.parent == source_directory:
+                        raise OSError("injected source preparation failure")
+                    return actual_read(path)
+                try:
+                    with mock.patch.object(runtime_source.os, "open", side_effect=track), \
+                            mock.patch.object(runtime_source.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as git_prep, \
+                            mock.patch.object(Path, "read_bytes", read), \
+                            mock.patch.object(runtime_source, "client_bundle", return_value=case / "trusted-client.py") as client_prep, \
+                            mock.patch.object(runtime_source, "collector_bundle", return_value=case / "trusted-collector.py") as collector_prep, \
+                            mock.patch.object(runtime_source, "docker") as docker, \
+                            mock.patch.object(runtime_source, "JsonProcess") as process, \
+                            mock.patch.object(runtime_source.subprocess, "Popen") as popen, \
+                            mock.patch.object(runtime_source, "seal_actual_driver") as seal:
+                        if failure == "first_git":
+                            git_prep.side_effect = RuntimeError("injected first Git preparation failure")
+                        elif failure == "client_bundle":
+                            client_prep.side_effect = RuntimeError("injected client bundle preparation failure")
+                        elif failure == "collector_bundle":
+                            collector_prep.side_effect = RuntimeError("injected collector bundle preparation failure")
+                        with self.assertRaises((OSError, RuntimeError)):
+                            runtime_source.run_case(ROOT, case, task, scenario, {}, collector_source.IMAGE, {}, V3)
+                        self.assertEqual(len(acquired), 1)
+                        with self.assertRaises(OSError):
+                            os.fstat(acquired[0])
+                        docker.assert_not_called()
+                        process.assert_not_called()
+                        popen.assert_not_called()
+                        seal.assert_not_called()
+                        self.assertFalse((case / "receipt.json").exists())
+                        self.assertFalse((case / "capture.json").exists())
+                        self.assertFalse((case / "workspace/probe_calls.txt").exists())
+                finally:
+                    for descriptor in acquired:
+                        try:
+                            os.close(descriptor)
+                        except OSError:
+                            pass
+
+    @unittest.skipUnless(os.name == "posix", "Retained directory ownership requires POSIX")
+    def test_workspace_owner_preserves_borrowed_return_and_closes_once(self):
+        scenario = V3["scenarios"][2]
+        task = next(value for value in CORPUS["tasks"] if value["id"] == scenario["base_task"])
+        result = object()
+        acquired = []
+        def borrowed(*arguments):
+            descriptor = arguments[-1]
+            os.fstat(descriptor)
+            acquired.append(descriptor)
+            return result
+        with tempfile.TemporaryDirectory(prefix="owned-workspace-return-") as temporary:
+            case = Path(temporary)
+            with mock.patch.object(runtime_source, "_run_case_with_workspace", side_effect=borrowed), \
+                    mock.patch.object(runtime_source.os, "close", wraps=os.close) as close:
+                self.assertIs(runtime_source.run_case(ROOT, case, task, scenario, {}, collector_source.IMAGE, {}, V3), result)
+                self.assertEqual(close.call_args_list, [mock.call(acquired[0])])
+            with self.assertRaises(OSError):
+                os.fstat(acquired[0])
+
     def test_released_approval_with_stale_blocked_display_is_not_a_snapshot_stage(self):
         owner = TuiOwner.__new__(TuiOwner)
         owner.facts = SimpleNamespace(state="blocked", kind="permission", records=[{"is_root": True, "state": "blocked"}])

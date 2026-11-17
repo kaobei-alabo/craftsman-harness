@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import sys
 import tempfile
 
 
@@ -19,6 +20,27 @@ class SnapshotFailure(ValueError):
 def check(condition, code):
     if not condition:
         raise SnapshotFailure(code)
+
+
+def close_owned_once(owners):
+    """Attempt every owned close once; errors never become completion.
+
+    A close error leaves its outcome unknown, even if the OS already released
+    the handle. Do not retry a descriptor number that may have been reused.
+    """
+    primary = sys.exc_info()[1]
+    failures = []
+    for name, descriptor in owners:
+        try:
+            os.close(descriptor)
+        except OSError as error:
+            failures.append({"owner": name, "errno": error.errno,
+                             "outcome": "unknown_not_retried"})
+    if failures:
+        error = SnapshotFailure("snapshot_cleanup_incomplete")
+        error.cleanup_failures = tuple(failures)
+        error.primary_failure = primary
+        raise error from primary
 
 
 def version(info):
@@ -160,8 +182,7 @@ def acquire(directory_fd, database_fd, maximum=MAXIMUM, named_root=None):
     except OSError:
         raise SnapshotFailure("snapshot_input_unavailable") from None
     finally:
-        for fd in descriptors.values():
-            os.close(fd)
+        close_owned_once(descriptors.items())
 
 
 class PrivateReader:
@@ -240,9 +261,7 @@ class PrivateReader:
                 verify_copies()
                 return self._query_copy(root, acquisition, thread, expected_workspace, expected_sequence, verify_copies)
             finally:
-                for fd in copies.values():
-                    os.close(fd)
-                os.close(root_fd)
+                close_owned_once([*copies.items(), ("private-copy-root", root_fd)])
 
     def _query_copy(self, root, acquisition, thread, expected_workspace, expected_sequence, verify_copies):
             # Ordinary SQLite creates a new SHM and recovers the copied WAL.
@@ -286,5 +305,6 @@ class PrivateReader:
 
     def close(self):
         if self.fd is not None:
-            os.close(self.fd)
+            descriptor = self.fd
             self.fd = None
+            close_owned_once([("private-reader-root", descriptor)])
