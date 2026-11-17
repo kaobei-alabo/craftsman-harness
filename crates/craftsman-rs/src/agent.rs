@@ -2520,6 +2520,10 @@ mod framework_tests;
 mod provider_tests;
 
 #[cfg(test)]
+#[path = "agent_provider_failure_boundary_tests.rs"]
+mod provider_failure_boundary_tests;
+
+#[cfg(test)]
 #[path = "agent_provider_diagnostics_tests.rs"]
 mod provider_diagnostics_tests;
 

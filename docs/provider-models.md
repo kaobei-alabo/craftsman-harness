@@ -147,6 +147,20 @@ and confirms the write is not replayed. Unmarked helpers return before path or
 config access. Discovery tests cover partial failure, namespacing and cancellation.
 No user credentials or paid model calls are used.
 
+The marked provider-boundary fixture uses a real loopback TCP server and the
+actual app builder. It sends HTTP 200 with `response.created` and then closes
+the body with genuine EOF, without a completion event or a shortened client
+deadline. A separate fixture admits twenty completed Responses requests and
+returns HTTP 402 for later requests, including an explicit follow-up; its
+successful control finishes on exactly the twentieth response. The tests retain
+an actual approved file write and each completed tool result, check the next
+request's original result items, and count usage only from completed responses.
+Default builder/ACP progress and the owned terminal's durable opt-in are tested
+separately. Native error text and standard ACP errors remain unchanged; failed
+generations do not trigger automatic model/tool retry or replay. These are
+synthetic boundary reproductions, not a diagnosis of an earlier provider failure
+or a new live coding score.
+
 Full native local modes and all four hosted checks still gate the reviewed
 implementation, followed by independent merged-main validation. Scripted tests
 do not establish live coding/gadget quality or universal model compatibility.
