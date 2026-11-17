@@ -79,6 +79,33 @@ are isolated and synthetic. The first new pruning test guessed an empty
 conversation's title incorrectly; that failed result is retained. Its corrected
 assertion compares the actual prior title and preserves the rollback check.
 
+Additional owned-session regressions in
+[`session_bridge/reliability_tests.rs`](../crates/craftsman-rs/src/tui/session_bridge/reliability_tests.rs)
+exercise a later effect that reuses an earlier call id. Two separate app approvals
+permit actual file creation, writing and synchronization; the child exits after
+the second effect, before its tool result returns. A fresh owner retains the
+first committed result and labels both the second call and its unstarted sibling
+UNKNOWN. The physical second file does not turn an unrecorded result into a
+completed result. Reopen and an explicit inspection turn repeat neither write.
+
+The input-preservation cases explicitly enable the app context controls.
+Another case rejects the final cancellation checkpoint with an actual SQLite
+trigger. The completed write stays durable, while two identical accepted steering
+inputs remain in the current owner's memory. They are absent from the earlier
+checkpoint: reopening cannot recover a save that failed. The UI reports the fixed
+checkpoint error, and a separately refused readiness save starts no model request.
+After storage is restored, an explicit follow-up saves the retained originals
+without repeating the write. These cases preserve the difference between current
+memory, committed results and unknown effects.
+
+The first new-case attempts failed at a Status import, overlapping fixture
+borrows, an existing transcript-selection reset and a transcript prefix too short
+to reduce during compaction. Those failures remain separate from corrected
+results. The corrected long-session fixture produces its prior history through
+actual completed turns and crosses the existing 50-checkpoint retention window;
+no historical transcript or sequence is planted. Original tests and runtime
+contracts remain unchanged.
+
 Full local and fresh all-four/every-step/both-mode CI validation remain required
 before merge, with independent merged-main verification. These checks do not
 prove power-loss behavior, trustworthy disks, native containment or live model

@@ -60,6 +60,16 @@ fixture exits during an observed pending summary request. Fresh owners reopen
 both checkpoints without replay, requiring their distinct actual exit codes.
 Unmarked/unknown-mode helpers return before path/config access.
 
+With explicit app context controls enabled, the owned-session reliability case
+runs 26 actual completed turns before an approved write/question round pauses
+with two accepted steering inputs. It checks the existing 50-checkpoint retention
+bound, cancels an observed pending
+HTTP summary and rechecks the original live and durable messages. A separately
+requested compaction retains the actual tool group and steering verbatim in its
+tail. Model rebuild, later cancellation and fresh-owner reopen then use that
+saved state without repeating the write. This checks transitions across the
+features; it does not measure live summary quality or portable native latency.
+
 All credentials, providers, config and files are synthetic and isolated. No
 parent environment, user config, installed gadget or paid account is changed.
 Initial new-test import/usage-type failures and the parent fixture's noncanonical

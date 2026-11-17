@@ -117,6 +117,15 @@ model/effort, checks retained request history and increasing SQLite sequence, an
 tests catalog cancellation and failed-init recovery. Unmarked helpers return
 before path/config inspection. No user config or real model account is used.
 
+With explicit app context controls enabled, the additional owned-session
+reliability case rebuilds through the actual `AgentSlot` after a saved round-limit
+pause, cancelled manual compaction and completed manual compaction. Accepted
+steering, the retained tool group,
+checkpoint sequence and main usage totals survive; the retired owner is closed
+and the replacement remains usable. Its loopback request excludes the old
+model's opaque native item. A later question cancellation and reopen preserve
+the new accepted input without replaying the earlier write.
+
 Full local/all-four/every-step/both-mode hosted checks still gate merge, followed
 by independent merged-main validation before local fast-forwards. Tests do not
 measure live quality, billing or OS containment. Remaining
