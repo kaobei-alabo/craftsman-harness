@@ -1,14 +1,37 @@
 """Private driver, gateway-boundary and independent-review rejection checks."""
 import sys
 
-if len(sys.argv) > 1 and sys.argv[1] == "--synthetic-gateway-fixture-v2":
-    if len(sys.argv) != 2:
+if len(sys.argv) > 1 and sys.argv[1].startswith("--synthetic-gateway-"):
+    if len(sys.argv) != 2 or sys.argv[1] not in {
+            "--synthetic-gateway-fixture-v2", "--synthetic-gateway-diagnostics-v3",
+            "--synthetic-gateway-stderr-overflow-v3", "--synthetic-gateway-bind-refusal-v3",
+            "--synthetic-gateway-stdout-refusal-v3"}:
         raise SystemExit(0)
     import json
     from pathlib import Path
+    if sys.argv[1] == "--synthetic-gateway-stderr-overflow-v3":
+        sys.stderr.buffer.write(b"x" * 65537)
+        sys.stderr.buffer.flush()
+        raise SystemExit(7)
+    if sys.argv[1] == "--synthetic-gateway-stdout-refusal-v3":
+        sys.stdout.buffer.write(b"{invalid fixture stdout}\n")
+        sys.stdout.buffer.flush()
+        raise SystemExit(11)
+    if sys.argv[1] == "--synthetic-gateway-diagnostics-v3":
+        sys.stderr.buffer.write(b"synthetic gateway startup diagnostic\n" * 1024)
+        sys.stderr.buffer.flush()
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gateway import serve
-    serve(json.loads(sys.stdin.buffer.read(1024 * 1024)), ("127.0.0.1", 0))
+    raw = sys.stdin.buffer.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise SystemExit("Synthetic gateway bootstrap exceeded its bound.")
+    config = json.loads(raw)
+    if config.get("synthetic") is not True or config.get("api_key") != "synthetic-provider-key" or not config.get("endpoint", "").startswith("http://127.0.0.1:"):
+        raise SystemExit("Non-synthetic gateway fixture refused.")
+    port = config.pop("fixture_bound_port", 0) if sys.argv[1] == "--synthetic-gateway-bind-refusal-v3" else 0
+    if type(port) is not int or not 0 <= port <= 65535:
+        raise SystemExit("Synthetic gateway fixture port refused.")
+    serve(config, ("127.0.0.1", port))
     raise SystemExit(0)
 
 from copy import deepcopy
@@ -387,6 +410,238 @@ class NativeChildWitness(unittest.TestCase):
 
 
 class ActualGatewayBoundary(unittest.TestCase):
+    class ChildFailure(AssertionError):
+        def __init__(self, owner, reason):
+            self.owner, self.reason = owner, reason
+
+        def __str__(self):
+            # Only this credential-free marked fixture's bounded diagnostics.
+            return self.reason + ": " + json.dumps(self.owner.facts()) + "\n" + self.owner.stderr.decode("utf-8", "backslashreplace")
+
+    class Child:
+        """Own both pipes and propagate reader/exit failures to the same10s wait."""
+        LIMIT = 65536
+
+        def __init__(self, bootstrap, marker="--synthetic-gateway-fixture-v2"):
+            self.lock = threading.Lock()
+            self.events = queue.Queue()
+            self.unknown_usage = threading.Event()
+            self.observations, self.threads = [], []
+            self.stdout, self.stderr = bytearray(), bytearray()
+            self.eof = {"stdout": False, "stderr": False}
+            self.failure, self.ready, self.process = None, None, None
+            self.failures = []
+            self.finite_output_fixture = marker in {
+                "--synthetic-gateway-stdout-refusal-v3", "--synthetic-gateway-stderr-overflow-v3"}
+            self.closed = False
+            self.termination_requested, self.wait_returned = False, False
+            env = {"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"}
+            if os.name == "nt" and "SystemRoot" in os.environ:
+                env["SystemRoot"] = os.environ["SystemRoot"]
+            self.process = subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__).resolve()), marker],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+            try:
+                for name in ("stdout", "stderr"):
+                    thread = threading.Thread(target=self.read, args=(name,), daemon=True)
+                    thread.start()
+                    self.threads.append(thread)
+                data = bootstrap if isinstance(bootstrap, bytes) else json.dumps(bootstrap).encode()
+                if len(data) > 1024 * 1024:
+                    raise ActualGatewayBoundary.ChildFailure(self, "bootstrap_bound")
+                self.process.stdin.write(data)
+                self.process.stdin.close()
+            except BaseException:
+                self.close()
+                raise
+
+        def fail(self, reason):
+            with self.lock:
+                if reason not in self.failures:self.failures.append(reason)
+                if self.failure is None:
+                    self.failure = reason
+                    self.events.put(("failure", reason))
+
+        def read(self, name):
+            stream = getattr(self.process, name)
+            retained = getattr(self, name)
+            pending = bytearray()
+            try:
+                while True:
+                    data = stream.read1(min(4096, self.LIMIT + 1 - len(retained)))
+                    if not data:
+                        with self.lock:self.eof[name] = True
+                        if name == "stdout" and (pending or self.ready is None):
+                            self.fail("stdout_incomplete_frame" if pending else "stdout_eof_before_ready")
+                        return
+                    if len(retained) + len(data) > self.LIMIT:
+                        self.fail(name + "_stream_bound")
+                        return
+                    with self.lock:retained.extend(data)
+                    if name == "stderr":
+                        continue
+                    pending.extend(data)
+                    while b"\n" in pending:
+                        line, _, rest = pending.partition(b"\n")
+                        pending = bytearray(rest)
+                        value = json.loads(line)
+                        if not isinstance(value, dict):
+                            raise ValueError("stdout_record_shape")
+                        with self.lock:self.observations.append(value)
+                        if value.get("phase") == "unknown_usage":self.unknown_usage.set()
+                        if value.get("ready"):
+                            if self.ready is not None or set(value) != {"ready", "model", "cap_usd", "synthetic_bound_port"} or value["ready"] is not True or type(value["synthetic_bound_port"]) is not int or not 1 <= value["synthetic_bound_port"] <= 65535:
+                                raise ValueError("stdout_ready_shape")
+                            with self.lock:self.ready = value
+                            self.events.put(("ready", value))
+            except (OSError, ValueError) as error:
+                self.fail(name + "_reader_" + type(error).__name__)
+
+        def wait_ready(self):
+            try:
+                kind, value = self.events.get(timeout=10)
+            except queue.Empty:
+                raise ActualGatewayBoundary.ChildFailure(self, "readiness_timeout") from None
+            if kind != "ready" or self.failure is not None:
+                raise ActualGatewayBoundary.ChildFailure(self, self.failure or value)
+            if self.process.poll() is not None:
+                raise ActualGatewayBoundary.ChildFailure(self, "child_returned_after_ready")
+            return value["synthetic_bound_port"]
+
+        def facts(self):
+            with self.lock:
+                return {"popen_returned": self.process is not None,
+                    "child_exit": None if self.process is None else self.process.poll(),
+                    "ready_read": self.ready is not None, "bound_port_read": None if self.ready is None else self.ready["synthetic_bound_port"],
+                    "stdout_eof": self.eof["stdout"], "stderr_eof": self.eof["stderr"],
+                    "stdout_bytes": len(self.stdout), "stderr_bytes": len(self.stderr),
+                    "stdout_sha256": hashlib.sha256(self.stdout).hexdigest(), "stderr_sha256": hashlib.sha256(self.stderr).hexdigest(),
+                    "reader_failure": self.failure, "reader_failures": list(self.failures),
+                    "termination_requested": self.termination_requested, "actual_wait_returned": self.wait_returned}
+
+        def close(self):
+            if self.closed:
+                return
+            try:
+                # The two fixed output controls actually exit7/11. Keep their
+                # natural wait under the same5s bound; do not replace it with
+                # a raced cleanup signal and then claim the intended code.
+                if self.process.poll() is None and not self.finite_output_fixture and not self.eof["stdout"]:
+                    self.process.terminate()
+                    self.termination_requested = True
+                self.process.wait(timeout=5)
+                self.wait_returned = True
+            finally:
+                if not self.process.stdin.closed:self.process.stdin.close()
+                end = time.monotonic() + 2
+                for thread in self.threads:thread.join(timeout=max(0, end - time.monotonic()))
+                self.closed = True
+                if any(thread.is_alive() for thread in self.threads):
+                    raise ActualGatewayBoundary.ChildFailure(self, "reader_cleanup_did_not_return")
+                self.process.stdout.close()
+                self.process.stderr.close()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, error_type, *_):
+            self.close()
+            if error_type is None and self.failure is not None:
+                raise ActualGatewayBoundary.ChildFailure(self, self.failure)
+
+    def bootstrap(self, root, provider_port=1):
+        return {"endpoint": "http://127.0.0.1:" + str(provider_port) + "/v1", "api_key": "synthetic-provider-key", "model": "gpt-6.1-sol",
+            "tokens": {"synthetic-agent-key": "at-twenty", "synthetic-eof-key": "new-eof"},
+            "prices": {"input_per_million": "0", "output_per_million": "0", "request_fee": "0"}, "prices_verified": True,
+            "cap_usd": "25.00", "ledger": str(root / "ledger.json"), "synthetic": True, "private_observations": True}
+
+    def test_actual_stderr_drains_before_bound_ready_and_real_http(self):
+        import urllib.request
+        import urllib.error
+        with tempfile.TemporaryDirectory(prefix="gateway-startup-stderr-") as directory:
+            with self.Child(self.bootstrap(Path(directory)), "--synthetic-gateway-diagnostics-v3") as child:
+                port = child.wait_ready()
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    opener.open("http://127.0.0.1:" + str(port) + "/", timeout=10)
+                self.assertEqual(refused.exception.code, 404)
+            self.assertEqual(bytes(child.stderr), b"synthetic gateway startup diagnostic\n" * 1024)
+            self.assertTrue(child.eof["stdout"] and child.eof["stderr"])
+            self.assertIsNotNone(child.process.returncode)
+            self.assertFalse(child.failure)
+
+    def test_actual_early_exit_retains_stderr_instead_of_readiness_queue_timeout(self):
+        with self.assertRaises(self.ChildFailure) as failed:
+            with self.Child(b"{") as child:
+                child.wait_ready()
+        self.assertEqual(failed.exception.reason, "stdout_eof_before_ready")
+        self.assertEqual(child.process.returncode, 1)
+        self.assertTrue(child.eof["stdout"] and child.eof["stderr"])
+        self.assertIsNone(child.ready)
+        self.assertIn(b"JSONDecodeError", child.stderr)
+        self.assertIn("JSONDecodeError", str(failed.exception))
+        self.assertLessEqual(len(child.stderr), 65536)
+        self.assertTrue(child.wait_returned)
+        self.assertFalse(child.termination_requested)
+
+    def test_actual_stderr_overflow_never_publishes_ready_or_unbounded_diagnostics(self):
+        with self.assertRaises(self.ChildFailure) as failed:
+            with self.Child(b"", "--synthetic-gateway-stderr-overflow-v3") as child:
+                child.wait_ready()
+        self.assertIn("stderr_stream_bound", child.failures)
+        self.assertIsNone(child.ready)
+        self.assertLessEqual(len(child.stderr), 65536)
+        self.assertIsNotNone(child.process.returncode)
+        self.assertEqual(child.process.returncode, 7)
+        self.assertTrue(child.wait_returned)
+        self.assertFalse(child.termination_requested)
+
+    def test_actual_stdout_parse_error_reaches_parent_and_preserves_exit(self):
+        with self.assertRaises(self.ChildFailure) as failed:
+            with self.Child(b"", "--synthetic-gateway-stdout-refusal-v3") as child:
+                child.wait_ready()
+        self.assertEqual(failed.exception.reason, "stdout_reader_JSONDecodeError")
+        self.assertEqual(child.process.returncode, 11)
+        self.assertIsNone(child.ready)
+        self.assertEqual(bytes(child.stdout), b"{invalid fixture stdout}\n")
+        self.assertTrue(child.wait_returned)
+        self.assertFalse(child.termination_requested)
+
+    def test_unknown_or_duplicate_gateway_marker_returns_before_bootstrap(self):
+        with tempfile.TemporaryDirectory(prefix="gateway-marker-guard-") as directory:
+            env = {"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"}
+            if os.name == "nt" and "SystemRoot" in os.environ:env["SystemRoot"] = os.environ["SystemRoot"]
+            for marker in ("--synthetic-gateway-fixture-v2", "--synthetic-gateway-diagnostics-v3",
+                    "--synthetic-gateway-stderr-overflow-v3", "--synthetic-gateway-bind-refusal-v3",
+                    "--synthetic-gateway-stdout-refusal-v3", "--synthetic-gateway-unknown-v3"):
+                args = [marker] if marker.endswith("unknown-v3") else [marker, marker]
+                with self.subTest(marker=marker):
+                    result = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), *args],
+                        cwd=directory, env=env, input=b"invalid JSON must never be read", capture_output=True, timeout=20)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout + result.stderr, b"")
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_actual_bind_refusal_retains_exit_and_error_before_readiness(self):
+        import errno
+        import re
+        import socket
+        with socket.socket() as occupied, tempfile.TemporaryDirectory(prefix="gateway-startup-bind-") as directory:
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            bootstrap = self.bootstrap(Path(directory))
+            bootstrap["fixture_bound_port"] = occupied.getsockname()[1]
+            with self.assertRaises(self.ChildFailure) as failed:
+                with self.Child(bootstrap, "--synthetic-gateway-bind-refusal-v3") as child:
+                    child.wait_ready()
+            self.assertEqual(failed.exception.reason, "stdout_eof_before_ready")
+            self.assertEqual(child.process.returncode, 1)
+            self.assertIsNone(child.ready)
+            self.assertTrue(child.eof["stdout"] and child.eof["stderr"])
+            errors = re.findall(rb"\[(?:Errno|WinError) ([0-9]+)\]", child.stderr)
+            self.assertEqual(int(errors[-1]), 10048 if os.name == "nt" else errno.EADDRINUSE)
+            self.assertTrue(child.wait_returned)
+            self.assertFalse(child.termination_requested)
+
     def test_real_twentieth_admission_twenty_first_refusal_and_provider_eof(self):
         received = []
         mode = ["completed"]
@@ -407,27 +662,12 @@ class ActualGatewayBoundary(unittest.TestCase):
         server.daemon_threads = True
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        process = None
-        with tempfile.TemporaryDirectory(prefix="actual-gateway-observations-") as directory:
-            root = Path(directory)
-            bootstrap = {"endpoint": "http://127.0.0.1:" + str(server.server_port) + "/v1", "api_key": "synthetic-provider-key", "model": "gpt-6.1-sol",
-                "tokens": {"synthetic-agent-key": "at-twenty", "synthetic-eof-key": "new-eof"},
-                "prices": {"input_per_million": "0", "output_per_million": "0", "request_fee": "0"}, "prices_verified": True,
-                "cap_usd": "25.00", "ledger": str(root / "ledger.json"), "synthetic": True, "private_observations": True}
-            observations = []
-            ready = queue.Queue()
-            try:
-                process = subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__)), "--synthetic-gateway-fixture-v2"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                def reader():
-                    for line in process.stdout:
-                        value = json.loads(line)
-                        observations.append(value)
-                        if value.get("ready"):ready.put(value)
-                reader_thread = threading.Thread(target=reader, daemon=True)
-                reader_thread.start()
-                process.stdin.write(json.dumps(bootstrap).encode())
-                process.stdin.close()
-                bound = ready.get(timeout=10)["synthetic_bound_port"]
+        try:
+            with tempfile.TemporaryDirectory(prefix="actual-gateway-observations-") as directory, self.Child(self.bootstrap(Path(directory), server.server_port)) as child:
+                root = Path(directory)
+                bootstrap = self.bootstrap(root, server.server_port)
+                observations = child.observations
+                bound = child.wait_ready()
                 import urllib.request
                 import urllib.error
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -440,8 +680,7 @@ class ActualGatewayBoundary(unittest.TestCase):
                 self.assertEqual(refused.exception.code, 402)
                 mode[0] = "eof"
                 self.assertEqual(request("synthetic-eof-key")[0], 200)
-                end = time.monotonic() + 5
-                while not any(value.get("phase") == "unknown_usage" for value in observations) and time.monotonic() < end:time.sleep(0.01)
+                child.unknown_usage.wait(timeout=5)
                 events = [value for value in observations if value.get("kind") == "private_gateway_observation"]
                 run = hashlib.sha256(b"at-twenty").hexdigest()
                 selected = [value for value in events if value["run_sha256"] == run]
@@ -456,16 +695,10 @@ class ActualGatewayBoundary(unittest.TestCase):
                 self.assertEqual(sum(value["state"] == "unsettled" for value in ledger["requests"]), 1)
                 output = json.dumps(observations)
                 for marker in ("synthetic-input-body-marker", "synthetic-provider-body-marker", "synthetic-provider-key", "synthetic-agent-key", bootstrap["endpoint"]):self.assertNotIn(marker, output)
-            finally:
-                if process is not None:
-                    process.terminate()
-                    process.wait(timeout=5)
-                    reader_thread.join(timeout=2)
-                    process.stdout.close()
-                    process.stderr.close()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":

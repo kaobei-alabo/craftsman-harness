@@ -177,6 +177,18 @@ an in-progress row is never saved success. The owned-TUI entrypoint also runs
 retained-file, SQLite/current-step, collector, negative-issuance and cleanup
 regressions, including real missing EOF and source/buffer races.
 
+The marked loopback gateway fixture retains its10s readiness wait,5s child
+cleanup and shared2s pipe-drain bound. It owns concurrent64KiB stdout/stderr
+readers and reports real child exit, EOF, parse/overflow failures and bounded
+synthetic stderr instead of losing them behind a readiness queue timeout.
+Port publication still follows the actual gateway bind and is read from its
+stdout; the20 admissions,21st HTTP402 refusal and genuine EOF/unknown ledger
+assertions remain exact. Additive owned controls cover diagnostic output before
+bind, a held-port bind refusal, invalid bootstrap, malformed stdout and overflow.
+PR29/run44195435162's original macOS readiness timeout remains failed evidence:
+its missing child diagnostics do not establish a historical scheduling or gateway
+cause, and hosted macOS validation of this fixture correction is still required.
+
 There are still **17 discoverable verification checks**: all 14 originals plus
 latest preflight, long-session and owned-TUI entrypoints. Every original
 context/setup/default-build/both-native-mode condition and publication hold
