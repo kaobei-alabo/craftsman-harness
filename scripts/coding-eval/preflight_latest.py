@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from coding_eval_anchors import ORIGINAL_CORPUS_SHA256
 from preflight_continuation import (
     BINDING, CAP_MICROS, MAX_INPUT, MAX_OUTPUT, SETTINGS, Refused,
     canonical_sha256, digest, integer, keys, read_json, require,
@@ -37,6 +38,32 @@ LONG_SCENARIOS = ["compaction-v1", "interruption-reopen-v1", "retained-results-v
 PROPOSAL_MICROS = 25000000
 ALLOCATIONS = {"full_suite": 18500000, "selected_repeats": 3000000, "long_sessions": 3000000}
 IMMUTABLE_RUNTIME_EXCLUSIONS = ("docs/", "evals/coding/", "scripts/coding-eval/")
+ADDITIVE_VALIDATION_PATHS = {"scripts/verify.sh", ".github/workflows/ci.yml"}
+
+
+def validate_additive_wiring(original, actual, path):
+    commands = {"scripts/verify.sh": {
+        'run_check coding-eval-latest "$verification_python" -I -B scripts/coding-eval/test_preflight_latest.py\n',
+        'run_check coding-eval-long-session "$verification_python" -I -B scripts/coding-eval/test_long_session.py\n',
+        'run_check coding-eval-owned-tui "$verification_python" -I -B scripts/coding-eval/test_owned_tui.py\n'},
+        ".github/workflows/ci.yml": {
+        '          python -I -B scripts/coding-eval/test_preflight_latest.py\n',
+        '          python -I -B scripts/coding-eval/test_long_session.py\n',
+        '          python -I -B scripts/coding-eval/test_owned_tui.py\n'}}
+    before = original.decode().splitlines(keepends=True)
+    after = actual.decode().splitlines(keepends=True)
+    position = 0
+    additions = []
+    for line in after:
+        if position < len(before) and line == before[position]:
+            position += 1
+        else:
+            require(line in commands[path], "validation_wiring_not_additive")
+            additions.append(line)
+    require(position == len(before), "original_validation_removed")
+    if additions:
+        expected = 1 if path == "scripts/verify.sh" else 2
+        require(all(additions.count(command) == expected for command in commands[path]), "incomplete_additive_validation_wiring")
 
 
 def git(root, *arguments):
@@ -78,9 +105,14 @@ def check_source(root, source):
     tree = git(root, "rev-parse", source["commit"] + "^{tree}").decode().strip()
     require(tree == source["tree"], "source_tree_changed")
     inventory = runtime_inventory(root, source["commit"])
+    untracked = git(root, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+    require(not any(path and (path.decode().endswith("/build.rs") or path == b"build.rs"
+                or path.decode().startswith(".cargo/")) for path in untracked), "untracked_automatic_build_input_refused")
     require(canonical_sha256(inventory) == source["runtime_inventory_sha256"],
             "runtime_inventory_changed")
-    require(runtime_inventory(root, "HEAD") == inventory, "current_runtime_differs")
+    current = runtime_inventory(root, "HEAD")
+    require([item for item in current if item["path"] not in ADDITIVE_VALIDATION_PATHS]
+            == [item for item in inventory if item["path"] not in ADDITIVE_VALIDATION_PATHS], "current_runtime_differs")
     # Git objects alone cannot establish that the working source remains exact.
     for item in inventory:
         if item["kind"] != "blob" or item["mode"] not in {"100644", "100755"}:
@@ -89,6 +121,9 @@ def check_source(root, source):
         try:
             require(not path.is_symlink() and path.is_file(), "current_runtime_differs")
             data = path.read_bytes()
+            if item["path"] in ADDITIVE_VALIDATION_PATHS:
+                validate_additive_wiring(git(root, "cat-file", "blob", item["object"]), data, item["path"])
+                continue
             header = b"blob " + str(len(data)).encode("ascii") + b"\0"
             require(hashlib.sha1(header + data).hexdigest() == item["object"], "current_runtime_differs")
         except OSError:
@@ -208,6 +243,7 @@ def prepare(root, plan_path, build_path=None):
         require(actual_hash == plan[name]["sha256"], name + "_digest_changed")
         inputs[name] = value
     corpus = inputs["corpus"]
+    require(plan["corpus"]["sha256"] == ORIGINAL_CORPUS_SHA256, "source_corpus_differs")
     validate_plan(plan, corpus)
     options = validate_feature_options(inputs["feature_options"])
     require(options == {"context": {"enabled": True, "max_bytes": 12288},
@@ -255,6 +291,7 @@ def prepare(root, plan_path, build_path=None):
         "is_live_authorization": False, "live_execution_ready": False, "paid_model_calls": 0,
         "new_live_grades": None, "configuration_or_credentials_loaded": False,
         "ledger_modified": False, "execution_lease_established": False,
+        "working_tree_build_attested": False, "required_build_authority": "tracked_git_archive_only",
         "plan_sha256": plan_hash, "corpus": plan["corpus"],
         "feature_options": {**plan["feature_options"], "value": options},
         "long_session_corpus": plan["long_session_corpus"], "source": source,

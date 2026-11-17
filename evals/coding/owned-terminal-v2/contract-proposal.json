@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "kind": "owned_terminal_capture_contract_proposal",
+  "reviewed_preparation_commit": "0ad1e1a8fc8ba908ada569a9d848b4fd73f8be86",
+  "original_corpus": {
+    "commit": "33a80d99431fd707b148485cb714f365b1946803",
+    "version": 5,
+    "sha256": "5d45038dca136245f090d2e2ed83a3e99f7a7c18eff19f2c4ba2d750d71d89f7"
+  },
+  "frozen_v1_scenario_sha256": "1ccacdb5c38accd8fe02b34f463cec2690927a37eacf5fc05c74289043e58be7",
+  "actual_runtime": {
+    "source_commit": "33a80d99431fd707b148485cb714f365b1946803",
+    "source_tree": "ddee5694698835c48c9c7bbf37b4140b64d721dc",
+    "image_id": "sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b",
+    "binary_sha256": "08542be11e7d207b43c4e0622a6f24180eaa2de9d65b247599f7f70660b56585",
+    "source_archive_sha256": "366970a77173141c6c8317764e85c703e1882e780d472efb552a845722c4e594"
+  },
+  "selected_manual_compaction": {
+    "keep_recent_messages": 4,
+    "expand_cut_backwards_to_keep_tool_group": true,
+    "old_prefix_may_be_summarized": true,
+    "count_decrease_required": false
+  },
+  "stored_context": {
+    "record_max_bytes": 32768,
+    "pinned_text_max_bytes": 4096,
+    "recent_update_pins": 4,
+    "compiled_view_max_bytes": 12288,
+    "evicted_input_witnesses_kept_outside_agent": true
+  },
+  "synthetic_execution_limits": {
+    "gateway_requests_per_run": 20,
+    "money_cap_usd": "25.00",
+    "input_price": "0",
+    "output_price": "0",
+    "task_wall_seconds": 900,
+    "user_turns": 14
+  },
+  "observed_external_channels": [
+    "fixed OSC7501 root transitions",
+    "actual owned child/keeper wait returns",
+    "retained scoped SQLite row",
+    "per-submission saved pin before eviction",
+    "actual gateway attempts/admissions/refusals/EOF",
+    "stopped physical task file snapshots"
+  ],
+  "unverified_without_additional_reviewed_authority": [
+    "direct AgentBoundaryPolicy callback objects",
+    "typed end/save/observer return and checkpoint_failed",
+    "live RecoveryInfo/reconciled state",
+    "native ToolOutcome ToolMeta exit/stdout/stderr",
+    "complete activity/quiescence between polling snapshots"
+  ],
+  "is_live_authorization": false,
+  "no_new_native_fact_may_be_inferred_from_portable_tool_text": true
+}

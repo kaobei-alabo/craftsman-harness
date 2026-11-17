@@ -53,6 +53,12 @@ The present $25 allowance cannot fund a fresh full run; the image, explicit
 budget/admission extension and isolated terminal capture driver remain separate
 gates. Historical 17/30 and 21/30 grades remain unchanged.
 
+The [owned-terminal v2 driver](owned-terminal-evaluation.md) now supplies
+credential-free synthetic external observations with actual source/image and
+producer authority. It separates original behavior, observed criteria and
+unverified private callbacks/live state/outer ToolMeta; it does not authorize a
+paid run or cap extension.
+
 ## Runner boundary
 
 `scripts/coding-eval/run_suite.py` runs the existing `craftsman acp-serve` in a

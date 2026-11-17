@@ -46,12 +46,22 @@ def synthetic_capture(scenario):
     state = {"messages": messages, "files": {"retained.txt": "actual fixture state"},
              "todos": [{"content": "Retain the original result", "status": "completed"}],
              "custom": {"_craftsman_context_v1": {"compactions": 0}}}
+    def stamp_state(value):
+        source = value["state"]
+        users = [(index, message["content"]) for index, message in enumerate(source["messages"]) if message["role"] == "user"]
+        original = {"event": 1, "digest": hashlib.sha256(task["prompt"].encode()).hexdigest(), "original_bytes": len(task["prompt"].encode())}
+        records = [{"event": index + 1, "digest": hashlib.sha256(text.encode()).hexdigest(), "original_bytes": len(text.encode())} for index, (_, text) in enumerate(users)]
+        last = records[-1]
+        source["custom"]["_craftsman_context_v1"].update(version=1, scope="1" * 64, sequence=last["event"], initial_input=original,
+            updates=records[1:][-4:], last_input={"revision": last["event"], "digest": list(bytes.fromhex(last["digest"]))}, omissions={"input_events": max(0, len(records) - 5)})
+        source["custom"]["_craftsman_durable_turn_v1"] = {"version": 1, "in_progress": False}
     before = {"thread": "synthetic-owned-session", "seq": 10, "state": deepcopy(state)}
+    stamp_state(before)
     after = deepcopy(before)
     after["seq"] = 11
     action = "cancelled_return_then_reopen"
     if scenario["id"] == "compaction-v1":
-        after["state"]["messages"] = [{"role": "user", "content": "Synthetic unit-test summary."}]
+        after["state"]["messages"] = [{"role": "user", "content": "Synthetic unit-test summary."}, *deepcopy(before["state"]["messages"][-4:])]
         after["state"]["custom"]["_craftsman_context_v1"]["compactions"] = 1
         action = "manual_compaction_saved"
     elif scenario["id"] == "retained-results-v1":
@@ -61,6 +71,12 @@ def synthetic_capture(scenario):
     final["seq"] = 12
     final["state"]["messages"].extend([{"role": "user", "content": scenario["final_prompt"]},
                                        {"role": "assistant", "content": "The retained outcome was written."}])
+    last_digest = hashlib.sha256(scenario["final_prompt"].encode()).hexdigest()
+    final["state"]["custom"]["_craftsman_context_v1"]["sequence"] = 13
+    final["state"]["custom"]["_craftsman_context_v1"]["last_input"] = {"revision": 13, "digest": list(bytes.fromhex(last_digest))}
+    final["state"]["custom"]["_craftsman_context_v1"]["updates"].append({"event": 13, "digest": last_digest, "original_bytes": len(scenario["final_prompt"].encode())})
+    final["state"]["custom"]["_craftsman_context_v1"]["updates"] = final["state"]["custom"]["_craftsman_context_v1"]["updates"][-4:]
+    final["state"]["custom"]["_craftsman_context_v1"]["omissions"]["input_events"] = 8
     files = {path: value.encode() for path, value in {**task["files"], **task["reference"], **scenario["fixture_files"]}.items()}
     effect = scenario["expected_effect"].encode()
     files[scenario["effect_file"]] = effect
@@ -75,6 +91,10 @@ def synthetic_capture(scenario):
         "gateway_requests": {"before_reopen": 15, "after_idle_reopen": 15, "final": 18},
         "effect_sha256_by_stage": {stage: hashlib.sha256(effect).hexdigest() for stage in long.STAGES},
         "completed_update_turns": 10, "idle_reopen_elapsed_millis": 5000, "observed_action": action}
+    capture["owned_input_receipts"] = [{"sha256": hashlib.sha256(message["content"].encode()).hexdigest(), "revision": number + 1,
+        "checkpoint_seq": 10, "session_sha256": hashlib.sha256(b"synthetic-owned-session").hexdigest(), "scope_sha256": "1" * 64,
+        "message_index": index, "original_bytes": len(message["content"].encode()), "source": "actual_owned_context_stamp"}
+        for number, (index, message) in enumerate((pair for pair in enumerate(before["state"]["messages"]) if pair[1]["role"] == "user"))]
     capture["checkpoints"] = {stage: long.safe_checkpoint_observation(value, scenario)
                               for stage, value in capture["checkpoints"].items()}
     return task, capture, files
@@ -198,7 +218,7 @@ class Cases(unittest.TestCase):
     def test_missing_accepted_update_and_short_idle_observation_fail(self):
         scenario = EXTENSION["scenarios"][1]
         _, capture, files = synthetic_capture(scenario)
-        capture["checkpoints"]["before"]["accepted_input_sha256"].pop()
+        capture["owned_input_receipts"].pop()
         with self.assertRaisesRegex(Refused, "missing_original_update_input"):
             self.grade(scenario, capture, files)
         _, capture, files = synthetic_capture(scenario)
@@ -218,12 +238,17 @@ class Cases(unittest.TestCase):
         scenario = EXTENSION["scenarios"][2]
         state = {"messages": [
             {"role": "user", "content": "synthetic-private-prompt-marker"},
-            {"role": "assistant", "tool_calls": [{"id": "private-id", "name": "execute", "args": {
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "private-id", "name": "execute", "args": {
                 "command": "synthetic-private-body-marker", "api_key": "synthetic-private-key-marker"}}]},
             {"role": "tool", "tool_call_id": "private-id", "content": "synthetic-provider-body-marker", "is_error": True}],
             "files": {"private.txt": "synthetic-file-text-marker"},
             "todos": [{"content": "synthetic-todo-text-marker"}],
-            "custom": {"endpoint": "synthetic-endpoint-marker"}}
+            "custom": {"endpoint": "synthetic-endpoint-marker",
+                       "_craftsman_durable_turn_v1": {"version": 1, "in_progress": False},
+                       "_craftsman_context_v1": {"version": 1, "scope": "1" * 64, "sequence": 1, "compactions": 0,
+                         "initial_input": {"event": 1, "digest": hashlib.sha256(b"synthetic-private-prompt-marker").hexdigest(), "original_bytes": len(b"synthetic-private-prompt-marker")},
+                         "updates": [], "last_input": {"revision": 1, "digest": list(hashlib.sha256(b"synthetic-private-prompt-marker").digest())},
+                         "omissions": {"input_events": 0}}}}
         observation = long.safe_checkpoint_observation({"thread": "synthetic-session-marker", "seq": 1, "state": state}, scenario)
         long.safe_checkpoint(observation)
         encoded = json.dumps(observation)

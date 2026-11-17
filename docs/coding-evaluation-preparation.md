@@ -1,5 +1,12 @@
 # Fresh coding evaluation preparation — November 17, 2026
 
+This document preserves the original offline preparation and its limits.
+[Owned-terminal evaluation v2](owned-terminal-evaluation.md) supersedes its
+unverified capture assumptions, including the manual-compaction tail, and
+documents the actual synthetic driver, scoped native-child witness, reviewed
+false-accept repairs and remaining unverified private criteria. The original
+preparation commit and v1 scenario files remain immutable evidence.
+
 **The present $25 allowance cannot fund a full fresh run.** The original ledger
 accounts for $24.285934, leaving $0.714066. Its 915 rows retain all 855 original
 rows and the same 40 unknown-usage reservations charged $6.586682. Preparation
