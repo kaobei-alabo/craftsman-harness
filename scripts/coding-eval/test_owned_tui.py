@@ -31,6 +31,7 @@ import grade_long_session as grader
 from test_long_session import CORPUS, EXTENSION, synthetic_capture
 import test_preflight_latest as preflight_fixtures
 import preflight_latest as preflight
+import wiring_baseline_fixture as wiring_baseline
 from preflight_continuation import Refused
 from gateway_observations import GatewayObservations, ObservationFailure
 from owned_tui_client import TerminalFacts
@@ -252,10 +253,83 @@ class ProtocolAndAuthority(unittest.TestCase):
     def test_all_original_validation_lines_are_retained(self):
         root = Path(__file__).resolve().parents[2]
         for path in ("scripts/verify.sh", ".github/workflows/ci.yml"):
-            original = subprocess.check_output(["git", "-C", str(root), "show", "33a80d99431fd707b148485cb714f365b1946803:" + path])
             actual = (root / path).read_bytes()
+            original = wiring_baseline.original_validation_bytes(actual, path)
             preflight.validate_additive_wiring(original, actual, path)
             with self.assertRaises(Refused):preflight.validate_additive_wiring(original, actual.replace(b"--no-fail-fast", b"--fail-fast"), path) if path.endswith("ci.yml") else preflight.validate_additive_wiring(original, actual.replace(b"run_check core-tests", b"omit core-tests"), path)
+
+    def test_validation_guard_needs_no_git_or_historical_object(self):
+        missing = subprocess.CalledProcessError(128, ["git", "show", wiring_baseline.SOURCE_COMMIT])
+        with mock.patch.object(subprocess, "check_output", side_effect=missing) as lookup, \
+                mock.patch.object(subprocess, "run", side_effect=OSError("Git unavailable")) as command:
+            self.test_all_original_validation_lines_are_retained()
+        lookup.assert_not_called()
+        command.assert_not_called()
+
+    def test_frozen_validation_baseline_rejects_every_old_local_check(self):
+        path = "scripts/verify.sh"
+        actual = (Path(__file__).resolve().parents[2] / path).read_bytes()
+        original = wiring_baseline.original_validation_bytes(actual, path)
+        commands = [line for line in original.splitlines(keepends=True) if line.startswith(b"run_check ")]
+        self.assertEqual(len(commands), 14)
+        for line in commands:
+            with self.subTest(command=line.split()[1].decode()):
+                changed = actual.replace(line, line.replace(b"run_check", b"omit_check", 1), 1)
+                with self.assertRaisesRegex(Refused, "original_validation_baseline_changed"):
+                    wiring_baseline.original_validation_bytes(changed, path)
+
+    def test_frozen_validation_baseline_rejects_ci_condition_and_command_changes(self):
+        path = ".github/workflows/ci.yml"
+        actual = (Path(__file__).resolve().parents[2] / path).read_bytes()
+        mutations = (
+            (b"runs-on: ubuntu-24.04", b"runs-on: ubuntu-22.04"),
+            (b"runner: ubuntu-24.04", b"runner: ubuntu-22.04"),
+            (b"runner: macos-15", b"runner: macos-14"),
+            (b"runner: windows-2025", b"runner: windows-2022"),
+            (b"rustup toolchain install --no-self-update", b"rustup show"),
+            (b"sudo apt-get update --error-on=any", b"sudo apt-get update"),
+            (b"GGML_NATIVE=OFF cargo check --locked --workspace", b"cargo check --workspace"),
+            (b"cargo test --locked --no-default-features --workspace --no-fail-fast", b"cargo test --workspace"),
+            (b"cargo test --locked --no-default-features --features craftsman-rs/gadgets --workspace", b"cargo test --workspace"),
+            (b"if: ${{ !cancelled() }}", b"if: false"),
+            (b"run: bash scripts/check-lineage.sh", b"run: true"),
+            (b"run: git diff --exit-code -- crates/craftsman-rs/tests/golden", b"run: true"),
+        )
+        for before, after in mutations:
+            with self.subTest(condition=before.decode()):
+                self.assertIn(before, actual)
+                with self.assertRaisesRegex(Refused, "original_validation_baseline_changed"):
+                    wiring_baseline.original_validation_bytes(actual.replace(before, after, 1), path)
+
+    def test_frozen_validation_baseline_rejects_same_length_old_edits(self):
+        root = Path(__file__).resolve().parents[2]
+        for path, before, after in (
+                ("scripts/verify.sh", b"run_check core-tests", b"run_check xore-tests"),
+                (".github/workflows/ci.yml", b"fail-fast: false", b"fail-fast: False")):
+            with self.subTest(path=path):
+                actual = (root / path).read_bytes()
+                self.assertIn(before, actual)
+                changed = actual.replace(before, after, 1)
+                self.assertEqual(len(actual), len(changed))
+                with self.assertRaisesRegex(Refused, "original_validation_baseline_changed"):
+                    wiring_baseline.original_validation_bytes(changed, path)
+
+    def test_frozen_validation_baseline_requires_all_exact_addition_counts(self):
+        root = Path(__file__).resolve().parents[2]
+        for path, commands in wiring_baseline.ADDITIONS.items():
+            actual = (root / path).read_bytes()
+            original = wiring_baseline.original_validation_bytes(actual, path)
+            with self.subTest(path=path, mutation="all additions absent"), \
+                    self.assertRaisesRegex(Refused, "incomplete_additive_validation_wiring"):
+                wiring_baseline.original_validation_bytes(original, path)
+            for command in commands:
+                for mutation, changed in (
+                        ("removed", actual.replace(command, b"", 1)),
+                        ("duplicated", actual.replace(command, command + command, 1)),
+                        ("modified", actual.replace(command, command.replace(b"-I -B", b"-I   -B"), 1))):
+                    with self.subTest(path=path, command=command.decode(), mutation=mutation), \
+                            self.assertRaisesRegex(Refused, "incomplete_additive_validation_wiring"):
+                        wiring_baseline.original_validation_bytes(changed, path)
 
 
 class NativeChildWitness(unittest.TestCase):
