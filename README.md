@@ -45,7 +45,7 @@ Phase 4 expands the tool-dispatch step inside phase 3; results return to the sam
 round boundary.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#edf5f5","primaryTextColor":"#263238","primaryBorderColor":"#408b8b","lineColor":"#65777d","secondaryColor":"#f3f4f4","tertiaryColor":"#f8fafb","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","edgeLabelBackground":"#ffffff","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"curve":"linear","nodeSpacing":14,"rankSpacing":16,"wrappingWidth":200}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#edf5f5","primaryTextColor":"#263238","primaryBorderColor":"#408b8b","lineColor":"#65777d","secondaryColor":"#f3f4f4","tertiaryColor":"#f8fafb","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","edgeLabelBackground":"#ffffff","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"curve":"linear","nodeSpacing":14,"rankSpacing":48,"wrappingWidth":200,"subGraphTitleMargin":{"top":72,"bottom":36}}}}%%
 flowchart TB
     C_LAUNCH(["Launch Craftsman"]) --> C_SETUP
     subgraph C_SETUP["1 · CLI and session setup — once per session or reconfiguration"]
@@ -234,7 +234,7 @@ with small eager snapshots, subject to callable interpreter/VFS compatibility
 proof. Phases 2–6 expand the managed invocation inside the phase 1 loop.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#edf5f5","primaryTextColor":"#263238","primaryBorderColor":"#408b8b","lineColor":"#65777d","secondaryColor":"#f3f4f4","tertiaryColor":"#f8fafb","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","edgeLabelBackground":"#ffffff","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"curve":"linear","nodeSpacing":14,"rankSpacing":16,"wrappingWidth":200}}}%%
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#edf5f5","primaryTextColor":"#263238","primaryBorderColor":"#408b8b","lineColor":"#65777d","secondaryColor":"#f3f4f4","tertiaryColor":"#f8fafb","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","edgeLabelBackground":"#ffffff","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"curve":"linear","nodeSpacing":14,"rankSpacing":48,"wrappingWidth":200,"subGraphTitleMargin":{"top":72,"bottom":36}}}}%%
 flowchart TB
     P_LAUNCH(["User task"]) --> P_LOOP
     subgraph P_LOOP["1 · Same agent loop — managed invocation expanded in phases 2–6"]
