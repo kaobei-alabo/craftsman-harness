@@ -208,11 +208,13 @@ fn raw_facts(handle: Handle) -> Value {
         SetLastError(0);
         GetFileType(handle)
     };
-    let error = unsafe { GetLastError() };
+    let type_error = unsafe { GetLastError() };
     match super::windows_probe::bootstrap(handle) {
-        Ok(info) => json!({"type":kind,"type_error":error,"access":info.access,"mode":info.mode}),
-        Err(error) => {
-            json!({"type":kind,"type_error":error,"eligibility_error":format!("{:?}",error.kind())})
+        Ok(info) => {
+            json!({"type":kind,"type_error":type_error,"access":info.access,"mode":info.mode})
+        }
+        Err(bootstrap_error) => {
+            json!({"type":kind,"type_error":type_error,"eligibility_error":format!("{:?}",bootstrap_error.kind())})
         }
     }
 }
