@@ -19,6 +19,22 @@ use tokio::sync::Notify;
 pub(crate) type StdoutWriter = Box<dyn Write + Send>;
 type Probe = Box<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 
+/// App-owned observation support, not native pipe data or a public receipt.
+/// Checked writes stop on actual IO errors; they cannot proactively observe a
+/// peer loss after successful output when no subsequent IO reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObservationSupport {
+    CheckedWrites,
+    CheckedLocalPipeWrites,
+    PeerState,
+}
+
+enum Observation {
+    CheckedWrites,
+    CheckedLocalPipeWrites,
+    PeerState(Probe),
+}
+
 /// Capture the invocation's actual output before building any agent. A native
 /// duplicate keeps redirected output bound to that pipe/file if another owner
 /// closes or rebinds the process-global stdout slot. It also reports actual IO
@@ -100,7 +116,10 @@ fn captured_stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
     #[cfg(not(any(unix, windows)))]
     let probe = None;
     let mut output = Output::new(Box::new(writer) as StdoutWriter);
-    output.probe = probe;
+    output.observation = match probe {
+        Some(check) => Observation::PeerState(check),
+        None => Observation::CheckedWrites,
+    };
     Ok(Arc::new(output))
 }
 
@@ -113,7 +132,7 @@ pub(crate) struct Output<W> {
     failure: Mutex<Option<ErrorKind>>,
     closed: Arc<AtomicBool>,
     stopped: Notify,
-    probe: Option<Probe>,
+    observation: Observation,
     model_seen: AtomicBool,
 }
 
@@ -124,7 +143,7 @@ impl<W: Write + Send + 'static> Output<W> {
             failure: Mutex::new(None),
             closed: Arc::new(AtomicBool::new(false)),
             stopped: Notify::new(),
-            probe: None,
+            observation: Observation::CheckedWrites,
             model_seen: AtomicBool::new(false),
         }
     }
@@ -137,6 +156,14 @@ impl<W: Write + Send + 'static> Output<W> {
         *self.failure.lock().unwrap()
     }
 
+    pub(crate) fn observation_support(&self) -> ObservationSupport {
+        match &self.observation {
+            Observation::CheckedWrites => ObservationSupport::CheckedWrites,
+            Observation::CheckedLocalPipeWrites => ObservationSupport::CheckedLocalPipeWrites,
+            Observation::PeerState(_) => ObservationSupport::PeerState,
+        }
+    }
+
     pub(crate) fn sink(self: &Arc<Self>) -> crate::agent::TokenSink {
         let output = self.clone();
         Arc::new(move |text| output.write(text.as_bytes()))
@@ -144,6 +171,7 @@ impl<W: Write + Send + 'static> Output<W> {
 
     pub(crate) fn guard(self: &Arc<Self>) -> OutputGuard {
         let output = self.clone();
+        let monitor_peer = self.observation_support() == ObservationSupport::PeerState;
         OutputGuard {
             check: Arc::new(move |after, dispatching| {
                 let probe = if after {
@@ -152,8 +180,8 @@ impl<W: Write + Send + 'static> Output<W> {
                 } else {
                     output.model_seen.load(Ordering::Acquire)
                 };
-                if !output.closed.load(Ordering::Acquire) && probe {
-                    if let Some(check) = &output.probe {
+                if !output.closed.load(Ordering::Acquire) && probe && monitor_peer {
+                    if let Observation::PeerState(check) = &output.observation {
                         let _writer = output.writer.lock().unwrap();
                         if let Err(error) = check() {
                             output.latch(error.kind());
@@ -202,8 +230,10 @@ impl<W: Write + Send + 'static> Output<W> {
 }
 
 /// A source-bound check retains the actual output, not just a caller's boolean.
-/// The initial request remains admitted; a tool response is checked before
-/// dispatch, and every later role request checks the same captured pipe again.
+/// The initial request remains admitted; all roles check the same actual-error
+/// latch before/after responses. Selected peer-state observers also check the
+/// captured connection before later requests and tool dispatch. Limited local
+/// pipe observation supplies no state query or post-success peer guarantee.
 /// A no-tool final response still reaches the real final-newline write.
 #[derive(Clone)]
 pub(crate) struct OutputGuard {
@@ -282,6 +312,29 @@ mod tests {
     use craftsman_harness::{Msg, Usage};
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_write_support_does_not_invent_peer_state_and_latches_actual_io() {
+        use std::io::Read;
+        let (writer, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let output = Arc::new(Output::new(writer));
+        assert_eq!(
+            output.observation_support(),
+            ObservationSupport::CheckedWrites
+        );
+        output.write(b"actual accepted output");
+        let mut received = vec![0; b"actual accepted output".len()];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, b"actual accepted output");
+        drop(peer);
+        let guard = output.guard();
+        assert!((guard.check)(true, true).is_ok());
+        assert_eq!(output.failure_kind(), None);
+        output.write(b"actual later IO observes closure");
+        assert_eq!(output.failure_kind(), Some(ErrorKind::BrokenPipe));
+        assert!((guard.check)(false, false).is_err());
+    }
 
     struct Writer {
         bytes: Arc<Mutex<Vec<u8>>>,

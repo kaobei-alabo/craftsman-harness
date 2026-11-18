@@ -6,7 +6,7 @@
 //! https://learn.microsoft.com/en-us/previous-versions/windows/drivers/ifs/irp-mj-query-information
 //! Driver-facing queries and File writes follow actual NONALERT eligibility.
 
-use super::{ErrorKind, Output, Probe, StdoutWriter};
+use super::{ErrorKind, Observation, Output, Probe, StdoutWriter};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{self, Write};
@@ -26,6 +26,7 @@ const UNBUFFERED: u32 = 8;
 const NAMED_PIPE_DEVICE: u32 = 0x11;
 const NULL_DEVICE: u32 = 0x15;
 const REMOTE_DEVICE: u32 = 0x10;
+const READ_ATTRIBUTES: u32 = 0x80;
 const WINSOCK_2_2: u16 = 0x0202;
 const SOL_SOCKET: i32 = 0xffff;
 const SO_TYPE: i32 = 0x1008;
@@ -383,6 +384,7 @@ fn duplicate_stdout() -> io::Result<OwnedHandle> {
     }
     let kind = captured_type(source)?;
     if kind == 3 {
+        pipe_write_eligibility(source)?;
         // A device0x11 label does not distinguish NPFS from Winsock sockets.
         // Only a checked native non-socket candidate may reach the remaining
         // supported-device/state checks and socket-incompatible duplication.
@@ -502,12 +504,36 @@ pub(super) fn eligibility(handle: Handle) -> io::Result<Eligibility> {
     Ok(eligibility)
 }
 
+fn pipe_write_eligibility(handle: Handle) -> io::Result<Eligibility> {
+    let actual = eligibility(handle)?;
+    // APPEND_DATA is FILE_CREATE_PIPE_INSTANCE for pipes and does not grant
+    // data writes. This check precedes every newly selected pipe backend.
+    if actual.access & WRITE_DATA == 0 {
+        return Err(unsupported());
+    }
+    Ok(actual)
+}
+
 #[cfg(test)]
 static DRIVER_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
 static FILE_WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
 static DUPLICATE_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static PIPE_STATE_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static DEVICE_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn device_queries() -> usize {
+    DEVICE_QUERIES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(super) fn pipe_state_queries() -> usize {
+    PIPE_STATE_QUERIES.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 #[cfg(test)]
 pub(super) fn duplicate_attempts() -> usize {
@@ -535,6 +561,8 @@ fn device(handle: Handle) -> io::Result<DeviceInformation> {
     eligibility(handle)?;
     #[cfg(test)]
     DRIVER_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(test)]
+    DEVICE_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut status = IoStatusBlock {
         status: 0,
         information: 0,
@@ -623,14 +651,24 @@ pub(super) fn null_device(handle: Handle) -> io::Result<()> {
     }
 }
 
-pub(super) fn pipe_state(handle: Handle) -> io::Result<u32> {
+pub(super) fn local_pipe_device(handle: Handle) -> io::Result<()> {
+    // On pipes APPEND_DATA0x4 names FILE_CREATE_PIPE_INSTANCE, not write data.
+    // Keep disk append eligibility unchanged, but require actual pipe writes.
+    pipe_write_eligibility(handle)?;
     let local = device(handle)?;
     if local.kind != NAMED_PIPE_DEVICE || local.characteristics & REMOTE_DEVICE != 0 {
         return Err(unsupported());
     }
+    Ok(())
+}
+
+pub(super) fn pipe_state(handle: Handle) -> io::Result<u32> {
+    local_pipe_device(handle)?;
     eligibility(handle)?;
     #[cfg(test)]
     DRIVER_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    #[cfg(test)]
+    PIPE_STATE_QUERIES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut status = IoStatusBlock {
         status: 0,
         information: 0,
@@ -721,7 +759,22 @@ impl Write for CheckedFile {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PipeObservationPolicy {
+    CheckedWrites,
+    FullState,
+}
+
 pub(super) fn capture() -> io::Result<Arc<Output<StdoutWriter>>> {
+    capture_with_writer(|writer| Box::new(writer))
+}
+
+// Both policies bind the same native duplicate. The policy is chosen from
+// validated access/mode/local-device facts before a state query or File IO;
+// failed selected full-state queries never choose another backend.
+fn capture_with_writer(
+    wrap: impl FnOnce(CheckedFile) -> StdoutWriter,
+) -> io::Result<Arc<Output<StdoutWriter>>> {
     let owner = duplicate_stdout()?;
     #[cfg(test)]
     let _phase = DiagnosticPhaseGuard::enter(DiagnosticPhase::Duplicate);
@@ -742,32 +795,74 @@ pub(super) fn capture() -> io::Result<Arc<Output<StdoutWriter>>> {
         // Native NUL is ordinary output discarding, not a closed connection.
         // It uses real checked File IO below and has no peer-state probe.
     }
-    eligibility(raw)?;
+    let actual = eligibility(raw)?;
     if kind == 1 {
         disk(raw)?;
     }
-    if kind == 3 {
-        match pipe_state(raw) {
-            Ok(_) => {}
-            // A real closed local pipe retains an output owner. Defer its
-            // observation; do not latch before the original admitted request.
-            Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
-            Err(error) => return Err(error),
+    let pipe_policy = if kind == 3 {
+        local_pipe_device(raw)?;
+        let selected = if actual.access & READ_ATTRIBUTES == 0 {
+            PipeObservationPolicy::CheckedWrites
+        } else {
+            PipeObservationPolicy::FullState
+        };
+        if selected == PipeObservationPolicy::FullState {
+            match pipe_state(raw) {
+                Ok(_) => {}
+                // A selected full observer retains genuine closed-pipe
+                // authority through the original admitted first request.
+                Err(error) if error.kind() == ErrorKind::BrokenPipe => {}
+                Err(error) => return Err(error),
+            }
         }
-    }
+        Some(selected)
+    } else {
+        None
+    };
     // Only now is std File allowed to perform synchronous IO on this handle.
     let file = Arc::new(File::from(owner));
-    let probe = if kind == 3 {
+    let observation = if pipe_policy == Some(PipeObservationPolicy::FullState) {
         let file = file.clone();
-        Some(Box::new(move || {
+        Observation::PeerState(Box::new(move || {
             #[cfg(test)]
             let _phase = DiagnosticPhaseGuard::enter(DiagnosticPhase::Duplicate);
             pipe_state(file.as_raw_handle()).map(|_| ())
         }) as Probe)
+    } else if pipe_policy == Some(PipeObservationPolicy::CheckedWrites) {
+        // No type/configuration/end/state or post-success peer-loss claim is
+        // minted here. Actual write/flush failures retain the legacy latch.
+        Observation::CheckedLocalPipeWrites
     } else {
-        None
+        Observation::CheckedWrites
     };
-    let mut output = Output::new(Box::new(CheckedFile { file }) as StdoutWriter);
-    output.probe = probe;
+    let mut output = Output::new(wrap(CheckedFile { file }));
+    output.observation = observation;
     Ok(Arc::new(output))
+}
+
+#[cfg(test)]
+pub(super) fn capture_buffered_for_flush_test() -> io::Result<Arc<Output<StdoutWriter>>> {
+    struct FlushBuffered {
+        native: CheckedFile,
+        pending: Vec<u8>,
+    }
+    impl Write for FlushBuffered {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.pending.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            // A real native write happens at the flush boundary. Remove the
+            // accepted buffer first so neither error nor Drop retries it.
+            let bytes = std::mem::take(&mut self.pending);
+            self.native.write_all(&bytes)?;
+            self.native.flush()
+        }
+    }
+    capture_with_writer(|native| {
+        Box::new(FlushBuffered {
+            native,
+            pending: Vec::new(),
+        })
+    })
 }

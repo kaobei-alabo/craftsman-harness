@@ -319,6 +319,28 @@ fn narrow_write(handle: &OwnedHandle) -> OwnedHandle {
     owned(result)
 }
 
+fn narrow_append_or_instance(handle: &OwnedHandle) -> OwnedHandle {
+    let mut result = null_mut();
+    // The same bit is append-data for disk files and create-instance for pipes.
+    // This explicitly reduces a newly created fixture's grant; production
+    // capture always duplicates SAME_ACCESS and never adds permissions.
+    assert_ne!(
+        unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                handle.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut result,
+                0x0010_0004,
+                0,
+                0,
+            )
+        },
+        0
+    );
+    owned(result)
+}
+
 fn raw_facts(handle: Handle) -> Value {
     let kind = unsafe {
         SetLastError(0);
@@ -792,10 +814,16 @@ async fn windows_output_fixture() {
         "socket-connected",
         "socket-inherited",
         "sync-disk",
+        "append-disk",
         "unbuffered-disk",
         "nul-output",
         "character-read-only",
         "console-unicode",
+        "named-limited-positive",
+        "named-limited-flush-error",
+        "named-limited-after-read-close",
+        "named-server-instance-only",
+        "named-full-message-refused",
     ];
     if !MODES.contains(&mode.as_str()) {
         return;
@@ -828,6 +856,8 @@ async fn windows_output_fixture() {
             | "socket-inherited"
             | "unbuffered-disk"
             | "character-read-only"
+            | "named-server-instance-only"
+            | "named-full-message-refused"
     );
     match mode.as_str() {
         "null" => select(null_mut()),
@@ -893,16 +923,19 @@ async fn windows_output_fixture() {
             select(value as Handle);
             socket = Some(value);
         }
-        "sync-disk" | "overlapped-disk" | "unbuffered-disk" => {
+        "sync-disk" | "append-disk" | "overlapped-disk" | "unbuffered-disk" => {
             let path = Path::new(completed);
             let name = wide(&path.to_string_lossy());
+            if mode == "append-disk" {
+                std::fs::write(path, b"existing disk bytes:").unwrap();
+            }
             let handle = owned(unsafe {
                 CreateFileW(
                     name.as_ptr(),
                     GENERIC_WRITE,
                     3,
                     null_mut(),
-                    2,
+                    if mode == "append-disk" { 4 } else { 2 },
                     if mode == "overlapped-disk" {
                         OVERLAPPED
                     } else if mode == "unbuffered-disk" {
@@ -913,6 +946,11 @@ async fn windows_output_fixture() {
                     null_mut(),
                 )
             });
+            let handle = if mode == "append-disk" {
+                narrow_append_or_instance(&handle)
+            } else {
+                handle
+            };
             select(handle.as_raw_handle());
             writer = Some(handle);
             setup_file = Some(path.to_owned());
@@ -1017,6 +1055,29 @@ async fn windows_output_fixture() {
             emit_query_diagnostics();
             std::process::exit(0);
         }
+        "named-full-message-refused" => {
+            let name = wide(&format!(
+                "\\\\.\\pipe\\craftsman-full-message-{}",
+                std::process::id()
+            ));
+            let server = owned(unsafe {
+                CreateNamedPipeW(name.as_ptr(), 3, 6, 1, 4096, 4096, 0, null_mut())
+            });
+            let client = owned(unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    null_mut(),
+                    3,
+                    0,
+                    null_mut(),
+                )
+            });
+            select(server.as_raw_handle());
+            writer = Some(server);
+            peer = Some(client);
+        }
         value if value.starts_with("named") || value.starts_with("overlapped") => {
             let server_output = matches!(
                 value,
@@ -1024,6 +1085,10 @@ async fn windows_output_fixture() {
                     | "named-server-minimal"
                     | "named-server-disconnected"
                     | "overlapped-server"
+                    | "named-limited-positive"
+                    | "named-limited-flush-error"
+                    | "named-limited-after-read-close"
+                    | "named-server-instance-only"
             );
             let (read, write) = named(
                 server_output,
@@ -1031,7 +1096,16 @@ async fn windows_output_fixture() {
                 value == "overlapped-client",
                 value == "named-client-attributes",
             );
-            let write = if matches!(value, "named-server-minimal" | "named-client") {
+            let write = if value == "named-server-instance-only" {
+                narrow_append_or_instance(&write)
+            } else if matches!(
+                value,
+                "named-server-minimal"
+                    | "named-client"
+                    | "named-limited-positive"
+                    | "named-limited-flush-error"
+                    | "named-limited-after-read-close"
+            ) {
                 narrow_write(&write)
             } else {
                 write
@@ -1083,6 +1157,17 @@ async fn windows_output_fixture() {
         );
     }
     if unsupported {
+        if mode == "named-server-instance-only" {
+            let access = facts["access"].as_u64().unwrap();
+            assert_eq!(access, 0x100004);
+            assert_eq!(access & 2, 0);
+        }
+        if mode == "named-full-message-refused" {
+            assert_ne!(
+                facts["access"].as_u64().unwrap() & READ_ATTRIBUTES as u64,
+                0
+            );
+        }
         if mode.starts_with("overlapped") {
             assert_eq!(
                 facts["mode"]
@@ -1096,6 +1181,16 @@ async fn windows_output_fixture() {
             super::stdout().is_err(),
             "unsupported native handle was admitted"
         );
+        if mode == "named-server-instance-only" {
+            assert_eq!(super::windows_probe::device_queries(), 0);
+            assert_eq!(super::windows_probe::pipe_state_queries(), 0);
+        }
+        if mode == "named-full-message-refused" {
+            assert!(
+                super::windows_probe::pipe_state_queries() > 0,
+                "selected full observer must attempt/validate native state and refuse bad pipe data"
+            );
+        }
         if matches!(
             mode.as_str(),
             "socket" | "socket-sync" | "socket-datagram" | "socket-connected" | "socket-inherited"
@@ -1162,11 +1257,23 @@ async fn windows_output_fixture() {
         emit_query_diagnostics();
         std::process::exit(0);
     }
-    if mode == "sync-disk" {
+    if mode == "sync-disk" || mode == "append-disk" {
         let output = super::stdout().unwrap();
+        assert_eq!(
+            output.observation_support(),
+            ObservationSupport::CheckedWrites
+        );
         output.write("匠 output\n".as_bytes());
         assert_eq!(output.failure_kind(), None);
-        assert_eq!(std::fs::read(completed).unwrap(), "匠 output\n".as_bytes());
+        if mode == "append-disk" {
+            assert_eq!(facts["access"], 0x100004);
+            assert_eq!(
+                std::fs::read(completed).unwrap(),
+                "existing disk bytes:匠 output\n".as_bytes()
+            );
+        } else {
+            assert_eq!(std::fs::read(completed).unwrap(), "匠 output\n".as_bytes());
+        }
         emit_query_diagnostics();
         std::process::exit(0);
     }
@@ -1227,30 +1334,130 @@ async fn windows_output_fixture() {
         emit_query_diagnostics();
         std::process::exit(0);
     }
-    if matches!(
+    let limited = matches!(
         mode.as_str(),
-        "anonymous"
-            | "named-server"
+        "named-server"
             | "named-server-minimal"
             | "named-client"
-            | "named-client-attributes"
-    ) {
+            | "named-server-disconnected"
+            | "named-limited-positive"
+            | "named-limited-flush-error"
+            | "named-limited-after-read-close"
+    );
+    if limited {
+        assert_eq!(
+            facts["access"].as_u64().unwrap() & READ_ATTRIBUTES as u64,
+            0
+        );
+        super::windows_probe::local_pipe_device(raw).expect("actual completed local device facts");
+    }
+    if matches!(mode.as_str(), "anonymous" | "named-client-attributes") {
         assert_eq!(
             super::windows_probe::pipe_state(raw).unwrap(),
             3,
             "actual completed local NPFS query required"
         );
     }
-    let output =
-        super::stdout().expect("canonical same-access native output must remain supported");
+    let output = if mode == "named-limited-flush-error" {
+        super::windows_probe::capture_buffered_for_flush_test()
+    } else {
+        super::stdout()
+    }
+    .expect("canonical same-access native output must remain supported");
+    assert_eq!(
+        output.observation_support(),
+        if limited {
+            ObservationSupport::CheckedLocalPipeWrites
+        } else {
+            ObservationSupport::PeerState
+        }
+    );
+    if limited {
+        assert!(super::windows_probe::device_queries() > 0);
+        assert_eq!(
+            super::windows_probe::pipe_state_queries(),
+            0,
+            "limited policy is selected before any full-state query, not after denial"
+        );
+    }
+    eprintln!(
+        "native-output-observation: {}",
+        json!({
+            "support":format!("{:?}",output.observation_support()),
+            "source_access":facts["access"],
+            "source_mode":facts["mode"],
+            "device_queries":super::windows_probe::device_queries(),
+            "class24_queries":super::windows_probe::pipe_state_queries(),
+        })
+    );
     assert_eq!(
         output.failure_kind(),
         None,
         "capture must defer real closed-peer observation"
     );
+    if mode == "named-limited-positive" {
+        // Rebinding the global slot must not redirect this actual captured
+        // low-grant pipe writer or give it additional source rights/state.
+        let nul_name = wide("NUL");
+        let nul = owned(unsafe {
+            CreateFileW(
+                nul_name.as_ptr(),
+                GENERIC_WRITE,
+                3,
+                null_mut(),
+                3,
+                0,
+                null_mut(),
+            )
+        });
+        select(nul.as_raw_handle());
+        let text = "actual owned low-grant éλ output".as_bytes();
+        output.write(text);
+        assert_eq!(output.failure_kind(), None);
+        let mut reader = File::from(peer.take().unwrap());
+        let mut actual = vec![0; text.len()];
+        reader.read_exact(&mut actual).unwrap();
+        assert_eq!(actual, text);
+        drop(reader);
+        assert!(
+            (output.guard().check)(true, true).is_ok(),
+            "checked writes do not invent proactive peer-loss observation"
+        );
+        assert_eq!(output.failure_kind(), None);
+        output.write(b"next actual IO observes the lost peer");
+        assert_eq!(output.failure_kind(), Some(ErrorKind::BrokenPipe));
+        assert!((output.guard().check)(false, false).is_err());
+        let after = raw_facts(raw);
+        assert_eq!(after["access"], facts["access"]);
+        assert_eq!(after["mode"], facts["mode"]);
+        assert_eq!(super::windows_probe::pipe_state_queries(), 0);
+        emit_query_diagnostics();
+        std::process::exit(0);
+    }
+    if mode == "named-limited-flush-error" {
+        drop(peer.take());
+        let before = super::windows_probe::activity_counts().1;
+        // The cfg-test adapter accepts bytes into its owned buffer, then a
+        // genuine captured native write fails at its flush boundary. There is
+        // no fabricated error or drop/retry write.
+        output.write(b"buffered actual low-grant flush");
+        assert_eq!(output.failure_kind(), Some(ErrorKind::BrokenPipe));
+        assert!(super::windows_probe::activity_counts().1 > before);
+        let stopped = super::windows_probe::activity_counts().1;
+        output.write(b"must not retry after the flush error");
+        assert_eq!(super::windows_probe::activity_counts().1, stopped);
+        assert!((output.guard().check)(false, false).is_err());
+        assert_eq!(super::windows_probe::pipe_state_queries(), 0);
+        let after = raw_facts(raw);
+        assert_eq!(after["access"], facts["access"]);
+        assert_eq!(after["mode"], facts["mode"]);
+        emit_query_diagnostics();
+        std::process::exit(0);
+    }
     let peer = Arc::new(Mutex::new(peer));
     let after_result = mode == "after-real-result";
     let after_write = mode == "after-first-write";
+    let limited_gap = mode == "named-limited-after-read-close";
     if !matches!(
         mode.as_str(),
         "anonymous-closed"
@@ -1258,6 +1465,7 @@ async fn windows_output_fixture() {
             | "named-client-closing"
             | "after-first-write"
             | "after-real-result"
+            | "named-limited-after-read-close"
     ) {
         drop(peer.lock().unwrap().take());
     }
@@ -1276,7 +1484,7 @@ async fn windows_output_fixture() {
         let peer = peer.clone();
         Arc::new(move |text: &str| {
             output.write(text.as_bytes());
-            if after_write {
+            if after_write || (limited_gap && !text.is_empty()) {
                 if let Some(read) = peer.lock().unwrap().take() {
                     // CreatePipe's test read end was opened synchronously; only
                     // this synchronous fixture handle becomes a std File reader.
@@ -1285,6 +1493,10 @@ async fn windows_output_fixture() {
                     reader.read_exact(&mut actual).unwrap();
                     assert_eq!(actual, text.as_bytes());
                     drop(reader);
+                    if limited_gap {
+                        assert_eq!(output.failure_kind(), None);
+                        assert!((output.guard().check)(true, true).is_ok());
+                    }
                 }
             }
         }) as crate::agent::TokenSink
@@ -1322,18 +1534,21 @@ async fn windows_output_fixture() {
     assert!(matches!(result, Err(AgentError::State(_))));
     assert_eq!(output.failure_kind(), Some(ErrorKind::BrokenPipe));
     assert!(!Path::new(forbidden).exists());
-    let requests = if after_result { 2 } else { 1 };
+    let requests = if after_result || limited_gap { 2 } else { 1 };
     assert_eq!(round.load(Ordering::SeqCst), requests);
     assert_eq!(
         *session.usage.lock().unwrap(),
         (requests as u64 * 8, requests as u64 * 2)
     );
-    if after_result {
+    if after_result || limited_gap {
         assert_eq!(
             std::fs::read(completed).unwrap(),
             b"real completed Windows effect"
         );
         assert!(session.agent.state.lock().unwrap().messages.iter().any(|m|matches!(m,craftsman_harness::Msg::Tool{content,is_error:false,..} if content.contains("Updated file"))));
+    }
+    if limited {
+        assert_eq!(super::windows_probe::pipe_state_queries(), 0);
     }
     emit_query_diagnostics();
     std::process::exit(0);
@@ -1357,6 +1572,7 @@ fn tool(path: &str, id: &str, content: &str) -> Value {
 struct Script {
     after_result: bool,
     nul_output: bool,
+    limited_gap: bool,
     completed: String,
     forbidden: String,
 }
@@ -1379,15 +1595,17 @@ impl Respond for Script {
             if !self.after_result || completed {
                 events.push(json!({"choices":[{"delta":{"content":"actual Windows content"}}]}));
             }
-            events.push(if (self.after_result || self.nul_output) && !completed {
-                tool(
-                    &self.completed,
-                    "completed",
-                    "real completed Windows effect",
-                )
-            } else {
-                tool(&self.forbidden, "forbidden", "must not run")
-            });
+            events.push(
+                if (self.after_result || self.nul_output || self.limited_gap) && !completed {
+                    tool(
+                        &self.completed,
+                        "completed",
+                        "real completed Windows effect",
+                    )
+                } else {
+                    tool(&self.forbidden, "forbidden", "must not run")
+                },
+            );
             events.push(json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}));
         }
         events.push(json!({"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2}}));
@@ -1406,6 +1624,7 @@ async fn case(mode: &str, requests: usize) {
         .respond_with(Script {
             after_result: mode == "after-real-result",
             nul_output: mode == "nul-output",
+            limited_gap: mode == "named-limited-after-read-close",
             completed: completed.to_string_lossy().into_owned(),
             forbidden: forbidden.to_string_lossy().into_owned(),
         })
@@ -1464,7 +1683,10 @@ async fn case(mode: &str, requests: usize) {
     if requests == 0 {
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
     }
-    if mode == "after-real-result" || mode == "nul-output" {
+    if mode == "after-real-result"
+        || mode == "nul-output"
+        || mode == "named-limited-after-read-close"
+    {
         assert_eq!(
             std::fs::read(completed).unwrap(),
             b"real completed Windows effect"
@@ -1546,6 +1768,36 @@ async fn actual_windows_connected_socket_refuses_before_duplicate_and_keeps_call
     case("socket-connected", 0).await;
 }
 
+#[tokio::test]
+async fn actual_windows_low_grant_owned_writes_rebind_and_real_error_keep_limited_support() {
+    case("named-limited-positive", 0).await;
+}
+
+#[tokio::test]
+async fn actual_windows_pipe_instance_only_rights_refuse_before_file_or_model() {
+    case("named-server-instance-only", 0).await;
+}
+
+#[tokio::test]
+async fn actual_windows_disk_append_rights_keep_checked_output_semantics() {
+    case("append-disk", 0).await;
+}
+
+#[tokio::test]
+async fn actual_windows_selected_full_message_pipe_refuses_without_checked_write_demotion() {
+    case("named-full-message-refused", 0).await;
+}
+
+#[tokio::test]
+async fn actual_windows_low_grant_native_flush_error_stops_without_retry() {
+    case("named-limited-flush-error", 0).await;
+}
+
+#[tokio::test]
+async fn actual_windows_limited_observer_keeps_effect_before_later_io_observes_peer_loss() {
+    case("named-limited-after-read-close", 2).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_windows_inherited_socket_refuses_before_duplicate_and_keeps_both_references() {
     let home = tempfile::tempdir().unwrap();
@@ -1559,6 +1811,7 @@ async fn actual_windows_inherited_socket_refuses_before_duplicate_and_keeps_both
         .respond_with(Script {
             after_result: false,
             nul_output: false,
+            limited_gap: false,
             completed: completed.to_string_lossy().into_owned(),
             forbidden: forbidden.to_string_lossy().into_owned(),
         })

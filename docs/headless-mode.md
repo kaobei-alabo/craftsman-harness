@@ -571,12 +571,14 @@ native stdout pipe/file before agent construction. Rust's shared `Stdout` uses
 the process-global descriptor and treats an invalid descriptor as a successful
 no-op; retaining that wrapper alone does not retain the selected output owner.
 Actual writes to the captured pipe/file latch their IO failure before the
-completed response reaches tool dispatch. A source-bound guard also queries
-the captured pipe's connection state before later model requests and after
-tool-bearing responses: a successful write alone does not establish that the
-peer is still open when the following tool is about to dispatch. Unix uses a
-zero-time readiness query; Windows reads the captured pipe's native connection
-metadata. Neither consumes pipe bytes, changes modes nor retries output.
+completed response reaches tool dispatch. For sources with selected peer-state
+observation, the source-bound guard also queries the captured connection before
+later model requests and after tool-bearing responses. Unix keeps its zero-time
+readiness query; the full Windows observer reads validated native pipe metadata.
+For the limited local Windows pipe observer, a successful write followed by peer
+loss remains unobserved until later IO reports an actual failure. Every observer
+retains the shared error check; no backend consumes probe bytes, changes modes
+or retries output.
 The same owner/latch remains selected by main, delegated and compaction provider
 guards before and after each response. An ordinary no-tool final response still
 reaches the actual final-newline write, retaining that failure boundary.
@@ -597,9 +599,10 @@ Actual NONALERT synchronous mode, write/append plus SYNCHRONIZE rights, and
 buffered IO are required; async/ALERT, read-only and unbuffered handles refuse.
 Driver-facing queries recheck those preconditions on the retained owner.
 Disk output must be a normal file. PIPE type alone includes sockets: local
-NPFS device and completed byte-pipe state must be validated, with exact sizes/
-status and known state. Unknown/query/type/access failures remain fixed errors,
-not absent guards. Non-console character devices refuse except a synchronous,
+NPFS device facts must be completed on the same eligible owner. The selected
+full observer additionally validates completed byte-pipe state with exact sizes/
+status and known fields. Unknown device/access/mode facts and selected-full
+query failures remain fixed errors. Non-console character devices refuse except a synchronous,
 same-access writable native NUL device identified as FILE_DEVICE_NULL after
 the exact8/16 eligibility bootstrap. NUL uses actual checked File writes/flush
 to discard output and has no connection-peer probe; a NULL/-1 HANDLE remains
@@ -624,15 +627,29 @@ changes.
 The recognized Windows console keeps the standard Unicode path and remains
 outside native duplicate-owned console proof.
 
-The selected local NPFS query is tried on actual pure-write handles without an
-a priori READ_ATTRIBUTES admission bit or access upgrade. Canonical anonymous,
-named server/client and minimal pure-write compatibility needs native Windows
-execution: failed queries cannot be relabelled working output. Real closed
-local-pipe observations remain deferred through the original initial request;
-no-tool final-newline failure, completed effects/results/usage and all-role
-before/after guards remain. Arbitrary asynchronous output is unsupported, so
-no pending-request buffer leaks, cancel-only completion, abort or infinite-wait
-alternative is selected.
+The app selects its Windows pipe observation policy before a state-query attempt
+or sampling, from completed actual access/mode/local-device facts. Actual
+WRITE_DATA0x2, SYNCHRONIZE and NONALERT/buffered eligibility are required for
+local pipe adoption. Pipe bit0x4 is FILE_CREATE_PIPE_INSTANCE and cannot qualify
+output merely because the generic disk helper accepts APPEND_DATA; disk append
+semantics stay unchanged.
+
+Qualified local NPFS without READ_ATTRIBUTES selects captured checked writes.
+The typed availability is CheckedLocalPipeWrites, distinct from ordinary
+disk/NUL/generic checked writes and PeerState observation. It supplies no
+pipe type/configuration/end/connection fields. It retains legacy actual
+write/flush-error stopping and the same main/child/compaction source-bound guard,
+but cannot observe a peer loss after successful output with no later IO.
+
+READ_ATTRIBUTES presence selects full native observation; it is not proof of a
+successful reply. That backend still requires the same actual class24 return,
+matching IOSB and completed40-byte/type/configuration/end/state predicates.
+Failure remains refusal or the unchanged genuine closed-status path; it never
+switches to checked writes because a query failed. Initial-request/no-tool final
+newline and real completed effects/results/received usage remain. No access
+upgrade, byte probe, alternate query, mode change or asynchronous buffer loan is
+introduced. Private headless/guest/input/output constructors do not select this
+limited app policy, and Unix/default writer behavior remains.
 
 The actual gadget-mode Windows run passed all six original one-shot cases and
 eleven of the17 added unit definitions, while six units and the appended binary
@@ -643,16 +660,32 @@ now uses attachment/mode APIs rather than window visibility and keeps real
 inactive-buffer UTF16 readback; the attribute-free client uses an actual reduced
 grant without removing the mask assertion.
 
-Named-server refusals still require actual primitive query evidence before a
-cause or repair is claimed. Marked cfg-test collection is limited to32 records:
+Native run44322458688 now executes both Windows modes: all six original cases,
+socket/inheritance/reference, console and NUL assertions pass, while four
+low-grant named-pipe cases fail per mode. Their eight class24 queries return
+ACCESS_DENIED/no completed fields. The current compatible candidate corrects
+only the new direct-query-success premise while retaining those end-to-end
+acceptance/first-request/quiet-exit/no-following-tool/usage/grant assertions.
+No denial is reclassified as connected or closed. Marked cfg-test collection is limited to32 records:
 fixed query names, original/duplicate phase, return NTSTATUS, IOSB status/count,
 requested size and completed-output fields. Partial/error/pending output supplies
 no native type/state fields. No handles, paths, bodies, keys or endpoints enter
 these records. Exact40-byte/state checks and fixed public errors remain; metadata
-denial cannot become working output or a permission upgrade. The inherited
+denial in a selected full backend cannot become working output or a permission upgrade. The inherited
 fixture restricts native handle inheritance to its socket and intended NUL/file
 stdio, owns only fresh process/thread HANDLEs through bounded wait/reap and keeps
 caller reference/usability assertions; it is not an OS-containment claim.
+
+New native controls require positive low-grant bytes and rebind-independent
+ownership, real later IO/flush-boundary error stopping without replay, and an
+explicit example where limited observation retains a completed tool before a
+later actual IO reports peer loss. The flush control uses a cfg-test owned
+buffer that performs its genuine native write at flush and removes its pending
+bytes before the attempt; it adds no production buffering/FlushFileBuffers or
+drop retry. Existing full-state after-successful-write controls remain unchanged
+and require actual selected-observer/grant witnesses on their sources. Native
+execution of this new policy still gates delivery; source definitions and
+controlled checks do not substitute for Windows proof.
 
 Marked Unix builder/HTTP/native-pipe regressions close the actual sole read end
 and then bind global stdout to a separate isolated file. Content followed by a

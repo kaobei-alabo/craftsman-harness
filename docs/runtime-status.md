@@ -172,9 +172,10 @@ boundary.
 
 Redirected one-shot output captures stdout as an owned native pipe/file
 before agent construction. Main, delegated and compaction providers retain
-that same owner: writes latch actual IO failures, and connection checks run
-after tool-bearing responses and before later model requests, including when
-the preceding write succeeded. Closure observed at that boundary stops further
+that same owner and recheck actual write/flush error latches before/after model
+responses. Sources selected for peer-state observation also run connection
+checks after tool-bearing responses and before later model requests, including
+when the preceding write succeeded. Closure observed at that boundary stops further
 dispatch; BrokenPipe exits quietly at 0 and other IO failures use fixed text.
 The first request remains admitted and a no-tool final response still reaches
 the actual final-newline write. Windows console encoding, deny-without-read
@@ -199,9 +200,9 @@ storage effects, and an actual stream control retains dispatch protection.
 
 Windows support requires a same-access captured owner, actual type/GetLastError,
 direct-kernel8/16 bootstrap before File/driver IO, and NONALERT/write eligibility.
-Only validated buffered disk files, completed local NPFS byte-pipe queries or
-same-access synchronous writable NUL with actual native FILE_DEVICE_NULL identity
-are admitted. NUL discards through checked File IO without a peer-liveness claim;
+Validated disk files and synchronous writable NUL keep checked File IO; NUL
+requires actual native FILE_DEVICE_NULL identity. Validated local NPFS selects
+an explicit source-dependent app observer before any agent work. NUL has no peer-liveness claim;
 NULL/-1 HANDLEs remain invalid. Async/ALERT/non-write/unbuffered, socket, unknown
 and other non-console-device cases refuse. The existing recognized console
 Unicode path remains. Windows gadget run44262189413 actually ran the24 original/
@@ -223,12 +224,29 @@ Console fixtures use actual attachment/mode APIs and inactive-buffer Unicode
 readback. The pure client now reduces and verifies its actual granted rights;
 binary NUL uses spawn/wait_with_output so Tokio cannot replace null stdout.
 Marked query diagnostics retain at most32 primitive records, with separate
-original/duplicate phases and no fields from partial/error output. Canonical
-server and truly attribute-free query compatibility remain unverified until
-actual status/size/state facts support a repair; no READ_ATTRIBUTES upgrade,
-listening-to-connected inference or metadata-failure fallback is permitted.
-The repaired same-process/inherited socket, caller-reference and fixture paths
-still need native execution; the scope decision is not future-source approval.
+original/duplicate phases and no fields from partial/error output. Later native
+run44322458688 passes the original six, socket/inherited/reference, console and
+NUL paths in both modes, but still fails four low-grant named-pipe cases in each
+mode. All eight class24 requests return ACCESS_DENIED with no completed fields.
+Those failed expectations and all earlier runs remain historical evidence.
+
+The compatible candidate retains legacy checked writes for qualified local
+NPFS whose actual access lacks READ_ATTRIBUTES. It requires WRITE_DATA0x2,
+SYNCHRONIZE, NONALERT/buffered mode and a completed local-device result on the
+same owner; pipe bit0x4 alone is create-instance authority, not data writing.
+ObservationSupport::CheckedLocalPipeWrites advertises only actual IO-result
+observation. It provides no type/configuration/end/connection data and cannot
+detect peer loss after successful output until later IO actually reports it.
+Disk/NUL/generic write support and PeerState support remain distinct.
+
+READ_ATTRIBUTES presence selects the full native observer, whose actual
+return/IOSB/completed40-byte/type/configuration/end/state validation still must
+succeed. Query failure in that selected backend refuses; it never chooses the
+limited backend. No access upgrade, byte probe, mode change, cached-state guess
+or query-error fallback is used. Native witnesses must show the already passing
+anonymous/metadata-capable sources retain full observation. This app-only policy
+does not enter private headless/guest/input/output construction paths. The new
+candidate and its native tests still require source review/fresh Windows proof.
 Current validation requires repaired-source review, actual Windows execution
 and full17/all-four/every-step/both-mode/inventory/warning/source-tree/
 independent-main proof. No broader source33/image/corpus/capture or live-budget
