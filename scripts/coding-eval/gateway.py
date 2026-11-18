@@ -1,6 +1,7 @@
 """A trusted evaluation gateway: real credentials enter only on its stdin."""
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 import sys
 from pathlib import Path
 import urllib.error
@@ -16,6 +17,17 @@ from gateway_observations import GatewayObservations, ObservationFailure, refusa
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
+
+
+class _SyntheticLoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        if self.server_address[0] != '127.0.0.1':
+            raise Refused('Synthetic loopback listen selection refused.')
+        # Keep the actual TCP socket options/bind and the normal activation;
+        # this explicit synthetic listener needs no reverse-DNS metadata.
+        TCPServer.server_bind(self)
+        self.server_name = '127.0.0.1'
+        self.server_port = self.server_address[1]
 
 
 class Usage:
@@ -161,7 +173,8 @@ def serve(config, synthetic_listen=None):
 
     if synthetic_listen is not None and not synthetic:
         raise Refused('Synthetic listen selection refused.')
-    server=ThreadingHTTPServer(synthetic_listen or ('0.0.0.0',8765),Handler)
+    server_type = _SyntheticLoopbackHTTPServer if synthetic_listen is not None else ThreadingHTTPServer
+    server=server_type(synthetic_listen or ('0.0.0.0',8765),Handler)
     ready={'ready':True,'model':config['model'],'cap_usd':config['cap_usd']}
     if synthetic_listen is not None:ready['synthetic_bound_port']=server.server_address[1]
     print(json.dumps(ready),flush=True)

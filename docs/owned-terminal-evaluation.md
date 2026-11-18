@@ -189,6 +189,23 @@ PR29/run44195435162's original macOS readiness timeout remains failed evidence:
 its missing child diagnostics do not establish a historical scheduling or gateway
 cause, and hosted macOS validation of this fixture correction is still required.
 
+PR29/run44239878015 separately retains two macOS10s readiness failures: the
+diagnostic child had0 stdout bytes and37888 stderr bytes, while the ordinary
+admission/EOF child had0 bytes on both streams; both returned-15 after the
+requested cleanup signal. These observations do not locate the startup stall.
+The 3.12.10 standard [HTTPServer bind](https://github.com/python/cpython/blob/0cc81280367df838c4b199f8f0378837165071c2/Lib/http/server.py#L134)
+calls getfqdn after the real TCP bind;
+that resolver dependency is unnecessary for this fixed loopback fixture. Only
+the explicit synthetic-listen path now calls the same TCPServer bind with its
+standard socket options and fixed local server metadata. Actual listen still
+precedes readiness publication; the normal production gateway path is unchanged.
+Marked real-child controls refuse hostname lookup after a standard native bind,
+then require actual synthetic port publication/read and HTTP404 without any
+resolver returning a hostname or readiness. The original10s/5s/shared2s bounds,
+all earlier fixture bodies/assertions and20/21/402/EOF accounting checks remain
+exact. These controlled results are not a historical macOS cause diagnosis;
+fresh corrected-source macOS and Windows CI still gate delivery.
+
 On Windows the held-port control sets and verifies SO_EXCLUSIVEADDRUSE on its
 actual occupied socket before bind. The unchanged standard gateway enables
 SO_REUSEADDR on the second socket; [Microsoft documents WSAEACCES10013 for that

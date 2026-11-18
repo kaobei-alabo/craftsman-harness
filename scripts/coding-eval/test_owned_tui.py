@@ -5,7 +5,8 @@ if len(sys.argv) > 1 and sys.argv[1].startswith("--synthetic-gateway-"):
     if len(sys.argv) != 2 or sys.argv[1] not in {
             "--synthetic-gateway-fixture-v2", "--synthetic-gateway-diagnostics-v3",
             "--synthetic-gateway-stderr-overflow-v3", "--synthetic-gateway-bind-refusal-v3",
-            "--synthetic-gateway-stdout-refusal-v3"}:
+            "--synthetic-gateway-stdout-refusal-v3", "--synthetic-gateway-standard-fqdn-refusal-v4",
+            "--synthetic-gateway-local-fqdn-refusal-v4"}:
         raise SystemExit(0)
     import json
     from pathlib import Path
@@ -20,6 +21,12 @@ if len(sys.argv) > 1 and sys.argv[1].startswith("--synthetic-gateway-"):
     if sys.argv[1] == "--synthetic-gateway-diagnostics-v3":
         sys.stderr.buffer.write(b"synthetic gateway startup diagnostic\n" * 1024)
         sys.stderr.buffer.flush()
+    if sys.argv[1] in {"--synthetic-gateway-standard-fqdn-refusal-v4", "--synthetic-gateway-local-fqdn-refusal-v4"}:
+        import socket
+        def refuse_fqdn(_):
+            # This detector never supplies a hostname or readiness result.
+            raise RuntimeError("Synthetic loopback hostname lookup refused.")
+        socket.getfqdn = refuse_fqdn
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gateway import serve
     raw = sys.stdin.buffer.read(1024 * 1024 + 1)
@@ -31,6 +38,23 @@ if len(sys.argv) > 1 and sys.argv[1].startswith("--synthetic-gateway-"):
     port = config.pop("fixture_bound_port", 0) if sys.argv[1] == "--synthetic-gateway-bind-refusal-v3" else 0
     if type(port) is not int or not 0 <= port <= 65535:
         raise SystemExit("Synthetic gateway fixture port refused.")
+    if sys.argv[1] == "--synthetic-gateway-standard-fqdn-refusal-v4":
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        class StandardBindProbe(ThreadingHTTPServer):
+            def server_bind(self):
+                def observe_and_refuse(host):
+                    # The unmodified HTTPServer method already called the
+                    # real TCP bind; observe its still-owned native socket.
+                    record = {"kind": "synthetic_fqdn_boundary", "lookup_host": host,
+                        "socket_address": list(self.socket.getsockname())}
+                    sys.stderr.write("synthetic-fqdn-boundary: " + json.dumps(record) + "\n")
+                    sys.stderr.flush()
+                    refuse_fqdn(host)
+                socket.getfqdn = observe_and_refuse
+                super().server_bind()
+        server = StandardBindProbe(("127.0.0.1", 0), BaseHTTPRequestHandler)
+        server.server_close()
+        raise SystemExit("Synthetic standard server did not request a hostname.")
     serve(config, ("127.0.0.1", port))
     raise SystemExit(0)
 
@@ -702,6 +726,64 @@ class ActualGatewayBoundary(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_standard_server_refuses_lookup_after_actual_loopback_bind(self):
+        with tempfile.TemporaryDirectory(prefix="gateway-standard-fqdn-") as directory:
+            root = Path(directory)
+            with self.assertRaises(self.ChildFailure) as failed:
+                with self.Child(self.bootstrap(root), "--synthetic-gateway-standard-fqdn-refusal-v4") as child:
+                    child.wait_ready()
+            self.assertEqual(failed.exception.reason, "stdout_eof_before_ready")
+            self.assertEqual(child.process.returncode, 1)
+            self.assertIsNone(child.ready)
+            self.assertEqual(bytes(child.stdout), b"")
+            records = [json.loads(line.removeprefix(b"synthetic-fqdn-boundary: "))
+                for line in child.stderr.splitlines() if line.startswith(b"synthetic-fqdn-boundary: ")]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(set(records[0]), {"kind", "lookup_host", "socket_address"})
+            self.assertEqual(records[0]["kind"], "synthetic_fqdn_boundary")
+            self.assertEqual(records[0]["lookup_host"], "127.0.0.1")
+            self.assertEqual(records[0]["socket_address"][0], "127.0.0.1")
+            self.assertIs(type(records[0]["socket_address"][1]), int)
+            self.assertTrue(1 <= records[0]["socket_address"][1] <= 65535)
+            self.assertIn(b"RuntimeError: Synthetic loopback hostname lookup refused.", child.stderr)
+            self.assertTrue(child.eof["stdout"] and child.eof["stderr"])
+            self.assertTrue(child.wait_returned)
+            self.assertFalse(child.termination_requested)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_actual_synthetic_bind_ready_and_http_require_no_fqdn_result(self):
+        import urllib.request
+        import urllib.error
+        with tempfile.TemporaryDirectory(prefix="gateway-local-fqdn-") as directory:
+            with self.Child(self.bootstrap(Path(directory)), "--synthetic-gateway-local-fqdn-refusal-v4") as child:
+                port = child.wait_ready()
+                self.assertIsNone(child.process.poll())
+                self.assertEqual(child.ready["model"], "gpt-6.1-sol")
+                self.assertEqual(child.ready["cap_usd"], "25.00")
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with self.assertRaises(urllib.error.HTTPError) as refused:
+                    opener.open("http://127.0.0.1:" + str(port) + "/", timeout=10)
+                self.assertEqual(refused.exception.code, 404)
+            self.assertEqual(bytes(child.stderr), b"")
+            self.assertTrue(child.ready is not None and child.eof["stdout"] and child.eof["stderr"])
+            self.assertTrue(child.wait_returned and child.termination_requested)
+            self.assertIsNotNone(child.process.returncode)
+            self.assertIsNone(child.failure)
+
+    def test_new_resolver_markers_refuse_duplicates_and_unknown_before_bootstrap(self):
+        with tempfile.TemporaryDirectory(prefix="gateway-fqdn-marker-guard-") as directory:
+            env = {"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"}
+            if os.name == "nt" and "SystemRoot" in os.environ:env["SystemRoot"] = os.environ["SystemRoot"]
+            for marker in ("--synthetic-gateway-standard-fqdn-refusal-v4", "--synthetic-gateway-local-fqdn-refusal-v4",
+                    "--synthetic-gateway-unknown-fqdn-v4"):
+                args = [marker] if marker.endswith("unknown-fqdn-v4") else [marker, marker]
+                with self.subTest(marker=marker):
+                    result = subprocess.run([sys.executable, "-I", "-B", str(Path(__file__).resolve()), *args],
+                        cwd=directory, env=env, input=b"invalid JSON must never be read", capture_output=True, timeout=20)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout + result.stderr, b"")
+                    self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 if __name__ == "__main__":
