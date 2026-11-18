@@ -127,7 +127,22 @@ fn duplicate_stdout() -> io::Result<OwnedHandle> {
     if invalid(source) {
         return Err(native_error(error));
     }
+    let kind = captured_type(source)?;
+    if kind == 3 {
+        // DuplicateHandle is not a supported socket duplication API. Before
+        // duplicating a provisional PIPE/socket, direct-kernel8/16 establishes
+        // NONALERT/write eligibility and only then may device() classify it.
+        // This borrows the once-read caller handle; arbitrary unsafe concurrent
+        // handle-table changes are outside this capture contract.
+        let information = device(source)?;
+        if information.kind != NAMED_PIPE_DEVICE || information.characteristics & REMOTE_DEVICE != 0
+        {
+            return Err(unsupported());
+        }
+    }
     let mut duplicate = null_mut();
+    #[cfg(test)]
+    DUPLICATE_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let result = unsafe {
         DuplicateHandle(
             GetCurrentProcess(),
@@ -223,6 +238,13 @@ pub(super) fn eligibility(handle: Handle) -> io::Result<Eligibility> {
 static DRIVER_QUERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
 static FILE_WRITES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static DUPLICATE_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn duplicate_attempts() -> usize {
+    DUPLICATE_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
+}
 
 #[cfg(test)]
 pub(super) fn activity_counts() -> (usize, usize) {

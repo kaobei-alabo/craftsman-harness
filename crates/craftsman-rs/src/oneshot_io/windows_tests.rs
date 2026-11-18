@@ -474,6 +474,13 @@ async fn windows_output_fixture() {
             super::stdout().is_err(),
             "unsupported native handle was admitted"
         );
+        if matches!(mode.as_str(), "socket" | "socket-sync" | "socket-datagram") {
+            assert_eq!(
+                super::windows_probe::duplicate_attempts(),
+                0,
+                "unsupported socket must be rejected before DuplicateHandle"
+            );
+        }
         let activity = super::windows_probe::activity_counts();
         assert_eq!(
             activity.1, 0,

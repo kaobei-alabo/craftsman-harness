@@ -204,7 +204,9 @@ same-access synchronous writable NUL with actual native FILE_DEVICE_NULL identit
 are admitted. NUL discards through checked File IO without a peer-liveness claim;
 NULL/-1 HANDLEs remain invalid. Async/ALERT/non-write/unbuffered, socket, unknown
 and other non-console-device cases refuse. The existing recognized console
-Unicode path remains. Pure-write
+Unicode path remains. Provisional PIPE/socket sources are classified safely before DuplicateHandle;
+unsupported sockets never reach that API. Later checks remain on the retained
+duplicate, without an atomic handle-table capture claim. Pure-write
 canonical pipe compatibility must be established by actual selected local query
 execution without an added READ_ATTRIBUTES bit or fallback. Marked Windows
 sync/overlapped/type/canonical/state tests are implementation evidence until run.

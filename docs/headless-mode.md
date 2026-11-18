@@ -604,6 +604,12 @@ same-access writable native NUL device identified as FILE_DEVICE_NULL after
 the exact8/16 eligibility bootstrap. NUL uses actual checked File writes/flush
 to discard output and has no connection-peer probe; a NULL/-1 HANDLE remains
 invalid. Remote/other unsupported devices refuse.
+Before DuplicateHandle is attempted for provisional PIPE/socket output, the
+once-selected caller handle is checked with direct8/16 eligibility and then the
+mode-gated native device classifier. Unsupported sockets never reach the socket-
+incompatible DuplicateHandle API. After same-access duplication, classification,
+queries and writes use only the retained duplicate. This is not atomic capture
+against arbitrary unsafe concurrent handle-table changes.
 The recognized Windows console keeps the standard Unicode path and remains
 outside native duplicate-owned console proof.
 
