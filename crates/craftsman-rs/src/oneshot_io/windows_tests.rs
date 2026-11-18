@@ -1144,7 +1144,10 @@ async fn windows_output_fixture() {
                 assert_eq!(after[field], facts[field], "caller grant/mode changed");
             }
             if let Some((selected, accepted)) = socket_streams.take() {
-                assert!(selected.into_raw_socket() == value, "selected socket identity changed");
+                assert!(
+                    selected.into_raw_socket() == value,
+                    "selected socket identity changed"
+                );
                 drop(accepted);
             }
             assert_eq!(unsafe { closesocket(value) }, 0);
