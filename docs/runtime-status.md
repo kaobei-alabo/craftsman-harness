@@ -204,12 +204,31 @@ same-access synchronous writable NUL with actual native FILE_DEVICE_NULL identit
 are admitted. NUL discards through checked File IO without a peer-liveness claim;
 NULL/-1 HANDLEs remain invalid. Async/ALERT/non-write/unbuffered, socket, unknown
 and other non-console-device cases refuse. The existing recognized console
-Unicode path remains. Provisional PIPE/socket sources are classified safely before DuplicateHandle;
-unsupported sockets never reach that API. Later checks remain on the retained
-duplicate, without an atomic handle-table capture claim. Pure-write
-canonical pipe compatibility must be established by actual selected local query
-execution without an added READ_ATTRIBUTES bit or fallback. Marked Windows
-sync/overlapped/type/canonical/state tests are implementation evidence until run.
+Unicode path remains. Windows gadget run44262189413 actually ran the24 original/
+added one-shot cases:17 passed and7 failed; core was skipped. All six original
+cases and the native NUL unit passed. A real socket reached DuplicateHandle,
+contradicting the earlier device0x11-only discriminator; named-server queries,
+the claimed attribute-free client, console setup and binary NUL fixture also
+failed. The prior source-only reviews remain evidence, not compatibility proof.
+
+The repair checks SO_TYPE after direct8/16 eligibility and before duplication,
+owns one successful Winsock2.2 reference and requires its checked cleanup. Socket
+success, malformed output and unknown errors refuse; WSAENOTSOCK is only a
+non-socket candidate for the remaining supported-kind/state checks. These
+provider calls may block/use alertable waits; no new hard OS deadline or
+arbitrary foreign Winsock lifecycle isolation is claimed. Later IO remains on
+the retained duplicate without an atomic handle-table capture claim.
+
+Console fixtures use actual attachment/mode APIs and inactive-buffer Unicode
+readback. The pure client now reduces and verifies its actual granted rights;
+binary NUL uses spawn/wait_with_output so Tokio cannot replace null stdout.
+Marked query diagnostics retain at most32 primitive records, with separate
+original/duplicate phases and no fields from partial/error output. Canonical
+server and truly attribute-free query compatibility remain unverified until
+actual status/size/state facts support a repair; no READ_ATTRIBUTES upgrade,
+listening-to-connected inference or metadata-failure fallback is permitted.
+The repaired same-process/inherited socket, caller-reference and fixture paths
+still need native execution; the scope decision is not future-source approval.
 Current validation requires repaired-source review, actual Windows execution
 and full17/all-four/every-step/both-mode/inventory/warning/source-tree/
 independent-main proof. No broader source33/image/corpus/capture or live-budget

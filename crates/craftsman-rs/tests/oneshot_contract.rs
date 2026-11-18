@@ -452,10 +452,14 @@ async fn native_windows_nul_stdout_discards_one_shot_output_and_preserves_approv
             "--auto-approve",
         ])
         .stdout(Stdio::null());
-    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
-        .await
-        .unwrap()
-        .unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(20), async {
+        // Command.output() replaces stdout with a pipe in pinned Tokio. Keep
+        // the selected native NUL handle through actual spawn and collection.
+        command.spawn()?.wait_with_output().await
+    })
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(
         output.status.code(),
         Some(0),

@@ -604,12 +604,23 @@ same-access writable native NUL device identified as FILE_DEVICE_NULL after
 the exact8/16 eligibility bootstrap. NUL uses actual checked File writes/flush
 to discard output and has no connection-peer probe; a NULL/-1 HANDLE remains
 invalid. Remote/other unsupported devices refuse.
-Before DuplicateHandle is attempted for provisional PIPE/socket output, the
-once-selected caller handle is checked with direct8/16 eligibility and then the
-mode-gated native device classifier. Unsupported sockets never reach the socket-
-incompatible DuplicateHandle API. After same-access duplication, classification,
-queries and writes use only the retained duplicate. This is not atomic capture
-against arbitrary unsafe concurrent handle-table changes.
+Native Windows run44262189413 contradicted the prior device0x11-only socket
+discriminator: an actual socket reached DuplicateHandle. The repair first checks
+the once-selected borrowed handle's direct8/16 eligibility, then queries
+[SO_TYPE](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-getsockopt)
+with owned int32 output/length and one successful negotiated Winsock2.2 startup
+reference. Every successful-startup path checks one matching cleanup before
+duplication/admission, including version mismatch and query error. Socket
+success, malformed output, unknown errors and failed cleanup refuse with fixed
+text; exact WSAENOTSOCK only permits remaining supported-device/state checks.
+No socket ownership/duplication, SO_ERROR/setter/data probe, IO-mode change or
+access upgrade is selected. This implementation scope was authorized separately;
+fresh same-process/inherited/native caller-reference proof remains required.
+Winsock may block/use alertable waits; no nested blocking call from an interrupting
+APC, stronger OS deadline or arbitrary foreign lifecycle isolation is promised.
+After same-access duplication, classification, queries and writes use the actual
+retained duplicate. Capture is not atomic against unsafe concurrent handle-table
+changes.
 The recognized Windows console keeps the standard Unicode path and remains
 outside native duplicate-owned console proof.
 
@@ -622,6 +633,26 @@ no-tool final-newline failure, completed effects/results/usage and all-role
 before/after guards remain. Arbitrary asynchronous output is unsupported, so
 no pending-request buffer leaks, cancel-only completion, abort or infinite-wait
 alternative is selected.
+
+The actual gadget-mode Windows run passed all six original one-shot cases and
+eleven of the17 added unit definitions, while six units and the appended binary
+NUL case failed; core was unexecuted. The native NUL unit passed, but pinned
+Tokio output() replaced the binary fixture's null stdout with a pipe. Its repair
+uses actual spawn/wait_with_output inside the unchanged20s bound. Console setup
+now uses attachment/mode APIs rather than window visibility and keeps real
+inactive-buffer UTF16 readback; the attribute-free client uses an actual reduced
+grant without removing the mask assertion.
+
+Named-server refusals still require actual primitive query evidence before a
+cause or repair is claimed. Marked cfg-test collection is limited to32 records:
+fixed query names, original/duplicate phase, return NTSTATUS, IOSB status/count,
+requested size and completed-output fields. Partial/error/pending output supplies
+no native type/state fields. No handles, paths, bodies, keys or endpoints enter
+these records. Exact40-byte/state checks and fixed public errors remain; metadata
+denial cannot become working output or a permission upgrade. The inherited
+fixture restricts native handle inheritance to its socket and intended NUL/file
+stdio, owns only fresh process/thread HANDLEs through bounded wait/reap and keeps
+caller reference/usability assertions; it is not an OS-containment claim.
 
 Marked Unix builder/HTTP/native-pipe regressions close the actual sole read end
 and then bind global stdout to a separate isolated file. Content followed by a
@@ -649,7 +680,7 @@ execution; its P1 mode/lifetime and P2 type/access/socket findings remain eviden
 The repaired Unix datagram refusal and stream control execute on actual owned
 sockets. Marked Windows tests cover sync/overlapped/refused handles, actual mode/
 rights, local canonical pipe queries and states, prior effects and Unicode;
-their execution and repaired-source/full17/all-four/every-step/both-mode/
+their repaired-source execution and full17/all-four/every-step/both-mode/
 inventory/warning/tree/independent-main proof remain validation requirements.
 Boundary observations are not atomic dispatch leases: a later peer closure may
 race an already-started operation.

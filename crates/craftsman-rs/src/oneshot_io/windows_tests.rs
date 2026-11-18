@@ -6,10 +6,11 @@ use crate::agent::{SessionExtras, build_session_ext};
 use crate::config::Config;
 use crate::hitl::ApprovalState;
 use serde_json::{Value, json};
-use std::ffi::c_void;
+use std::ffi::{OsStr, OsString, c_void};
 use std::fs::File;
 use std::io::Read;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::{AsRawHandle, AsRawSocket, FromRawHandle, IntoRawSocket, OwnedHandle};
 use std::path::Path;
 use std::process::Stdio;
 use std::ptr::{null, null_mut};
@@ -27,6 +28,86 @@ const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const READ_ATTRIBUTES: u32 = 0x80;
 const OVERLAPPED: u32 = 0x4000_0000;
+const INHERITED_SOCKET: &str = "CRAFTSMAN_TEST_INHERITED_SOCKET_V1";
+
+#[repr(C)]
+struct SecurityAttributes {
+    size: u32,
+    descriptor: *mut c_void,
+    inherit: i32,
+}
+
+#[repr(C)]
+struct StartupInfo {
+    size: u32,
+    reserved: *mut u16,
+    desktop: *mut u16,
+    title: *mut u16,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    columns: u32,
+    rows: u32,
+    fill: u32,
+    flags: u32,
+    show: u16,
+    reserved_size: u16,
+    reserved_bytes: *mut u8,
+    input: Handle,
+    output: Handle,
+    error: Handle,
+}
+
+#[repr(C)]
+struct StartupInfoEx {
+    startup: StartupInfo,
+    attributes: *mut c_void,
+}
+
+#[repr(C)]
+struct ProcessInformation {
+    process: Handle,
+    thread: Handle,
+    process_id: u32,
+    thread_id: u32,
+}
+
+#[repr(C, align(16))]
+struct AttributeStorage([u8; 4096]);
+
+const _: () = assert!(
+    std::mem::size_of::<StartupInfo>()
+        == if std::mem::size_of::<usize>() == 8 {
+            104
+        } else {
+            68
+        }
+);
+const _: () = assert!(
+    std::mem::size_of::<StartupInfoEx>()
+        == if std::mem::size_of::<usize>() == 8 {
+            112
+        } else {
+            72
+        }
+);
+const _: () = assert!(
+    std::mem::size_of::<ProcessInformation>()
+        == if std::mem::size_of::<usize>() == 8 {
+            24
+        } else {
+            16
+        }
+);
+const _: () = assert!(
+    std::mem::size_of::<SecurityAttributes>()
+        == if std::mem::size_of::<usize>() == 8 {
+            24
+        } else {
+            12
+        }
+);
 
 #[repr(C)]
 struct Coord {
@@ -78,7 +159,8 @@ unsafe extern "system" {
     fn DisconnectNamedPipe(handle: Handle) -> i32;
     fn CreateEventW(attributes: *mut c_void, manual: i32, initial: i32, name: *const u16)
     -> Handle;
-    fn GetConsoleWindow() -> Handle;
+    fn GetConsoleProcessList(processes: *mut u32, capacity: u32) -> u32;
+    fn GetConsoleMode(console: Handle, mode: *mut u32) -> i32;
     fn AllocConsole() -> i32;
     fn FreeConsole() -> i32;
     fn CreateConsoleScreenBuffer(
@@ -95,6 +177,38 @@ unsafe extern "system" {
         position: Coord,
         read: *mut u32,
     ) -> i32;
+    fn GetHandleInformation(handle: Handle, flags: *mut u32) -> i32;
+    fn InitializeProcThreadAttributeList(
+        attributes: *mut c_void,
+        count: u32,
+        flags: u32,
+        bytes: *mut usize,
+    ) -> i32;
+    fn UpdateProcThreadAttribute(
+        attributes: *mut c_void,
+        flags: u32,
+        key: usize,
+        value: *mut c_void,
+        bytes: usize,
+        previous: *mut c_void,
+        returned: *mut usize,
+    ) -> i32;
+    fn DeleteProcThreadAttributeList(attributes: *mut c_void);
+    fn CreateProcessW(
+        application: *const u16,
+        command: *mut u16,
+        process_security: *mut c_void,
+        thread_security: *mut c_void,
+        inherit: i32,
+        flags: u32,
+        environment: *mut c_void,
+        directory: *const u16,
+        startup: *mut StartupInfo,
+        information: *mut ProcessInformation,
+    ) -> i32;
+    fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
+    fn TerminateProcess(process: Handle, code: u32) -> i32;
+    fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
 }
 
 #[link(name = "ws2_32")]
@@ -110,6 +224,8 @@ unsafe extern "system" {
         flags: u32,
     ) -> usize;
     fn closesocket(socket: usize) -> i32;
+    fn getsockopt(socket: usize, level: i32, name: i32, value: *mut i8, length: *mut i32) -> i32;
+    fn WSAGetLastError() -> i32;
 }
 
 fn owned(handle: Handle) -> OwnedHandle {
@@ -219,6 +335,424 @@ fn raw_facts(handle: Handle) -> Value {
     }
 }
 
+fn console_attachment_facts() -> (u32, u32) {
+    // Only the returned attachment count is inspected; no PID is queried or
+    // reported. A console can be attached without a visible console window.
+    let mut unused_process = 0u32;
+    unsafe {
+        SetLastError(0);
+        let count = GetConsoleProcessList(&mut unused_process, 1);
+        (count, GetLastError())
+    }
+}
+
+fn usable_socket_type(socket: usize) -> i32 {
+    let mut value = 0i32;
+    let mut length = 4i32;
+    let (result, error) = unsafe {
+        let result = getsockopt(
+            socket,
+            0xffff,
+            0x1008,
+            (&mut value as *mut i32).cast(),
+            &mut length,
+        );
+        (result, if result == -1 { WSAGetLastError() } else { 0 })
+    };
+    assert_eq!(result, 0, "actual caller socket query error {error}");
+    assert_eq!(length, 4);
+    assert!(value > 0);
+    value
+}
+
+fn quoted_argument(value: &OsStr) -> Vec<u16> {
+    let mut result = vec![b'"' as u16];
+    let mut slashes = 0usize;
+    for word in value.encode_wide() {
+        match word {
+            92 => slashes += 1,
+            34 => {
+                result.extend(std::iter::repeat_n(92, slashes * 2 + 1));
+                result.push(word);
+                slashes = 0;
+            }
+            _ => {
+                result.extend(std::iter::repeat_n(92, slashes));
+                slashes = 0;
+                result.push(word);
+            }
+        }
+    }
+    result.extend(std::iter::repeat_n(92, slashes * 2));
+    result.push(34);
+    result
+}
+
+struct ExplicitInheritance {
+    storage: Box<AttributeStorage>,
+    handles: Box<[Handle; 3]>,
+    initialized: bool,
+}
+
+impl ExplicitInheritance {
+    fn new(handles: [Handle; 3]) -> Result<Self, String> {
+        let mut bytes = 0usize;
+        unsafe { SetLastError(0) };
+        let sizing = unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut bytes) };
+        let error = unsafe { GetLastError() };
+        if sizing != 0 || error != 122 || bytes == 0 || bytes > 4096 {
+            return Err(format!("native inheritance sizing failed {error}"));
+        }
+        let mut owned = Self {
+            storage: Box::new(AttributeStorage([0; 4096])),
+            handles: Box::new(handles),
+            initialized: false,
+        };
+        let list = owned.storage.0.as_mut_ptr().cast();
+        if unsafe { InitializeProcThreadAttributeList(list, 1, 0, &mut bytes) } == 0 {
+            return Err(format!(
+                "native inheritance initialization failed {}",
+                unsafe { GetLastError() }
+            ));
+        }
+        owned.initialized = true;
+        if unsafe {
+            UpdateProcThreadAttribute(
+                list,
+                0,
+                0x0002_0002,
+                owned.handles.as_mut_ptr().cast(),
+                std::mem::size_of::<[Handle; 3]>(),
+                null_mut(),
+                null_mut(),
+            )
+        } == 0
+        {
+            return Err(format!("native explicit inheritance failed {}", unsafe {
+                GetLastError()
+            }));
+        }
+        Ok(owned)
+    }
+}
+
+impl Drop for ExplicitInheritance {
+    fn drop(&mut self) {
+        if self.initialized {
+            unsafe { DeleteProcThreadAttributeList(self.storage.0.as_mut_ptr().cast()) };
+        }
+    }
+}
+
+struct NativeChild {
+    process: OwnedHandle,
+    _thread: Option<OwnedHandle>,
+    reaped: bool,
+    cleanup_attempted: bool,
+}
+
+impl NativeChild {
+    fn cleanup(&mut self) -> Result<(), String> {
+        if self.reaped {
+            return Ok(());
+        }
+        if self.cleanup_attempted {
+            return Err("native child cleanup already failed".to_owned());
+        }
+        self.cleanup_attempted = true;
+        if unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) } == 0 {
+            self.reaped = true;
+            return Ok(());
+        }
+        let requested = unsafe { TerminateProcess(self.process.as_raw_handle(), 99) };
+        let error = if requested == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+        let waited = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 5000) };
+        if waited != 0 {
+            return Err(format!(
+                "native child cleanup did not reap {waited} termination_error {error}"
+            ));
+        }
+        self.reaped = true;
+        Ok(())
+    }
+
+    fn wait(mut self) -> Result<u32, String> {
+        let waited = unsafe { WaitForSingleObject(self.process.as_raw_handle(), 10000) };
+        if waited != 0 {
+            self.cleanup()?;
+            return Err(format!("native child wait refused or timed out {waited}"));
+        }
+        self.reaped = true;
+        let mut code = 0u32;
+        if unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) } == 0 {
+            return Err(format!("native child exit query failed {}", unsafe {
+                GetLastError()
+            }));
+        }
+        Ok(code)
+    }
+}
+
+impl Drop for NativeChild {
+    fn drop(&mut self) {
+        if !self.reaped && !self.cleanup_attempted && self.cleanup().is_err() {
+            eprintln!("native inherited child cleanup failed");
+        }
+    }
+}
+
+struct CallerSocket {
+    socket: usize,
+    reference: bool,
+}
+
+impl CallerSocket {
+    fn new() -> Self {
+        let mut data = [0usize; 128];
+        assert_eq!(unsafe { WSAStartup(0x0202, data.as_mut_ptr().cast()) }, 0);
+        let mut owned = Self {
+            socket: usize::MAX,
+            reference: true,
+        };
+        assert_eq!(
+            unsafe { std::ptr::read(data.as_ptr().cast::<u16>()) },
+            0x0202
+        );
+        owned.socket = unsafe { WSASocketW(2, 1, 6, null_mut(), 0, 0) };
+        assert_ne!(owned.socket, usize::MAX);
+        assert_eq!(usable_socket_type(owned.socket), 1);
+        owned
+    }
+
+    fn close(&mut self) -> Result<(), String> {
+        if self.socket != usize::MAX {
+            let socket = std::mem::replace(&mut self.socket, usize::MAX);
+            if unsafe { closesocket(socket) } != 0 {
+                return Err("native caller socket close failed".to_owned());
+            }
+        }
+        if self.reference {
+            self.reference = false;
+            if unsafe { WSACleanup() } != 0 {
+                return Err("native caller cleanup failed".to_owned());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CallerSocket {
+    fn drop(&mut self) {
+        if self.close().is_err() {
+            eprintln!("native caller cleanup failed");
+        }
+    }
+}
+
+fn launch_inherited_socket(
+    socket: usize,
+    home: &Path,
+    workspace: &Path,
+    endpoint: &str,
+    completed: &Path,
+    forbidden: &Path,
+    stderr_path: &Path,
+) -> Result<NativeChild, String> {
+    let mut security = SecurityAttributes {
+        size: std::mem::size_of::<SecurityAttributes>() as u32,
+        descriptor: null_mut(),
+        inherit: 1,
+    };
+    let nul_name = wide("NUL");
+    let nul = owned(unsafe {
+        CreateFileW(
+            nul_name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            3,
+            (&mut security as *mut SecurityAttributes).cast(),
+            3,
+            0,
+            null_mut(),
+        )
+    });
+    let stderr_name: Vec<u16> = stderr_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let stderr = owned(unsafe {
+        CreateFileW(
+            stderr_name.as_ptr(),
+            GENERIC_WRITE,
+            3,
+            (&mut security as *mut SecurityAttributes).cast(),
+            2,
+            0,
+            null_mut(),
+        )
+    });
+    for (stage, handle) in [
+        ("parent_socket", socket as Handle),
+        ("parent_null", nul.as_raw_handle()),
+        ("parent_stderr", stderr.as_raw_handle()),
+    ] {
+        let mut flags = 0u32;
+        if unsafe { GetHandleInformation(handle, &mut flags) } == 0 || flags & 1 == 0 {
+            return Err("native intended handle is not inheritable".to_owned());
+        }
+        eprintln!(
+            "native-output-inheritance: {}",
+            json!({"stage":stage,"inherit_bit":flags & 1 != 0})
+        );
+    }
+    let mut inheritance = ExplicitInheritance::new([
+        socket as Handle,
+        nul.as_raw_handle(),
+        stderr.as_raw_handle(),
+    ])?;
+    let executable =
+        std::env::current_exe().map_err(|_| "native helper executable unavailable".to_owned())?;
+    let application: Vec<u16> = executable
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let arguments: Vec<OsString> = vec![
+        executable.into_os_string(),
+        HELPER.into(),
+        "--exact".into(),
+        "--ignored".into(),
+        "--nocapture".into(),
+        "--".into(),
+        MARKER.into(),
+        "socket-inherited".into(),
+        endpoint.into(),
+        completed.as_os_str().into(),
+        forbidden.as_os_str().into(),
+    ];
+    let mut command = Vec::new();
+    for argument in &arguments {
+        if !command.is_empty() {
+            command.push(32);
+        }
+        command.extend(quoted_argument(argument));
+    }
+    command.push(0);
+    let mut environment = std::collections::BTreeMap::<&str, OsString>::new();
+    for name in ["PATH", "SystemRoot"] {
+        if let Some(value) = std::env::var_os(name) {
+            environment.insert(name, value);
+        }
+    }
+    environment.insert("HOME", home.as_os_str().into());
+    environment.insert("USERPROFILE", home.as_os_str().into());
+    environment.insert(
+        "CRAFTSMAN_CONFIG_DIR",
+        home.join(".craftsman").into_os_string(),
+    );
+    environment.insert(INHERITED_SOCKET, socket.to_string().into());
+    let mut block = Vec::new();
+    for (key, value) in environment {
+        block.extend(key.encode_utf16());
+        block.push(61);
+        let words: Vec<u16> = value.encode_wide().collect();
+        if words.contains(&0) {
+            return Err("native environment contains a NUL".to_owned());
+        }
+        block.extend(words);
+        block.push(0);
+    }
+    block.push(0);
+    let directory: Vec<u16> = workspace.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut startup = StartupInfoEx {
+        startup: StartupInfo {
+            size: std::mem::size_of::<StartupInfoEx>() as u32,
+            reserved: null_mut(),
+            desktop: null_mut(),
+            title: null_mut(),
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            columns: 0,
+            rows: 0,
+            fill: 0,
+            flags: 0x100,
+            show: 0,
+            reserved_size: 0,
+            reserved_bytes: null_mut(),
+            input: nul.as_raw_handle(),
+            output: nul.as_raw_handle(),
+            error: stderr.as_raw_handle(),
+        },
+        attributes: inheritance.storage.0.as_mut_ptr().cast(),
+    };
+    let mut information = ProcessInformation {
+        process: null_mut(),
+        thread: null_mut(),
+        process_id: 0,
+        thread_id: 0,
+    };
+    let created = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command.as_mut_ptr(),
+            null_mut(),
+            null_mut(),
+            1,
+            0x0008_0400,
+            block.as_mut_ptr().cast(),
+            directory.as_ptr(),
+            &mut startup.startup,
+            &mut information,
+        )
+    };
+    if created == 0 {
+        return Err(format!("native helper creation failed {}", unsafe {
+            GetLastError()
+        }));
+    }
+    // Only the newly returned process/thread HANDLEs drive completion. PIDs
+    // are neither read nor logged; argv/environment/list/stdio stayed alive.
+    let mut child = NativeChild {
+        process: owned(information.process),
+        _thread: None,
+        reaped: false,
+        cleanup_attempted: false,
+    };
+    if information.thread.is_null() || information.thread as usize == usize::MAX {
+        return Err("native created thread handle is invalid".to_owned());
+    }
+    child._thread = Some(owned(information.thread));
+    Ok(child)
+}
+
+struct QueryDiagnosticsOnFailure;
+
+fn emit_query_diagnostics() {
+    let queries = super::windows_probe::take_query_diagnostics();
+    eprintln!(
+        "native-output-query-diagnostics: {}",
+        json!({
+            "available":queries.is_some(),
+            "queries":queries,
+            "duplicate_attempts":super::windows_probe::duplicate_attempts(),
+        })
+    );
+}
+
+impl Drop for QueryDiagnosticsOnFailure {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            emit_query_diagnostics();
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "marked Windows output fixture; unmarked/unknown modes return before config/path/native IO"]
 async fn windows_output_fixture() {
@@ -255,6 +789,8 @@ async fn windows_output_fixture() {
         "socket",
         "socket-sync",
         "socket-datagram",
+        "socket-connected",
+        "socket-inherited",
         "sync-disk",
         "unbuffered-disk",
         "nul-output",
@@ -264,8 +800,15 @@ async fn windows_output_fixture() {
     if !MODES.contains(&mode.as_str()) {
         return;
     }
+    // Diagnostics exist only in this explicitly marked, known-mode child and
+    // contain at most32 actual query records with fixed names/primitive fields.
+    super::windows_probe::enable_query_diagnostics();
+    let _diagnostics_on_failure = QueryDiagnosticsOnFailure;
+    eprintln!("native-output-case: {mode}");
     // No path, config, environment or native handle inspection above this point.
     let mut socket = None;
+    let mut socket_streams = None;
+    let mut socket_type_before = None;
     let mut setup_file = None;
     let mut peer = None;
     let mut writer = None;
@@ -281,6 +824,8 @@ async fn windows_output_fixture() {
             | "socket"
             | "socket-sync"
             | "socket-datagram"
+            | "socket-connected"
+            | "socket-inherited"
             | "unbuffered-disk"
             | "character-read-only"
     );
@@ -292,10 +837,14 @@ async fn windows_output_fixture() {
             select(event.as_raw_handle());
             writer = Some(event);
         }
-        "socket" | "socket-sync" | "socket-datagram" => {
+        "socket" | "socket-sync" | "socket-datagram" | "socket-connected" | "socket-inherited" => {
             // Aligned opaque WSADATA storage, larger than either native ABI.
             let mut data = [0usize; 128];
             assert_eq!(unsafe { WSAStartup(0x0202, data.as_mut_ptr().cast()) }, 0);
+            assert_eq!(
+                unsafe { std::ptr::read(data.as_ptr().cast::<u16>()) },
+                0x0202
+            );
             let (kind, protocol, flags) = if mode == "socket-datagram" {
                 (2, 17, 1)
             } else if mode == "socket-sync" {
@@ -303,8 +852,43 @@ async fn windows_output_fixture() {
             } else {
                 (1, 6, 1)
             };
-            let value = unsafe { WSASocketW(2, kind, protocol, null_mut(), 0, flags) };
+            let value = if mode == "socket-inherited" {
+                // Only this known marked mode reads the private entry. The
+                // parent created/inherited this real socket through an explicit
+                // handle list, with initially safe NUL/file stdio for libtest.
+                let value = std::env::var(INHERITED_SOCKET)
+                    .expect("native inherited socket entry")
+                    .parse::<usize>()
+                    .expect("native inherited socket value");
+                let mut inherit_flags = 0u32;
+                assert_ne!(
+                    unsafe { GetHandleInformation(value as Handle, &mut inherit_flags) },
+                    0
+                );
+                eprintln!(
+                    "native-output-inheritance: {}",
+                    json!({"stage":"child_handle","inherit_bit":inherit_flags & 1 != 0})
+                );
+                value
+            } else if mode == "socket-connected" {
+                let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let selected =
+                    std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                let (accepted, _) = listener.accept().unwrap();
+                let value = selected.as_raw_socket();
+                socket_streams = Some((selected, accepted));
+                value
+            } else {
+                unsafe { WSASocketW(2, kind, protocol, null_mut(), 0, flags) }
+            };
             assert_ne!(value, usize::MAX);
+            // Do not prime inherited-socket lookup before the real factory's
+            // first SO_TYPE query. Its actual type is checked after refusal.
+            socket_type_before = if mode == "socket-inherited" {
+                None
+            } else {
+                Some(usable_socket_type(value))
+            };
             select(value as Handle);
             socket = Some(value);
         }
@@ -353,10 +937,33 @@ async fn windows_output_fixture() {
             writer = Some(handle);
         }
         "console-unicode" => {
-            let allocated = unsafe { GetConsoleWindow() }.is_null();
+            let (before, before_error) = console_attachment_facts();
+            eprintln!(
+                "native-console-attachment: {}",
+                json!({"stage":"console_before","count":before,"last_error":before_error})
+            );
+            let allocated = before == 0;
             if allocated {
-                assert_ne!(unsafe { AllocConsole() }, 0);
+                let (result, error) = unsafe {
+                    SetLastError(0);
+                    let result = AllocConsole();
+                    (result, GetLastError())
+                };
+                eprintln!(
+                    "native-console-attachment: {}",
+                    json!({"stage":"console_allocate","result":result,"last_error":error})
+                );
+                assert_ne!(result, 0, "actual console allocation error {error}");
             }
+            let (attached, attached_error) = console_attachment_facts();
+            eprintln!(
+                "native-console-attachment: {}",
+                json!({"stage":"console_after","count":attached,"last_error":attached_error})
+            );
+            assert!(
+                attached > 0,
+                "actual console attachment error {attached_error}"
+            );
             // A separate inactive screen buffer avoids writing into a parent's
             // visible console while exercising the actual Unicode writer.
             let screen = owned(unsafe {
@@ -368,6 +975,17 @@ async fn windows_output_fixture() {
                     null_mut(),
                 )
             });
+            let mut console_mode = 0u32;
+            let (mode_result, mode_error) = unsafe {
+                SetLastError(0);
+                let result = GetConsoleMode(screen.as_raw_handle(), &mut console_mode);
+                (result, GetLastError())
+            };
+            eprintln!(
+                "native-console-attachment: {}",
+                json!({"stage":"console_mode","result":mode_result,"last_error":mode_error,"mode":(mode_result != 0).then_some(console_mode)})
+            );
+            assert_ne!(mode_result, 0, "actual console mode error {mode_error}");
             select(screen.as_raw_handle());
             let output = super::stdout().unwrap();
             let text = "éλ";
@@ -395,6 +1013,7 @@ async fn windows_output_fixture() {
             if allocated {
                 assert_ne!(unsafe { FreeConsole() }, 0);
             }
+            emit_query_diagnostics();
             std::process::exit(0);
         }
         value if value.starts_with("named") || value.starts_with("overlapped") => {
@@ -411,7 +1030,7 @@ async fn windows_output_fixture() {
                 value == "overlapped-client",
                 value == "named-client-attributes",
             );
-            let write = if value == "named-server-minimal" {
+            let write = if matches!(value, "named-server-minimal" | "named-client") {
                 narrow_write(&write)
             } else {
                 write
@@ -476,7 +1095,10 @@ async fn windows_output_fixture() {
             super::stdout().is_err(),
             "unsupported native handle was admitted"
         );
-        if matches!(mode.as_str(), "socket" | "socket-sync" | "socket-datagram") {
+        if matches!(
+            mode.as_str(),
+            "socket" | "socket-sync" | "socket-datagram" | "socket-connected" | "socket-inherited"
+        ) {
             assert_eq!(
                 super::windows_probe::duplicate_attempts(),
                 0,
@@ -505,6 +1127,26 @@ async fn windows_output_fixture() {
             );
         }
         if let Some(value) = socket {
+            // The factory's checked cleanup must retain the caller's separate
+            // startup reference and the selected real socket's usability.
+            let socket_type_after = usable_socket_type(value);
+            if let Some(before) = socket_type_before {
+                assert_eq!(socket_type_after, before);
+            } else {
+                assert_eq!(socket_type_after, 1);
+            }
+            eprintln!(
+                "native-output-caller-socket: {}",
+                json!({"stage":"caller_after","socket_type":socket_type_after})
+            );
+            let after = raw_facts(value as Handle);
+            for field in ["access", "mode"] {
+                assert_eq!(after[field], facts[field], "caller grant/mode changed");
+            }
+            if let Some((selected, accepted)) = socket_streams.take() {
+                assert!(selected.into_raw_socket() == value, "selected socket identity changed");
+                drop(accepted);
+            }
             assert_eq!(unsafe { closesocket(value) }, 0);
             assert_eq!(unsafe { WSACleanup() }, 0);
         }
@@ -512,6 +1154,7 @@ async fn windows_output_fixture() {
             assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
         }
         assert!(!Path::new(forbidden).exists());
+        emit_query_diagnostics();
         std::process::exit(0);
     }
     if mode == "sync-disk" {
@@ -519,6 +1162,7 @@ async fn windows_output_fixture() {
         output.write("匠 output\n".as_bytes());
         assert_eq!(output.failure_kind(), None);
         assert_eq!(std::fs::read(completed).unwrap(), "匠 output\n".as_bytes());
+        emit_query_diagnostics();
         std::process::exit(0);
     }
     if mode == "nul-output" {
@@ -575,6 +1219,7 @@ async fn windows_output_fixture() {
         assert!(super::windows_probe::activity_counts().1 > captured_writes);
         let after = super::windows_probe::bootstrap(raw).unwrap();
         assert_eq!((before.access, before.mode), (after.access, after.mode));
+        emit_query_diagnostics();
         std::process::exit(0);
     }
     if matches!(
@@ -685,6 +1330,7 @@ async fn windows_output_fixture() {
         );
         assert!(session.agent.state.lock().unwrap().messages.iter().any(|m|matches!(m,craftsman_harness::Msg::Tool{content,is_error:false,..} if content.contains("Updated file"))));
     }
+    emit_query_diagnostics();
     std::process::exit(0);
 }
 
@@ -799,6 +1445,14 @@ async fn case(mode: &str, requests: usize) {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!String::from_utf8_lossy(&result.stderr).contains("panicked"));
+    for line in String::from_utf8_lossy(&result.stderr)
+        .lines()
+        .filter(|line| {
+            line.starts_with("native-output-") || line.starts_with("native-console-attachment:")
+        })
+    {
+        eprintln!("{line}");
+    }
     let observed = server.received_requests().await.unwrap();
     assert_eq!(observed.len(), requests);
     assert!(!forbidden.exists());
@@ -880,6 +1534,84 @@ async fn actual_windows_null_invalid_type_error_and_socket_refuse_without_work()
     ] {
         case(mode, 0).await;
     }
+}
+
+#[tokio::test]
+async fn actual_windows_connected_socket_refuses_before_duplicate_and_keeps_caller_reference() {
+    case("socket-connected", 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn actual_windows_inherited_socket_refuses_before_duplicate_and_keeps_both_references() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let completed = workspace.path().join("completed.txt");
+    let forbidden = workspace.path().join("must-not-be-dispatched.txt");
+    let stderr_path = workspace.path().join("owned-inherited-socket.stderr");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(Script {
+            after_result: false,
+            nul_output: false,
+            completed: completed.to_string_lossy().into_owned(),
+            forbidden: forbidden.to_string_lossy().into_owned(),
+        })
+        .mount(&server)
+        .await;
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut caller = CallerSocket::new();
+        let before = usable_socket_type(caller.socket);
+        let child = launch_inherited_socket(
+            caller.socket,
+            home.path(),
+            workspace.path(),
+            &server.uri(),
+            &completed,
+            &forbidden,
+            &stderr_path,
+        )?;
+        // The synchronous owner has only bounded10s wait/5s reap calls and
+        // returns before any result/read. A second runtime worker keeps the
+        // real loopback request witness responsive; no owner task is abandoned.
+        let code = child.wait()?;
+        let mut stderr = Vec::new();
+        File::open(&stderr_path)
+            .map_err(|_| "native stderr open failed".to_owned())?
+            .take(65537)
+            .read_to_end(&mut stderr)
+            .map_err(|_| "native stderr read failed".to_owned())?;
+        if stderr.len() > 65536 {
+            return Err("native stderr exceeded its bound".to_owned());
+        }
+        if code != 0 {
+            return Err(format!(
+                "native child exit {code}: {}",
+                String::from_utf8_lossy(&stderr)
+            ));
+        }
+        assert!(!String::from_utf8_lossy(&stderr).contains("panicked"));
+        for line in String::from_utf8_lossy(&stderr)
+            .lines()
+            .filter(|line| line.starts_with("native-output-"))
+        {
+            eprintln!("{line}");
+        }
+        assert_eq!(usable_socket_type(caller.socket), before);
+        caller.close()?;
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(!forbidden.exists());
+        assert!(!completed.exists());
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+        Ok::<(), String>(())
+    })
+    .await;
+    assert!(
+        started.elapsed() <= Duration::from_secs(20),
+        "native inherited-socket deadline exceeded"
+    );
+    outcome.unwrap().unwrap();
 }
 #[tokio::test]
 async fn actual_windows_synchronous_disk_keeps_utf8_output() {
