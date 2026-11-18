@@ -170,7 +170,7 @@ behavior. Main content goes to stdout and activity to stderr; non-TTY approval
 input denies without reading. It is not an explicit-only unattended execution
 boundary.
 
-Candidate `36ab019` captures redirected stdout as an owned native pipe/file
+Redirected one-shot output captures stdout as an owned native pipe/file
 before agent construction. Main, delegated and compaction providers retain
 that same owner: writes latch actual IO failures, and connection checks run
 after tool-bearing responses and before later model requests, including when
@@ -186,15 +186,29 @@ This is a boundary check, not OS containment, background-work quiescence, public
 can still race an operation already started. Details and native bounds are in
 [the one-shot contract](headless-mode.md#11-implementation-progress--not-a-shipped-exec-command).
 
-The candidate is not yet integrated or pushed, and independent reviews are
-running. Actual Unix builder/loopback/native-pipe controls cover stdout rebinding,
+Initial36ab019 evidence includes actual Unix builder/loopback/native-pipe controls for stdout rebinding,
 closure after successfully read content in the same response, and retention of
-a prior completed tool. Focused core/gadget checks passed 52 test executions,
+a prior completed tool. Its focused core/gadget checks passed 52 test executions,
 including all six unchanged one-shot cases in each mode. The prior `0d2fd68`
 full-core failure after a real file write remains historical, with its OS trigger
 unverified; the first failed controls and unused-mut warning are also preserved.
-Windows probe execution and final full17/all-four/every-step/both-mode/inventory/
-warning/source-tree/independent-main proof remain pending.
+The independent review's P1 Windows mode/lifetime and P2 type/access/Unix-socket
+findings are retained; its pending mock did not execute on Windows. Unix socket
+admission now requires actual stream SO_TYPE; datagrams refuse before model/tool/
+storage effects, and an actual stream control retains dispatch protection.
+
+Windows support requires a same-access captured owner, actual type/GetLastError,
+direct-kernel8/16 bootstrap before File/driver IO, and NONALERT/write eligibility.
+Only validated buffered disk files or completed local NPFS byte-pipe queries are
+admitted; async/ALERT/non-write/unbuffered, socket, unknown and non-console-device
+cases refuse. The existing recognized console Unicode path remains. Pure-write
+canonical pipe compatibility must be established by actual selected local query
+execution without an added READ_ATTRIBUTES bit or fallback. Marked Windows
+sync/overlapped/type/canonical/state tests are implementation evidence until run.
+Current validation requires repaired-source review, actual Windows execution
+and full17/all-four/every-step/both-mode/inventory/warning/source-tree/
+independent-main proof. No broader source33/image/corpus/capture or live-budget
+authorization follows from these boundary checks.
 
 The accepted headless v1 contract requires invocation-only permissions,
 canonical scopes, input/output/resource bounds, truthful all-role usage,

@@ -24,25 +24,23 @@ type Probe = Box<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 /// closes or rebinds the process-global stdout slot. It also reports actual IO
 /// errors instead of StdoutRaw's successful no-op for an invalid descriptor.
 pub(crate) fn stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
-    let stdout = std::io::stdout();
     #[cfg(windows)]
     {
-        use std::io::IsTerminal;
-        if stdout.is_terminal() {
-            // Preserve the established Windows console Unicode conversion.
-            // Redirected pipes/files below use their own native handles.
-            return Ok(Arc::new(Output::new(Box::new(stdout))));
-        }
+        windows_probe::capture()
     }
+    #[cfg(not(windows))]
+    {
+        captured_stdout()
+    }
+}
+
+#[cfg(not(windows))]
+fn captured_stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
+    let stdout = std::io::stdout();
     #[cfg(unix)]
     let writer = {
         use std::os::fd::AsFd;
         std::fs::File::from(stdout.as_fd().try_clone_to_owned()?)
-    };
-    #[cfg(windows)]
-    let writer = {
-        use std::os::windows::io::AsHandle;
-        std::fs::File::from(stdout.as_handle().try_clone_to_owned()?)
     };
     #[cfg(not(any(unix, windows)))]
     let writer = stdout;
@@ -99,8 +97,6 @@ pub(crate) fn stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
             }) as Probe
         })
     };
-    #[cfg(windows)]
-    let probe = windows_probe::probe(&writer);
     #[cfg(not(any(unix, windows)))]
     let probe = None;
     let mut output = Output::new(Box::new(writer) as StdoutWriter);
@@ -477,3 +473,7 @@ mod tests {
 #[cfg(all(test, unix))]
 #[path = "oneshot_io/native_tests.rs"]
 mod native_tests;
+
+#[cfg(all(test, windows))]
+#[path = "oneshot_io/windows_tests.rs"]
+mod windows_tests;

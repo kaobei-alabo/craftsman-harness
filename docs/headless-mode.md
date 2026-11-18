@@ -583,6 +583,36 @@ reaches the actual final-newline write, retaining that failure boundary.
 Only main content reaches stdout; the existing Windows console Unicode path,
 non-terminal deny-without-read approval and other frontend defaults remain.
 
+The supported Unix socket kind is verified with actual `SO_TYPE`: only streams
+use this readiness check. Datagram/other socket kinds refuse before session,
+model or tool effects; a datagram's writable poll result is not peer liveness.
+Pipes, normal files and terminal output retain their existing behavior.
+
+Windows redirected output first validates the captured HANDLE/type and actual
+GetLastError, then duplicates SAME_ACCESS without inheriting, upgrading rights
+or changing mode. Only direct-kernel FileAccessInformation8/FileModeInformation16
+bootstrap before File conversion or any driver-facing query/write; Microsoft
+[documents those classes without a filesystem IRP](https://learn.microsoft.com/en-us/previous-versions/windows/drivers/ifs/irp-mj-query-information).
+Actual NONALERT synchronous mode, write/append plus SYNCHRONIZE rights, and
+buffered IO are required; async/ALERT, read-only and unbuffered handles refuse.
+Driver-facing queries recheck those preconditions on the retained owner.
+Disk output must be a normal file. PIPE type alone includes sockets: local
+NPFS device and completed byte-pipe state must be validated, with exact sizes/
+status and known state. Unknown/query/type/access failures remain fixed errors,
+not absent guards. Non-console character and remote/unsupported devices refuse.
+The recognized Windows console keeps the standard Unicode path and remains
+outside native duplicate-owned console proof.
+
+The selected local NPFS query is tried on actual pure-write handles without an
+a priori READ_ATTRIBUTES admission bit or access upgrade. Canonical anonymous,
+named server/client and minimal pure-write compatibility needs native Windows
+execution: failed queries cannot be relabelled working output. Real closed
+local-pipe observations remain deferred through the original initial request;
+no-tool final-newline failure, completed effects/results/usage and all-role
+before/after guards remain. Arbitrary asynchronous output is unsupported, so
+no pending-request buffer leaks, cancel-only completion, abort or infinite-wait
+alternative is selected.
+
 Marked Unix builder/HTTP/native-pipe regressions close the actual sole read end
 and then bind global stdout to a separate isolated file. Content followed by a
 tool in one SSE completion cannot redirect output or dispatch that tool: the
@@ -604,6 +634,15 @@ passing focused invocation does not erase it. The original real-binary broken
 pipe assertions, sole-reader-close setup and 20-second bounds stay unchanged.
 These checks do not establish P2g cleanup, general OS containment, Windows
 execution of the Unix controls or production readiness.
+The independent36ab019 review's conditional pending mock was not native Windows
+execution; its P1 mode/lifetime and P2 type/access/socket findings remain evidence.
+The repaired Unix datagram refusal and stream control execute on actual owned
+sockets. Marked Windows tests cover sync/overlapped/refused handles, actual mode/
+rights, local canonical pipe queries and states, prior effects and Unicode;
+their execution and repaired-source/full17/all-four/every-step/both-mode/
+inventory/warning/tree/independent-main proof remain validation requirements.
+Boundary observations are not atomic dispatch leases: a later peer closure may
+race an already-started operation.
 
 A separate private instruction/attachment-file boundary now admits bounded original
 UTF-8 data through `PreparedInput` before session/store assignment and the SAME runtime
