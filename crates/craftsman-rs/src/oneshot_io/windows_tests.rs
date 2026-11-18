@@ -255,7 +255,8 @@ async fn windows_output_fixture() {
         "socket-datagram",
         "sync-disk",
         "unbuffered-disk",
-        "character-unsupported",
+        "nul-output",
+        "character-read-only",
         "console-unicode",
     ];
     if !MODES.contains(&mode.as_str()) {
@@ -279,7 +280,7 @@ async fn windows_output_fixture() {
             | "socket-sync"
             | "socket-datagram"
             | "unbuffered-disk"
-            | "character-unsupported"
+            | "character-read-only"
     );
     match mode.as_str() {
         "null" => select(null_mut()),
@@ -329,12 +330,16 @@ async fn windows_output_fixture() {
             writer = Some(handle);
             setup_file = Some(path.to_owned());
         }
-        "character-unsupported" => {
+        "nul-output" | "character-read-only" => {
             let name = wide("NUL");
             let handle = owned(unsafe {
                 CreateFileW(
                     name.as_ptr(),
-                    GENERIC_WRITE,
+                    if mode == "nul-output" {
+                        GENERIC_WRITE
+                    } else {
+                        GENERIC_READ
+                    },
                     3,
                     null_mut(),
                     3,
@@ -482,7 +487,7 @@ async fn windows_output_fixture() {
                     | "invalid"
                     | "type-error"
                     | "unbuffered-disk"
-                    | "character-unsupported"
+                    | "character-read-only"
             )
         {
             assert_eq!(
@@ -505,6 +510,62 @@ async fn windows_output_fixture() {
         output.write("匠 output\n".as_bytes());
         assert_eq!(output.failure_kind(), None);
         assert_eq!(std::fs::read(completed).unwrap(), "匠 output\n".as_bytes());
+        std::process::exit(0);
+    }
+    if mode == "nul-output" {
+        super::windows_probe::null_device(raw).expect("actual native FILE_DEVICE_NULL identity");
+        let before = super::windows_probe::bootstrap(raw).unwrap();
+        let output = super::stdout().expect("canonical synchronous native NUL output must work");
+        output.write("discarded native 匠 output\n".as_bytes());
+        assert_eq!(output.failure_kind(), None);
+        let captured_writes = super::windows_probe::activity_counts().1;
+        assert!(
+            captured_writes > 0,
+            "selected captured NUL writer must perform real File IO"
+        );
+        let cfg: Config = serde_json::from_value(json!({
+            "model":"mock-model", "base_url":endpoint, "api_key":"synthetic-nul-owner-key"
+        }))
+        .unwrap();
+        let approval = Arc::new(Mutex::new(ApprovalState {
+            auto_approve: true,
+            ..ApprovalState::default()
+        }));
+        let session = build_session_ext(
+            &cfg,
+            approval,
+            crate::prompt::NONINTERACTIVE_INSTRUCTIONS,
+            true,
+            false,
+            None,
+            SessionExtras {
+                token_sink: Some(output.sink()),
+                output_closed: Some(output.closed_flag()),
+                output_guard: Some(output.guard()),
+                ..SessionExtras::default()
+            },
+        )
+        .await
+        .unwrap();
+        let result = session
+            .agent
+            .run_turn("complete the actual NUL output task")
+            .await;
+        session.lsp.shutdown().await;
+        assert!(matches!(result, Ok(craftsman_harness::TurnResult::Done(_))));
+        output.write(b"\n");
+        assert_eq!(output.failure_kind(), None);
+        assert_eq!(
+            std::fs::read(completed).unwrap(),
+            b"real completed Windows effect"
+        );
+        assert!(!Path::new(forbidden).exists());
+        assert_eq!(*session.usage.lock().unwrap(), (16, 4));
+        assert!(session.agent.state.lock().unwrap().messages.iter().any(|m|
+            matches!(m,craftsman_harness::Msg::Tool { content,is_error:false,.. } if content.contains("Updated file"))));
+        assert!(super::windows_probe::activity_counts().1 > captured_writes);
+        let after = super::windows_probe::bootstrap(raw).unwrap();
+        assert_eq!((before.access, before.mode), (after.access, after.mode));
         std::process::exit(0);
     }
     if matches!(
@@ -635,6 +696,7 @@ fn tool(path: &str, id: &str, content: &str) -> Value {
 }
 struct Script {
     after_result: bool,
+    nul_output: bool,
     completed: String,
     forbidden: String,
 }
@@ -649,13 +711,15 @@ impl Respond for Script {
             .iter()
             .any(|m| m["role"] == "tool" && m["tool_call_id"] == "forbidden");
         let mut events = vec![];
-        if followed {
+        if self.nul_output && completed {
+            events.push(json!({"choices":[{"delta":{"content":"completed Windows NUL output"},"finish_reason":"stop"}]}));
+        } else if followed {
             events.push(json!({"choices":[{"delta":{"content":"unexpected Windows follow-up"},"finish_reason":"stop"}]}));
         } else {
             if !self.after_result || completed {
                 events.push(json!({"choices":[{"delta":{"content":"actual Windows content"}}]}));
             }
-            events.push(if self.after_result && !completed {
+            events.push(if (self.after_result || self.nul_output) && !completed {
                 tool(
                     &self.completed,
                     "completed",
@@ -681,6 +745,7 @@ async fn case(mode: &str, requests: usize) {
         .and(path("/chat/completions"))
         .respond_with(Script {
             after_result: mode == "after-real-result",
+            nul_output: mode == "nul-output",
             completed: completed.to_string_lossy().into_owned(),
             forbidden: forbidden.to_string_lossy().into_owned(),
         })
@@ -731,7 +796,7 @@ async fn case(mode: &str, requests: usize) {
     if requests == 0 {
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
     }
-    if mode == "after-real-result" {
+    if mode == "after-real-result" || mode == "nul-output" {
         assert_eq!(
             std::fs::read(completed).unwrap(),
             b"real completed Windows effect"
@@ -802,7 +867,7 @@ async fn actual_windows_null_invalid_type_error_and_socket_refuse_without_work()
         "socket-sync",
         "socket-datagram",
         "read-only",
-        "character-unsupported",
+        "character-read-only",
     ] {
         case(mode, 0).await;
     }
@@ -810,6 +875,11 @@ async fn actual_windows_null_invalid_type_error_and_socket_refuse_without_work()
 #[tokio::test]
 async fn actual_windows_synchronous_disk_keeps_utf8_output() {
     case("sync-disk", 0).await;
+}
+
+#[tokio::test]
+async fn actual_windows_synchronous_nul_discards_captured_output_and_keeps_tool_result_usage() {
+    case("nul-output", 2).await;
 }
 
 #[tokio::test]

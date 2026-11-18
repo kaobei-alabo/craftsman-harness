@@ -24,6 +24,7 @@ const SYNCHRONOUS: u32 = 0x10 | 0x20;
 const NONALERT: u32 = 0x20;
 const UNBUFFERED: u32 = 8;
 const NAMED_PIPE_DEVICE: u32 = 0x11;
+const NULL_DEVICE: u32 = 0x15;
 const REMOTE_DEVICE: u32 = 0x10;
 
 #[repr(C)]
@@ -302,6 +303,15 @@ fn disk(handle: Handle) -> io::Result<()> {
     }
 }
 
+pub(super) fn null_device(handle: Handle) -> io::Result<()> {
+    let information = device(handle)?;
+    if information.kind == NULL_DEVICE && information.characteristics & REMOTE_DEVICE == 0 {
+        Ok(())
+    } else {
+        Err(unsupported())
+    }
+}
+
 pub(super) fn pipe_state(handle: Handle) -> io::Result<u32> {
     let local = device(handle)?;
     if local.kind != NAMED_PIPE_DEVICE || local.characteristics & REMOTE_DEVICE != 0 {
@@ -383,12 +393,17 @@ pub(super) fn capture() -> io::Result<Arc<Output<StdoutWriter>>> {
     if kind == 2 {
         let mut mode = 0;
         // GetConsoleMode is a synchronous console API, not a file query/write.
-        if unsafe { GetConsoleMode(raw, &mut mode) } == 0 {
-            return Err(native_error(unsafe { GetLastError() }));
+        if unsafe { GetConsoleMode(raw, &mut mode) } != 0 {
+            // Preserve the prior global Stdout Unicode behavior. This console
+            // path is not native duplicate-owned redirected output proof.
+            return Ok(Arc::new(Output::new(Box::new(std::io::stdout()))));
         }
-        // Preserve the prior global Stdout Unicode behavior. This console path
-        // is not claimed as native duplicate-owned redirected output.
-        return Ok(Arc::new(Output::new(Box::new(std::io::stdout()))));
+        // GetConsoleMode failure is not permission to adopt an arbitrary char
+        // device. device() first revalidates direct8/16 NONALERT/write access,
+        // then completes the native device query on this same retained owner.
+        null_device(raw)?;
+        // Native NUL is ordinary output discarding, not a closed connection.
+        // It uses real checked File IO below and has no peer-state probe.
     }
     eligibility(raw)?;
     if kind == 1 {

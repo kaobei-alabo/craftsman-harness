@@ -599,7 +599,11 @@ Driver-facing queries recheck those preconditions on the retained owner.
 Disk output must be a normal file. PIPE type alone includes sockets: local
 NPFS device and completed byte-pipe state must be validated, with exact sizes/
 status and known state. Unknown/query/type/access failures remain fixed errors,
-not absent guards. Non-console character and remote/unsupported devices refuse.
+not absent guards. Non-console character devices refuse except a synchronous,
+same-access writable native NUL device identified as FILE_DEVICE_NULL after
+the exact8/16 eligibility bootstrap. NUL uses actual checked File writes/flush
+to discard output and has no connection-peer probe; a NULL/-1 HANDLE remains
+invalid. Remote/other unsupported devices refuse.
 The recognized Windows console keeps the standard Unicode path and remains
 outside native duplicate-owned console proof.
 

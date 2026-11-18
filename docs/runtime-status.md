@@ -199,9 +199,12 @@ storage effects, and an actual stream control retains dispatch protection.
 
 Windows support requires a same-access captured owner, actual type/GetLastError,
 direct-kernel8/16 bootstrap before File/driver IO, and NONALERT/write eligibility.
-Only validated buffered disk files or completed local NPFS byte-pipe queries are
-admitted; async/ALERT/non-write/unbuffered, socket, unknown and non-console-device
-cases refuse. The existing recognized console Unicode path remains. Pure-write
+Only validated buffered disk files, completed local NPFS byte-pipe queries or
+same-access synchronous writable NUL with actual native FILE_DEVICE_NULL identity
+are admitted. NUL discards through checked File IO without a peer-liveness claim;
+NULL/-1 HANDLEs remain invalid. Async/ALERT/non-write/unbuffered, socket, unknown
+and other non-console-device cases refuse. The existing recognized console
+Unicode path remains. Pure-write
 canonical pipe compatibility must be established by actual selected local query
 execution without an added READ_ATTRIBUTES bit or fallback. Marked Windows
 sync/overlapped/type/canonical/state tests are implementation evidence until run.
