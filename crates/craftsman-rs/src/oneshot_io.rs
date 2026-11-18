@@ -5,6 +5,9 @@
 //! drops its active turn on sink failure; provider guards also check after a
 //! response, because a single poll can otherwise stream and dispatch a tool
 //! before an outer cancellation future gets polled again.
+//! Redirected stdout is captured as an owned native file: Rust's shared
+//! `Stdout` follows the global descriptor and suppresses invalid-descriptor
+//! errors, so it cannot establish this selected output's success or failure.
 
 use async_trait::async_trait;
 use craftsman_harness::{AgentError, ModelProvider, ModelRequest, ModelResponse};
@@ -13,11 +16,84 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
+pub(crate) type StdoutWriter = Box<dyn Write + Send>;
+type Probe = Box<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
+/// Capture the invocation's actual output before building any agent. A native
+/// duplicate keeps redirected output bound to that pipe/file if another owner
+/// closes or rebinds the process-global stdout slot. It also reports actual IO
+/// errors instead of StdoutRaw's successful no-op for an invalid descriptor.
+pub(crate) fn stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
+    let stdout = std::io::stdout();
+    #[cfg(windows)]
+    {
+        use std::io::IsTerminal;
+        if stdout.is_terminal() {
+            // Preserve the established Windows console Unicode conversion.
+            // Redirected pipes/files below use their own native handles.
+            return Ok(Arc::new(Output::new(Box::new(stdout))));
+        }
+    }
+    #[cfg(unix)]
+    let writer = {
+        use std::os::fd::AsFd;
+        std::fs::File::from(stdout.as_fd().try_clone_to_owned()?)
+    };
+    #[cfg(windows)]
+    let writer = {
+        use std::os::windows::io::AsHandle;
+        std::fs::File::from(stdout.as_handle().try_clone_to_owned()?)
+    };
+    #[cfg(not(any(unix, windows)))]
+    let writer = stdout;
+    #[cfg(unix)]
+    let probe = {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::FileTypeExt;
+        let kind = writer.metadata()?.file_type();
+        let descriptor = writer.as_raw_fd();
+        (kind.is_fifo() || kind.is_socket()).then(|| {
+            Box::new(move || {
+                let mut poll = libc::pollfd {
+                    fd: descriptor,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: Output retains the captured File while invoking
+                // this zero-time, read-only readiness query. No pipe bytes,
+                // descriptor flags or process ownership are changed.
+                if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else if poll.revents & libc::POLLNVAL != 0 {
+                    Err(std::io::Error::from_raw_os_error(libc::EBADF))
+                } else if poll.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                    Err(std::io::Error::from(ErrorKind::BrokenPipe))
+                } else {
+                    Ok(())
+                }
+            }) as Probe
+        })
+    };
+    #[cfg(windows)]
+    let probe = windows_probe::probe(&writer);
+    #[cfg(not(any(unix, windows)))]
+    let probe = None;
+    let mut output = Output::new(Box::new(writer) as StdoutWriter);
+    output.probe = probe;
+    Ok(Arc::new(output))
+}
+
+#[cfg(windows)]
+#[path = "oneshot_io/windows_probe.rs"]
+mod windows_probe;
+
 pub(crate) struct Output<W> {
     writer: Mutex<W>,
     failure: Mutex<Option<ErrorKind>>,
     closed: Arc<AtomicBool>,
     stopped: Notify,
+    probe: Option<Probe>,
+    model_seen: AtomicBool,
 }
 
 impl<W: Write + Send + 'static> Output<W> {
@@ -27,6 +103,8 @@ impl<W: Write + Send + 'static> Output<W> {
             failure: Mutex::new(None),
             closed: Arc::new(AtomicBool::new(false)),
             stopped: Notify::new(),
+            probe: None,
+            model_seen: AtomicBool::new(false),
         }
     }
 
@@ -43,6 +121,43 @@ impl<W: Write + Send + 'static> Output<W> {
         Arc::new(move |text| output.write(text.as_bytes()))
     }
 
+    pub(crate) fn guard(self: &Arc<Self>) -> OutputGuard {
+        let output = self.clone();
+        OutputGuard {
+            check: Arc::new(move |after, dispatching| {
+                let probe = if after {
+                    output.model_seen.store(true, Ordering::Release);
+                    dispatching
+                } else {
+                    output.model_seen.load(Ordering::Acquire)
+                };
+                if !output.closed.load(Ordering::Acquire) && probe {
+                    if let Some(check) = &output.probe {
+                        let _writer = output.writer.lock().unwrap();
+                        if let Err(error) = check() {
+                            output.latch(error.kind());
+                        }
+                    }
+                }
+                if output.closed.load(Ordering::Acquire) {
+                    Err(AgentError::State("output sink is closed".into()))
+                } else {
+                    Ok(())
+                }
+            }),
+        }
+    }
+
+    fn latch(&self, kind: ErrorKind) {
+        let mut failure = self.failure.lock().unwrap();
+        if failure.is_none() {
+            *failure = Some(kind);
+            self.closed.store(true, Ordering::Release);
+            // notify_one caches a permit if the turn has not started waiting.
+            self.stopped.notify_one();
+        }
+    }
+
     pub(crate) fn write(&self, bytes: &[u8]) {
         if self.closed.load(Ordering::Acquire) {
             return;
@@ -54,10 +169,7 @@ impl<W: Write + Send + 'static> Output<W> {
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             // Record only the kind: an IO error's arbitrary text is not a safe
             // diagnostic and must not carry the model's text or credentials.
-            *self.failure.lock().unwrap() = Some(error.kind());
-            self.closed.store(true, Ordering::Release);
-            // notify_one caches a permit if the turn has not started waiting.
-            self.stopped.notify_one();
+            self.latch(error.kind());
         }
     }
 
@@ -65,6 +177,43 @@ impl<W: Write + Send + 'static> Output<W> {
         if !self.closed.load(Ordering::Acquire) {
             self.stopped.notified().await;
         }
+    }
+}
+
+/// A source-bound check retains the actual output, not just a caller's boolean.
+/// The initial request remains admitted; a tool response is checked before
+/// dispatch, and every later role request checks the same captured pipe again.
+/// A no-tool final response still reaches the real final-newline write.
+#[derive(Clone)]
+pub(crate) struct OutputGuard {
+    check: Arc<dyn Fn(bool, bool) -> Result<(), AgentError> + Send + Sync>,
+}
+
+pub(crate) fn checked_owned_provider(
+    inner: Arc<dyn ModelProvider>,
+    guard: Option<OutputGuard>,
+) -> Arc<dyn ModelProvider> {
+    match guard {
+        Some(guard) => Arc::new(OwnedOutputCheckedProvider { inner, guard }),
+        None => inner,
+    }
+}
+
+struct OwnedOutputCheckedProvider {
+    inner: Arc<dyn ModelProvider>,
+    guard: OutputGuard,
+}
+
+#[async_trait]
+impl ModelProvider for OwnedOutputCheckedProvider {
+    async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, AgentError> {
+        (self.guard.check)(false, false)?;
+        let response = self.inner.complete(req).await;
+        let dispatching = matches!(&response, Ok(ModelResponse {
+            message: craftsman_harness::Msg::Assistant { tool_calls, .. }, ..
+        }) if !tool_calls.is_empty());
+        (self.guard.check)(true, dispatching)?;
+        response
     }
 }
 
@@ -299,3 +448,7 @@ mod tests {
         assert!(Arc::ptr_eq(&provider, &checked));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "oneshot_io/native_tests.rs"]
+mod native_tests;

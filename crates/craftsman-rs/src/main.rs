@@ -297,7 +297,8 @@ async fn run_once(
     // A custom main sink makes child/compaction providers silent. Its latched
     // failure cancels this turn, and provider guards prevent same-poll dispatch
     // of tools after a broken content delta. Other frontends keep their sinks.
-    let output = Arc::new(oneshot_io::Output::new(std::io::stdout()));
+    let output = oneshot_io::stdout()
+        .map_err(|_| anyhow::anyhow!("could not write one-shot output to stdout"))?;
     let Some(mut session) = agent::build_session_ext(
         &cfg,
         approval,
@@ -308,6 +309,7 @@ async fn run_once(
         agent::SessionExtras {
             token_sink: Some(output.sink()),
             output_closed: Some(output.closed_flag()),
+            output_guard: Some(output.guard()),
             #[cfg(feature = "gadgets")]
             local_gadgets: true,
             #[cfg(feature = "gadgets")]

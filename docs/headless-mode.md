@@ -566,6 +566,45 @@ real binary and a synthetic local provider, not hosted models or live credential
 They also cover an unfinished SSE response, final-newline pipe failure and the
 unchanged legacy round-cap exit 2 (not headless v1’s future limit exit 3).
 
+For redirected `-m` output, the sink now retains a duplicate of the selected
+native stdout pipe/file before agent construction. Rust's shared `Stdout` uses
+the process-global descriptor and treats an invalid descriptor as a successful
+no-op; retaining that wrapper alone does not retain the selected output owner.
+Actual writes to the captured pipe/file latch their IO failure before the
+completed response reaches tool dispatch. A source-bound guard also queries
+the captured pipe's connection state before later model requests and after
+tool-bearing responses: a successful write alone does not establish that the
+peer is still open when the following tool is about to dispatch. Unix uses a
+zero-time readiness query; Windows reads the captured pipe's native connection
+metadata. Neither consumes pipe bytes, changes modes nor retries output.
+The same owner/latch remains selected by main, delegated and compaction provider
+guards before and after each response. An ordinary no-tool final response still
+reaches the actual final-newline write, retaining that failure boundary.
+Only main content reaches stdout; the existing Windows console Unicode path,
+non-terminal deny-without-read approval and other frontend defaults remain.
+
+Marked Unix builder/HTTP/native-pipe regressions close the actual sole read end
+and then bind global stdout to a separate isolated file. Content followed by a
+tool in one SSE completion cannot redirect output or dispatch that tool: the
+selected pipe reports BrokenPipe, the foreign file and tool target stay empty
+or absent, and exactly one actual request/its usage remain. A second case first
+completes an approved file tool, closes the output before the next response,
+and retains that actual file, tool result and both requests' usage while refusing
+the new tool. A third control reads the successfully written content and closes
+the sole native peer inside that content callback, before the same-poll tool
+response returns; the connection check observes closure and prevents dispatch.
+No cancellation-select scheduling assumption, output retry, model
+retry, fabricated result or tool replay is introduced.
+
+The prior full-core broken-pipe failure and the first failed owner regressions
+remain evidence. The descriptor-rebinding controls reproduce a concrete output
+owner defect; they do not establish that descriptor rebinding caused the earlier
+full-run failure. Its exact scheduling/OS trigger remains unverified, and a
+passing focused invocation does not erase it. The original real-binary broken
+pipe assertions, sole-reader-close setup and 20-second bounds stay unchanged.
+These checks do not establish P2g cleanup, general OS containment, Windows
+execution of the Unix controls or production readiness.
+
 A separate private instruction/attachment-file boundary now admits bounded original
 UTF-8 data through `PreparedInput` before session/store assignment and the SAME runtime
 builder. It preserves data/labels without granting capabilities or selecting a shell/

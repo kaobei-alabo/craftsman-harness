@@ -834,10 +834,14 @@ pub struct SessionExtras {
     /// of printing to stdout — their internal chatter is not part of the wire
     /// protocol and would only pollute the pod log.
     pub token_sink: Option<TokenSink>,
-    /// Optional latched sink failure (legacy `-m`). All role providers check it
-    /// before/after a response; None preserves other frontends exactly. The
-    /// caller owns in-flight cancellation; this is not P2g shutdown ordering.
+    /// Optional failure latched by the selected output owner (legacy `-m`). All
+    /// role providers check it before/after a response; None preserves other
+    /// frontends exactly. The caller owns in-flight cancellation; this is not
+    /// P2g shutdown ordering.
     pub output_closed: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Actual one-shot output owner; checks captured pipe closure at model
+    /// boundaries even after a successful write. Absent in other frontends.
+    pub output_guard: Option<crate::oneshot_io::OutputGuard>,
     /// Optional notification before each main-agent model round.
     pub round_sink: Option<RoundSink>,
     /// Optional legacy text activity sink used by frontends and transports.
@@ -1558,7 +1562,8 @@ async fn build_session_with_profile(
         }
     };
     let provider = if construction.prepared().is_none() {
-        crate::oneshot_io::checked_provider(provider, extras.output_closed.clone())
+        let provider = crate::oneshot_io::checked_provider(provider, extras.output_closed.clone());
+        crate::oneshot_io::checked_owned_provider(provider, extras.output_guard.clone())
     } else {
         provider // Mandatory private role helper already bound gate + admissions.
     };
@@ -1922,7 +1927,9 @@ async fn build_session_with_profile(
         }),
     };
     let sub_provider = if construction.prepared().is_none() {
-        crate::oneshot_io::checked_provider(sub_provider, extras.output_closed.clone())
+        let provider =
+            crate::oneshot_io::checked_provider(sub_provider, extras.output_closed.clone());
+        crate::oneshot_io::checked_owned_provider(provider, extras.output_guard.clone())
     } else {
         sub_provider // Mandatory private role helper already bound gate + admissions.
     };
@@ -2057,7 +2064,9 @@ async fn build_session_with_profile(
         }),
     };
     let compaction_provider = if construction.prepared().is_none() {
-        crate::oneshot_io::checked_provider(compaction_provider, extras.output_closed.clone())
+        let provider =
+            crate::oneshot_io::checked_provider(compaction_provider, extras.output_closed.clone());
+        crate::oneshot_io::checked_owned_provider(provider, extras.output_guard.clone())
     } else {
         compaction_provider // Mandatory private role helper already bound gate + admissions.
     };
