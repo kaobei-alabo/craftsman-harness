@@ -25,12 +25,14 @@ type Probe = Box<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ObservationSupport {
     CheckedWrites,
+    #[cfg(windows)]
     CheckedLocalPipeWrites,
     PeerState,
 }
 
 enum Observation {
     CheckedWrites,
+    #[cfg(windows)]
     CheckedLocalPipeWrites,
     PeerState(Probe),
 }
@@ -159,6 +161,7 @@ impl<W: Write + Send + 'static> Output<W> {
     pub(crate) fn observation_support(&self) -> ObservationSupport {
         match &self.observation {
             Observation::CheckedWrites => ObservationSupport::CheckedWrites,
+            #[cfg(windows)]
             Observation::CheckedLocalPipeWrites => ObservationSupport::CheckedLocalPipeWrites,
             Observation::PeerState(_) => ObservationSupport::PeerState,
         }
