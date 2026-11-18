@@ -4,3 +4,7 @@
 # README.md. SQLite databases are binary whatever their content looks like.
 crates/craftsman-rs/tests/fixtures/** -text
 *.db binary
+
+# Validation contracts compare these files' actual LF bytes on every checkout.
+scripts/verify.sh text eol=lf
+.github/workflows/ci.yml text eol=lf

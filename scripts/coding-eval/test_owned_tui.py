@@ -709,4 +709,5 @@ if __name__ == "__main__":
     # the independently reviewed retained-SQLite/collector rejection cases.
     from test_owned_tui_boundaries import (NegativeIssuanceBoundaries, RetainedWriteBoundaries,
         SqliteSnapshotBoundaries, NativeCollectorBoundaries, CleanupAndMarkerBoundaries, SnapshotChannelBoundaries)
+    from test_wiring_eol import WiringCheckoutBoundaries
     unittest.main()

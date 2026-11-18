@@ -204,6 +204,15 @@ remains exact. Source-bound synthetic proof does not replace coordinator
 fresh full 17/native/hosted/inventory/warning/tree/independent-main gates or
 independent driver/isolation review.
 
+Exact Git attributes keep `scripts/verify.sh` and `.github/workflows/ci.yml`
+as LF text, including checkouts with `core.autocrlf=true`. The wiring guard
+still checks their actual bytes against the frozen original baselines and
+requires every exact addition; it needs no historical Git object. Other text
+keeps its checkout policy, while corpus fixtures seed verified original Git
+bytes. Compatibility-fixture and database attributes remain in force. Local
+checkout controls accompany this change; fresh native Windows proof remains
+required.
+
 The unchanged v1 preflight still refuses the current documentation checkout:
 its broad source inventory includes the previously authorised README Explore
 edits from e6dc4fd. The explicit frozen 33a80d9 checkout passes with the strict
