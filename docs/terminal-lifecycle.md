@@ -40,6 +40,22 @@ generation or billing ended.
 Turn-end work is attempted once. If shutdown interrupts an end hook, the
 framework does not replay its effects or append a fabricated replacement answer.
 
+ACP selects interruptible main-model waits and the explicitly configured app
+controls, but does not select the terminal session cancellation owner, required
+durable-turn checkpoints or completed round-limit pauses. Its existing progress
+persistence and `max_turn_requests` behavior remain separate. The owned-terminal
+reliability cases cover actual question cancellation after a model rebuild and
+a final-save failure after a completed file effect; they do not extend those
+guarantees to ACP, background recovery or native OS containment.
+
+The additional Claude/Gemini owned-session cases stop at the real question
+waiter after an approved file effect. They retain accepted input and the actual
+question result before final persistence, then close the old owner and reopen
+through a distinct builder on the original connection. A refused Gemini final
+save remains a UI error until an explicit successful recovery save; it does not
+turn the earlier checkpoint into saved input. The fixtures use complete synthetic
+native responses and add no stream-failure, cleanup-bound or containment claim.
+
 ## Native commands and signals
 
 Signal receivers are installed before raw terminal entry and agent construction.

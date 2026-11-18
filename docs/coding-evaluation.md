@@ -45,6 +45,23 @@ rates or the total allowance. The gateway checks the current ledger digest again
 before starting admission. Full-suite forecasts are preparation only; the
 selected pilot does not authorize running them.
 
+The [fresh evaluation preparation](coding-evaluation-preparation.md) binds the
+verified November 17 source, the unchanged full v5 corpus, selected-case repeats
+and three bounded owned-terminal scenarios. It proposes $25 additional / $50
+total on the same original ledger, with no approval or admission-cap change.
+The present $25 allowance cannot fund a fresh full run; the image, explicit
+budget/admission extension and isolated terminal capture driver remain separate
+gates. Historical 17/30 and 21/30 grades remain unchanged.
+
+The [owned-terminal v3 driver](owned-terminal-evaluation.md) supplies
+credential-free production-TUI observations at the frozen source/image, with
+retained whole SQLite bytes queried in a private copy and a separately owned
+fixed native child collector. New duplicate/read negatives require the actual
+owned return and new saved result/count delta before issuance. Historical v2
+capture gaps and first failed repair attempts stay intact; live writer hold is
+quarantined. Private callbacks/typed returns/live state/outer invocation and
+ToolMeta remain unverified, and this does not authorize a paid run or cap change.
+
 ## Runner boundary
 
 `scripts/coding-eval/run_suite.py` runs the existing `craftsman acp-serve` in a

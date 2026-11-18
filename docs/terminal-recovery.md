@@ -79,6 +79,65 @@ are isolated and synthetic. The first new pruning test guessed an empty
 conversation's title incorrectly; that failed result is retained. Its corrected
 assertion compares the actual prior title and preserves the rollback check.
 
+Additional owned-session regressions in
+[`session_bridge/reliability_tests.rs`](../crates/craftsman-rs/src/tui/session_bridge/reliability_tests.rs)
+exercise a later effect that reuses an earlier call id. Two separate app approvals
+permit actual file creation, writing and synchronization; the child exits after
+the second effect, before its tool result returns. A fresh owner retains the
+first committed result and labels both the second call and its unstarted sibling
+UNKNOWN. The physical second file does not turn an unrecorded result into a
+completed result. Reopen and an explicit inspection turn repeat neither write.
+
+The strengthened reused-id follow-up first reopens that abrupt checkpoint
+through a distinct owned app builder with the production registered read/write
+tools. Actual tool-activity and approval witnesses remain zero during load;
+the separately requested inspection executes two real file reads with no write
+invocation or approval. The original results, UNKNOWN/sibling group, accepted
+input, file bytes, modification times and checkpoint sequence remain checked.
+A separately requested write to a different fixture file then proves the same
+witnesses observe one actual approved write without resetting their counters.
+The earlier scripted final text remains only a state/sequence comparison and
+is not counted as an actual read or a registered-tool no-dispatch witness.
+
+The input-preservation cases explicitly enable the app context controls.
+Another case rejects the final cancellation checkpoint with an actual SQLite
+trigger. The completed write stays durable, while two identical accepted steering
+inputs remain in the current owner's memory. They are absent from the earlier
+checkpoint: reopening cannot recover a save that failed. The UI reports the fixed
+checkpoint error, and a separately refused readiness save starts no model request.
+After storage is restored, an explicit follow-up saves the retained originals
+without repeating the write. These cases preserve the difference between current
+memory, committed results and unknown effects.
+
+The first new-case attempts failed at a Status import, overlapping fixture
+borrows, an existing transcript-selection reset and a transcript prefix too short
+to reduce during compaction. Those failures remain separate from corrected
+results. The corrected long-session fixture produces its prior history through
+actual completed turns and crosses the existing 50-checkpoint retention window;
+no historical transcript or sequence is planted. Original tests and runtime
+contracts remain unchanged.
+
+Two additional owned-session cases use synthetic Claude Messages and Gemini
+GenerateContent after 26 actual completed turns and the existing 50-checkpoint
+retention window. Claude's original thinking/signature and redacted opaque blocks
+remain exact through question cancellation, the final durable save and a fresh
+owner's request on the same connection. The accepted input and committed write
+result remain portable; the cancelled question keeps its actual non-error
+no-answer result while the unstarted sibling keeps its cancellation error.
+
+The Gemini case refuses the final cancellation save with an actual SQLite
+trigger, distinguishes retained memory from the earlier incomplete checkpoint,
+and explicitly saves the retained originals after restoring storage. A fresh
+owner then continues on the original connection with the exact signed parts.
+API-returned call ids remain exact, while generated framework ids for id-less
+native calls are not invented in function responses. Both cases inspect the
+physical file and preserve the write without replay; reopened aggregate usage
+is not fabricated. Synthetic signatures test preservation, not authenticity or
+live provider compatibility. The first run's new fixture incorrectly expected
+the declined question to be an error; that failure is retained separately and
+the correction checks the actual existing tool outcome in portable and native
+history without changing the provider codec.
+
 Full local and fresh all-four/every-step/both-mode CI validation remain required
 before merge, with independent merged-main verification. These checks do not
 prove power-loss behavior, trustworthy disks, native containment or live model

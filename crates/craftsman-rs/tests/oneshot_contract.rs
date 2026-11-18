@@ -396,3 +396,87 @@ async fn legacy_round_cap_keeps_exit_two_instead_of_the_new_exec_limit_code() {
     assert_eq!(requests.load(Ordering::SeqCst), 50);
     assert_eq!(output.stdout, b"\n");
 }
+
+#[cfg(windows)]
+struct NativeNulAware {
+    target: String,
+}
+
+#[cfg(windows)]
+impl Respond for NativeNulAware {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if let Some(result) = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool")
+        {
+            assert!(result["content"].as_str().unwrap().contains("Updated file"));
+            text("completed real NUL-discarded response")
+        } else {
+            sse(&[
+                json!({"choices":[{"delta":{"content":"real content discarded to native NUL"}}]}),
+                tool(
+                    "nul-write",
+                    "write_file",
+                    json!({"file_path":self.target,"content":"real NUL one-shot effect"}),
+                ),
+                json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+                json!({"choices":[],"usage":{"prompt_tokens":8,"completion_tokens":2}}),
+            ])
+        }
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn native_windows_nul_stdout_discards_one_shot_output_and_preserves_approved_effect() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let target = workspace.path().join("nul-one-shot-effect.txt");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(NativeNulAware {
+            target: target.to_string_lossy().into_owned(),
+        })
+        .mount(&server)
+        .await;
+    config(home.path(), &server.uri(), json!({}));
+    let mut command = command(home.path(), workspace.path());
+    command
+        .args([
+            "-m",
+            "create the approved NUL output effect",
+            "--auto-approve",
+        ])
+        .stdout(Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(20), async {
+        // Command.output() replaces stdout with a pipe in pinned Tokio. Keep
+        // the selected native NUL handle through actual spawn and collection.
+        command.spawn()?.wait_with_output().await
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("panicked"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Broken pipe"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read(&target).unwrap(), b"real NUL one-shot effect");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let followup: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert!(followup["messages"].as_array().unwrap().iter().any(|m| {
+        m["role"] == "tool"
+            && m["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("Updated file"))
+    }));
+}

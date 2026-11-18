@@ -58,6 +58,15 @@ stays pending. Replay invokes no model, tool, approval callback or turn hook.
 Assistant content chunks keep one `messageId` per model round and use a distinct
 ID for later rounds and model replacements.
 
+Native model EOF before completion and an HTTP failure retain the existing
+`-32603` / `agent turn failed` prompt error. Earlier approved file effects and
+completed results stay in the live session and its cached replay; that replay
+does not sample, dispatch tools, or request new permission. The error frame does
+not report missing provider usage as zero or claim that all live progress was
+saved. ACP keeps its existing non-durable progress policy, so its latest disk
+checkpoint can precede the last completed tool result. The separate owned
+terminal durable opt-in checkpoints those results before more sampling.
+
 ## Cancellation and shutdown
 
 `session/cancel` first requests cancellation on the actual active agent, then
@@ -118,6 +127,14 @@ transfer. A marked ignored native MCP child checks actual launch directory,
 literal environment, discovery and tool execution; unmarked runs return before
 reading stdin, environment or configuration. Both full native feature modes and
 all four hosted validation jobs remain required before delivery.
+
+Marked actual-builder/ACP tests separately reproduce a real loopback Responses
+`response.created` body ending at EOF, a fixture-only twenty-request admission
+ceiling followed by HTTP 402, and normal completion on exactly response twenty.
+They check actual one-call approval, file/result retention, unchanged error
+frames, completed-response usage, and cached replay without effects. They make
+no paid calls and do not identify the historical failing peer or establish a
+production defect; see [provider connections](provider-models.md).
 
 The two intentional ACP golden diffs correct permission/tool/message identity
 and include accumulated usage on the now normally completed cancellation path.

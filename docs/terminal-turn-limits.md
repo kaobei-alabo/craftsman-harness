@@ -62,3 +62,12 @@ startup returns before environment/configuration access. No paid model calls or
 user configuration changes are made. Full local validation and all four hosted
 jobs, every mandatory step, both native modes and independent-main validation
 remain required before delivery.
+
+With explicit app context controls enabled, an additional owned-session case
+follows 26 real completed turns with a one-round approved write/question pause.
+Two steering inputs accepted during
+the question are saved after the actual results, without another model request.
+The saved pause remains usable through manual-compaction cancellation, completed
+compaction, model rebuild and another cancelled turn. The fixture checks real
+SQLite retention and fresh-owner reopen; it is focused recovery coverage, not
+evidence that arbitrary long tasks complete successfully.

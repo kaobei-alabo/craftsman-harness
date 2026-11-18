@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 16, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 18, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
@@ -111,6 +111,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
+| Coding-evaluation preparation and reliability evidence | Local frozen-source validation and production-TUI synthetic v3 | Unchanged original/reference graders, private SQLite snapshots and independently requested fixed child; full combined-source/native/hosted/live-budget gates remain; [preparation](coding-evaluation-preparation.md), [owned-terminal v3](owned-terminal-evaluation.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
 | Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
@@ -165,9 +166,91 @@ bounds; those contracts and their failed/corrected evidence remain unchanged.
 ## 4. Legacy one-shot versus accepted headless v1
 
 Legacy `-m` retains its argument input, configured permissions/storage and exit
-behavior. Its non-TTY approval input denies without reading, and output-closed
-provider guards prevent further same-response dispatch. It is not an
-explicit-only unattended execution boundary.
+behavior. Main content goes to stdout and activity to stderr; non-TTY approval
+input denies without reading. It is not an explicit-only unattended execution
+boundary.
+
+Redirected one-shot output captures stdout as an owned native pipe/file
+before agent construction. Main, delegated and compaction providers retain
+that same owner and recheck actual write/flush error latches before/after model
+responses. Sources selected for peer-state observation also run connection
+checks after tool-bearing responses and before later model requests, including
+when the preceding write succeeded. Closure observed at that boundary stops further
+dispatch; BrokenPipe exits quietly at 0 and other IO failures use fixed text.
+The first request remains admitted and a no-tool final response still reaches
+the actual final-newline write. Windows console encoding, deny-without-read
+approval and other frontend defaults remain unchanged; completed real effects,
+tool results and received usage are retained rather than rolled back or replayed.
+
+This is a boundary check, not OS containment, background-work quiescence, public
+`exec`, general coding-quality or release-readiness proof. A later peer closure
+can still race an operation already started. Details and native bounds are in
+[the one-shot contract](headless-mode.md#11-implementation-progress--not-a-shipped-exec-command).
+
+Initial36ab019 evidence includes actual Unix builder/loopback/native-pipe controls for stdout rebinding,
+closure after successfully read content in the same response, and retention of
+a prior completed tool. Its focused core/gadget checks passed 52 test executions,
+including all six unchanged one-shot cases in each mode. The prior `0d2fd68`
+full-core failure after a real file write remains historical, with its OS trigger
+unverified; the first failed controls and unused-mut warning are also preserved.
+The independent review's P1 Windows mode/lifetime and P2 type/access/Unix-socket
+findings are retained; its pending mock did not execute on Windows. Unix socket
+admission now requires actual stream SO_TYPE; datagrams refuse before model/tool/
+storage effects, and an actual stream control retains dispatch protection.
+
+Windows support requires a same-access captured owner, actual type/GetLastError,
+direct-kernel8/16 bootstrap before File/driver IO, and NONALERT/write eligibility.
+Validated disk files and synchronous writable NUL keep checked File IO; NUL
+requires actual native FILE_DEVICE_NULL identity. Validated local NPFS selects
+an explicit source-dependent app observer before any agent work. NUL has no peer-liveness claim;
+NULL/-1 HANDLEs remain invalid. Async/ALERT/non-write/unbuffered, socket, unknown
+and other non-console-device cases refuse. The existing recognized console
+Unicode path remains. Windows gadget run44262189413 actually ran the24 original/
+added one-shot cases:17 passed and7 failed; core was skipped. All six original
+cases and the native NUL unit passed. A real socket reached DuplicateHandle,
+contradicting the earlier device0x11-only discriminator; named-server queries,
+the claimed attribute-free client, console setup and binary NUL fixture also
+failed. The prior source-only reviews remain evidence, not compatibility proof.
+
+The repair checks SO_TYPE after direct8/16 eligibility and before duplication,
+owns one successful Winsock2.2 reference and requires its checked cleanup. Socket
+success, malformed output and unknown errors refuse; WSAENOTSOCK is only a
+non-socket candidate for the remaining supported-kind/state checks. These
+provider calls may block/use alertable waits; no new hard OS deadline or
+arbitrary foreign Winsock lifecycle isolation is claimed. Later IO remains on
+the retained duplicate without an atomic handle-table capture claim.
+
+Console fixtures use actual attachment/mode APIs and inactive-buffer Unicode
+readback. The pure client now reduces and verifies its actual granted rights;
+binary NUL uses spawn/wait_with_output so Tokio cannot replace null stdout.
+Marked query diagnostics retain at most32 primitive records, with separate
+original/duplicate phases and no fields from partial/error output. Later native
+run44322458688 passes the original six, socket/inherited/reference, console and
+NUL paths in both modes, but still fails four low-grant named-pipe cases in each
+mode. All eight class24 requests return ACCESS_DENIED with no completed fields.
+Those failed expectations and all earlier runs remain historical evidence.
+
+The compatible candidate retains legacy checked writes for qualified local
+NPFS whose actual access lacks READ_ATTRIBUTES. It requires WRITE_DATA0x2,
+SYNCHRONIZE, NONALERT/buffered mode and a completed local-device result on the
+same owner; pipe bit0x4 alone is create-instance authority, not data writing.
+ObservationSupport::CheckedLocalPipeWrites advertises only actual IO-result
+observation. It provides no type/configuration/end/connection data and cannot
+detect peer loss after successful output until later IO actually reports it.
+Disk/NUL/generic write support and PeerState support remain distinct.
+
+READ_ATTRIBUTES presence selects the full native observer, whose actual
+return/IOSB/completed40-byte/type/configuration/end/state validation still must
+succeed. Query failure in that selected backend refuses; it never chooses the
+limited backend. No access upgrade, byte probe, mode change, cached-state guess
+or query-error fallback is used. Native witnesses must show the already passing
+anonymous/metadata-capable sources retain full observation. This app-only policy
+does not enter private headless/guest/input/output construction paths. The new
+candidate and its native tests still require source review/fresh Windows proof.
+Current validation requires repaired-source review, actual Windows execution
+and full17/all-four/every-step/both-mode/inventory/warning/source-tree/
+independent-main proof. No broader source33/image/corpus/capture or live-budget
+authorization follows from these boundary checks.
 
 The accepted headless v1 contract requires invocation-only permissions,
 canonical scopes, input/output/resource bounds, truthful all-role usage,
@@ -190,10 +273,16 @@ requires CMake, plus ALSA development headers/pkg-config/clang on Linux.
 ```
 
 The verification script selects an installed python 3.11 or newer runtime
-and runs 14 checks: formatting, locked core/default builds, exec-contract,
+and runs 17 discoverable checks: all 14 original checks plus latest evaluation
+preflight, long-session and owned-TUI tests. The original checks retain formatting,
+locked core/default builds, exec-contract,
 benchmark-driver, CI-cache/workflow, coding-budget/scope/preflight/options contracts,
 provenance, both complete native modes and unchanged goldens. A failed core mode
 does not hide the gadget mode.
+
+The three additive evaluation tests are also discovered in existing CI contract
+steps. This entrypoint count does not claim that all 17 checks or hosted/native
+gates have passed at the latest combined source.
 
 Required CI contexts are `fmt`, `test (ubuntu-24.04)`, `test (macos-15)` and
 `test (windows-2025)`. Each test platform checks the default voice/gadget build
@@ -250,6 +339,32 @@ longer sessions and additional models need their own comparisons. Current priori
 completion state are in [harness-improvements.md](harness-improvements.md).
 Public headless execution/gadgets, native containment and full typed events /
 Session API keep their separate roadmap gates.
+
+The local [owned-terminal synthetic v3](owned-terminal-evaluation.md) runs the
+production TUI at frozen source `33a80d9` in immutable image
+`sha256:6123321bf37c5641bc6ff4b4f79848f8b8e752fbc78a2f4361406162943cb38b`.
+It records real one-call approvals, stored-row/pin evidence, actual OSC/PTY
+lifecycle, cancellation, manual compaction and quit/reopen, with an
+independently requested fixed native child with verified executed bytes, actual
+bounded wait/EOF and one local forwarding attempt. Whole retained SQLite bytes
+are queried only in an independently held private copy with current-step
+expectations. Duplicate/read negatives require a new saved condition after the
+actual owned return; live writer hold is quarantined. Historical v2 capture
+gaps and first failed repair attempts remain. Original task behavior, completed
+external observations and unverified private callbacks/typed returns/live
+recovery/outer invocation/ToolMeta or whole-activity absence remain separate criteria.
+This synthetic evidence is not a new full live-model score, production-readiness
+decision or OS-containment proof. New combined runtime source/image rebinding
+and coordinator full local/native/hosted/independent-main validation remain
+pending; additional live-budget approval is still required.
+
+The full unchanged v5 corpus was also validated in that same frozen image:
+all 30 original workspaces failed their independent held-out grades and all
+30 reference workspaces passed. Complete outputs retain all 20 Rust full-grade
+commands and 20 separate original/reference `--doc` diagnostics. This is the
+offline corpus prerequisite for source `33a80d9`; it does not supply model
+answers, revise historical scores, diagnose an older candidate's doctest failure,
+or validate a newer combined source/image automatically.
 
 The repository is public and MIT licensed for its original work. Standard public
 GitHub-hosted runner compute is free; storage/concurrency limits remain. The

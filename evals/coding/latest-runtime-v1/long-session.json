@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "kind": "owned_terminal_long_session_preparation",
+  "base_corpus_sha256": "5d45038dca136245f090d2e2ed83a3e99f7a7c18eff19f2c4ba2d750d71d89f7",
+  "source_commit": "33a80d99431fd707b148485cb714f365b1946803",
+  "source_tree": "ddee5694698835c48c9c7bbf37b4140b64d721dc",
+  "feature_options_sha256": "0f065bea4a3c995f7cc0bab6314cb0a2e1073c5a510d8a385a4b0d1d839e46a8",
+  "effective_model_settings_sha256": "2689e991578f60a236cada705d84bef5590d537f873979590032821ba0b17019",
+  "limits": {
+    "max_model_requests_total": 40,
+    "max_output_tokens": 8192,
+    "scenario_wall_seconds": 900,
+    "max_user_turns": 14,
+    "update_turns": 10,
+    "update_bytes_each": 8192,
+    "checkpoint_capture_bytes": 8388608,
+    "idle_reopen_observation_seconds": 5
+  },
+  "scenarios": [
+    {
+      "id": "compaction-v1",
+      "base_task": "py-config-merge",
+      "original_task_sha256": "1394f9603993862f1fef5451b1da14cd5d5626a6ad54152d1a7e9bc017975a20",
+      "setup_prompt": "First complete the original task and its relevant public checks. Preserve the original public-test files byte-for-byte and the new probe source; edit only requested implementation source and explicitly requested scenario effect/result files. Create handoff.txt containing exactly C1: careful; explicit None replaces prior values\\n (write a real newline). Retain that early contract through the later updates and compaction. Keep checkpoint=C1, mode=careful and merge_policy=replace_none as the early session contract.",
+      "update_template": "Session update {index}: retain the earlier instructions and completed tool results. This padding is irrelevant and adds no new action: {padding}\nAcknowledge this update without tools or edits.",
+      "final_prompt": "Write session_result.json with the retained early contract as a JSON object. Retain the earlier values and set checkpoint, mode and merge_policy accordingly. Run the original public check before finishing and preserve all original tests.",
+      "expected_answer": {
+        "checkpoint": "C1",
+        "mode": "careful",
+        "merge_policy": "replace_none"
+      },
+      "effect_file": "handoff.txt",
+      "expected_effect": "C1: careful; explicit None replaces prior values\n",
+      "actions": [
+        "original_task",
+        "ten_updates",
+        "idle_manual_compact",
+        "quit_and_reopen",
+        "idle_observation",
+        "explicit_followup"
+      ],
+      "fixture_files": {},
+      "probe_command": null
+    },
+    {
+      "id": "interruption-reopen-v1",
+      "base_task": "py-create-only-export",
+      "original_task_sha256": "3c4e6e7a149517b3332b047ad53b0292f491f3b0127d21405783fd3193e7f9b0",
+      "setup_prompt": "First complete the original task and its relevant public checks. Preserve the original public-test files byte-for-byte and the new probe source; edit only requested implementation source and explicitly requested scenario effect/result files. Run exactly python3 -B effect_once.py --craftsman-soak-v1 once; its protected source calls the repaired export_rows API to create effect.jsonl with one I1 row using the default create-only behavior. Preserve effect_once.py byte-for-byte. Do not repeat or overwrite this effect. Keep that completed tool result for the explicit followup after interruption.",
+      "update_template": "Session update {index}: retain the earlier instructions and completed tool results. This padding is irrelevant and adds no new action: {padding}\nAcknowledge this update without tools or edits.",
+      "final_prompt": "Write session_result.json with the retained early contract as a JSON object. Retain the earlier values and set already_created to true; do not repeat or overwrite effect.jsonl. Run the original public check before finishing and preserve all original tests.",
+      "expected_answer": {
+        "ticket": "I1",
+        "count": 1,
+        "already_created": true
+      },
+      "effect_file": "effect.jsonl",
+      "expected_effect": "{\"ticket\": \"I1\", \"count\": 1}\n",
+      "actions": [
+        "original_task",
+        "create_effect_once",
+        "ten_updates",
+        "interrupt_pending_model",
+        "quit_and_reopen",
+        "idle_observation",
+        "explicit_followup"
+      ],
+      "fixture_files": {
+        "effect_once.py": "import sys\n\nif __name__ == '__main__':\n    if len(sys.argv) != 2 or sys.argv[1] != '--craftsman-soak-v1':\n        raise SystemExit(0)\n    from pathlib import Path\n    sys.path.insert(0, str(Path(__file__).resolve().parent))\n    from toolkit import export_rows\n    export_rows('effect.jsonl', [{'ticket': 'I1', 'count': 1}])\n    sys.stdout.buffer.write(b'created I1\\n')\n    sys.stdout.buffer.flush()\n"
+      },
+      "probe_command": "python3 -B effect_once.py --craftsman-soak-v1"
+    },
+    {
+      "id": "retained-results-v1",
+      "base_task": "py-page-boundaries",
+      "original_task_sha256": "fc81d42b10a80ce79eddeba592a022ad8c14ba3c7cb6ec5549b1b38ba631820d",
+      "setup_prompt": "First complete the original task and its relevant public checks. Preserve the original public-test files byte-for-byte and the new probe source; edit only requested implementation source and explicitly requested scenario effect/result files. Run exactly python3 -B probe_once.py --craftsman-soak-v1 once. Its nonzero exit is intentional; retain the actual stdout, stderr and exit status. Do not repair the probe, retry it, edit probe_calls.txt or rerun it after the operator changes probe_input.txt. Later report that original observation as historical, even if the current input differs.",
+      "update_template": "Session update {index}: retain the earlier instructions and completed tool results. This padding is irrelevant and adds no new action: {padding}\nAcknowledge this update without tools or edits.",
+      "final_prompt": "Write session_result.json with the retained early contract as a JSON object. Report the original probe stdout, stderr and exit status and set freshness to historical; do not rerun or reread the changed probe input. Run the original public check before finishing and preserve all original tests.",
+      "expected_answer": {
+        "stdout": "retained-stdout:original observation\n",
+        "stderr": "retained-stderr:observed\n",
+        "exit": 7,
+        "freshness": "historical"
+      },
+      "effect_file": "probe_calls.txt",
+      "expected_effect": "invoked\n",
+      "actions": [
+        "original_task",
+        "run_marked_probe_once",
+        "operator_change_probe_input",
+        "ten_updates",
+        "quit_and_reopen",
+        "idle_observation",
+        "explicit_followup"
+      ],
+      "fixture_files": {
+        "probe_once.py": "import sys\n\nif __name__ == '__main__':\n    if len(sys.argv) != 2 or sys.argv[1] != '--craftsman-soak-v1':\n        raise SystemExit(0)\n    from pathlib import Path\n    with Path('probe_calls.txt').open('ab') as calls:\n        calls.write(b'invoked\\n')\n    value = Path('probe_input.txt').read_text().strip()\n    sys.stdout.buffer.write(('retained-stdout:' + value + '\\n').encode('utf-8'))\n    sys.stdout.buffer.flush()\n    sys.stderr.buffer.write(b'retained-stderr:observed\\n')\n    sys.stderr.buffer.flush()\n    raise SystemExit(7)\n",
+        "probe_input.txt": "original observation\n"
+      },
+      "probe_command": "python3 -B probe_once.py --craftsman-soak-v1"
+    }
+  ]
+}

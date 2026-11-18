@@ -5,6 +5,9 @@
 //! drops its active turn on sink failure; provider guards also check after a
 //! response, because a single poll can otherwise stream and dispatch a tool
 //! before an outer cancellation future gets polled again.
+//! Redirected stdout is captured as an owned native file: Rust's shared
+//! `Stdout` follows the global descriptor and suppresses invalid-descriptor
+//! errors, so it cannot establish this selected output's success or failure.
 
 use async_trait::async_trait;
 use craftsman_harness::{AgentError, ModelProvider, ModelRequest, ModelResponse};
@@ -13,11 +16,126 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
+pub(crate) type StdoutWriter = Box<dyn Write + Send>;
+type Probe = Box<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
+/// App-owned observation support, not native pipe data or a public receipt.
+/// Checked writes stop on actual IO errors; they cannot proactively observe a
+/// peer loss after successful output when no subsequent IO reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ObservationSupport {
+    CheckedWrites,
+    #[cfg(windows)]
+    CheckedLocalPipeWrites,
+    PeerState,
+}
+
+enum Observation {
+    CheckedWrites,
+    #[cfg(windows)]
+    CheckedLocalPipeWrites,
+    PeerState(Probe),
+}
+
+/// Capture the invocation's actual output before building any agent. A native
+/// duplicate keeps redirected output bound to that pipe/file if another owner
+/// closes or rebinds the process-global stdout slot. It also reports actual IO
+/// errors instead of StdoutRaw's successful no-op for an invalid descriptor.
+pub(crate) fn stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
+    #[cfg(windows)]
+    {
+        windows_probe::capture()
+    }
+    #[cfg(not(windows))]
+    {
+        captured_stdout()
+    }
+}
+
+#[cfg(not(windows))]
+fn captured_stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
+    let stdout = std::io::stdout();
+    #[cfg(unix)]
+    let writer = {
+        use std::os::fd::AsFd;
+        std::fs::File::from(stdout.as_fd().try_clone_to_owned()?)
+    };
+    #[cfg(not(any(unix, windows)))]
+    let writer = stdout;
+    #[cfg(unix)]
+    let probe = {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::FileTypeExt;
+        let kind = writer.metadata()?.file_type();
+        let descriptor = writer.as_raw_fd();
+        if kind.is_socket() {
+            let mut socket_type = 0i32;
+            let mut length = std::mem::size_of::<i32>() as libc::socklen_t;
+            // SAFETY: the captured File owns this live socket descriptor;
+            // SO_TYPE reads exactly the supplied integer/length buffers and
+            // neither consumes bytes nor changes socket or descriptor flags.
+            if unsafe {
+                libc::getsockopt(
+                    descriptor,
+                    libc::SOL_SOCKET,
+                    libc::SO_TYPE,
+                    (&mut socket_type as *mut i32).cast(),
+                    &mut length,
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            if length as usize != std::mem::size_of::<i32>() || socket_type != libc::SOCK_STREAM {
+                return Err(std::io::Error::new(
+                    ErrorKind::Unsupported,
+                    "unsupported one-shot output socket type",
+                ));
+            }
+        }
+        (kind.is_fifo() || kind.is_socket()).then(|| {
+            Box::new(move || {
+                let mut poll = libc::pollfd {
+                    fd: descriptor,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: Output retains the captured File while invoking
+                // this zero-time, read-only readiness query. No pipe bytes,
+                // descriptor flags or process ownership are changed.
+                if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else if poll.revents & libc::POLLNVAL != 0 {
+                    Err(std::io::Error::from_raw_os_error(libc::EBADF))
+                } else if poll.revents & (libc::POLLERR | libc::POLLHUP) != 0 {
+                    Err(std::io::Error::from(ErrorKind::BrokenPipe))
+                } else {
+                    Ok(())
+                }
+            }) as Probe
+        })
+    };
+    #[cfg(not(any(unix, windows)))]
+    let probe = None;
+    let mut output = Output::new(Box::new(writer) as StdoutWriter);
+    output.observation = match probe {
+        Some(check) => Observation::PeerState(check),
+        None => Observation::CheckedWrites,
+    };
+    Ok(Arc::new(output))
+}
+
+#[cfg(windows)]
+#[path = "oneshot_io/windows_probe.rs"]
+mod windows_probe;
+
 pub(crate) struct Output<W> {
     writer: Mutex<W>,
     failure: Mutex<Option<ErrorKind>>,
     closed: Arc<AtomicBool>,
     stopped: Notify,
+    observation: Observation,
+    model_seen: AtomicBool,
 }
 
 impl<W: Write + Send + 'static> Output<W> {
@@ -27,6 +145,8 @@ impl<W: Write + Send + 'static> Output<W> {
             failure: Mutex::new(None),
             closed: Arc::new(AtomicBool::new(false)),
             stopped: Notify::new(),
+            observation: Observation::CheckedWrites,
+            model_seen: AtomicBool::new(false),
         }
     }
 
@@ -38,9 +158,56 @@ impl<W: Write + Send + 'static> Output<W> {
         *self.failure.lock().unwrap()
     }
 
+    pub(crate) fn observation_support(&self) -> ObservationSupport {
+        match &self.observation {
+            Observation::CheckedWrites => ObservationSupport::CheckedWrites,
+            #[cfg(windows)]
+            Observation::CheckedLocalPipeWrites => ObservationSupport::CheckedLocalPipeWrites,
+            Observation::PeerState(_) => ObservationSupport::PeerState,
+        }
+    }
+
     pub(crate) fn sink(self: &Arc<Self>) -> crate::agent::TokenSink {
         let output = self.clone();
         Arc::new(move |text| output.write(text.as_bytes()))
+    }
+
+    pub(crate) fn guard(self: &Arc<Self>) -> OutputGuard {
+        let output = self.clone();
+        let monitor_peer = self.observation_support() == ObservationSupport::PeerState;
+        OutputGuard {
+            check: Arc::new(move |after, dispatching| {
+                let probe = if after {
+                    output.model_seen.store(true, Ordering::Release);
+                    dispatching
+                } else {
+                    output.model_seen.load(Ordering::Acquire)
+                };
+                if !output.closed.load(Ordering::Acquire) && probe && monitor_peer {
+                    if let Observation::PeerState(check) = &output.observation {
+                        let _writer = output.writer.lock().unwrap();
+                        if let Err(error) = check() {
+                            output.latch(error.kind());
+                        }
+                    }
+                }
+                if output.closed.load(Ordering::Acquire) {
+                    Err(AgentError::State("output sink is closed".into()))
+                } else {
+                    Ok(())
+                }
+            }),
+        }
+    }
+
+    fn latch(&self, kind: ErrorKind) {
+        let mut failure = self.failure.lock().unwrap();
+        if failure.is_none() {
+            *failure = Some(kind);
+            self.closed.store(true, Ordering::Release);
+            // notify_one caches a permit if the turn has not started waiting.
+            self.stopped.notify_one();
+        }
     }
 
     pub(crate) fn write(&self, bytes: &[u8]) {
@@ -54,10 +221,7 @@ impl<W: Write + Send + 'static> Output<W> {
         if let Err(error) = writer.write_all(bytes).and_then(|()| writer.flush()) {
             // Record only the kind: an IO error's arbitrary text is not a safe
             // diagnostic and must not carry the model's text or credentials.
-            *self.failure.lock().unwrap() = Some(error.kind());
-            self.closed.store(true, Ordering::Release);
-            // notify_one caches a permit if the turn has not started waiting.
-            self.stopped.notify_one();
+            self.latch(error.kind());
         }
     }
 
@@ -65,6 +229,45 @@ impl<W: Write + Send + 'static> Output<W> {
         if !self.closed.load(Ordering::Acquire) {
             self.stopped.notified().await;
         }
+    }
+}
+
+/// A source-bound check retains the actual output, not just a caller's boolean.
+/// The initial request remains admitted; all roles check the same actual-error
+/// latch before/after responses. Selected peer-state observers also check the
+/// captured connection before later requests and tool dispatch. Limited local
+/// pipe observation supplies no state query or post-success peer guarantee.
+/// A no-tool final response still reaches the real final-newline write.
+#[derive(Clone)]
+pub(crate) struct OutputGuard {
+    check: Arc<dyn Fn(bool, bool) -> Result<(), AgentError> + Send + Sync>,
+}
+
+pub(crate) fn checked_owned_provider(
+    inner: Arc<dyn ModelProvider>,
+    guard: Option<OutputGuard>,
+) -> Arc<dyn ModelProvider> {
+    match guard {
+        Some(guard) => Arc::new(OwnedOutputCheckedProvider { inner, guard }),
+        None => inner,
+    }
+}
+
+struct OwnedOutputCheckedProvider {
+    inner: Arc<dyn ModelProvider>,
+    guard: OutputGuard,
+}
+
+#[async_trait]
+impl ModelProvider for OwnedOutputCheckedProvider {
+    async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, AgentError> {
+        (self.guard.check)(false, false)?;
+        let response = self.inner.complete(req).await;
+        let dispatching = matches!(&response, Ok(ModelResponse {
+            message: craftsman_harness::Msg::Assistant { tool_calls, .. }, ..
+        }) if !tool_calls.is_empty());
+        (self.guard.check)(true, dispatching)?;
+        response
     }
 }
 
@@ -112,6 +315,29 @@ mod tests {
     use craftsman_harness::{Msg, Usage};
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_write_support_does_not_invent_peer_state_and_latches_actual_io() {
+        use std::io::Read;
+        let (writer, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let output = Arc::new(Output::new(writer));
+        assert_eq!(
+            output.observation_support(),
+            ObservationSupport::CheckedWrites
+        );
+        output.write(b"actual accepted output");
+        let mut received = vec![0; b"actual accepted output".len()];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, b"actual accepted output");
+        drop(peer);
+        let guard = output.guard();
+        assert!((guard.check)(true, true).is_ok());
+        assert_eq!(output.failure_kind(), None);
+        output.write(b"actual later IO observes closure");
+        assert_eq!(output.failure_kind(), Some(ErrorKind::BrokenPipe));
+        assert!((guard.check)(false, false).is_err());
+    }
 
     struct Writer {
         bytes: Arc<Mutex<Vec<u8>>>,
@@ -299,3 +525,11 @@ mod tests {
         assert!(Arc::ptr_eq(&provider, &checked));
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "oneshot_io/native_tests.rs"]
+mod native_tests;
+
+#[cfg(all(test, windows))]
+#[path = "oneshot_io/windows_tests.rs"]
+mod windows_tests;

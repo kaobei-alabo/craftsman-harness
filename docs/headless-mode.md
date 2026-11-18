@@ -566,6 +566,158 @@ real binary and a synthetic local provider, not hosted models or live credential
 They also cover an unfinished SSE response, final-newline pipe failure and the
 unchanged legacy round-cap exit 2 (not headless v1’s future limit exit 3).
 
+For redirected `-m` output, the sink now retains a duplicate of the selected
+native stdout pipe/file before agent construction. Rust's shared `Stdout` uses
+the process-global descriptor and treats an invalid descriptor as a successful
+no-op; retaining that wrapper alone does not retain the selected output owner.
+Actual writes to the captured pipe/file latch their IO failure before the
+completed response reaches tool dispatch. For sources with selected peer-state
+observation, the source-bound guard also queries the captured connection before
+later model requests and after tool-bearing responses. Unix keeps its zero-time
+readiness query; the full Windows observer reads validated native pipe metadata.
+For the limited local Windows pipe observer, a successful write followed by peer
+loss remains unobserved until later IO reports an actual failure. Every observer
+retains the shared error check; no backend consumes probe bytes, changes modes
+or retries output.
+The same owner/latch remains selected by main, delegated and compaction provider
+guards before and after each response. An ordinary no-tool final response still
+reaches the actual final-newline write, retaining that failure boundary.
+Only main content reaches stdout; the existing Windows console Unicode path,
+non-terminal deny-without-read approval and other frontend defaults remain.
+
+The supported Unix socket kind is verified with actual `SO_TYPE`: only streams
+use this readiness check. Datagram/other socket kinds refuse before session,
+model or tool effects; a datagram's writable poll result is not peer liveness.
+Pipes, normal files and terminal output retain their existing behavior.
+
+Windows redirected output first validates the captured HANDLE/type and actual
+GetLastError, then duplicates SAME_ACCESS without inheriting, upgrading rights
+or changing mode. Only direct-kernel FileAccessInformation8/FileModeInformation16
+bootstrap before File conversion or any driver-facing query/write; Microsoft
+[documents those classes without a filesystem IRP](https://learn.microsoft.com/en-us/previous-versions/windows/drivers/ifs/irp-mj-query-information).
+Actual NONALERT synchronous mode, write/append plus SYNCHRONIZE rights, and
+buffered IO are required; async/ALERT, read-only and unbuffered handles refuse.
+Driver-facing queries recheck those preconditions on the retained owner.
+Disk output must be a normal file. PIPE type alone includes sockets: local
+NPFS device facts must be completed on the same eligible owner. The selected
+full observer additionally validates completed byte-pipe state with exact sizes/
+status and known fields. Unknown device/access/mode facts and selected-full
+query failures remain fixed errors. Non-console character devices refuse except a synchronous,
+same-access writable native NUL device identified as FILE_DEVICE_NULL after
+the exact8/16 eligibility bootstrap. NUL uses actual checked File writes/flush
+to discard output and has no connection-peer probe; a NULL/-1 HANDLE remains
+invalid. Remote/other unsupported devices refuse.
+Native Windows run44262189413 contradicted the prior device0x11-only socket
+discriminator: an actual socket reached DuplicateHandle. The repair first checks
+the once-selected borrowed handle's direct8/16 eligibility, then queries
+[SO_TYPE](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-getsockopt)
+with owned int32 output/length and one successful negotiated Winsock2.2 startup
+reference. Every successful-startup path checks one matching cleanup before
+duplication/admission, including version mismatch and query error. Socket
+success, malformed output, unknown errors and failed cleanup refuse with fixed
+text; exact WSAENOTSOCK only permits remaining supported-device/state checks.
+No socket ownership/duplication, SO_ERROR/setter/data probe, IO-mode change or
+access upgrade is selected. This implementation scope was authorized separately;
+fresh same-process/inherited/native caller-reference proof remains required.
+Winsock may block/use alertable waits; no nested blocking call from an interrupting
+APC, stronger OS deadline or arbitrary foreign lifecycle isolation is promised.
+After same-access duplication, classification, queries and writes use the actual
+retained duplicate. Capture is not atomic against unsafe concurrent handle-table
+changes.
+The recognized Windows console keeps the standard Unicode path and remains
+outside native duplicate-owned console proof.
+
+The app selects its Windows pipe observation policy before a state-query attempt
+or sampling, from completed actual access/mode/local-device facts. Actual
+WRITE_DATA0x2, SYNCHRONIZE and NONALERT/buffered eligibility are required for
+local pipe adoption. Pipe bit0x4 is FILE_CREATE_PIPE_INSTANCE and cannot qualify
+output merely because the generic disk helper accepts APPEND_DATA; disk append
+semantics stay unchanged.
+
+Qualified local NPFS without READ_ATTRIBUTES selects captured checked writes.
+The typed availability is CheckedLocalPipeWrites, distinct from ordinary
+disk/NUL/generic checked writes and PeerState observation. It supplies no
+pipe type/configuration/end/connection fields. It retains legacy actual
+write/flush-error stopping and the same main/child/compaction source-bound guard,
+but cannot observe a peer loss after successful output with no later IO.
+
+READ_ATTRIBUTES presence selects full native observation; it is not proof of a
+successful reply. That backend still requires the same actual class24 return,
+matching IOSB and completed40-byte/type/configuration/end/state predicates.
+Failure remains refusal or the unchanged genuine closed-status path; it never
+switches to checked writes because a query failed. Initial-request/no-tool final
+newline and real completed effects/results/received usage remain. No access
+upgrade, byte probe, alternate query, mode change or asynchronous buffer loan is
+introduced. Private headless/guest/input/output constructors do not select this
+limited app policy, and Unix/default writer behavior remains.
+
+The actual gadget-mode Windows run passed all six original one-shot cases and
+eleven of the17 added unit definitions, while six units and the appended binary
+NUL case failed; core was unexecuted. The native NUL unit passed, but pinned
+Tokio output() replaced the binary fixture's null stdout with a pipe. Its repair
+uses actual spawn/wait_with_output inside the unchanged20s bound. Console setup
+now uses attachment/mode APIs rather than window visibility and keeps real
+inactive-buffer UTF16 readback; the attribute-free client uses an actual reduced
+grant without removing the mask assertion.
+
+Native run44322458688 now executes both Windows modes: all six original cases,
+socket/inheritance/reference, console and NUL assertions pass, while four
+low-grant named-pipe cases fail per mode. Their eight class24 queries return
+ACCESS_DENIED/no completed fields. The current compatible candidate corrects
+only the new direct-query-success premise while retaining those end-to-end
+acceptance/first-request/quiet-exit/no-following-tool/usage/grant assertions.
+No denial is reclassified as connected or closed. Marked cfg-test collection is limited to32 records:
+fixed query names, original/duplicate phase, return NTSTATUS, IOSB status/count,
+requested size and completed-output fields. Partial/error/pending output supplies
+no native type/state fields. No handles, paths, bodies, keys or endpoints enter
+these records. Exact40-byte/state checks and fixed public errors remain; metadata
+denial in a selected full backend cannot become working output or a permission upgrade. The inherited
+fixture restricts native handle inheritance to its socket and intended NUL/file
+stdio, owns only fresh process/thread HANDLEs through bounded wait/reap and keeps
+caller reference/usability assertions; it is not an OS-containment claim.
+
+New native controls require positive low-grant bytes and rebind-independent
+ownership, real later IO/flush-boundary error stopping without replay, and an
+explicit example where limited observation retains a completed tool before a
+later actual IO reports peer loss. The flush control uses a cfg-test owned
+buffer that performs its genuine native write at flush and removes its pending
+bytes before the attempt; it adds no production buffering/FlushFileBuffers or
+drop retry. Existing full-state after-successful-write controls remain unchanged
+and require actual selected-observer/grant witnesses on their sources. Native
+execution of this new policy still gates delivery; source definitions and
+controlled checks do not substitute for Windows proof.
+
+Marked Unix builder/HTTP/native-pipe regressions close the actual sole read end
+and then bind global stdout to a separate isolated file. Content followed by a
+tool in one SSE completion cannot redirect output or dispatch that tool: the
+selected pipe reports BrokenPipe, the foreign file and tool target stay empty
+or absent, and exactly one actual request/its usage remain. A second case first
+completes an approved file tool, closes the output before the next response,
+and retains that actual file, tool result and both requests' usage while refusing
+the new tool. A third control reads the successfully written content and closes
+the sole native peer inside that content callback, before the same-poll tool
+response returns; the connection check observes closure and prevents dispatch.
+No cancellation-select scheduling assumption, output retry, model
+retry, fabricated result or tool replay is introduced.
+
+The prior full-core broken-pipe failure and the first failed owner regressions
+remain evidence. The descriptor-rebinding controls reproduce a concrete output
+owner defect; they do not establish that descriptor rebinding caused the earlier
+full-run failure. Its exact scheduling/OS trigger remains unverified, and a
+passing focused invocation does not erase it. The original real-binary broken
+pipe assertions, sole-reader-close setup and 20-second bounds stay unchanged.
+These checks do not establish P2g cleanup, general OS containment, Windows
+execution of the Unix controls or production readiness.
+The independent36ab019 review's conditional pending mock was not native Windows
+execution; its P1 mode/lifetime and P2 type/access/socket findings remain evidence.
+The repaired Unix datagram refusal and stream control execute on actual owned
+sockets. Marked Windows tests cover sync/overlapped/refused handles, actual mode/
+rights, local canonical pipe queries and states, prior effects and Unicode;
+their repaired-source execution and full17/all-four/every-step/both-mode/
+inventory/warning/tree/independent-main proof remain validation requirements.
+Boundary observations are not atomic dispatch leases: a later peer closure may
+race an already-started operation.
+
 A separate private instruction/attachment-file boundary now admits bounded original
 UTF-8 data through `PreparedInput` before session/store assignment and the SAME runtime
 builder. It preserves data/labels without granting capabilities or selecting a shell/

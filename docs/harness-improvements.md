@@ -1,6 +1,6 @@
 # Coding-harness improvement progress
 
-Updated November 16, 2026. The initial implementation/evaluation cycle and the
+Updated November 18, 2026. The initial implementation/evaluation cycle and the
 subsequent terminal fixes are merged and installed. The broader goal of
 competitive coding-agent quality remains ongoing. Small synthetic repositories
 and selected paired cases do not establish performance across large projects
@@ -18,7 +18,7 @@ or additional models.
 | Declared verification | Merged and locally installed | Reviewed scoped checks, actual results, bounded repair and content-bound protected review; one matched live composition check |
 | Bounded task context | Implemented, explicit opt-in | Actual input/file observations, stale/uncertain labels and local `/context`; original messages/native items preserved |
 | Exact failure budgets and structural test review | Implemented, explicit opt-in | Actual owned sampling pause after saved results; protected-source notes preserve legitimate progress/approvals |
-| Fresh and broader quality evaluation | Planned | Full latest-runtime suite, repeated comparisons, larger repositories, longer sessions and more models |
+| Fresh and broader quality evaluation | Local synthetic v3 evidence; live run pending | Frozen-source corpus prerequisite, three production-TUI synthetic scenarios, private SQLite snapshots and independently requested fixed child; combined-source/native/hosted/live-budget gates remain |
 
 The original $25 evaluation ledger accounts for **$24.285934**, including
 **40 retained unknown-usage reservations**. Its stages remain separately recorded:
@@ -29,6 +29,38 @@ The original $25 evaluation ledger accounts for **$24.285934**, including
 No unknown reservation was reset/refunded, and failed attempts/contract
 corrections retain their original evidence. These are conservative admission
 amounts, not a provider invoice or an additional allowance.
+
+[Fresh evaluation preparation](coding-evaluation-preparation.md) proposes $25
+additional / $50 total on this same ledger for the next bounded cycle. It makes
+no model calls or cap change. The remaining $0.714066 cannot fund a full fresh
+run; budget approval, reviewed future combined-source/image rebinding and
+explicit live admission/cohort selection remain required. The separate scoped
+synthetic capture evidence is described below.
+
+[Owned-terminal v3](owned-terminal-evaluation.md) supplies local synthetic
+evidence from the production TUI at frozen source `33a80d9`: real one-call
+approvals, stored rows, cancellation, manual compaction, quit/reopen and an
+independently requested fixed native child. Retained whole SQLite bytes are
+queried only in a private copy; duplicate/read negatives bind the actual owned
+return and new saved condition, and unbound live writer hold is quarantined.
+Historical v2 capture gaps and first repair failures remain. It distinguishes
+passed original behavior and completed external observations from unverified
+private callbacks, typed returns/live recovery/outer invocation/ToolMeta and
+whole-activity absence. Its
+synthetic fixture ledger does not extend the real allowance or create a full
+latest-runtime model score. Coordinator integration and full local/native/
+hosted/independent-main validation remain separate gates.
+
+The unchanged full v5 corpus prerequisite passed in the same frozen
+source `33a80d9` image: 30 originals failed held-out grading and 30 references
+passed, with complete Rust grade/doctest output retained. That credential-free
+fixture validation is separate from a full live run or any future combined
+runtime/source-image rebinding.
+
+`scripts/verify.sh` discovers 17 checks: every original 14 check plus latest
+preflight, long-session and owned-TUI tests. The additive discovery preserves
+the original required CI contexts, setup/default builds and both native modes;
+discovery alone does not establish those checks passed.
 
 The first full 30-task score is historical. Subsequent selected comparisons do
 not create a full score for the current runtime. [Task workflow](task-workflow.md)

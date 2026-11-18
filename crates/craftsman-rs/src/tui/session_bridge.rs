@@ -26,6 +26,9 @@ mod control_tests;
 #[path = "session_bridge/lifecycle_tests.rs"]
 mod lifecycle_tests;
 #[cfg(test)]
+#[path = "session_bridge/reliability_tests.rs"]
+mod reliability_tests;
+#[cfg(test)]
 #[path = "session_bridge/round_limit_tests.rs"]
 mod round_limit_tests;
 

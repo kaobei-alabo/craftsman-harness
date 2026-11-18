@@ -44,6 +44,9 @@ run_check coding-eval-budget "$verification_python" -I -B scripts/coding-eval/te
 run_check coding-eval-scope "$verification_python" -I -B scripts/coding-eval/test_scope.py
 run_check coding-eval-preflight "$verification_python" -I -B scripts/coding-eval/test_preflight_continuation.py
 run_check coding-eval-options "$verification_python" -I -B scripts/coding-eval/test_runner_options.py
+run_check coding-eval-latest "$verification_python" -I -B scripts/coding-eval/test_preflight_latest.py
+run_check coding-eval-long-session "$verification_python" -I -B scripts/coding-eval/test_long_session.py
+run_check coding-eval-owned-tui "$verification_python" -I -B scripts/coding-eval/test_owned_tui.py
 run_check provenance ./scripts/check-lineage.sh
 run_check core-tests cargo test --locked --no-default-features --workspace --no-fail-fast -- --test-threads=4
 run_check gadget-tests cargo test --locked --no-default-features --features craftsman-rs/gadgets --workspace --no-fail-fast -- --test-threads=4

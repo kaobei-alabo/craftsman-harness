@@ -1,6 +1,7 @@
 """A trusted evaluation gateway: real credentials enter only on its stdin."""
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 import sys
 from pathlib import Path
 import urllib.error
@@ -10,11 +11,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from budget import Budget, Refused, checked_request
 from preflight_continuation import read_json
 import re
+from gateway_observations import GatewayObservations, ObservationFailure, refusal_reason
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
+
+
+class _SyntheticLoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        if self.server_address[0] != '127.0.0.1':
+            raise Refused('Synthetic loopback listen selection refused.')
+        # Keep the actual TCP socket options/bind and the normal activation;
+        # this explicit synthetic listener needs no reverse-DNS metadata.
+        TCPServer.server_bind(self)
+        self.server_name = '127.0.0.1'
+        self.server_port = self.server_address[1]
 
 
 class Usage:
@@ -67,7 +80,7 @@ def checked_budget(config):
     return Budget(config['ledger'], config['prices'], config['cap_usd'], config.get('prices_verified'))
 
 
-def serve(config):
+def serve(config, synthetic_listen=None):
     endpoint = config['endpoint']
     parsed = urllib.parse.urlsplit(endpoint)
     synthetic = config.get('synthetic') is True
@@ -78,6 +91,13 @@ def serve(config):
     tokens = config['tokens']
     if not isinstance(tokens, dict) or not 1 <= len(tokens) <= 256:
         raise Refused('Invalid evaluation run tokens.')
+    observations = None
+    if config.get('private_observations') is not None and type(config['private_observations']) is not bool:
+        raise Refused('Invalid private observation selection.')
+    if config.get('private_observations') is True:
+        if not synthetic:
+            raise Refused('Private observations require the isolated synthetic driver.')
+        observations = GatewayObservations(sys.stdout)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -91,7 +111,7 @@ def serve(config):
             self.fixed(404,'Evaluation route is not available.')
 
         def do_POST(self):
-            ticket=None;usage=Usage();status=None
+            ticket=None;usage=Usage();status=None;run=None
             try:
                 auth=self.headers.get('Authorization','')
                 run=tokens.get(auth.removeprefix('Bearer ')) if auth.startswith('Bearer ') else None
@@ -100,15 +120,18 @@ def serve(config):
                 length=self.headers.get('Content-Length','')
                 if not length.isdigit() or not 1<=int(length)<=256*1024:
                     self.fixed(400,'Invalid evaluation request size.');return
+                if observations is not None:observations.record('attempted',run)
                 self.connection.settimeout(120)
                 raw=self.rfile.read(int(length))
                 if len(raw)!=int(length):raise Refused('Incomplete evaluation request.')
                 body,input_upper,output_max=checked_request(raw,config['model'])
                 ticket=budget.reserve(run,input_upper,output_max)
+                if observations is not None:observations.record('admitted',run,ticket.ordinal)
                 request=urllib.request.Request(endpoint.rstrip('/')+'/responses',data=body,
                     headers={'Authorization':'Bearer '+config['api_key'],'Content-Type':'application/json','Accept':'text/event-stream'},method='POST')
                 with opener.open(request,timeout=120) as response:
                     status=response.status
+                    if observations is not None:observations.record('provider_headers',run,ticket.ordinal,status)
                     content_type=response.headers.get('Content-Type','')
                     if not content_type.startswith('text/event-stream'):
                         raise Refused('Evaluation provider did not return an event stream.')
@@ -119,24 +142,42 @@ def serve(config):
                         if connected:
                             try:self.wfile.write(chunk);self.wfile.flush()
                             except (BrokenPipeError,ConnectionResetError):connected=False
+                    if observations is not None:observations.record('provider_eof',run,ticket.ordinal,status,terminal=usage.terminal_event)
             except urllib.error.HTTPError as error:
                 status=error.code
                 self.fixed(502,'Evaluation provider refused the request.')
             except Refused as error:
+                if observations is not None and ticket is None and run is not None:
+                    try:observations.record('refused',run,reason=refusal_reason(error))
+                    except ObservationFailure:pass
                 if ticket is None:self.fixed(402,str(error))
                 else:self.close_connection=True
+            except ObservationFailure:
+                self.close_connection=True
             except (OSError, ValueError, urllib.error.URLError):
+                if observations is not None and run is not None:
+                    try:observations.record('transport_error',run,ticket.ordinal if ticket is not None else None,status)
+                    except ObservationFailure:pass
                 self.close_connection=True
                 if ticket is None:
                     try:self.fixed(502,'Evaluation transport failed.')
                     except OSError:pass
             finally:
                 if ticket is not None:
-                    try:budget.settle(ticket,usage.usage,status,{'terminal_event':usage.terminal_event,'reason':usage.reason,'events':usage.events})
-                    except Refused:pass
+                    try:
+                        budget.settle(ticket,usage.usage,status,{'terminal_event':usage.terminal_event,'reason':usage.reason,'events':usage.events})
+                        if observations is not None:
+                            state=budget.data['requests'][ticket.ordinal]['state']
+                            observations.record('settled' if state=='settled' else 'unknown_usage',run,ticket.ordinal,status)
+                    except (Refused,ObservationFailure):pass
 
-    server=ThreadingHTTPServer(('0.0.0.0',8765),Handler)
-    print(json.dumps({'ready':True,'model':config['model'],'cap_usd':config['cap_usd']}),flush=True)
+    if synthetic_listen is not None and not synthetic:
+        raise Refused('Synthetic listen selection refused.')
+    server_type = _SyntheticLoopbackHTTPServer if synthetic_listen is not None else ThreadingHTTPServer
+    server=server_type(synthetic_listen or ('0.0.0.0',8765),Handler)
+    ready={'ready':True,'model':config['model'],'cap_usd':config['cap_usd']}
+    if synthetic_listen is not None:ready['synthetic_bound_port']=server.server_address[1]
+    print(json.dumps(ready),flush=True)
     server.serve_forever(poll_interval=0.1)
 
 
