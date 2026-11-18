@@ -7,16 +7,39 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import grade_long_session as long
-from preflight_continuation import Refused, canonical_sha256
+from preflight_continuation import Refused, canonical_sha256, require
+from preflight_latest import git
+from test_preflight_latest import CORPUS_PATH, frozen_corpus_fixture
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CORPUS = json.loads((ROOT / "evals/coding/tasks.json").read_text())
-EXTENSION_PATH = ROOT / "evals/coding/latest-runtime-v1/long-session.json"
-EXTENSION = json.loads(EXTENSION_PATH.read_text())
+EXTENSION_GIT_PATH = "evals/coding/latest-runtime-v1/long-session.json"
+EXTENSION_PATH = ROOT / EXTENSION_GIT_PATH
+
+
+def frozen_extension_fixture(root):
+    """Read the current blob against the unchanged original v1 fixture identity."""
+    data = git(root, "cat-file", "blob", "HEAD:" + EXTENSION_GIT_PATH)
+    header = b"blob " + str(len(data)).encode("ascii") + b"\0"
+    # Independently verified against preparation 0ad1e1a, not a checkout/plan rehash.
+    require(len(data) == 7375
+            and hashlib.sha256(data).hexdigest() == "1ccacdb5c38accd8fe02b34f463cec2690927a37eacf5fc05c74289043e58be7"
+            and hashlib.sha1(header + data).hexdigest() == "d77b439a458c6ef0e934afcd01f24389a6bf541a",
+            "source_long_session_fixture_differs")
+    return data
+
+
+def fixture_inputs(root):
+    corpus = frozen_corpus_fixture(root)
+    extension = frozen_extension_fixture(root)
+    return corpus, json.loads(corpus.decode("utf-8")), json.loads(extension.decode("utf-8"))
+
+
+CORPUS_BYTES, CORPUS, EXTENSION = fixture_inputs(ROOT)
 
 
 def synthetic_capture(scenario):
@@ -106,7 +129,7 @@ class Cases(unittest.TestCase):
         return long.grade_capture(scenario, task, capture, files, EXTENSION)
 
     def test_versioned_extension_binds_all_three_original_tasks_and_fixed_limits(self):
-        corpus_hash = hashlib.sha256((ROOT / "evals/coding/tasks.json").read_bytes()).hexdigest()
+        corpus_hash = hashlib.sha256(frozen_corpus_fixture(ROOT)).hexdigest()
         checked = long.validate_extension(EXTENSION, CORPUS, corpus_hash)
         self.assertEqual([row["id"] for row in checked["scenarios"]], list(long.SCENARIOS))
         self.assertEqual(checked["limits"]["max_model_requests_total"], 40)
@@ -300,6 +323,121 @@ class Cases(unittest.TestCase):
                                       capture_output=True, timeout=20)
             self.assertNotEqual(repeated.returncode, 0)
             self.assertEqual((root / "effect.jsonl").read_bytes(), effect)
+
+
+class FixtureInputs(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="craftsman-long-session-inputs-")
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.origin = self.directory / "origin"
+        self.checkout = self.directory / "checkout"
+        self.hooks = self.directory / "empty-hooks"
+        self.attributes = self.directory / "empty-attributes"
+        self.hooks.mkdir()
+        self.attributes.write_bytes(b"")
+        self.origin.mkdir()
+        self.command(self.origin, "init", "--quiet")
+        self.command(self.origin, "config", "core.autocrlf", "false")
+        self.original = {CORPUS_PATH: CORPUS_BYTES, EXTENSION_GIT_PATH: frozen_extension_fixture(ROOT)}
+        for path, data in self.original.items():
+            target = self.origin / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        self.commit(self.origin)
+        self.previous = git(self.origin, "rev-parse", "HEAD").decode().strip()
+        (self.origin / "fixture-version.txt").write_bytes(b"owned fixture v2\n")
+        self.commit(self.origin)
+        self.command(self.origin, "clone", "--quiet", "--depth=1", "-c", "core.autocrlf=true",
+                     self.origin.as_uri(), str(self.checkout))
+        self.projections = {path: (self.checkout / path).read_bytes() for path in self.original}
+
+    def command(self, root, *arguments, check=True):
+        return subprocess.run(["git", "-c", "core.hooksPath=" + str(self.hooks),
+            "-c", "core.attributesFile=" + str(self.attributes), "-C", str(root), *arguments],
+            check=check, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+
+    def commit(self, root):
+        self.command(root, "add", "--all")
+        self.command(root, "-c", "commit.gpgsign=false", "-c", "user.name=Evaluation fixture",
+            "-c", "user.email=fixture@localhost", "commit", "--quiet", "--no-gpg-sign", "-m", "Owned fixture input")
+
+    def original_case(self):
+        data, corpus, extension = fixture_inputs(self.checkout)
+        with mock.patch.multiple(sys.modules[__name__], ROOT=self.checkout,
+                                 CORPUS_BYTES=data, CORPUS=corpus, EXTENSION=extension):
+            Cases("test_versioned_extension_binds_all_three_original_tasks_and_fixed_limits").test_versioned_extension_binds_all_three_original_tasks_and_fixed_limits()
+
+    def test_owned_crlf_depth_one_checkout_keeps_exact_blob_identity_and_original_limits(self):
+        self.assertEqual(git(self.checkout, "config", "--get", "core.autocrlf").strip(), b"true")
+        self.assertEqual(git(self.checkout, "rev-parse", "--is-shallow-repository").strip(), b"true")
+        self.assertEqual(git(self.checkout, "rev-list", "--count", "HEAD").strip(), b"1")
+        self.assertNotEqual(self.command(self.checkout, "cat-file", "-e", self.previous, check=False).returncode, 0)
+        for path, original in self.original.items():
+            self.assertEqual(self.projections[path], original.replace(b"\n", b"\r\n"))
+            self.assertEqual(git(self.checkout, "cat-file", "blob", "HEAD:" + path), original)
+        data, corpus, extension = fixture_inputs(self.checkout)
+        self.assertEqual(data, CORPUS_BYTES)
+        self.assertEqual(corpus, CORPUS)
+        self.assertEqual(extension, EXTENSION)
+        with self.assertRaisesRegex(Refused, "changed_extension_base"):
+            long.validate_extension(extension, corpus, hashlib.sha256(self.projections[CORPUS_PATH]).hexdigest())
+        self.original_case()
+        for path, projection in self.projections.items():
+            self.assertEqual((self.checkout / path).read_bytes(), projection)
+
+    def test_utf8_fixture_inputs_preserve_json_under_a_cp1252_default_read(self):
+        actual_read_text = Path.read_text
+
+        def cp1252_default(path, encoding=None, **kwargs):
+            return actual_read_text(path, encoding="cp1252" if encoding is None else encoding, **kwargs)
+
+        with mock.patch.object(Path, "read_text", new=cp1252_default):
+            # A controlled default-codec counterexample, not native Windows proof.
+            self.assertNotEqual(json.loads((self.checkout / CORPUS_PATH).read_text()), CORPUS)
+            data, corpus, extension = fixture_inputs(self.checkout)
+            self.assertEqual(data, CORPUS_BYTES)
+            self.assertEqual(corpus, CORPUS)
+            self.assertEqual(extension, EXTENSION)
+            self.original_case()
+        for path, projection in self.projections.items():
+            self.assertEqual((self.checkout / path).read_bytes(), projection)
+
+    def test_changed_rehashed_committed_blobs_refuse_despite_restored_working_projections(self):
+        self.command(self.checkout, "config", "core.autocrlf", "false")
+        changed = deepcopy(CORPUS)
+        changed["tasks"][0]["held_out"] = "print('changed synthetic grader')\n"
+        variants = (CORPUS_BYTES + b"\n", self.projections[CORPUS_PATH], json.dumps(changed).encode("utf-8"))
+        for data in variants:
+            with self.subTest(sha256=hashlib.sha256(data).hexdigest()):
+                extension = deepcopy(EXTENSION)
+                extension["base_corpus_sha256"] = hashlib.sha256(data).hexdigest()
+                (self.checkout / CORPUS_PATH).write_bytes(data)
+                (self.checkout / EXTENSION_GIT_PATH).write_bytes(json.dumps(extension).encode("utf-8"))
+                self.commit(self.checkout)
+                self.assertEqual(git(self.checkout, "cat-file", "blob", "HEAD:" + CORPUS_PATH), data)
+                for path, projection in self.projections.items():
+                    (self.checkout / path).write_bytes(projection)
+                with self.assertRaisesRegex(Refused, "source_corpus_differs"):
+                    fixture_inputs(self.checkout)
+                with self.assertRaisesRegex(Refused, "source_long_session_fixture_differs"):
+                    frozen_extension_fixture(self.checkout)
+                with self.assertRaisesRegex(Refused, "original_corpus_anchor_changed"):
+                    long.validate_extension(extension, json.loads(data.decode("utf-8")), hashlib.sha256(data).hexdigest())
+                for path, projection in self.projections.items():
+                    self.assertEqual((self.checkout / path).read_bytes(), projection)
+
+    def test_missing_current_blobs_refuse_without_working_copy_or_history_fallback(self):
+        self.command(self.checkout, "rm", "--quiet", "--", CORPUS_PATH, EXTENSION_GIT_PATH)
+        self.commit(self.checkout)
+        for path, projection in self.projections.items():
+            (self.checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.checkout / path).write_bytes(projection)
+        for read in (frozen_corpus_fixture, frozen_extension_fixture):
+            with self.subTest(read=read.__name__), self.assertRaisesRegex(Refused, "source_record_unavailable"):
+                read(self.checkout)
+        for path, projection in self.projections.items():
+            self.assertEqual((self.checkout / path).read_bytes(), projection)
 
 
 if __name__ == "__main__":
