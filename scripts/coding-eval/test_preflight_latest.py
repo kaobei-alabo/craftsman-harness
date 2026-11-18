@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,7 +36,7 @@ def frozen_corpus_fixture(root):
 class Cases(unittest.TestCase):
     def write(self, path, value):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(value, ensure_ascii=False) + "\n")
+        path.write_text(json.dumps(value, ensure_ascii=False) + "\n", encoding="utf-8")
 
     def hash(self, path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -366,6 +367,37 @@ class FixtureSeeding(unittest.TestCase):
             self.assertFalse((case.root / "synthetic-budget/ledger.json").exists())
         finally:case.tearDown()
         self.assertEqual(path.read_bytes(), changed)
+
+
+class FixtureEncoding(unittest.TestCase):
+    def test_explicit_utf8_under_cp1252_default_preserves_bytes_and_grader_refusal(self):
+        case = Cases("test_manifest_rehash_cannot_change_an_original_grader_from_recorded_source")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        corpus_before = case.corpus_path.read_bytes()
+        ledger_before = case.ledger_path.read_bytes()
+        serialized = json.dumps(case.corpus, ensure_ascii=False)
+        actual_write_text = Path.write_text
+
+        def cp1252_default_write(path, data, encoding=None, **kwargs):
+            # A controlled fallback, not a native Windows or locale claim.
+            return actual_write_text(path, data,
+                encoding="cp1252" if encoding is None else encoding, **kwargs)
+
+        with mock.patch.object(Path, "write_text", new=cp1252_default_write):
+            with self.assertRaises(UnicodeEncodeError):
+                (case.root / "default-codec-control.json").write_text(serialized + "\n")
+            output = case.root / "explicit-utf8-fixture.json"
+            case.write(output, case.corpus)
+            # Preserve the existing platform newline behavior without rewriting
+            # the independently frozen corpus blob or any digest/anchor.
+            expected = serialized.encode("utf-8") + os.linesep.encode("ascii")
+            self.assertEqual(output.read_bytes(), expected)
+            self.assertEqual(json.loads(output.read_bytes()), case.corpus)
+            self.assertEqual(case.corpus_path.read_bytes(), corpus_before)
+            case.test_manifest_rehash_cannot_change_an_original_grader_from_recorded_source()
+            self.assertEqual(case.ledger_path.read_bytes(), ledger_before)
+        self.assertEqual(frozen_corpus_fixture(ROOT), corpus_before)
 
 
 if __name__ == "__main__":
