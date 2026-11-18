@@ -166,9 +166,35 @@ bounds; those contracts and their failed/corrected evidence remain unchanged.
 ## 4. Legacy one-shot versus accepted headless v1
 
 Legacy `-m` retains its argument input, configured permissions/storage and exit
-behavior. Its non-TTY approval input denies without reading, and output-closed
-provider guards prevent further same-response dispatch. It is not an
-explicit-only unattended execution boundary.
+behavior. Main content goes to stdout and activity to stderr; non-TTY approval
+input denies without reading. It is not an explicit-only unattended execution
+boundary.
+
+Candidate `36ab019` captures redirected stdout as an owned native pipe/file
+before agent construction. Main, delegated and compaction providers retain
+that same owner: writes latch actual IO failures, and connection checks run
+after tool-bearing responses and before later model requests, including when
+the preceding write succeeded. Closure observed at that boundary stops further
+dispatch; BrokenPipe exits quietly at 0 and other IO failures use fixed text.
+The first request remains admitted and a no-tool final response still reaches
+the actual final-newline write. Windows console encoding, deny-without-read
+approval and other frontend defaults remain unchanged; completed real effects,
+tool results and received usage are retained rather than rolled back or replayed.
+
+This is a boundary check, not OS containment, background-work quiescence, public
+`exec`, general coding-quality or release-readiness proof. A later peer closure
+can still race an operation already started. Details and native bounds are in
+[the one-shot contract](headless-mode.md#11-implementation-progress--not-a-shipped-exec-command).
+
+The candidate is not yet integrated or pushed, and independent reviews are
+running. Actual Unix builder/loopback/native-pipe controls cover stdout rebinding,
+closure after successfully read content in the same response, and retention of
+a prior completed tool. Focused core/gadget checks passed 52 test executions,
+including all six unchanged one-shot cases in each mode. The prior `0d2fd68`
+full-core failure after a real file write remains historical, with its OS trigger
+unverified; the first failed controls and unused-mut warning are also preserved.
+Windows probe execution and final full17/all-four/every-step/both-mode/inventory/
+warning/source-tree/independent-main proof remain pending.
 
 The accepted headless v1 contract requires invocation-only permissions,
 canonical scopes, input/output/resource bounds, truthful all-role usage,

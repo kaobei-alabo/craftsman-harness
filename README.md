@@ -91,6 +91,7 @@ documents and folders containing several projects are supported too.
 [Local state and connections](docs/connections.md) ·
 [File checkpoints and rewind](docs/workspace-checkpoints.md) ·
 [Long tasks and turn limits](docs/terminal-turn-limits.md) ·
+[Legacy one-shot output](docs/runtime-status.md#4-legacy-one-shot-versus-accepted-headless-v1) ·
 [Terminal lifecycle and recovery](docs/terminal-recovery.md) ·
 [Durable manual compaction](docs/terminal-compaction.md) ·
 [ACP integration](docs/acp.md) ·
