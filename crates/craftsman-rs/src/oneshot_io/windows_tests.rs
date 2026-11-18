@@ -875,7 +875,8 @@ async fn windows_output_fixture() {
                 let selected =
                     std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
                 let (accepted, _) = listener.accept().unwrap();
-                let value = selected.as_raw_socket();
+                let value = usize::try_from(selected.as_raw_socket())
+                    .expect("std RawSocket fits native SOCKET");
                 socket_streams = Some((selected, accepted));
                 value
             } else {
@@ -1144,8 +1145,9 @@ async fn windows_output_fixture() {
                 assert_eq!(after[field], facts[field], "caller grant/mode changed");
             }
             if let Some((selected, accepted)) = socket_streams.take() {
+                let expected = u64::try_from(value).expect("native SOCKET fits std RawSocket");
                 assert!(
-                    selected.into_raw_socket() == value,
+                    selected.into_raw_socket() == expected,
                     "selected socket identity changed"
                 );
                 drop(accepted);
