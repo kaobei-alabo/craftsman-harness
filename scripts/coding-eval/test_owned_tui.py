@@ -626,6 +626,9 @@ class ActualGatewayBoundary(unittest.TestCase):
         import re
         import socket
         with socket.socket() as occupied, tempfile.TemporaryDirectory(prefix="gateway-startup-bind-") as directory:
+            if os.name == "nt":
+                occupied.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                self.assertEqual(occupied.getsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE), 1)
             occupied.bind(("127.0.0.1", 0))
             occupied.listen()
             bootstrap = self.bootstrap(Path(directory))
@@ -638,7 +641,7 @@ class ActualGatewayBoundary(unittest.TestCase):
             self.assertIsNone(child.ready)
             self.assertTrue(child.eof["stdout"] and child.eof["stderr"])
             errors = re.findall(rb"\[(?:Errno|WinError) ([0-9]+)\]", child.stderr)
-            self.assertEqual(int(errors[-1]), 10048 if os.name == "nt" else errno.EADDRINUSE)
+            self.assertEqual(int(errors[-1]), 10013 if os.name == "nt" else errno.EADDRINUSE)
             self.assertTrue(child.wait_returned)
             self.assertFalse(child.termination_requested)
 

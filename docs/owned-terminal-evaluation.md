@@ -189,6 +189,14 @@ PR29/run44195435162's original macOS readiness timeout remains failed evidence:
 its missing child diagnostics do not establish a historical scheduling or gateway
 cause, and hosted macOS validation of this fixture correction is still required.
 
+On Windows the held-port control sets and verifies SO_EXCLUSIVEADDRUSE on its
+actual occupied socket before bind. The unchanged standard gateway enables
+SO_REUSEADDR on the second socket; [Microsoft documents WSAEACCES10013 for that
+combination](https://learn.microsoft.com/en-us/windows/win32/winsock/so-exclusiveaddruse).
+The new test requires exactly10013 on Windows and EADDRINUSE on Unix, with real
+child exit1/no readiness. This documented expectation still needs actual hosted
+Windows validation; local macOS is not Windows proof.
+
 There are still **17 discoverable verification checks**: all 14 originals plus
 latest preflight, long-session and owned-TUI entrypoints. Every original
 context/setup/default-build/both-native-mode condition and publication hold
