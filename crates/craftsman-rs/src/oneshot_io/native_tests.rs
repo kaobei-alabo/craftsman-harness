@@ -8,7 +8,8 @@ use crate::hitl::ApprovalState;
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::Read;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::AtomicUsize;
@@ -46,12 +47,40 @@ async fn stdout_owner_fixture() {
     };
     if !matches!(
         mode.as_str(),
-        "first-response" | "after-real-result" | "after-first-write"
+        "first-response"
+            | "after-real-result"
+            | "after-first-write"
+            | "datagram-refusal"
+            | "stream-after-first-write"
     ) {
         return;
     }
     // No path/config/environment/native IO was inspected before the marker.
-    let (reader, writer) = crate::platform_os::stdin_pipe::pair_for_tests().unwrap();
+    if mode == "datagram-refusal" {
+        let (reader, sender) = UnixDatagram::pair().unwrap();
+        sender.send(b"actual datagram control").unwrap();
+        let mut observed = [0; 64];
+        let count = reader.recv(&mut observed).unwrap();
+        assert_eq!(&observed[..count], b"actual datagram control");
+        drop(reader);
+        let writer = File::from(OwnedFd::from(sender));
+        replace_stdout(&writer);
+        let refusal = match super::stdout() {
+            Ok(_) => panic!("datagram stdout was admitted before agent construction"),
+            Err(error) => error,
+        };
+        assert_eq!(refusal.kind(), ErrorKind::Unsupported);
+        std::process::exit(0);
+    }
+    let (reader, writer) = if mode == "stream-after-first-write" {
+        let (reader, writer) = UnixStream::pair().unwrap();
+        (
+            File::from(OwnedFd::from(reader)),
+            File::from(OwnedFd::from(writer)),
+        )
+    } else {
+        crate::platform_os::stdin_pipe::pair_for_tests().unwrap()
+    };
     replace_stdout(&writer);
     let output = super::stdout().unwrap();
     let reader = Arc::new(Mutex::new(Some(reader)));
@@ -84,7 +113,10 @@ async fn stdout_owner_fixture() {
         auto_approve: true,
         ..ApprovalState::default()
     }));
-    let token_sink = if mode == "after-first-write" {
+    let token_sink = if matches!(
+        mode.as_str(),
+        "after-first-write" | "stream-after-first-write"
+    ) {
         let output = output.clone();
         let reader = reader.clone();
         Arc::new(move |text: &str| {
@@ -320,6 +352,52 @@ async fn late_stdout_owner_loss_preserves_actual_prior_tool_result_and_usage() {
 #[tokio::test]
 async fn output_peer_closing_after_a_successful_write_stops_the_same_response_tool() {
     actual_owner_case_mode("after-first-write").await;
+}
+
+#[tokio::test]
+async fn stream_socket_peer_closure_preserves_same_response_dispatch_protection() {
+    actual_owner_case_mode("stream-after-first-write").await;
+}
+
+#[tokio::test]
+async fn datagram_stdout_is_refused_before_model_or_tool_or_storage_effects() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let target = workspace.path().join("must-not-be-dispatched.txt");
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(Script {
+            after_result: false,
+            completed: workspace
+                .path()
+                .join("completed.txt")
+                .to_string_lossy()
+                .into_owned(),
+            forbidden: target.to_string_lossy().into_owned(),
+        })
+        .mount(&server)
+        .await;
+    let mut command = helper(home.path(), workspace.path());
+    command
+        .args([MARKER, "datagram-refusal"])
+        .arg(server.uri())
+        .arg(workspace.path().join("completed.txt"))
+        .arg(&target)
+        .arg(workspace.path().join("foreign-stdout.txt"));
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(workspace.path()).unwrap().count(), 0);
 }
 
 #[tokio::test]

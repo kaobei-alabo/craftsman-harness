@@ -52,6 +52,31 @@ pub(crate) fn stdout() -> std::io::Result<Arc<Output<StdoutWriter>>> {
         use std::os::unix::fs::FileTypeExt;
         let kind = writer.metadata()?.file_type();
         let descriptor = writer.as_raw_fd();
+        if kind.is_socket() {
+            let mut socket_type = 0i32;
+            let mut length = std::mem::size_of::<i32>() as libc::socklen_t;
+            // SAFETY: the captured File owns this live socket descriptor;
+            // SO_TYPE reads exactly the supplied integer/length buffers and
+            // neither consumes bytes nor changes socket or descriptor flags.
+            if unsafe {
+                libc::getsockopt(
+                    descriptor,
+                    libc::SOL_SOCKET,
+                    libc::SO_TYPE,
+                    (&mut socket_type as *mut i32).cast(),
+                    &mut length,
+                )
+            } < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            if length as usize != std::mem::size_of::<i32>() || socket_type != libc::SOCK_STREAM {
+                return Err(std::io::Error::new(
+                    ErrorKind::Unsupported,
+                    "unsupported one-shot output socket type",
+                ));
+            }
+        }
         (kind.is_fifo() || kind.is_socket()).then(|| {
             Box::new(move || {
                 let mut poll = libc::pollfd {
