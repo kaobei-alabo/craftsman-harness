@@ -103,8 +103,9 @@ data is masked again before later sampling.
 The current `privacy_restore` module produces provisional plain-text or complete
 JSON-document views from actual live mapping records. It performs no file
 operation or model/terminal output. It restores only exact known tokens;
-combining marks, joiners and supported telephone continuations keep an extended
-token unresolved. Display preserves that token, while a file candidate containing
+combining marks, joiners, connector punctuation and supported telephone
+continuations keep an extended token unresolved. Display preserves that token,
+while a file candidate containing
 a known alias with such an attachment refuses as a whole. Unmatched marked
 `pv1-` tokens also refuse file candidates. Unmarked altered phone numbers need
 actual field provenance or a conservative consuming policy; they cannot be
@@ -182,9 +183,10 @@ remain delivery gates; synthetic provider tests do not spend model credits.
 Local evidence: the committed vault passes42 actual database cases in both
 feature modes. The detector fixture passes6 source tests and4 app tests,
 including33 actual runtime invocations and14 host-refused adversarial results.
-The restoration layer passes17 actual-vault cases after independent review
-identified telephone and Unicode boundary defects; the original4 failed
-regressions, repaired source and warning/driver failures are retained. These
+The restoration layer passes27 actual-vault cases after independent review
+identified telephone, Unicode mark/joiner and connector boundary defects. The
+original4 failed controls and10 failed connector controls, repaired source and
+warning/driver failures are retained. These
 are private feature tests; combined native CI/main proof and actual consumer
 integration remain separate.
 
