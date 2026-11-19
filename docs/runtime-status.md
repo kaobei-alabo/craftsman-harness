@@ -1,10 +1,14 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 19, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 20, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
-The context/failure continuation is recorded below. Source validation, live
+The private script-capture/bundle foundations are merged as PR #31 at `29349c5`;
+independent main run [44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
+passed all four jobs, every mandatory step and both native modes. That main
+source is locally installed; public script execution and privacy hooks remain
+unselected. The context/failure continuation is recorded below. Source validation, live
 coding results and published releases are separate evidence.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
@@ -117,7 +121,8 @@ are not proof of OS containment or blocking-worker quiescence.
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
-| Reusable script runner | Private capture and test-only bundle foundations reviewed; native delivery pending | Python/JavaScript/TypeScript compatibility proof has scoped functional reviews; source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
+| Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
+| Privacy hooks | Implementation in progress, no normal-session activation | Selected restoration targets are displayed replies and validated file edits; encrypted local aliases and an approved WASM detector precede key-source/final-wire/native-history integration; see [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |

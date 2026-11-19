@@ -1,0 +1,193 @@
+# Privacy hooks — masked model data, restored replies and file edits
+
+Status, November 20, 2026: private encrypted aliases, an approved source-built
+WASM detector and host restoration views are implemented and locally tested.
+Normal Craftsman sessions do not select this hook yet. Actual key ownership,
+required-hook policy and model/file integration remain open. Existing gadget
+grants and permissions remain in force.
+
+The selected behavior is to replace supported personal data before a model
+request and restore known replacements in **displayed replies and file edits**.
+For example, a model can edit a document containing an email alias; Craftsman
+would restore the real email in the proposed local edit before its normal
+permission and content review. The next model request receives a masked view
+of the resulting file content again.
+
+## One gadget system, two roles
+
+| Role | What starts it | Example |
+| --- | --- | --- |
+| Tool | An explicit tool call | Inspect JSON or compute a CSV total |
+| Hook | A host-selected lifecycle stage | Detect personal data before a model send |
+
+Both roles use the existing Wasmtime gadget engine. A future manifest can
+declare hook functions and supported events. **Trusted user policy decides
+whether a hook is required.** A project, model or gadget cannot make its own
+code mandatory, approve its source or widen its capabilities.
+
+The privacy detector receives only bounded input text and returns candidate
+UTF-8 byte spans with categories and input bindings. It has no filesystem,
+network, environment, mapping-store or key access. Host code validates the
+spans, owns the replacement map and decides whether a request or effect may
+proceed. A detector's success text is never permission authority.
+
+## Intended path through the harness
+
+```mermaid
+flowchart TD
+    C["Assemble full model context"] --> D["Approved required WASM detector"]
+    D --> V["Host validates spans and persists encrypted aliases"]
+    V --> W["Validate final model wire view"]
+    W --> M["Model receives masked data"]
+    M --> R["Masked response stays in model history"]
+    R --> U["Restore known aliases for display"]
+    R --> F["Restore declared file data fields"]
+    F --> P["Actual path, permissions and content review"]
+    P --> E["Existing file operation"]
+    E --> C
+    D --> X["Missing, unapproved or failed hook: refuse send"]
+    V --> X
+    W --> X
+```
+
+This diagram is the target, not the current runtime. Required execution must
+cover main, delegated, compaction and other selected model lanes after all
+context assembly, including every retry. A missing, unapproved, failed or
+timed-out hook, an unavailable key or a failed mapping save must stop the
+operation; there is no raw-data fallback. Profile exclusions cannot remove a
+selected required hook.
+
+## What can be restored
+
+Initial reversible categories are supported emails and telephone layouts,
+plus identifiers explicitly declared by trusted host policy. Email aliases use
+the reserved `.invalid` domain. Telephone aliases retain only the supported
+digit/separator layout; dummy numbers are not guaranteed to be unassigned.
+These are pseudonyms, not anonymous data.
+
+Repeated values must receive the same alias within a project/thread namespace.
+Separate namespaces must not share that identity. Replacement generation must
+check collisions with original input and already issued aliases; ambiguous,
+altered, unknown or foreign-scope aliases cannot reveal a value.
+
+Passwords, API tokens and private keys need a separate irreversible-redaction
+or preserve-in-place policy. They must not become automatically restored text.
+Detection cannot promise complete coverage of arbitrary names, addresses,
+medical information, encoded values or images. Additional detectors and
+explicit field rules can extend the supported scope.
+
+## Replies and file edits have different effects
+
+Reply restoration changes only the human-facing view. The model-facing response
+and its tool arguments must remain consistent with the masked history. Streaming
+can split an alias across chunks, so restoration needs a bounded delayed matcher
+or whole-response buffer before any restored output is emitted. Terminal text
+still goes through SafeBackend.
+
+File restoration changes data that a real operation will consume. It therefore
+must happen **before** the existing approval, path, protected-content and
+verification gates, and only in declared content fields. The original model
+call remains masked; the host constructs a separate execution view. Both the
+match text and replacement text of an edit need the same validated resolution.
+Create operations review the new content against absence; updates review the
+old/new content. Existing delete and rename operations, if selected later,
+retain their own scope and staleness rules.
+
+Structured formats need parsing and escaping appropriate to the format;
+restoring an identifier must not introduce executable syntax. An unsupported
+or ambiguous field refuses the effect. This is not blanket string substitution
+into shell commands, source code, paths, gadget code, MCP calls or network
+destinations. A replacement never grants a new capability. New tool-result
+data is masked again before later sampling.
+
+The current `privacy_restore` module produces provisional plain-text or complete
+JSON-document views from actual live mapping records. It performs no file
+operation or model/terminal output. It restores only exact known tokens;
+combining marks, joiners and supported telephone continuations keep an extended
+token unresolved. Display preserves that token, while a file candidate containing
+a known alias with such an attachment refuses as a whole. Unmatched marked
+`pv1-` tokens also refuse file candidates. Unmarked altered phone numbers need
+actual field provenance or a conservative consuming policy; they cannot be
+identified universally from their spelling.
+
+JSON restoration changes complete string-value tokens with appropriate escaping.
+It keeps surrounding keys, numbers, whitespace and unchanged string tokens
+byte-exact; keys, duplicate decoded keys and malformed documents refuse. This
+does not classify a JSON value as non-executable in its consuming application.
+Partial edits and language-specific code strings still need their own parser,
+source/content binding and real tool guard.
+
+Provisional views recheck their live session before and after a trusted host
+callback. The callback can copy data or perform work; a later failed check
+cannot retract it. Current whole-proposal refusal closes that private mapping
+session. A future repair-capable tool adapter must distinguish invalid model
+proposals from fatal hook/key/storage failure while recording refusals and
+keeping every later request and effect guarded. There is no raw fallback.
+
+Restoration caps are 256 KiB input/result, 512 records, 4096 replacements per
+complete view/document, 4096 JSON strings and depth64. Matching charges decoded
+string bytes times record count against a shared 64 MiB scan allowance. Parsing,
+encoding, hashing and other work also have fixed count/byte bounds; the scan
+allowance is not a measurement of every CPU operation or allocation.
+
+## Local mapping storage and key ownership
+
+The proposed mapping store is a separate `privacy-vault.db` under the actual
+Craftsman configuration root, using the local libSQL/Turso core. It does not
+change `threads.db`, its schema/version, retention or memory files, and it does
+not contact a remote Turso service.
+
+The existing conversation/checkpoint storage format remains in use; encrypting
+its content would require a separate migration. The new vault encrypts its own
+mapping records and indexes.
+
+Authenticated encryption protects each stored original; keyed equality
+indexes support repeat detection without plaintext indexes. Category, version,
+alias and namespace belong to the authenticated binding. A separate host key
+source supplies key material; API credentials and model output cannot supply
+that authority. Plaintext maps must not enter logs, tool outputs, conversation
+custom state, memory, checkpoints or trace records. Mapping writes must actually
+finish before a dependent send.
+
+Private supplied-key tests do not establish real keystore ownership, secure
+unlock UI or normal-session authority. Those remain integration requirements.
+Encryption and WASM isolation do not protect plaintext from a compromised
+Craftsman host or operating system while it is in use.
+
+## Integration and validation gates
+
+The next implementation must keep the four current provider transports and
+their signed/opaque history coherent. Provider-owned opaque items cannot be
+rewritten or paired with incompatible portable messages; an unsupported
+preexisting history needs an explicit refusal or fresh-session requirement.
+Rebuild, thread reopen, compaction, cancellation and failed saves must preserve
+the correct namespace without replaying model or tool work.
+
+Raw input containing an already issued alias is deliberately refused by the
+private vault. A consuming transport therefore needs actual provenance for
+already-masked model-history items; it cannot run this raw-input masker repeatedly
+and assume idempotence. The actual client send and file terminals must enforce
+their guards even when middleware or a resumed approval bypasses the normal
+chain.
+
+Required evidence includes actual approved WASM execution, encrypted database
+and WAL scans, reopen/wrong-key/tamper/collision/bounds failures, host span
+validation, split-stream replies and real builder/loopback-HTTP/file/storage
+tests. Tests must show that failed hooks or saves send no unmasked request,
+that restored edits still pass real approvals, and that usage and completed
+effects remain truthful on stop or failure. Full local and all four native CI
+jobs, complete steps/inventories/warnings and independent merged-main proof
+remain delivery gates; synthetic provider tests do not spend model credits.
+
+Local evidence: the committed vault passes42 actual database cases in both
+feature modes. The detector fixture passes6 source tests and4 app tests,
+including33 actual runtime invocations and14 host-refused adversarial results.
+The restoration layer passes17 actual-vault cases after independent review
+identified telephone and Unicode boundary defects; the original4 failed
+regressions, repaired source and warning/driver failures are retained. These
+are private feature tests; combined native CI/main proof and actual consumer
+integration remain separate.
+
+See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
+[current runtime](runtime-status.md) and the
+separate [WASM script-runner plan](wasm-script-runner.md).

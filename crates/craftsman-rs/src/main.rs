@@ -43,6 +43,9 @@ mod oneshot_io;
 mod picker;
 mod platform_os;
 mod plugins;
+// App-binary host views only; no tool, transport, renderer or hook selects them.
+#[doc(hidden)]
+pub mod privacy_restore;
 // Host-supplied private primitives only; no CLI, agent or hook selects them.
 // Public reachability within this binary keeps the unwired APIs typechecked.
 #[doc(hidden)]

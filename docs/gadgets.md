@@ -19,10 +19,18 @@ language scope and compatibility gates. These interpreters and the virtual
 file-change review layer are not part of the shipped gadget runtime yet.
 
 The private [session-capture foundation](session-script-capture.md) and
-[test-only bundle validation](script-bundle-admission.md) have scoped source reviews;
-full native delivery checks remain pending.
+[test-only bundle validation](script-bundle-admission.md) are merged as PR #31.
+Their complete local17 and independent main44567715919 proof cover all four CI
+jobs, every mandatory step and both native modes, with old tests/warnings intact.
 Current public routes select neither; they do not execute scripts or approve
 code, input scopes or native file changes.
+
+The selected [privacy-hook extension](privacy-hooks.md) will use the same gadget
+engine for automatic lifecycle functions. Trusted user policy, rather than a
+gadget declaration, decides which hooks are required. The source-built detector
+has passed its isolated WASM tests; storage and restoration work is in progress.
+Normal sessions do not yet mask model traffic or restore reply/file fields
+through this hook.
 
 ## Enable the agent surface
 

@@ -93,8 +93,12 @@ Independent corrective review accepted those repairs. Fresh substituted Agents a
 in a stopped turn are refused, while accepted historical information is retained.
 The [bundle-admission implementation](script-bundle-admission.md) is
 currently registered only for gadget-feature tests; checked code data is not
-execution approval. Both foundations have scoped independent source reviews;
-fresh native delivery checks remain pending. They select
+execution approval. Both foundations are merged as PR #31 and have scoped
+independent source reviews plus full local17 and fresh main
+[44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
+proof at `29349c5`/tree `93748936`. All four jobs, every mandatory step and both
+native modes passed with original test bodies and warning signatures preserved.
+That source is installed locally. These foundations select
 no interpreter, execute no script and apply no native changes; source consent,
 actual task-root derivation, backend selection and the public runner remain
 later work.
