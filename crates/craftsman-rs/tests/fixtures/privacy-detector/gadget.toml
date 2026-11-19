@@ -1,0 +1,8 @@
+id = "privacy-detector"
+version = "0.1.0"
+description = "Synthetic bounded email/phone detector fixture; detection declares no activation or approval authority."
+
+[capabilities]
+read = []
+write = []
+http = []

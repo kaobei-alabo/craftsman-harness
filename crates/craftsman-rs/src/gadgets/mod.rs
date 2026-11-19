@@ -98,3 +98,6 @@ impl std::error::Error for GadgetError {}
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod privacy_detector_tests;
