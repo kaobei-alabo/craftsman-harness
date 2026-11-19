@@ -1107,6 +1107,40 @@ mod offline_lock_tests {
             if package.source.is_none() && selected != original {
                 return Err("changed source SDK or macro dependencies");
             }
+            if package.source.is_some() {
+                let mut required = original.clone();
+                // Only these two root package feature unions add optional
+                // serde edges absent from the fixture's exact resolution.
+                // Match complete identities; no other missing edge is allowed.
+                if matches!(
+                    (key.0.as_str(), key.1.as_str(), key.2.as_deref()),
+                    (
+                        "hashbrown",
+                        "0.17.1",
+                        Some("registry+https://github.com/rust-lang/crates.io-index")
+                    ) | (
+                        "semver",
+                        "1.0.28",
+                        Some("registry+https://github.com/rust-lang/crates.io-index")
+                    )
+                ) {
+                    for name in ["serde", "serde_core"] {
+                        let optional = (
+                            name.to_owned(),
+                            "1.0.228".to_owned(),
+                            Some(
+                                "registry+https://github.com/rust-lang/crates.io-index".to_owned(),
+                            ),
+                        );
+                        if !required.remove(&optional) {
+                            return Err("changed root-only serialization feature union");
+                        }
+                    }
+                }
+                if selected != required {
+                    return Err("changed required registry dependency set");
+                }
+            }
         }
         let mut pending = vec![entry];
         let mut reached = BTreeSet::new();
@@ -1247,5 +1281,65 @@ mod offline_lock_tests {
             .map(|edge| *edge = "syn".to_owned())
             .unwrap();
         assert!(workspace_closure(&changed, &workspace).is_err());
+    }
+
+    #[test]
+    fn detector_lock_rejects_required_registry_edge_omissions_with_other_paths_remaining() {
+        let (fixture, workspace) = graphs();
+        let mut accepted = Vec::new();
+        for (name, omitted) in [
+            ("serde_derive", "proc-macro2"),
+            ("quote", "proc-macro2"),
+            ("wit-bindgen-rust-macro", "quote"),
+        ] {
+            let mut changed = fixture.clone();
+            let package = changed
+                .package
+                .iter_mut()
+                .find(|package| package.name == name)
+                .unwrap();
+            let before = package.dependencies.len();
+            package
+                .dependencies
+                .retain(|edge| edge.split_whitespace().next() != Some(omitted));
+            assert_eq!(package.dependencies.len() + 1, before);
+            if workspace_closure(&changed, &workspace).is_ok() {
+                accepted.push(format!("{name} -> {omitted}"));
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "required registry edges were accepted as omitted: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn detector_lock_rejects_unselected_root_only_registry_feature_edges() {
+        let (fixture, workspace) = graphs();
+        let mut accepted = Vec::new();
+        for name in ["hashbrown", "semver"] {
+            for added in ["serde", "serde_core"] {
+                let mut changed = fixture.clone();
+                let package = changed
+                    .package
+                    .iter_mut()
+                    .find(|package| package.name == name)
+                    .unwrap();
+                assert!(
+                    !package
+                        .dependencies
+                        .iter()
+                        .any(|edge| edge.split_whitespace().next() == Some(added))
+                );
+                package.dependencies.push(added.to_owned());
+                if workspace_closure(&changed, &workspace).is_ok() {
+                    accepted.push(format!("{name} -> {added}"));
+                }
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "unselected registry feature edges were accepted: {accepted:?}"
+        );
     }
 }

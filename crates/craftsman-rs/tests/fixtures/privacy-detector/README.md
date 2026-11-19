@@ -29,8 +29,10 @@ The fixture's standalone lock uses the root workspace's already-locked package
 versions/checksums and SDK/macro edges, including WASM-only dependencies. The
 first demo-derived lock failed CI's offline build at ref-cast1.0.27; that lock
 and failure remain historical evidence. Root/SDK/demo/other locks and WIT are
-unchanged. Four graph guards prevent the new fixture from drifting outside
-that dependency closure.
+unchanged. Six graph guards prevent the new fixture from drifting outside
+that dependency closure. Registry edge sets are exact except for the verified
+root-only serde/serde_core feature edges of hashbrown0.17.1 and semver1.0.28;
+required omissions that remain reachable through another package still refuse.
 
 Supported email syntax is bounded unquoted ASCII local parts using letters,
 digits, dot, underscore, percent, plus and hyphen; dotted ASCII domains with an

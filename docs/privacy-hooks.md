@@ -198,6 +198,10 @@ from passing local tests. The corrections retain complete native ancestors,
 add Windows raw-path probes, and align only the new detector fixture lock to
 the root dependency closure. Fresh complete native proof remains pending;
 neither candidate enables privacy or substitutes for actual consumer guards.
+Independent review also found that a registry-edge subset guard could accept
+omitted required edges. The original two failing controls are retained; the
+corrected guard requires exact edges with only the documented root feature-union
+differences, and all six graph controls pass locally.
 
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
