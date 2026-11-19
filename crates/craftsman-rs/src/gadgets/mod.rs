@@ -16,6 +16,9 @@ mod host;
 mod manifest;
 pub(crate) mod migration;
 mod runtime;
+// Unwired immutable data admission; actual source consent/host selection is separate.
+#[cfg(test)]
+pub(crate) mod script_bundle;
 #[allow(dead_code)] // Private source/grant accessors beyond composed-host use remain unwired.
 mod sources;
 pub(crate) mod surfaces;
