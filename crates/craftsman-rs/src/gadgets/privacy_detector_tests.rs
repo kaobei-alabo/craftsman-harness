@@ -980,3 +980,272 @@ async fn source_built_privacy_detector_passes_marked_actual_native_runtime() {
     assert!(stdout.contains("adversarial=14"));
     assert!(!stdout.contains("NOT-SELECTED"));
 }
+
+mod offline_lock_tests {
+    use super::root;
+    use serde::Deserialize;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type Identity = (String, String, Option<String>);
+
+    #[derive(Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Lock {
+        version: u32,
+        package: Vec<Package>,
+    }
+
+    #[derive(Clone, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Package {
+        name: String,
+        version: String,
+        source: Option<String>,
+        checksum: Option<String>,
+        #[serde(default)]
+        dependencies: Vec<String>,
+    }
+
+    fn identity(package: &Package) -> Identity {
+        (
+            package.name.clone(),
+            package.version.clone(),
+            package.source.clone(),
+        )
+    }
+
+    fn packages(lock: &Lock) -> Result<BTreeMap<Identity, &Package>, &'static str> {
+        if lock.version != 4 {
+            return Err("unexpected lock version");
+        }
+        let mut packages = BTreeMap::new();
+        for package in &lock.package {
+            if packages.insert(identity(package), package).is_some() {
+                return Err("duplicate locked package");
+            }
+        }
+        Ok(packages)
+    }
+
+    fn dependency(
+        graph: &BTreeMap<Identity, &Package>,
+        spelling: &str,
+    ) -> Result<Identity, &'static str> {
+        let fields: Vec<_> = spelling.split_whitespace().collect();
+        let (name, version, source) = match fields.as_slice() {
+            [name] => (*name, None, None),
+            [name, version] => (*name, Some(*version), None),
+            [name, version, source] if source.starts_with('(') && source.ends_with(')') => {
+                (*name, Some(*version), Some(&source[1..source.len() - 1]))
+            }
+            _ => return Err("invalid locked dependency"),
+        };
+        let mut found = graph.keys().filter(|key| {
+            key.0 == name
+                && version.is_none_or(|version| key.1 == version)
+                && source.is_none_or(|source| key.2.as_deref() == Some(source))
+        });
+        let selected = found.next().ok_or("missing locked dependency")?;
+        if found.next().is_some() {
+            return Err("ambiguous locked dependency");
+        }
+        Ok(selected.clone())
+    }
+
+    fn edges(
+        graph: &BTreeMap<Identity, &Package>,
+        package: &Package,
+    ) -> Result<BTreeSet<Identity>, &'static str> {
+        let selected: BTreeSet<_> = package
+            .dependencies
+            .iter()
+            .map(|spelling| dependency(graph, spelling))
+            .collect::<Result<_, _>>()?;
+        if selected.len() != package.dependencies.len() {
+            return Err("duplicate locked dependency");
+        }
+        Ok(selected)
+    }
+
+    // Compare resolved identities, rather than spelling: the root's broader
+    // feature union qualifies versions that are unambiguous in this fixture.
+    // Lockfiles retain target-only edges even when this test runs natively.
+    fn workspace_closure(
+        fixture: &Lock,
+        workspace: &Lock,
+    ) -> Result<BTreeSet<Identity>, &'static str> {
+        let fixture = packages(fixture)?;
+        let workspace = packages(workspace)?;
+        let entry = (
+            "privacy-detector-fixture".to_owned(),
+            "0.1.0".to_owned(),
+            None,
+        );
+        let package = fixture.get(&entry).ok_or("missing fixture entry")?;
+        if package.checksum.is_some()
+            || edges(&fixture, package)?
+                .iter()
+                .map(|key| key.0.as_str())
+                .collect::<BTreeSet<_>>()
+                != BTreeSet::from(["craftsman-gadget", "schemars", "serde", "serde_json"])
+        {
+            return Err("changed standalone fixture dependencies");
+        }
+        for (key, package) in &fixture {
+            if key == &entry {
+                continue;
+            }
+            let original = workspace.get(key).ok_or("package absent from root lock")?;
+            if package.checksum != original.checksum {
+                return Err("package checksum differs from root lock");
+            }
+            let selected = edges(&fixture, package)?;
+            let original = edges(&workspace, original)?;
+            if !selected.is_subset(&original) {
+                return Err("dependency edge absent from root lock");
+            }
+            if package.source.is_none() && selected != original {
+                return Err("changed source SDK or macro dependencies");
+            }
+        }
+        let mut pending = vec![entry];
+        let mut reached = BTreeSet::new();
+        while let Some(key) = pending.pop() {
+            if reached.insert(key.clone()) {
+                pending.extend(edges(&fixture, fixture[&key])?);
+            }
+        }
+        if reached.len() != fixture.len() {
+            return Err("unreachable fixture lock package");
+        }
+        Ok(reached)
+    }
+
+    fn graphs() -> (Lock, Lock) {
+        let root = root();
+        (
+            toml::from_str(
+                &std::fs::read_to_string(
+                    root.join("crates/craftsman-rs/tests/fixtures/privacy-detector/Cargo.lock"),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            toml::from_str(&std::fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap(),
+        )
+    }
+
+    #[test]
+    fn detector_entire_lock_graph_reuses_workspace_including_wasm_only_dependencies() {
+        let (fixture, workspace) = graphs();
+        let reached = workspace_closure(&fixture, &workspace).unwrap();
+        assert_eq!(reached.len(), 45);
+        assert_eq!(reached.iter().filter(|key| key.2.is_some()).count(), 42);
+        for name in [
+            "rustversion",
+            "wit-bindgen",
+            "wit-bindgen-core",
+            "wit-bindgen-rust",
+            "wit-bindgen-rust-macro",
+            "wit-component",
+            "wit-parser",
+        ] {
+            assert!(reached.iter().any(|key| key.0 == name));
+        }
+    }
+
+    #[test]
+    fn detector_lock_rejects_uncached_versions_checksums_and_foreign_sources() {
+        let (fixture, workspace) = graphs();
+        for (name, version) in [("ref-cast", "1.0.27"), ("syn", "3.0.9")] {
+            let mut changed = fixture.clone();
+            let package = changed
+                .package
+                .iter_mut()
+                .find(|package| package.name == name && package.version.starts_with(&version[..1]))
+                .unwrap();
+            package.version = version.to_owned();
+            assert!(workspace_closure(&changed, &workspace).is_err());
+        }
+        let mut changed = fixture.clone();
+        let package = changed
+            .package
+            .iter_mut()
+            .find(|package| package.name == "serde")
+            .unwrap();
+        package.checksum = Some("0".repeat(64));
+        assert!(workspace_closure(&changed, &workspace).is_err());
+        let package = changed
+            .package
+            .iter_mut()
+            .find(|package| package.name == "serde")
+            .unwrap();
+        package.checksum = fixture
+            .package
+            .iter()
+            .find(|package| package.name == "serde")
+            .unwrap()
+            .checksum
+            .clone();
+        package.source = Some("registry+https://example.invalid/index".to_owned());
+        assert!(workspace_closure(&changed, &workspace).is_err());
+    }
+
+    #[test]
+    fn detector_lock_rejects_missing_wasm_packages_and_changed_sdk_or_macro_edges() {
+        let (fixture, workspace) = graphs();
+        let mut changed = fixture.clone();
+        changed
+            .package
+            .retain(|package| package.name != "wit-bindgen-rust-macro");
+        assert!(workspace_closure(&changed, &workspace).is_err());
+        let mut changed = fixture.clone();
+        changed
+            .package
+            .iter_mut()
+            .find(|package| package.name == "craftsman-gadget")
+            .unwrap()
+            .dependencies
+            .retain(|edge| edge != "wit-bindgen");
+        assert!(workspace_closure(&changed, &workspace).is_err());
+        let mut changed = fixture.clone();
+        changed
+            .package
+            .iter_mut()
+            .find(|package| package.name == "craftsman-gadget-macros")
+            .unwrap()
+            .dependencies
+            .push("serde".to_owned());
+        assert!(workspace_closure(&changed, &workspace).is_err());
+    }
+
+    #[test]
+    fn detector_lock_rejects_duplicate_unreachable_and_ambiguous_packages() {
+        let (fixture, workspace) = graphs();
+        let mut changed = fixture.clone();
+        changed.package.push(changed.package[0].clone());
+        assert!(workspace_closure(&changed, &workspace).is_err());
+        let mut changed = fixture.clone();
+        changed.package.push(
+            workspace
+                .package
+                .iter()
+                .find(|package| package.name == "atomic-waker")
+                .unwrap()
+                .clone(),
+        );
+        assert!(workspace_closure(&changed, &workspace).is_err());
+        let mut changed = fixture.clone();
+        changed
+            .package
+            .iter_mut()
+            .find(|package| package.name == "craftsman-gadget-macros")
+            .unwrap()
+            .dependencies
+            .iter_mut()
+            .find(|edge| edge.starts_with("syn "))
+            .map(|edge| *edge = "syn".to_owned())
+            .unwrap();
+        assert!(workspace_closure(&changed, &workspace).is_err());
+    }
+}
