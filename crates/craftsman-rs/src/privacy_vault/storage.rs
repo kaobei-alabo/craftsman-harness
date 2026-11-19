@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zeroize::Zeroizing;
 
+#[cfg(all(test, windows))]
+mod windows_tests;
+
 const APPLICATION_ID: i64 = 0x43505631;
 const DB_BYTES: u64 = 32 * 1024 * 1024;
 const WAL_BYTES: u64 = 16 * 1024 * 1024;
@@ -676,11 +679,26 @@ struct NativeLocation {
 impl NativeLocation {
     fn capture(location: VaultLocation, budget: &mut Budget) -> Result<Self> {
         let root = location.root;
-        let mut ancestor = PathBuf::new();
-        for part in root.components() {
-            ancestor.push(part.as_os_str());
+        #[cfg(windows)]
+        {
+            use std::path::{Component, Prefix};
+            // Rust treats a verbatim prefix as implicitly rooted, including
+            // a bare verbatim drive. It still needs its native root separator.
+            let mut components = root.components();
+            if matches!(components.next(), Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+                && !matches!(components.next(), Some(Component::RootDir))
+            {
+                return Err(PrivacyError::Input);
+            }
+        }
+        // A Windows drive prefix alone (C: or \\?\C:) is not the
+        // complete absolute root. Borrow full native ancestors without
+        // rebuilding/normalizing the supplied spelling; the admitted root's
+        // 128-component ceiling bounds this list. Check root-to-leaf as before.
+        for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
             budget.io()?;
-            let meta = fs::symlink_metadata(&ancestor).map_err(|_| PrivacyError::Io)?;
+            let meta = fs::symlink_metadata(ancestor).map_err(|_| PrivacyError::Io)?;
             if meta.file_type().is_symlink() || !meta.is_dir() {
                 return Err(PrivacyError::Integrity);
             }
