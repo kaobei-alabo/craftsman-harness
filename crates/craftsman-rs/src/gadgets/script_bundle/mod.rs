@@ -861,16 +861,16 @@ fn logical_name(name: &str, kind: FileKind, runtime: RuntimeProfile) -> Result<S
         if !supported {
             return Err(AdmissionError::Profile);
         }
-    } else if kind == FileKind::Asset && executable_extension(name) {
+    } else if kind == FileKind::Asset && executable_extension(&name_key(name)?) {
         return Err(AdmissionError::Name);
     }
     Ok(name.into())
 }
 fn path_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > PATH_BYTES || name.starts_with('/')
-        || name.contains(['\\', '\0', ':', '<', '>', '"', '|', '?', '*'])
-        || name.chars().any(|c| c.is_control()
-            || matches!(c, '\u{feff}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+    if name.is_empty()
+        || name.len() > PATH_BYTES
+        || name.starts_with('/')
+        || forbidden_name_characters(name)
     {
         return Err(AdmissionError::Name);
     }
@@ -889,7 +889,8 @@ fn path_name(name: &str) -> Result<()> {
             return Err(AdmissionError::Name);
         }
         let key = name_key(component)?;
-        if key.contains(['/', '\\', ':'])
+        if key.contains('/')
+            || forbidden_name_characters(&key)
             || key == "."
             || key == ".."
             || key.starts_with(char::is_whitespace)
@@ -903,6 +904,13 @@ fn path_name(name: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+// The same original/canonical denial rules apply to every path component.
+// Keys only refuse ambiguous data; they never replace accepted spellings.
+fn forbidden_name_characters(name: &str) -> bool {
+    name.contains(['\\', '\0', ':', '<', '>', '"', '|', '?', '*'])
+        || name.chars().any(|c| c.is_control()
+            || matches!(c, '\u{feff}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
 }
 fn name_key(name: &str) -> Result<String> {
     let mut bytes = 0;

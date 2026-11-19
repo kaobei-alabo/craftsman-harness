@@ -88,6 +88,16 @@ file's original kind/name/order/bytes. Changing original metadata spelling or
 order also changes this conservative binding. Case/Unicode keys only refuse
 collisions and are never execution aliases. Source BOM/CRLF and arbitrary binary
 asset/artifact bytes remain exact; empty files remain present records.
+The existing bounded NFKC + lowercase key also drives asset suffix denial and
+the same forbidden punctuation/control/component rules used for original names.
+Executable-equivalent compatibility suffixes (including fullwidth letters/dots
+and long-s), canonical traversal/separators/device names, and fullwidth forbidden
+punctuation refuse whole. Valid original Unicode names remain unchanged in the
+snapshot, metadata, encoded data view and digest. Code-module suffix acceptance
+still checks the original profile spelling; no canonical execution alias is
+created. The version-1 canonical repair retains the independent 17-row DATA
+controls and their initial failures; it demonstrates denial consistency without
+source consent or source/package/VM execution.
 Structural data admission does not establish language syntax, type checking,
 artifact extraction or runtime import compatibility.
 

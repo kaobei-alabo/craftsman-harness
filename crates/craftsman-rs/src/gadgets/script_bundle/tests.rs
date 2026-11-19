@@ -1692,3 +1692,5 @@ fn owned_known_image_data_admission() {
         assert_eq!(hex(&std::fs::read(path).unwrap()), runtime.image_sha256());
     }
 }
+
+mod canonical_repair;
