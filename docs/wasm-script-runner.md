@@ -86,7 +86,12 @@ rather than claiming full POSIX unlinked-file behavior.
 The [private session-capture foundation](session-script-capture.md) now has an
 actual normal-builder/TUI/ACP owner, retained native reads, revocable binary
 snapshots and complete historical CRUD previews. All public selectors remain
-absent. The [bundle-admission implementation](script-bundle-admission.md) is
+absent. Review found an actual-Agent identity-binding gap and late-stop return
+races. The integrated repair adds a pure per-built-Agent identity and actual
+backend check, plus stop fences through publication and receiver settlement;
+independent corrective review is pending. Fresh substituted Agents and new work
+in a stopped turn are refused, while accepted historical information is retained.
+The [bundle-admission implementation](script-bundle-admission.md) is
 currently registered only for gadget-feature tests; checked code data is not
 execution approval. Both code changes are under independent review. They select
 no interpreter, execute no script and apply no native changes; source consent,
