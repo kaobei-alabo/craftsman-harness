@@ -31,6 +31,10 @@ gadget declaration, decides which hooks are required. The source-built detector
 has passed its isolated WASM tests; storage and restoration work is in progress.
 Normal sessions do not yet mask model traffic or restore reply/file fields
 through this hook.
+First PR #32 CI44602915778 failed the new detector's offline lock dependency
+and Windows vault opening. Its failed proof is retained; the detector fixture
+now uses root-locked dependencies and the private vault has complete-ancestor
+and native-probe candidates. Fresh native delivery proof remains required.
 
 ## Enable the agent surface
 

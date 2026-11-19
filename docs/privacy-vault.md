@@ -48,6 +48,13 @@ file identity, reparse attributes and link count, but does not establish inherit
 ACL privacy. Actual host/keystore integration must resolve that Windows boundary.
 SQLite still opens a path: same-user external races, native blocking IO and
 directory/path replacement are not claimed to be OS containment.
+Native ancestor capture uses complete borrowed absolute paths in root-to-leaf
+order. Windows drive/verbatim-drive prefixes require their native root separator
+before IO; a bare prefix is refused. This preserves each ancestor check without
+normalizing the selected spelling. Ten Windows-only owned-path probes cover
+ordinary/canonical paths, raw prefix errors, actual identities, commit/reopen,
+hardlinks, junctions, replacement and bounds. Their hosted evidence is separate
+from local macOS tests.
 
 ## Exact categories and immutable scope
 
@@ -157,5 +164,14 @@ passed to execute, a live WAL-pragma row blocking COMMIT, the first incorrect
 BEGIN expectation, and the missing host-source Sync bound. Corrections preserve
 every old test/assertion/deadline. Local proof does not substitute for all four required
 hosted contexts/every step/both native modes and independent merged-main proof;
-those gates remain before integration delivery/merge/install. No push, model
+those gates remain before integration delivery/merge/install. No paid model
 expense, binary/container publication or user config/keychain change is made.
+
+PR #32's first native run
+[44602915778](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44602915778)
+is retained as failed evidence:37 vault and27 restoration cases per Windows
+mode failed with fixedIo at opening; all old test statuses and source warning
+blocks were preserved. The complete-ancestor candidate addresses the source
+path construction, while raw Windows syscall confirmation and fresh all-four
+proof remain required. Direct libSQL canonical-path cases passed in the failed
+run; the fixed production diagnostic alone did not identify a failing syscall.

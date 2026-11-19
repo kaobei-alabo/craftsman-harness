@@ -190,6 +190,15 @@ warning/driver failures are retained. These
 are private feature tests; combined native CI/main proof and actual consumer
 integration remain separate.
 
+The first PR #32 native run
+[44602915778](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44602915778)
+failed the new Windows vault/restoration opening cases and the detector's locked
+offline dependency preparation on all platforms. It is preserved separately
+from passing local tests. The corrections retain complete native ancestors,
+add Windows raw-path probes, and align only the new detector fixture lock to
+the root dependency closure. Fresh complete native proof remains pending;
+neither candidate enables privacy or substitutes for actual consumer guards.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).

@@ -25,8 +25,12 @@ The fixture bounds 64 nodes, 64 KiB text per node, 256 KiB combined text,
 128 spans and 64 KiB complete detector output. Overflow is whole-batch refusal,
 never clipping or complete-empty evidence. SDK JSON stays 1 MiB, runtime memory
 256 MiB and call timeout 30 seconds; Wasmtime stays 48.0.8 and Rust 1.99.1.
-The fixture's lock reuses the original SDK fixture's resolved dependency set
-with only this fixture package name changed. Root lock/SDK/WIT are unchanged.
+The fixture's standalone lock uses the root workspace's already-locked package
+versions/checksums and SDK/macro edges, including WASM-only dependencies. The
+first demo-derived lock failed CI's offline build at ref-cast1.0.27; that lock
+and failure remain historical evidence. Root/SDK/demo/other locks and WIT are
+unchanged. Four graph guards prevent the new fixture from drifting outside
+that dependency closure.
 
 Supported email syntax is bounded unquoted ASCII local parts using letters,
 digits, dot, underscore, percent, plus and hyphen; dotted ASCII domains with an
@@ -81,6 +85,10 @@ with `--ignored --exact gadgets::privacy_detector_tests::privacy_detector_native
 printed by Cargo's `--no-run` output; do not assume a hash. Output goes to
 `target/verification/privacy-hook-detector/{calls,image,logs}`. Running collection
 over an existing record fails instead of overwriting evidence.
+Create the owned empty `logs` directory before collect mode; missing output
+directories refuse even when actual calls have completed. The original
+collector's base-label fields are historical; use external source/hash/commit
+records for current attestation.
 
 The worker report/API/integration map and source bindings live under
 `target/verification/privacy-hook-detector/`. Full local/all-four/every-step/
