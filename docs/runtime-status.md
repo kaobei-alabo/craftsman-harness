@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 18, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 19, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
@@ -117,6 +117,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
+| Reusable script runner | Private capture implemented; bundle admission test-only, both under review | Python/JavaScript/TypeScript compatibility proof has scoped functional reviews; source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |

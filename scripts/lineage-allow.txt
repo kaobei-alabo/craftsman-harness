@@ -42,6 +42,10 @@ crates/craftsman-rs/src/threads_db.rs:    Python,  # legacy-database migration: 
 # --- config round-trip of legacy keys (compatibility code) ---
 
 # --- Python the interpreter, not lineage ---
+README.md:compatible **Python, JavaScript and TypeScript**  # selected script-runner languages; Python names the interpreter, not the retired client
+docs/gadgets.md:reusable Python and JavaScript/TypeScript scripts  # selected interpreter authoring targets, not project lineage
+docs/runtime-status.md:Python/JavaScript/TypeScript compatibility proof  # current status of the selected interpreter compatibility work
+docs/wasm-script-runner.md:Python  # this feature plan names the Python interpreter, CPython implementation and pure-Python modules
 scripts/gen-fixtures-v040.py:Python  # the fixture generator is a Python script; names interpreter versions
 crates/craftsman-rs/tests/fixtures/v0.4.0/README.md:Python  # fixture notes: the Python interpreter and SQLite library that wrote the fixture
 docs/schemas/check_trace.py:with the Python standard library  # the trace validator is a Python script and needs no package
