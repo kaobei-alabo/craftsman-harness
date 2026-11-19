@@ -547,3 +547,224 @@ async fn reviewed_unicode_mark_and_joiner_continuations_refuse_plain_and_escaped
         }
     }
 }
+
+// The complete Unicode Connector_Punctuation (Pc) set, including ASCII's
+// already supported LOW LINE. The literal scalars are never normalized.
+const REVIEWED_UNICODE_CONNECTORS: [char; 10] = [
+    '_', '\u{203f}', '\u{2040}', '\u{2054}', '\u{fe33}', '\u{fe34}', '\u{fe4d}', '\u{fe4e}',
+    '\u{fe4f}', '\u{ff3f}',
+];
+
+fn connector_embeddings(known: &str, connector: &str) -> [(&'static str, String); 4] {
+    [
+        ("prefix", format!("{connector}{known}")),
+        ("suffix", format!("{known}{connector}")),
+        ("prefix-letter", format!("x{connector}{known}")),
+        ("suffix-letter", format!("{known}{connector}x")),
+    ]
+}
+
+async fn connector_display_control(original: &str, category: Category) {
+    let (_root, _vault, session, masked) = fixture(&[(original, category)]).await;
+    let known = alias(&masked, category);
+    let before = masked.text_for_later_model_request().unwrap().to_owned();
+    let restorer = Restorer::from_records(
+        &session,
+        masked.resolution_records_for_host_fields().unwrap(),
+    )
+    .unwrap();
+    restorer
+        .display(&known)
+        .unwrap()
+        .with_host_display_text(|text| assert_eq!(text, original))
+        .unwrap();
+
+    // Collect every mismatch so the prior-source failure log retains all ten
+    // connector forms and both ends, rather than stopping at the first scalar.
+    let mut failures = Vec::new();
+    for connector in REVIEWED_UNICODE_CONNECTORS {
+        for (shape, embedded) in connector_embeddings(&known, &connector.to_string()) {
+            let input = format!("{known}; {embedded}; {known}.");
+            let expected = format!("{original}; {embedded}; {original}.");
+            match restorer
+                .display(&input)
+                .and_then(|view| view.with_host_display_text(str::to_owned))
+            {
+                Ok(display) if display == expected => {}
+                Ok(_) => failures.push(format!(
+                    "U+{:04X} {shape}: display changed an extended token",
+                    connector as u32
+                )),
+                Err(error) => failures.push(format!(
+                    "U+{:04X} {shape}: display refused with {error:?}",
+                    connector as u32
+                )),
+            }
+        }
+    }
+    assert_eq!(masked.text_for_later_model_request().unwrap(), before);
+    assert!(
+        failures.is_empty(),
+        "connector display failures for {category:?}:\n{}",
+        failures.join("\n")
+    );
+}
+
+async fn connector_file_control(original: &str, category: Category) {
+    let mut failures = Vec::new();
+    for connector in REVIEWED_UNICODE_CONNECTORS {
+        for shape_index in 0..4 {
+            for form in ["plain", "json-direct", "json-escaped"] {
+                // Refusal closes a mapping session, so every negative candidate
+                // needs its own actual vault/session and exact known alias.
+                let (_root, _vault, session, masked) = fixture(&[(original, category)]).await;
+                let known = alias(&masked, category);
+                let escaped = format!("\\u{:04x}", connector as u32);
+                let (shape, embedded) =
+                    connector_embeddings(&known, &connector.to_string())[shape_index].clone();
+                let escaped_embedded = connector_embeddings(&known, &escaped)[shape_index]
+                    .1
+                    .clone();
+                let (format, control, expected, input) = match form {
+                    "plain" => (
+                        FileDataFormat::PlainText,
+                        known.clone(),
+                        original.to_owned(),
+                        format!("{known}; {embedded}; {known}"),
+                    ),
+                    "json-direct" | "json-escaped" => {
+                        let value = if form == "json-escaped" {
+                            &escaped_embedded
+                        } else {
+                            &embedded
+                        };
+                        let input = format!(
+                            "{{\"exact\":\"{known}\",\"embedded\":\"{value}\",\"later\":\"{known}\"}}"
+                        );
+                        let decoded: serde_json::Value = serde_json::from_str(&input).unwrap();
+                        assert_eq!(decoded["embedded"], embedded);
+                        if form == "json-escaped" {
+                            assert!(input.contains(&escaped));
+                        }
+                        (
+                            FileDataFormat::JsonDocument,
+                            format!("{{\"exact\":\"{known}\",\"n\":1.2300e+02}}"),
+                            format!("{{\"exact\":\"{original}\",\"n\":1.2300e+02}}"),
+                            input,
+                        )
+                    }
+                    _ => unreachable!(),
+                };
+                let before = input.clone();
+                let masked_before = masked.text_for_later_model_request().unwrap().to_owned();
+                let restorer = Restorer::from_records(
+                    &session,
+                    masked.resolution_records_for_host_fields().unwrap(),
+                )
+                .unwrap();
+                restorer
+                    .file_data(format, &control)
+                    .unwrap()
+                    .with_host_candidate_content(|text| assert_eq!(text, expected))
+                    .unwrap();
+                assert_eq!(
+                    masked.text_for_later_model_request().unwrap(),
+                    masked_before
+                );
+                match restorer.file_data(format, &input) {
+                    Err(RestoreError::UnknownAlias) => {
+                        assert!(session.capture_text("no later raw fallback").is_err());
+                    }
+                    Err(error) => failures.push(format!(
+                        "U+{:04X} {shape} {form}: wrong refusal {error:?}",
+                        connector as u32
+                    )),
+                    Ok(_) => failures.push(format!(
+                        "U+{:04X} {shape} {form}: accepted a complete ambiguous candidate",
+                        connector as u32
+                    )),
+                }
+                assert_eq!(input, before);
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "connector file failures for {category:?}:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_display_email() {
+    connector_display_control("alice@example.test", Category::Email).await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_display_telephone() {
+    connector_display_control("1234567", Category::Telephone).await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_display_customer() {
+    connector_display_control(
+        "CUSTOMER-4821",
+        Category::Identifier(IdentifierKind::Customer),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_display_account() {
+    connector_display_control(
+        "ACCOUNT-4821",
+        Category::Identifier(IdentifierKind::Account),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_display_project() {
+    connector_display_control(
+        "PROJECT-4821",
+        Category::Identifier(IdentifierKind::Project),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_file_email() {
+    connector_file_control("alice@example.test", Category::Email).await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_file_telephone() {
+    connector_file_control("1234567", Category::Telephone).await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_file_customer() {
+    connector_file_control(
+        "CUSTOMER-4821",
+        Category::Identifier(IdentifierKind::Customer),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_file_account() {
+    connector_file_control(
+        "ACCOUNT-4821",
+        Category::Identifier(IdentifierKind::Account),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn reviewed_unicode_connector_file_project() {
+    connector_file_control(
+        "PROJECT-4821",
+        Category::Identifier(IdentifierKind::Project),
+    )
+    .await;
+}

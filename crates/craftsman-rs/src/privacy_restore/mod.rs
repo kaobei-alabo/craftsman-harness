@@ -380,11 +380,14 @@ fn token_boundary(text: &str, start: usize, end: usize, category: Category) -> b
 }
 
 fn word_continuation(c: char) -> bool {
-    // Use the existing pinned Unicode mark tables. Format controls are also
-    // attachments: do not remove or normalize them to rescue an alias. These
-    // conservative ranges include joiners, bidi controls and tagged text.
+    // Use the existing pinned Unicode mark tables and all ten Unicode Pc
+    // connector scalars. Connectors and format controls are attachments: do
+    // not remove or normalize them to rescue an alias. The conservative
+    // format ranges include joiners, bidi controls and tagged text.
     c.is_alphanumeric()
         || unicode_normalization::char::is_combining_mark(c)
+        || matches!(c, '_' | '\u{203f}' | '\u{2040}' | '\u{2054}'
+            | '\u{fe33}'..='\u{fe34}' | '\u{fe4d}'..='\u{fe4f}' | '\u{ff3f}')
         || (c.is_control() && !c.is_whitespace())
         || matches!(c,
             '\u{00ad}' | '\u{0600}'..='\u{0605}' | '\u{061c}' | '\u{06dd}'
