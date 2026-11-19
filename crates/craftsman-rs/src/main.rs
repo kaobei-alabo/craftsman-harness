@@ -43,6 +43,10 @@ mod oneshot_io;
 mod picker;
 mod platform_os;
 mod plugins;
+// Host-supplied private primitives only; no CLI, agent or hook selects them.
+// Public reachability within this binary keeps the unwired APIs typechecked.
+#[doc(hidden)]
+pub mod privacy_vault;
 mod prompt;
 mod provider_config;
 mod route;
