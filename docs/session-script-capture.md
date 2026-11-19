@@ -12,6 +12,12 @@ approval policy, backend and committed Agent identity. Legacy, service, frozen
 and private prepared construction reject a supplied frontend selection before
 effects. ACP retains its existing non-durable checkpoint policy; capture does
 not set cancellation_session.
+The identity is a pure framework per-built-Agent witness, minted only by
+AgentBuilder. Clones and moves retain it; fresh builders sharing state,
+backend, registry, names or the original tool handle receive a different
+witness. Capture checks that witness against the actual Agent and its immutable
+backend, in addition to the original selected context, state, tool, root,
+policy and generation. The identity supplies no read or task permission.
 
 Only explicitly selected relative file names under that one session folder
 are inspected. There is no recursive inventory, Git requirement, home scan,
@@ -45,6 +51,25 @@ shutdown bounds and blocking-worker limitations remain; there is no OS
 quiescence, portable filesystem latency or containment claim.
 Historical objects retain private read/directory handles until those objects
 are dropped; closing eligibility does not claim every native handle is closed.
+
+Native completion is separate from successful capture acceptance. Each capture
+observes its actual current turn before admission, during native work, around
+supervisor publication, after the receiver wakes, through publisher settlement
+and immediately before a successful return. A stopped capturing turn receives
+Revoked in the post-native/pre-publication and queued-receiver/wake windows.
+This adds no native reread, replay, rollback, model call or VM cancellation.
+One latest complete native evidence frame of at most 1 MiB may remain privately
+owned after refused or abandoned delivery. It is bounded historical data,
+has no context/permit/native handles, and is never treated as successful
+delivery or persisted as a new checkpoint/flag.
+
+An already accepted snapshot or preview remains historical information when
+only its former turn is stopped, while its actual session/read policy/generation
+remain valid. Historical readout does not mint task, source, execution, review
+or apply authority. Starting another capture or deriving a new preview in a
+currently stopped turn fails before work; a real stop during preview derivation
+also refuses the new return. Session close/rebuild/transfer and generation
+changes still invalidate old objects as the original cases require.
 
 The preview accepts strict complete final-candidate data for captured targets
 only. It derives absent-to-file CREATE, changed-file UPDATE and file-to-absent

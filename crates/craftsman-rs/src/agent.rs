@@ -965,12 +965,25 @@ pub(crate) struct FrontendCaptureBinding {
     state: Arc<Mutex<AgentState>>,
     backend: Arc<dyn Backend>,
     identity_tool: Arc<dyn Tool>,
+    agent_identity: craftsman_harness::AgentIdentity,
 }
 
 #[cfg(feature = "gadgets")]
 impl FrontendCaptureBinding {
-    pub(crate) fn into_parts(self) -> (Arc<Mutex<AgentState>>, Arc<dyn Backend>, Arc<dyn Tool>) {
-        (self.state, self.backend, self.identity_tool)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Arc<Mutex<AgentState>>,
+        Arc<dyn Backend>,
+        Arc<dyn Tool>,
+        craftsman_harness::AgentIdentity,
+    ) {
+        (
+            self.state,
+            self.backend,
+            self.identity_tool,
+            self.agent_identity,
+        )
     }
 }
 
@@ -2539,6 +2552,7 @@ async fn build_session_with_capture_profile(
                 state: agent.state.clone(),
                 backend: backend.clone(),
                 identity_tool,
+                agent_identity: agent.identity(),
             }))
         }
         None => None,

@@ -67,6 +67,29 @@ pub enum TurnResult {
     Suspended(crate::interrupt::Suspension),
 }
 
+/// Read-only identity of one built Agent. Clones and moves retain it; every
+/// AgentBuilder::build creates a fresh identity even when all supplied handles
+/// are shared. This witness is not a permission, state snapshot or task grant.
+///
+/// There is no caller constructor, identity setter, raw address, Debug or
+/// Serialize interface. Holding this marker does not retain backend resources.
+#[derive(Clone)]
+pub struct AgentIdentity {
+    instance: Arc<()>,
+}
+
+impl AgentIdentity {
+    pub fn matches(&self, actual: &Agent) -> bool {
+        Arc::ptr_eq(&self.instance, &actual.instance)
+    }
+
+    /// Check the actual built Agent and its immutable backend field, rather
+    /// than comparing caller-retained backend fields with one another.
+    pub fn matches_backend(&self, actual: &Agent, expected: &Arc<dyn Backend>) -> bool {
+        self.matches(actual) && Arc::ptr_eq(&actual.backend, expected)
+    }
+}
+
 /// The parked state of a suspended turn: the gated `call` awaiting a decision,
 /// the `remaining` calls in the same round not yet dispatched, and the `round`
 /// index so [`Agent::resume`] can continue the model↔tool loop afterward.
@@ -118,6 +141,7 @@ impl Drop for TurnActivityGuard {
 /// backend, driven by [`run_turn`](Agent::run_turn).
 #[derive(Clone)]
 pub struct Agent {
+    instance: Arc<()>,
     pub state: Arc<Mutex<AgentState>>,
     name: String,
     model: Arc<dyn ModelProvider>,
@@ -189,6 +213,13 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Capture only a read-only witness of this actual built instance.
+    pub fn identity(&self) -> AgentIdentity {
+        AgentIdentity {
+            instance: self.instance.clone(),
+        }
+    }
+
     /// Start building an agent around `model`.
     pub fn builder(model: Arc<dyn ModelProvider>) -> AgentBuilder {
         AgentBuilder::new(model)
@@ -1989,6 +2020,7 @@ impl AgentBuilder {
         let notification_inbox = Arc::new(Mutex::new(notifications.subscribe()));
 
         Agent {
+            instance: Arc::new(()),
             state,
             name: self.name,
             model: self.model,

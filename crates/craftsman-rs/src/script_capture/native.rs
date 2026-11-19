@@ -28,6 +28,8 @@ pub(super) enum Stage {
     BeforeRead,
     BeforeEof,
     AfterRead,
+    AfterNativeCheck,
+    AfterPreview,
 }
 #[cfg(test)]
 pub(super) type Hook = std::sync::Arc<dyn Fn(Stage, &str) + Send + Sync>;

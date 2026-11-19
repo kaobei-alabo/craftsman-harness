@@ -3,6 +3,48 @@ use super::*;
 use crate::script_capture::{CaptureError, Operation, tests as proof};
 use std::time::Duration;
 
+#[test]
+#[ignore = "owned native binding/stop fixture; exact markers required before config/environment work"]
+fn actual_agent_binding_and_capture_stop_fixture() {
+    const NAME: &str =
+        "tui::session_bridge::script_capture_tests::actual_agent_binding_and_capture_stop_fixture";
+    let args: Vec<_> = std::env::args().collect();
+    if !args.iter().any(|arg| arg == NAME) || !args.iter().any(|arg| arg == "--exact") {
+        return;
+    }
+    let Some(case) = crate::script_capture::binding_stop_tests::selected(args.into_iter()) else {
+        return;
+    };
+    let Some(marker) = proof::selected_marker() else {
+        return;
+    };
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let fixture = proof::fixture(&marker).await;
+            let (tx, _events) = mpsc::unbounded_channel();
+            let mut slot = AgentSlot::spawn(
+                &fixture.cfg,
+                Arc::new(Mutex::new(ApprovalState::default())),
+                UiBridge { tx },
+                craftsman_harness::SessionCancellation::default(),
+            );
+            tokio::time::timeout(Duration::from_secs(30), slot.get())
+                .await
+                .unwrap();
+            let owner = slot.cancellation();
+            let session = slot.peek_mut().expect("actual selected normal builder");
+            crate::script_capture::binding_stop_tests::run(case, session, owner).await;
+            assert!(fixture.server.received_requests().await.unwrap().is_empty());
+            fixture.originals_preserved();
+            slot.shutdown().await;
+        });
+    eprintln!("actual Agent binding and per-capture return stop assertions completed");
+}
+
 pub(crate) async fn script_capture_fixture(marker: &proof::FixtureMarker) {
     let mut fixture = proof::fixture(marker).await;
     let approval = Arc::new(Mutex::new(ApprovalState::default()));

@@ -64,6 +64,9 @@ struct Lifetime {
     closed: bool,
     active: bool,
     workers: Vec<JoinHandle<()>>,
+    /// At most one complete bounded native observation whose delivery was
+    /// refused/abandoned. Pure data only: no Context Arc or native authority.
+    refused_native: Option<Arc<CompletedNativeEvidence>>,
 }
 
 /// An unbound capture can be produced only from the shared builder's witness.
@@ -108,7 +111,7 @@ impl PendingCapture {
     }
 
     pub(crate) fn bind(self, actual: FrontendCaptureBinding) -> SessionCapture {
-        let (state, backend, identity_tool) = actual.into_parts();
+        let (state, backend, identity_tool, agent_identity) = actual.into_parts();
         SessionCapture {
             context: Arc::new(CaptureContext {
                 root: self.root,
@@ -117,6 +120,7 @@ impl PendingCapture {
                 state: Arc::downgrade(&state),
                 backend,
                 identity_tool,
+                agent_identity,
                 nonce: self.nonce,
                 construction_stop: self.construction_stop,
                 lifetime: Mutex::new(Lifetime {
@@ -125,6 +129,7 @@ impl PendingCapture {
                     closed: false,
                     active: false,
                     workers: Vec::new(),
+                    refused_native: None,
                 }),
                 #[cfg(test)]
                 hook: Mutex::new(None),
@@ -140,6 +145,7 @@ struct CaptureContext {
     state: Weak<Mutex<AgentState>>,
     backend: Arc<dyn Backend>,
     identity_tool: Arc<dyn Tool>,
+    agent_identity: craftsman_harness::AgentIdentity,
     nonce: [u8; 16],
     construction_stop: Option<TurnCancellation>,
     lifetime: Mutex<Lifetime>,
@@ -167,7 +173,9 @@ impl CaptureContext {
             .ok_or(CaptureError::Foreign)?;
         if !std::ptr::eq(self, selected.context.as_ref())
             || !Weak::ptr_eq(&self.state, &Arc::downgrade(&actual.agent.state))
-            || !Arc::ptr_eq(&self.backend, &selected.context.backend)
+            || !self
+                .agent_identity
+                .matches_backend(&actual.agent, &self.backend)
             || !Arc::ptr_eq(&self.frontend, &selected.context.frontend)
             || !actual
                 .agent
@@ -212,6 +220,19 @@ impl CaptureContext {
         }
         self.check(snapshots.generation, None)
     }
+
+    fn retain_refused_native(&self, evidence: Arc<CompletedNativeEvidence>) {
+        debug_assert!(evidence.frame.len() <= MAX_PREVIEW_BYTES);
+        // Poison recovery retains historical data while admission stays denied.
+        let mut lifetime = self.lifetime.lock().unwrap_or_else(|p| p.into_inner());
+        if lifetime
+            .refused_native
+            .as_ref()
+            .is_none_or(|old| old.serial <= evidence.serial)
+        {
+            lifetime.refused_native = Some(evidence);
+        }
+    }
 }
 
 impl SessionCapture {
@@ -219,10 +240,15 @@ impl SessionCapture {
     /// admitted before native content copying. No ambient Backend read occurs.
     pub async fn capture(&self, actual: &Session, targets: &[&str]) -> Result<SnapshotSet> {
         self.context.matches(actual)?;
+        let stop = TurnCancellation::current();
+        if stop.as_ref().is_some_and(TurnCancellation::is_cancelled) {
+            return Err(CaptureError::Revoked);
+        }
         let targets = native::SelectedTargets::admit(targets)?;
         self.context.root.check_names(&targets)?;
-        let stop = TurnCancellation::current();
         let (send, receive) = tokio::sync::oneshot::channel();
+        let (settled_send, settled_receive) = tokio::sync::oneshot::channel();
+        let generation;
         {
             // Admission and join insertion share one lock with close. Close
             // cannot miss a just-started worker, and no await holds this lock.
@@ -248,12 +274,13 @@ impl SessionCapture {
             }
             lifetime.workers.retain(|worker| !worker.is_finished());
             lifetime.serial = lifetime.serial.checked_add(1).ok_or(CaptureError::Bounds)?;
-            let generation = lifetime.generation;
+            generation = lifetime.generation;
             let serial = lifetime.serial;
             lifetime.active = true;
             let context = self.context.clone();
             let reader = context.clone();
             let observed_stop = stop.clone();
+            let published_stop = stop.clone();
             #[cfg(test)]
             let hook = context
                 .hook
@@ -276,21 +303,88 @@ impl SessionCapture {
                     .and_then(|v| v);
                 // Check after the real worker returns, including failures.
                 // Dropped receivers cannot abandon join ownership or expose data.
-                let result = context.check(generation, stop.as_ref()).and_then(|()| {
-                    result.and_then(|records| {
-                        SnapshotData::from_actual(context.clone(), generation, serial, records)
-                    })
+                let native_fence = context.check(generation, published_stop.as_ref());
+                if native_fence.is_ok() {
+                    #[cfg(test)]
+                    {
+                        let hook = context.hook.lock().ok().and_then(|hook| hook.clone());
+                        if let Some(hook) = hook {
+                            hook(native::Stage::AfterNativeCheck, "");
+                        }
+                    }
+                }
+                // A native Ok contains actual completed/checked originals.
+                // Keep its bounded historical facts on a late refusal, without
+                // claiming successful delivery or starting another native read.
+                let completed = result.and_then(|records| {
+                    SnapshotData::from_actual(context.clone(), generation, serial, records)
                 });
+                let evidence = completed.as_ref().ok().map(|data| data.evidence.clone());
+                let result = context
+                    .check(generation, published_stop.as_ref())
+                    .and(native_fence)
+                    .and(completed);
+                let result = context
+                    .check(generation, published_stop.as_ref())
+                    .and(result)
+                    .map(|inner| SnapshotSet {
+                        inner: Arc::new(inner),
+                    });
+                if result.is_err() {
+                    if let Some(evidence) = &evidence {
+                        context.retain_refused_native(evidence.clone());
+                    }
+                }
+                if let Err(Ok(undelivered)) = send.send(result) {
+                    context.retain_refused_native(undelivered.inner.evidence.clone());
+                }
+                // Sending can synchronously wake the capturing caller. A real
+                // stop in that wake gap is still not a successful return.
+                if context.check(generation, published_stop.as_ref()).is_err() {
+                    if let Some(evidence) = evidence {
+                        context.retain_refused_native(evidence);
+                    }
+                }
                 if let Ok(mut lifetime) = context.lifetime.lock() {
                     lifetime.active = false;
                 }
-                let _ = send.send(result.map(|inner| SnapshotSet {
-                    inner: Arc::new(inner),
-                }));
+                let _ = settled_send.send(());
             }));
         }
-        let snapshots = receive.await.map_err(|_| CaptureError::Worker)??;
-        self.context.validate_snapshot(actual, &snapshots.inner)?;
+        let received = receive.await.map_err(|_| CaptureError::Worker);
+        let snapshots = received.and_then(|result| result);
+        let evidence = snapshots
+            .as_ref()
+            .ok()
+            .map(|data| data.inner.evidence.clone());
+        let wake_fence = self.context.check(generation, stop.as_ref());
+        // Balance the owned publisher's admission through actual send/wake
+        // and settlement. No native reread/replay or quiescence receipt.
+        let settled = settled_receive.await.map_err(|_| CaptureError::Worker);
+        let accepted = self
+            .context
+            .check(generation, stop.as_ref())
+            .and(wake_fence)
+            .and(settled)
+            .and_then(|()| {
+                let snapshots = snapshots?;
+                self.context.validate_snapshot(actual, &snapshots.inner)?;
+                self.context.check(generation, stop.as_ref())?;
+                Ok(snapshots)
+            });
+        if accepted.is_err() {
+            if let Some(evidence) = evidence {
+                self.context.retain_refused_native(evidence);
+            }
+        }
+        let snapshots = accepted?;
+        // Acceptance is the final actual-turn fence before returning Ready(Ok).
+        self.context
+            .check(generation, stop.as_ref())
+            .inspect_err(|_| {
+                self.context
+                    .retain_refused_native(snapshots.inner.evidence.clone());
+            })?;
         Ok(snapshots)
     }
 
@@ -337,10 +431,32 @@ impl SessionCapture {
         snapshots: &SnapshotSet,
         final_candidates: &[u8],
     ) -> Result<ProspectivePreview> {
+        let stop = TurnCancellation::current();
+        if stop.as_ref().is_some_and(TurnCancellation::is_cancelled) {
+            return Err(CaptureError::Revoked);
+        }
         self.context.validate_snapshot(actual, &snapshots.inner)?;
-        let preview = preview::derive(snapshots.inner.clone(), final_candidates)?;
+        self.context
+            .check(snapshots.inner.generation, stop.as_ref())?;
+        let preview = preview::derive(snapshots.inner.clone(), final_candidates);
+        #[cfg(test)]
+        {
+            let hook = self
+                .context
+                .hook
+                .lock()
+                .map_err(|_| CaptureError::Worker)?
+                .clone();
+            if let Some(hook) = hook {
+                hook(native::Stage::AfterPreview, "");
+            }
+        }
+        self.context
+            .check(snapshots.inner.generation, stop.as_ref())?;
         self.context.validate_snapshot(actual, &snapshots.inner)?;
-        Ok(preview)
+        self.context
+            .check(snapshots.inner.generation, stop.as_ref())?;
+        preview
     }
 
     #[cfg(test)]
@@ -360,6 +476,14 @@ struct SnapshotData {
     serial: u64,
     records: Vec<native::TargetSnapshot>,
     digest: [u8; 32],
+    evidence: Arc<CompletedNativeEvidence>,
+}
+
+/// A single complete historical native frame, bounded by the existing 1 MiB
+/// admission. It carries no context/permit and cannot construct a SnapshotSet.
+struct CompletedNativeEvidence {
+    serial: u64,
+    frame: Vec<u8>,
 }
 
 impl SnapshotData {
@@ -382,12 +506,17 @@ impl SnapshotData {
             return Err(CaptureError::Bounds);
         }
         let digest = Sha256::digest(&bytes).into();
+        let evidence = Arc::new(CompletedNativeEvidence {
+            serial,
+            frame: bytes,
+        });
         Ok(Self {
             context,
             generation,
             serial,
             records,
             digest,
+            evidence,
         })
     }
 
@@ -456,3 +585,6 @@ fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+pub(crate) mod binding_stop_tests;
