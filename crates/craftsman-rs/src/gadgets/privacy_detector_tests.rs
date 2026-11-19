@@ -396,6 +396,9 @@ fn build_fixture(root: &Path) -> (Vec<u8>, std::process::Output) {
         .arg(root.join("crates/craftsman-rs/tests/fixtures/privacy-detector/Cargo.toml"))
         .arg("--target-dir")
         .arg(root.join("target/privacy-detector-wasm"))
+        .envs(compiler_environment::build_environment())
+        .env_remove(compiler_environment::TRANSPORT_X86)
+        .env_remove(compiler_environment::TRANSPORT_NATIVE)
         .output()
         .unwrap();
     assert!(
@@ -905,41 +908,17 @@ async fn source_built_privacy_detector_passes_marked_actual_native_runtime() {
     command
         .args(["--ignored", "--exact", HELPER, "--nocapture"])
         .arg(format!("{MARKER}suite"))
-        .env_clear()
-        .env("HOME", home.path())
-        .env("USERPROFILE", home.path())
-        .env("TMPDIR", home.path())
-        .env("TEMP", home.path())
-        .env("TMP", home.path())
-        .env("CARGO_HOME", cargo_home)
-        .env(
-            "PATH",
-            std::env::var_os("PATH").expect("actual toolchain PATH"),
-        )
-        .env(
-            "RUSTC",
-            Path::new(env!("CARGO")).with_file_name(if cfg!(windows) {
-                "rustc.exe"
-            } else {
-                "rustc"
-            }),
-        )
-        .env(
-            "RUSTDOC",
-            Path::new(env!("CARGO")).with_file_name(if cfg!(windows) {
-                "rustdoc.exe"
-            } else {
-                "rustdoc"
-            }),
-        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(windows)]
-    command.env(
-        "SystemRoot",
-        std::env::var_os("SystemRoot").expect("native SystemRoot for trusted compiler"),
+    compiler_environment::isolated_supervisor_environment(
+        command.as_std_mut(),
+        home.path(),
+        &cargo_home,
+        &std::env::var_os("PATH").expect("actual toolchain PATH"),
+        compiler_environment::system_root(),
+        compiler_environment::host_discovery(),
     );
     let mut child = command.spawn().unwrap();
     let mut stdout_reader = child.stdout.take().unwrap().take(65537);
@@ -1341,5 +1320,488 @@ mod offline_lock_tests {
             accepted.is_empty(),
             "unselected registry feature edges were accepted: {accepted:?}"
         );
+    }
+}
+
+mod compiler_environment {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::process::{Command, Stdio};
+
+    pub(super) const TRANSPORT_X86: &str = "CRAFTSMAN_DETECTOR_COMPILER_PROGRAM_FILES_X86";
+    pub(super) const TRANSPORT_NATIVE: &str = "CRAFTSMAN_DETECTOR_COMPILER_PROGRAM_FILES";
+    const PROBE: &str = "gadgets::privacy_detector_tests::compiler_environment::compiler_environment_native_fixture";
+    const PROBE_MARKER: &str = "craftsman-privacy-detector-compiler=";
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) struct DiscoveryRoot {
+        name: &'static str,
+        value: OsString,
+    }
+
+    impl DiscoveryRoot {
+        fn new(name: &'static str, value: OsString) -> Result<Self, &'static str> {
+            let bytes = value.as_encoded_bytes();
+            if bytes.is_empty()
+                || bytes.len() > 16 * 1024
+                || bytes.contains(&0)
+                || !Path::new(&value).is_absolute()
+            {
+                return Err("invalid compiler discovery root");
+            }
+            Ok(Self { name, value })
+        }
+
+        fn transport_name(&self) -> &'static str {
+            match self.name {
+                "ProgramFiles(x86)" => TRANSPORT_X86,
+                "ProgramFiles" => TRANSPORT_NATIVE,
+                _ => unreachable!("owned discovery root name"),
+            }
+        }
+
+        fn environment(&self) -> Vec<(&'static str, OsString)> {
+            vec![(self.name, self.value.clone())]
+        }
+    }
+
+    fn discovery(
+        mut lookup: impl FnMut(&str) -> Option<OsString>,
+    ) -> Result<DiscoveryRoot, &'static str> {
+        for name in ["ProgramFiles(x86)", "ProgramFiles"] {
+            if let Some(value) = lookup(name) {
+                return DiscoveryRoot::new(name, value);
+            }
+        }
+        Err("compiler discovery root unavailable")
+    }
+
+    fn transferred(
+        mut lookup: impl FnMut(&str) -> Option<OsString>,
+    ) -> Result<Option<DiscoveryRoot>, &'static str> {
+        match (lookup(TRANSPORT_X86), lookup(TRANSPORT_NATIVE)) {
+            (Some(value), None) => DiscoveryRoot::new("ProgramFiles(x86)", value).map(Some),
+            (None, Some(value)) => DiscoveryRoot::new("ProgramFiles", value).map(Some),
+            (None, None) => Ok(None),
+            (Some(_), Some(_)) => Err("ambiguous compiler discovery roots"),
+        }
+    }
+
+    pub(super) fn system_root() -> Option<OsString> {
+        #[cfg(windows)]
+        {
+            Some(std::env::var_os("SystemRoot").expect("native SystemRoot for trusted compiler"))
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    pub(super) fn host_discovery() -> Option<DiscoveryRoot> {
+        #[cfg(windows)]
+        {
+            Some(
+                discovery(|name| std::env::var_os(name))
+                    .expect("compiler discovery root unavailable"),
+            )
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    // A private transport keeps installation roots out of the helper's normal
+    // environment. Only its Cargo child gets the standard discovery name;
+    // rustc owns MSVC/SDK discovery and the unchanged guest inherits no env.
+    pub(super) fn build_environment() -> Vec<(&'static str, OsString)> {
+        #[cfg(windows)]
+        {
+            transferred(|name| std::env::var_os(name))
+                .expect("invalid compiler discovery transfer")
+                .or_else(host_discovery)
+                .expect("compiler discovery root unavailable")
+                .environment()
+        }
+        #[cfg(not(windows))]
+        {
+            Vec::new()
+        }
+    }
+
+    pub(super) fn isolated_supervisor_environment(
+        command: &mut Command,
+        home: &Path,
+        cargo_home: &OsStr,
+        path: &OsStr,
+        system_root: Option<OsString>,
+        discovery: Option<DiscoveryRoot>,
+    ) {
+        command
+            .env_clear()
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("TMPDIR", home)
+            .env("TEMP", home)
+            .env("TMP", home)
+            .env("CARGO_HOME", cargo_home)
+            .env("PATH", path)
+            .env(
+                "RUSTC",
+                Path::new(env!("CARGO")).with_file_name(if cfg!(windows) {
+                    "rustc.exe"
+                } else {
+                    "rustc"
+                }),
+            )
+            .env(
+                "RUSTDOC",
+                Path::new(env!("CARGO")).with_file_name(if cfg!(windows) {
+                    "rustdoc.exe"
+                } else {
+                    "rustdoc"
+                }),
+            );
+        if let Some(value) = system_root {
+            command.env("SystemRoot", value);
+        }
+        if let Some(selected) = discovery {
+            command.env(selected.transport_name(), selected.value);
+        }
+    }
+
+    fn probe_mode(arguments: impl IntoIterator<Item = OsString>) -> Option<&'static str> {
+        let values: Vec<_> = arguments
+            .into_iter()
+            .filter_map(|argument| {
+                argument
+                    .to_str()
+                    .and_then(|argument| argument.strip_prefix(PROBE_MARKER))
+                    .map(str::to_owned)
+            })
+            .collect();
+        match values.as_slice() {
+            [value] if value == "parent" => Some("parent"),
+            [value] if value == "snapshot" => Some("snapshot"),
+            _ => None,
+        }
+    }
+
+    #[test]
+    #[ignore = "compiler environment probe; exactly one registered argv marker required"]
+    fn compiler_environment_native_fixture() {
+        let Some(mode) = probe_mode(std::env::args_os()) else {
+            println!("COMPILER-ENVIRONMENT:NOT-SELECTED");
+            return;
+        };
+        if mode == "snapshot" {
+            let mut snapshot = BTreeMap::new();
+            for name in [
+                "HOME",
+                "USERPROFILE",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                "CARGO_HOME",
+                "PATH",
+                "RUSTC",
+                "RUSTDOC",
+                "SystemRoot",
+                "ProgramFiles(x86)",
+                "ProgramFiles",
+                TRANSPORT_X86,
+                TRANSPORT_NATIVE,
+                "CRAFTSMAN_TEST_PARENT_CREDENTIAL",
+            ] {
+                snapshot.insert(
+                    name,
+                    std::env::var_os(name).map(|value| value.into_string().unwrap()),
+                );
+            }
+            println!(
+                "COMPILER-ENVIRONMENT:JSON {}",
+                serde_json::to_string(&snapshot).unwrap()
+            );
+            return;
+        }
+        let selected = discovery(|name| std::env::var_os(name)).unwrap();
+        let home = std::env::var_os("CRAFTSMAN_TEST_COMPILER_HOME").unwrap();
+        let cargo_home = std::env::var_os("CRAFTSMAN_TEST_COMPILER_CARGO_HOME").unwrap();
+        let path = std::env::var_os("PATH").unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--ignored", "--exact", PROBE, "--nocapture"])
+            .arg(format!("{PROBE_MARKER}snapshot"));
+        isolated_supervisor_environment(
+            &mut child,
+            Path::new(&home),
+            &cargo_home,
+            &path,
+            system_root(),
+            Some(selected.clone()),
+        );
+        let environment: BTreeMap<_, _> = child
+            .get_envs()
+            .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+            .collect();
+        assert_eq!(environment.get(OsStr::new("ProgramFiles(x86)")), None);
+        assert_eq!(environment.get(OsStr::new("ProgramFiles")), None);
+        assert_eq!(
+            environment.get(OsStr::new(selected.transport_name())),
+            Some(&Some(selected.value.clone()))
+        );
+        let translated = transferred(|name| environment.get(OsStr::new(name)).cloned().flatten())
+            .unwrap()
+            .unwrap();
+        child
+            .envs(translated.environment())
+            .env_remove(TRANSPORT_X86)
+            .env_remove(TRANSPORT_NATIVE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = child.output().unwrap();
+        assert!(output.status.success());
+        assert!(output.stdout.len() <= 64 * 1024 && output.stderr.len() <= 64 * 1024);
+        std::io::stdout().write_all(&output.stdout).unwrap();
+        std::io::stderr().write_all(&output.stderr).unwrap();
+    }
+
+    async fn output(mut command: tokio::process::Command) -> std::process::Output {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let mut out = child.stdout.take().unwrap().take(65537);
+        let mut err = child.stderr.take().unwrap().take(65537);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let (out_read, err_read, status) =
+            match tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::join!(
+                    out.read_to_end(&mut stdout),
+                    err.read_to_end(&mut stderr),
+                    child.wait()
+                )
+            })
+            .await
+            {
+                Ok(completed) => completed,
+                Err(_) => {
+                    child.start_kill().unwrap();
+                    tokio::time::timeout(Duration::from_secs(5), child.wait())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    panic!("compiler probe exceeded its owned bound");
+                }
+            };
+        out_read.unwrap();
+        err_read.unwrap();
+        assert!(stdout.len() <= 64 * 1024 && stderr.len() <= 64 * 1024);
+        std::process::Output {
+            status: status.unwrap(),
+            stdout,
+            stderr,
+        }
+    }
+
+    #[tokio::test]
+    async fn compiler_discovery_is_private_until_actual_isolated_child_translation() {
+        for name in ["ProgramFiles(x86)", "ProgramFiles"] {
+            let home = tempfile::tempdir().unwrap();
+            let root = home.path().join("compiler installation 中文 with spaces");
+            let owned_home = home.path().join("isolated-home");
+            let cargo_home = home.path().join("isolated-cargo");
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--ignored", "--exact", PROBE, "--nocapture"])
+                .arg(format!("{PROBE_MARKER}parent"))
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap())
+                .env(name, &root)
+                .env("HOME", home.path().join("unselected-parent-home"))
+                .env(
+                    "CRAFTSMAN_TEST_PARENT_CREDENTIAL",
+                    "synthetic excluded value",
+                )
+                .env("CRAFTSMAN_TEST_COMPILER_HOME", &owned_home)
+                .env("CRAFTSMAN_TEST_COMPILER_CARGO_HOME", &cargo_home);
+            if name == "ProgramFiles(x86)" {
+                command.env("ProgramFiles", home.path().join("unselected installation"));
+            }
+            if let Some(value) = system_root() {
+                command.env("SystemRoot", value);
+            }
+            let observed = output(command).await;
+            assert!(
+                observed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&observed.stderr)
+            );
+            let text = std::str::from_utf8(&observed.stdout).unwrap();
+            let snapshot: BTreeMap<String, Option<String>> = serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("COMPILER-ENVIRONMENT:JSON "))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(snapshot[name].as_deref(), root.to_str());
+            let unselected = if name == "ProgramFiles(x86)" {
+                "ProgramFiles"
+            } else {
+                "ProgramFiles(x86)"
+            };
+            assert_eq!(snapshot[unselected], None);
+            assert_eq!(snapshot[TRANSPORT_X86], None);
+            assert_eq!(snapshot[TRANSPORT_NATIVE], None);
+            assert_eq!(snapshot["CRAFTSMAN_TEST_PARENT_CREDENTIAL"], None);
+            for variable in ["HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"] {
+                assert_eq!(snapshot[variable].as_deref(), owned_home.to_str());
+            }
+            assert_eq!(snapshot["CARGO_HOME"].as_deref(), cargo_home.to_str());
+            for (variable, executable) in [("RUSTC", "rustc"), ("RUSTDOC", "rustdoc")] {
+                let expected = Path::new(env!("CARGO")).with_file_name(if cfg!(windows) {
+                    format!("{executable}.exe")
+                } else {
+                    executable.to_owned()
+                });
+                assert_eq!(snapshot[variable].as_deref(), expected.to_str());
+            }
+        }
+    }
+
+    #[test]
+    fn compiler_discovery_selection_preserves_preference_and_refuses_whole_invalid_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let mut looked_up = Vec::new();
+        let selected = discovery(|name| {
+            looked_up.push(name.to_owned());
+            Some(home.path().as_os_str().to_owned())
+        })
+        .unwrap();
+        assert_eq!(looked_up, ["ProgramFiles(x86)"]);
+        assert_eq!(selected.name, "ProgramFiles(x86)");
+        assert!(discovery(|_| None).is_err());
+        for invalid in [
+            OsString::new(),
+            OsString::from("relative/installation"),
+            OsString::from("bad\0root"),
+            OsString::from("x".repeat(16 * 1024 + 1)),
+        ] {
+            let mut looked_up = Vec::new();
+            assert!(
+                discovery(|name| {
+                    looked_up.push(name.to_owned());
+                    Some(invalid.clone())
+                })
+                .is_err()
+            );
+            assert_eq!(looked_up, ["ProgramFiles(x86)"]);
+        }
+        assert!(transferred(|_| Some(home.path().as_os_str().to_owned())).is_err());
+        assert_eq!(transferred(|_| None).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn unmarked_unknown_and_duplicate_compiler_probes_do_not_inspect_poisoned_roots() {
+        for markers in [vec![], vec!["unknown"], vec!["parent", "parent"]] {
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--ignored", "--exact", PROBE, "--nocapture"]);
+            for marker in markers {
+                command.arg(format!("{PROBE_MARKER}{marker}"));
+            }
+            command
+                .env_clear()
+                .env("ProgramFiles(x86)", "relative poisoned root");
+            if let Some(value) = system_root() {
+                command.env("SystemRoot", value);
+            }
+            let observed = output(command).await;
+            assert!(observed.status.success());
+            let text = std::str::from_utf8(&observed.stdout).unwrap();
+            assert!(text.contains("COMPILER-ENVIRONMENT:NOT-SELECTED"));
+            assert!(!text.contains("COMPILER-ENVIRONMENT:JSON"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn actual_pinned_native_compiler_distinguishes_a_link_utility_from_a_linker() {
+        let home = tempfile::tempdir().unwrap();
+        let source = home.path().join("compiler_probe.rs");
+        std::fs::write(
+            &source,
+            b"fn main() { assert_eq!(std::env::args_os().count(), 2); }\n",
+        )
+        .unwrap();
+        let rustc = Path::new(env!("CARGO")).with_file_name("rustc");
+        let path = std::env::var_os("PATH").unwrap();
+        let utility = if cfg!(target_os = "macos") {
+            "/bin/link"
+        } else {
+            "/usr/bin/link"
+        };
+        let failed_image = home.path().join("failed-native-image");
+        let mut wrong = tokio::process::Command::new(&rustc);
+        wrong
+            .arg(&source)
+            .args(["--edition", "2024", "--crate-name", "compiler_probe", "-C"])
+            .arg(format!("linker={utility}"))
+            .arg("-o")
+            .arg(&failed_image);
+        isolated_supervisor_environment(
+            wrong.as_std_mut(),
+            home.path(),
+            home.path().join("isolated-cargo").as_os_str(),
+            &path,
+            None,
+            None,
+        );
+        let failed = output(wrong).await;
+        assert!(!failed.status.success());
+        assert!(!failed_image.exists());
+        let diagnostic = std::str::from_utf8(&failed.stderr).unwrap();
+        assert!(diagnostic.contains("linking with"));
+        assert!(diagnostic.contains(utility));
+        println!("ACTUAL-NATIVE-LINK-UTILITY-DIAGNOSTIC {diagnostic}");
+
+        let image = home.path().join("actual-linked-native-image");
+        let mut correct = tokio::process::Command::new(&rustc);
+        correct
+            .arg(&source)
+            .args([
+                "--edition",
+                "2024",
+                "--crate-name",
+                "compiler_probe",
+                "-C",
+                "linker=/usr/bin/cc",
+            ])
+            .arg("-o")
+            .arg(&image);
+        isolated_supervisor_environment(
+            correct.as_std_mut(),
+            home.path(),
+            home.path().join("isolated-cargo").as_os_str(),
+            &path,
+            None,
+            None,
+        );
+        let compiled = output(correct).await;
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        assert!(image.is_file());
+        let mut execute = tokio::process::Command::new(&image);
+        execute.arg("actual-compiler-probe").env_clear();
+        let returned = output(execute).await;
+        assert!(returned.status.success());
+        assert!(returned.stdout.is_empty() && returned.stderr.is_empty());
     }
 }

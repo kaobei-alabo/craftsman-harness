@@ -81,6 +81,24 @@ return before fixture/config/path access. The collector uses the original
 runtime, ephemeral approval and an independently checked owned image/manifest;
 it never writes a user grant, native-code disk cache, SDK or app config.
 
+On Windows, native build scripts and proc macros also require the installed
+MSVC linker when the final guest target is WASIp2. The isolated supervisor
+captures the actual `ProgramFiles(x86)` compiler-discovery root, falling back to
+`ProgramFiles` only when the first variable is absent. It keeps that one bounded
+absolute native path in a private test-helper transfer. Only the Cargo compiler
+child receives its standard discovery name; Rust's tooling locates the installed
+MSVC/SDK tools. The application does not search the registry or a user profile,
+and the unchanged guest receives no inherited environment. The original isolated
+HOME/config/temp, actual PATH/CARGO_HOME/RUSTC/RUSTDOC/SystemRoot and all
+240-second/64-KiB/5-second supervisor and 30-second guest bounds remain.
+
+PR32 run44629784168's Windows `link.exe` diagnostic rejected object-file operands
+as filesystem-link operands; it is retained as wrong-linker evidence. It does
+not establish a missing LIB or kernel32 failure. Local compiler-environment
+and native-linker probes are macOS evidence; fresh complete Windows validation
+is required for this discovery preparation. SDK/WIT/source/dependency locks,
+production behavior and the frozen CI/verification scripts are unchanged.
+
 For create-only detailed records, select the same compiled native test executable
 with `--ignored --exact gadgets::privacy_detector_tests::privacy_detector_native_fixture
 --nocapture craftsman-privacy-detector=collect`. The actual executable path is
