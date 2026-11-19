@@ -28,13 +28,18 @@ code, input scopes or native file changes.
 The selected [privacy-hook extension](privacy-hooks.md) will use the same gadget
 engine for automatic lifecycle functions. Trusted user policy, rather than a
 gadget declaration, decides which hooks are required. The source-built detector
-has passed its isolated WASM tests; storage and restoration work is in progress.
+has passed its isolated WASM tests; encrypted storage and restoration views
+are implemented as private foundations.
 Normal sessions do not yet mask model traffic or restore reply/file fields
 through this hook.
 First PR #32 CI44602915778 failed the new detector's offline lock dependency
 and Windows vault opening. Its failed proof is retained; the detector fixture
 now uses root-locked dependencies and the private vault has complete-ancestor
 and native-probe candidates. Fresh native delivery proof remains required.
+Corrected-first run44629784168 passed the opening cases in both Windows modes,
+but its detector source build selected an incompatible `link.exe`. The isolated
+compiler-discovery correction is locally tested and awaits fresh complete native
+proof; neither test preparation nor source review activates normal privacy.
 
 ## Enable the agent surface
 

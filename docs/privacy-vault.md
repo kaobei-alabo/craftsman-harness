@@ -175,3 +175,12 @@ blocks were preserved. The complete-ancestor candidate addresses the source
 path construction, while raw Windows syscall confirmation and fresh all-four
 proof remain required. Direct libSQL canonical-path cases passed in the failed
 run; the fixed production diagnostic alone did not identify a failing syscall.
+
+The corrected-first run
+[44629784168](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44629784168)
+executes all applicable vault/restoration cases and all ten opening probes
+successfully in both Windows modes. Successful captured libtest cases do not
+provide raw numerical syscall/metadata output, and none is inferred. The run
+still fails the separate detector compiler fixture; its narrow compiler-discovery
+correction needs new complete native proof before merge and delivery. Existing
+vault behavior and key/ACL/normal-session integration limits remain unchanged.

@@ -203,6 +203,22 @@ omitted required edges. The original two failing controls are retained; the
 corrected guard requires exact edges with only the documented root feature-union
 differences, and all six graph controls pass locally.
 
+The corrected-first run
+[44629784168](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44629784168)
+passed fmt, Ubuntu and macOS. All applicable vault/restoration cases and the
+ten new opening probes passed in both Windows modes. Windows still failed the
+detector's trusted source build: `link.exe` handled object-file arguments as a
+filesystem-link utility. The complete failed run and original warning blocks
+are retained; this is not evidence of a missing library or successful Windows
+detector execution.
+
+The next correction carries one validated Visual Studio discovery root through
+the isolated test helper to its Cargo child. The guest still inherits no
+environment. Existing assertions, native/guest deadlines, SDK/WIT, locks and
+frozen validation scripts remain unchanged. Actual isolated-child and native
+compiler probes pass locally; fresh complete Windows and all-four delivery
+proof remain required. This compiler preparation does not select privacy hooks.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).
