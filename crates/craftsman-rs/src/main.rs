@@ -46,6 +46,9 @@ mod plugins;
 mod prompt;
 mod provider_config;
 mod route;
+// Opaque app-only read capture and historical preview; no CLI/tool route.
+#[cfg(feature = "gadgets")]
+pub mod script_capture;
 mod service_agent;
 mod shell;
 mod shell_output;

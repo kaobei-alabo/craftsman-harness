@@ -895,7 +895,7 @@ fn checked_path(path: &str) -> Result<String> {
     Ok(path.to_owned())
 }
 
-pub(super) fn valid_name(name: &str) -> Result<()> {
+pub(crate) fn valid_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.contains([':', '\\'])
         || name.ends_with(['.', ' '])

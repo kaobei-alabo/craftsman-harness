@@ -40,6 +40,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(all(test, feature = "gadgets"))]
+#[path = "acp_serve/script_capture_tests.rs"]
+mod script_capture_tests;
+#[cfg(all(test, feature = "gadgets"))]
+pub(crate) use script_capture_tests::{script_capture_fixture, script_capture_none_fixture};
 
 /// The ACP major version this agent implements.
 pub const ACP_PROTOCOL_VERSION: u32 = 1;
@@ -82,6 +87,19 @@ struct AcpSession {
     frame_slot: FrameSlot,
     prompts_open: Arc<Mutex<bool>>,
     approval: Arc<Mutex<ApprovalState>>,
+}
+
+/// Only actual ACP session construction can mint this per-build owner.
+#[cfg(feature = "gadgets")]
+pub(crate) struct CaptureBuildOwner {
+    identity: Arc<()>,
+}
+
+#[cfg(feature = "gadgets")]
+impl CaptureBuildOwner {
+    pub(crate) fn identity(&self) -> &Arc<()> {
+        &self.identity
+    }
 }
 
 struct InFlightPrompt {
@@ -253,6 +271,10 @@ impl AcpServerState {
     }
 
     async fn close(&mut self) {
+        #[cfg(feature = "gadgets")]
+        for session in self.sessions.values() {
+            session.runtime.revoke_script_capture();
+        }
         self.cancel_in_flight();
         for session in self.sessions.values() {
             *session.prompts_open.lock().unwrap() = false;
@@ -263,6 +285,8 @@ impl AcpServerState {
             let _ = task.await;
         }
         for session in self.sessions.values() {
+            #[cfg(feature = "gadgets")]
+            session.runtime.close_script_capture().await;
             for task in session.runtime.registry.take_background_joins() {
                 let _ = task.await;
             }
@@ -572,6 +596,32 @@ async fn build_acp_session(
         ..SessionExtras::default()
     };
 
+    #[cfg(feature = "gadgets")]
+    let runtime = {
+        let owner = agent::FrontendCaptureOwner::Acp(CaptureBuildOwner {
+            identity: Arc::new(()),
+        });
+        #[cfg(test)]
+        let extras = {
+            let mut extras = extras;
+            if let Some(marker) = crate::script_capture::tests::selected_marker() {
+                extras.script_capture = Some(owner.marked_selection(&marker));
+            }
+            extras
+        };
+        agent::build_owned_session_ext(
+            cfg,
+            approval.clone(),
+            SYSTEM_PROMPT_SUFFIX,
+            true,
+            false,
+            Some(session_id.to_owned()),
+            extras,
+            owner,
+        )
+        .await?
+    };
+    #[cfg(not(feature = "gadgets"))]
     let runtime = agent::build_session_ext(
         cfg,
         approval.clone(),
@@ -1282,6 +1332,8 @@ async fn set_model(state: &mut AcpServerState, model: String) -> Result<(), Stri
         return Ok(());
     }
     let mut cfg = entry.cfg.clone();
+    #[cfg(feature = "gadgets")]
+    entry.runtime.revoke_script_capture();
     cfg.model = Some(model);
     let cwd = entry.cwd.clone();
     let approval = entry.approval.clone();
@@ -1294,6 +1346,8 @@ async fn set_model(state: &mut AcpServerState, model: String) -> Result<(), Stri
     }
     let previous = &state.sessions[&id].runtime;
     previous.agent.request_cancel();
+    #[cfg(feature = "gadgets")]
+    previous.close_script_capture().await;
     for task in previous.registry.take_background_joins() {
         let _ = task.await;
     }
