@@ -13,6 +13,17 @@ and private shared-builder construction do not yet provide the full headless
 input/output contract or composed source-approved guest-host enforcement. See
 [runtime-status.md](runtime-status.md) and `headless-mode.md` sections 11–15.
 
+The next authoring target is reusable Python and JavaScript/TypeScript scripts
+inside WASM. The [script-runner plan](wasm-script-runner.md) records the selected
+language scope and compatibility gates. These interpreters and the virtual
+file-change review layer are not part of the shipped gadget runtime yet.
+
+The private [session-capture foundation](session-script-capture.md) and
+[test-only bundle validation](script-bundle-admission.md) have scoped source reviews;
+full native delivery checks remain pending.
+Current public routes select neither; they do not execute scripts or approve
+code, input scopes or native file changes.
+
 ## Enable the agent surface
 
 The `gadgets` Cargo feature is on in the default build, independently of voice.

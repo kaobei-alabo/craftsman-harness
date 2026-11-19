@@ -37,9 +37,17 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+#[cfg(all(test, feature = "gadgets"))]
+#[path = "agent_script_capture_tests.rs"]
+mod script_capture_construction_tests;
+#[cfg(all(test, feature = "gadgets"))]
+pub(crate) use script_capture_construction_tests::script_capture_reject_prepared_fixture;
 
 /// A live agent plus the handles the REPL needs to inspect and reset it.
 pub struct Session {
+    /// Private normal-session read owner. Every public selector remains absent.
+    #[cfg(feature = "gadgets")]
+    pub(crate) script_capture: Option<crate::script_capture::SessionCapture>,
     /// Local gadget host, present only in opted-in terminal sessions.
     #[cfg(feature = "gadgets")]
     pub gadgets: Option<Arc<crate::gadgets::GadgetRuntime>>,
@@ -117,6 +125,27 @@ pub const COMPACT_THRESHOLD_MSGS: usize = 120;
 pub const COMPACT_KEEP_TAIL_MSGS: usize = 20;
 
 impl Session {
+    #[cfg(feature = "gadgets")]
+    pub(crate) fn revoke_script_capture(&self) {
+        if let Some(capture) = &self.script_capture {
+            capture.revoke();
+        }
+    }
+
+    #[cfg(feature = "gadgets")]
+    pub(crate) fn invalidate_script_capture(&self) {
+        if let Some(capture) = &self.script_capture {
+            capture.invalidate();
+        }
+    }
+
+    #[cfg(feature = "gadgets")]
+    pub(crate) async fn close_script_capture(&self) {
+        if let Some(capture) = &self.script_capture {
+            capture.close().await;
+        }
+    }
+
     /// Estimated session cost in USD. No configured rates are available,
     /// so the footer truthfully shows `n/a`.
     pub fn cost_usd(&self) -> Option<f64> {
@@ -124,6 +153,8 @@ impl Session {
     }
 
     pub fn set_thread_id(&mut self, thread_id: impl Into<String>) {
+        #[cfg(feature = "gadgets")]
+        self.invalidate_script_capture();
         let thread_id = thread_id.into();
         self.agent.set_thread_id(&thread_id);
         if let Some(workspace) = &self.workspace_checkpoints {
@@ -143,6 +174,11 @@ impl Session {
         previous: &Self,
         thread_id: Option<&str>,
     ) -> Result<(), AgentError> {
+        #[cfg(feature = "gadgets")]
+        {
+            previous.revoke_script_capture();
+            self.invalidate_script_capture();
+        }
         self.agent.inherit_conversation(&previous.agent)?;
         *self.usage.lock().unwrap() = *previous.usage.lock().unwrap();
         if let Some(thread_id) = thread_id {
@@ -167,6 +203,8 @@ impl Session {
     }
 
     pub async fn load_thread(&mut self, thread_id: &str) -> Result<bool, AgentError> {
+        #[cfg(feature = "gadgets")]
+        self.invalidate_script_capture();
         let loaded = self.agent.load_thread(thread_id).await?;
         if loaded {
             if let Some(workspace) = &self.workspace_checkpoints {
@@ -805,6 +843,10 @@ impl Tool for McpFrameworkTool {
 /// established terminal behavior; explicit sinks never use terminal stdout.
 #[derive(Default)]
 pub struct SessionExtras {
+    /// Opaque selection consumed only with its actual TUI/ACP construction owner.
+    /// No public route mints one; marked native fixtures exercise this foundation.
+    #[cfg(feature = "gadgets")]
+    pub(crate) script_capture: Option<FrontendCaptureSelection>,
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
     /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
@@ -861,6 +903,88 @@ pub struct SessionExtras {
     /// Explicit workspace root for client-selected sessions. Terminal callers leave
     /// this unset and retain current-directory behavior.
     pub workspace_root: Option<PathBuf>,
+}
+
+#[cfg(feature = "gadgets")]
+pub(crate) enum FrontendCaptureOwner {
+    Tui(crate::tui::CaptureBuildOwner),
+    Acp(crate::acp_serve::CaptureBuildOwner),
+}
+
+#[cfg(feature = "gadgets")]
+impl FrontendCaptureOwner {
+    fn identity(&self) -> &Arc<()> {
+        match self {
+            Self::Tui(owner) => owner.identity(),
+            Self::Acp(owner) => owner.identity(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn marked_selection(
+        &self,
+        _marker: &crate::script_capture::tests::FixtureMarker,
+    ) -> FrontendCaptureSelection {
+        FrontendCaptureSelection {
+            identity: self.identity().clone(),
+        }
+    }
+}
+
+/// A selection is neither a path permission nor a serializable bearer token.
+#[cfg(feature = "gadgets")]
+pub(crate) struct FrontendCaptureSelection {
+    identity: Arc<()>,
+}
+
+/// Minted only after the normal shared builder resolves its actual cwd/origin.
+#[cfg(feature = "gadgets")]
+pub(crate) struct FrontendCaptureContext {
+    root: PathBuf,
+    config_origin: PathBuf,
+    approval: Arc<Mutex<ApprovalState>>,
+    owner: FrontendCaptureOwner,
+}
+
+#[cfg(feature = "gadgets")]
+impl FrontendCaptureContext {
+    pub(crate) fn into_parts(self) -> (PathBuf, PathBuf, Arc<Mutex<ApprovalState>>, Arc<()>) {
+        (
+            self.root,
+            self.config_origin,
+            self.approval,
+            self.owner.identity().clone(),
+        )
+    }
+}
+
+/// Only the actual shared builder binds a prepared read owner to its backend
+/// and committed Agent identity. A working ToolCtx is never this witness.
+#[cfg(feature = "gadgets")]
+pub(crate) struct FrontendCaptureBinding {
+    state: Arc<Mutex<AgentState>>,
+    backend: Arc<dyn Backend>,
+    identity_tool: Arc<dyn Tool>,
+    agent_identity: craftsman_harness::AgentIdentity,
+}
+
+#[cfg(feature = "gadgets")]
+impl FrontendCaptureBinding {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Arc<Mutex<AgentState>>,
+        Arc<dyn Backend>,
+        Arc<dyn Tool>,
+        craftsman_harness::AgentIdentity,
+    ) {
+        (
+            self.state,
+            self.backend,
+            self.identity_tool,
+            self.agent_identity,
+        )
+    }
 }
 
 // Construction authority is typed independently of frontend sinks. The only
@@ -1265,6 +1389,31 @@ pub async fn build_session_ext(
     .await
 }
 
+#[cfg(feature = "gadgets")]
+pub(crate) async fn build_owned_session_ext(
+    cfg: &Config,
+    approval: Arc<Mutex<ApprovalState>>,
+    extra_system: &str,
+    activity_to_stderr: bool,
+    verbose: bool,
+    thread_id: Option<String>,
+    extras: SessionExtras,
+    owner: FrontendCaptureOwner,
+) -> Option<Session> {
+    build_session_with_capture_profile(
+        SessionConstruction::Frontend(cfg),
+        approval,
+        extra_system,
+        activity_to_stderr,
+        verbose,
+        thread_id,
+        extras,
+        None,
+        Some(owner),
+    )
+    .await
+}
+
 async fn build_session_with_profile(
     construction: SessionConstruction<'_>,
     approval: Arc<Mutex<ApprovalState>>,
@@ -1275,6 +1424,45 @@ async fn build_session_with_profile(
     extras: SessionExtras,
     request_meter: Option<Arc<crate::exec::meter::Meter>>,
 ) -> Option<Session> {
+    build_session_with_capture_profile(
+        construction,
+        approval,
+        extra_system,
+        activity_to_stderr,
+        verbose,
+        thread_id,
+        extras,
+        request_meter,
+        #[cfg(feature = "gadgets")]
+        None,
+    )
+    .await
+}
+
+async fn build_session_with_capture_profile(
+    construction: SessionConstruction<'_>,
+    approval: Arc<Mutex<ApprovalState>>,
+    extra_system: &str,
+    activity_to_stderr: bool,
+    verbose: bool,
+    thread_id: Option<String>,
+    extras: SessionExtras,
+    request_meter: Option<Arc<crate::exec::meter::Meter>>,
+    #[cfg(feature = "gadgets")] frontend_capture_owner: Option<FrontendCaptureOwner>,
+) -> Option<Session> {
+    // Reject mixed/foreign selections before config, native IO, stores,
+    // providers or ordinary frontend discovery. None retains the old path.
+    #[cfg(feature = "gadgets")]
+    let selected_capture_owner = match (&extras.script_capture, frontend_capture_owner) {
+        (Some(selection), Some(owner))
+            if construction.prepared().is_none()
+                && Arc::ptr_eq(&selection.identity, owner.identity()) =>
+        {
+            Some(owner)
+        }
+        (Some(_), _) => return None,
+        (None, _) => None,
+    };
     // Typed pre-effect construction check: headless has exactly one actual
     // meter/gate; frontend has neither. No independently excludable raw fallback.
     match (&construction, &request_meter) {
@@ -1343,6 +1531,34 @@ async fn build_session_with_profile(
             .workspace_root
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+    };
+    #[cfg(feature = "gadgets")]
+    let pending_script_capture = if let Some(owner) = selected_capture_owner {
+        // This is the actual normal configuration origin, captured once.
+        // Config fields/hashes, source hints and private Prepared cannot supply it.
+        let config_origin = crate::config::config_dir();
+        let config_origin = if config_origin.is_absolute() {
+            config_origin
+        } else {
+            std::env::current_dir().ok()?.join(config_origin)
+        };
+        let context = FrontendCaptureContext {
+            root: cwd.clone(),
+            config_origin,
+            approval: approval.clone(),
+            owner,
+        };
+        match crate::script_capture::PendingCapture::from_actual(context).await {
+            Ok(capture) => Some(capture),
+            Err(error) => {
+                if let Some(sink) = &extras.activity_sink {
+                    sink(&error.to_string());
+                }
+                return None;
+            }
+        }
+    } else {
+        None
     };
     let controls = if context_options.enabled || failure_options.is_some() {
         match crate::agent_controls::AppControls::new(
@@ -2305,6 +2521,8 @@ async fn build_session_with_profile(
         construction.prepared().is_none() && !activity_to_stderr,
         extras.ask_user_prompt.clone(),
     ));
+    #[cfg(feature = "gadgets")]
+    let capture_identity_tool = pending_script_capture.as_ref().map(|_| ask_user.clone());
     builder = builder.tool(match construction.gate() {
         Some(gate) => gate.wrap_tool(ask_user),
         None => ask_user,
@@ -2323,10 +2541,28 @@ async fn build_session_with_profile(
     }
 
     let agent = builder.build();
+    #[cfg(feature = "gadgets")]
+    let script_capture = match pending_script_capture {
+        Some(capture) => {
+            let identity_tool = capture_identity_tool?;
+            if !agent.registered_tool_matches("ask_user", &identity_tool) {
+                return None;
+            }
+            Some(capture.bind(FrontendCaptureBinding {
+                state: agent.state.clone(),
+                backend: backend.clone(),
+                identity_tool,
+                agent_identity: agent.identity(),
+            }))
+        }
+        None => None,
+    };
     if let Some(controls) = &controls {
         controls.bind_tools(&agent, &trusted_observational_tools, &trusted_file_tools);
     }
     Some(Session {
+        #[cfg(feature = "gadgets")]
+        script_capture,
         #[cfg(feature = "gadgets")]
         gadgets,
         agent,

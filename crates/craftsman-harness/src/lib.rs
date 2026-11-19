@@ -20,7 +20,7 @@ pub mod middleware;
 pub use middleware::{AgentMiddleware, Flow, MiddlewareChain, Next, ToolNext};
 
 pub mod agent;
-pub use agent::{Agent, AgentBuilder, TurnOutput, TurnResult};
+pub use agent::{Agent, AgentBuilder, AgentIdentity, TurnOutput, TurnResult};
 
 pub mod completion;
 pub use completion::{CompletionAction, CompletionAfterCheck, CompletionCheck};

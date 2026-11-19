@@ -31,6 +31,9 @@ mod reliability_tests;
 #[cfg(test)]
 #[path = "session_bridge/round_limit_tests.rs"]
 mod round_limit_tests;
+#[cfg(all(test, feature = "gadgets"))]
+#[path = "session_bridge/script_capture_tests.rs"]
+pub(crate) mod script_capture_tests;
 
 #[derive(Debug)]
 pub(super) enum ApprovalChoice {
@@ -102,6 +105,19 @@ pub(super) struct UiBridge {
     pub(super) tx: mpsc::UnboundedSender<UiEvent>,
 }
 
+/// Opaque per-build identity minted only by the actual bridge.
+#[cfg(feature = "gadgets")]
+pub(crate) struct CaptureBuildOwner {
+    identity: Arc<()>,
+}
+
+#[cfg(feature = "gadgets")]
+impl CaptureBuildOwner {
+    pub(crate) fn identity(&self) -> &Arc<()> {
+        &self.identity
+    }
+}
+
 struct CancelPrompt(tokio::task::JoinHandle<()>);
 impl Drop for CancelPrompt {
     fn drop(&mut self) {
@@ -133,6 +149,40 @@ fn scoped_prompt(event: UiEvent, turn: &Option<craftsman_harness::TurnCancellati
 }
 
 impl UiBridge {
+    #[cfg(feature = "gadgets")]
+    fn capture_build_owner(&self) -> agent::FrontendCaptureOwner {
+        // The actual bridge owns this build; equal channels/configurations do
+        // not recycle its per-build identity.
+        agent::FrontendCaptureOwner::Tui(CaptureBuildOwner {
+            identity: Arc::new(()),
+        })
+    }
+
+    async fn build_session(
+        &self,
+        cfg: &Config,
+        approval: Arc<Mutex<ApprovalState>>,
+        cancellation: craftsman_harness::SessionCancellation,
+        thread_id: Option<String>,
+    ) -> Option<Session> {
+        let mut extras = self.session_extras();
+        extras.cancellation_session = Some(cancellation);
+        #[cfg(feature = "gadgets")]
+        {
+            let owner = self.capture_build_owner();
+            #[cfg(test)]
+            if let Some(marker) = crate::script_capture::tests::selected_marker() {
+                extras.script_capture = Some(owner.marked_selection(&marker));
+            }
+            agent::build_owned_session_ext(
+                cfg, approval, "", false, false, thread_id, extras, owner,
+            )
+            .await
+        }
+        #[cfg(not(feature = "gadgets"))]
+        agent::build_session_ext(cfg, approval, "", false, false, thread_id, extras).await
+    }
+
     fn session_extras(&self) -> SessionExtras {
         let round_tx = self.tx.clone();
         let token_tx = self.tx.clone();
@@ -270,13 +320,12 @@ impl AgentSlot {
         root_cancellation: craftsman_harness::SessionCancellation,
     ) -> Self {
         let cfg = cfg.clone();
-        let mut extras = bridge.session_extras();
         let cancellation = root_cancellation
             .child()
             .expect("the terminal root has depth zero");
-        extras.cancellation_session = Some(cancellation.clone());
         let building = cancellation.clone();
         let startup = bridge.tx.clone();
+        let building_bridge = bridge.clone();
         Self {
             inner: AgentSlotInner::Pending(tokio::spawn(async move {
                 if building.is_cancelled() {
@@ -284,9 +333,7 @@ impl AgentSlot {
                 }
                 let session = building
                     .new_turn()
-                    .scope(agent::build_session_ext(
-                        &cfg, approval, "", false, false, None, extras,
-                    ))
+                    .scope(building_bridge.build_session(&cfg, approval, building.clone(), None))
                     .await;
                 if session
                     .as_ref()
@@ -313,6 +360,10 @@ impl AgentSlot {
     }
 
     pub(super) fn rebuild(&mut self, cfg: &Config, approval: Arc<Mutex<ApprovalState>>) {
+        #[cfg(feature = "gadgets")]
+        if let Some(previous) = self.peek() {
+            previous.revoke_script_capture();
+        }
         let previous = std::mem::replace(&mut self.inner, AgentSlotInner::Ready(Box::new(None)));
         let previous_owner = self.cancellation.clone();
         let cfg = cfg.clone();
@@ -328,16 +379,12 @@ impl AgentSlot {
                 .session
                 .as_ref()
                 .map(|session| session.thread_id.clone());
-            let mut extras = bridge.session_extras();
-            extras.cancellation_session = Some(owner.clone());
             let candidate = if owner.is_cancelled() {
                 None
             } else {
                 owner
                     .new_turn()
-                    .scope(agent::build_session_ext(
-                        &cfg, approval, "", false, false, thread_id, extras,
-                    ))
+                    .scope(bridge.build_session(&cfg, approval, owner.clone(), thread_id))
                     .await
             };
             let Some(mut candidate) = candidate else {
@@ -345,6 +392,8 @@ impl AgentSlot {
                 owner.cancel();
                 old.cancellation.cancel();
                 if let Some(previous) = &old.session {
+                    #[cfg(feature = "gadgets")]
+                    previous.close_script_capture().await;
                     previous.agent.request_cancel();
                     for join in previous.registry.take_background_joins() {
                         let _ = join.await;
@@ -360,6 +409,8 @@ impl AgentSlot {
             if let Some(previous) = old.session {
                 old.cancellation.cancel();
                 previous.agent.request_cancel();
+                #[cfg(feature = "gadgets")]
+                previous.close_script_capture().await;
                 for join in previous.registry.take_background_joins() {
                     let _ = join.await;
                 }
@@ -441,10 +492,16 @@ impl AgentSlot {
     }
 
     pub(super) async fn shutdown(&mut self) {
+        #[cfg(feature = "gadgets")]
+        if let Some(session) = self.peek() {
+            session.revoke_script_capture();
+        }
         self.cancellation.cancel();
         let _ = self.get().await;
         self.cancellation.cancel();
         if let Some(session) = self.peek() {
+            #[cfg(feature = "gadgets")]
+            session.close_script_capture().await;
             for join in session.registry.take_background_joins() {
                 let _ = join.await;
             }

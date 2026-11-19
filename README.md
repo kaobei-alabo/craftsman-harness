@@ -37,9 +37,10 @@ already been built and used in [live model sessions](docs/live-gadget-evaluation
 
 ## Planned WASM enhancement
 
-Rust gadgets already run in Wasmtime. The proposed enhancement adds a common
-sandbox for compatible skill/plugin scripts and a file-change review layer.
-The session and model loop stay shared; **implementation is on hold**.
+Rust gadgets already run in Wasmtime. Work has resumed on a common sandbox for
+compatible **Python, JavaScript and TypeScript** skill/plugin scripts, followed
+by a file-change review layer. The session and model loop stay shared; the
+[script runner](docs/wasm-script-runner.md) is not yet shipped.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"nodeSpacing":24,"rankSpacing":28,"wrappingWidth":230,"subGraphTitleMargin":{"top":14,"bottom":14}}}}%%

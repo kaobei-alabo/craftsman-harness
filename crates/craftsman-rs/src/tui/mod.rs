@@ -13,6 +13,10 @@ mod program_status;
 mod provider_setup;
 mod render;
 mod session_bridge;
+#[cfg(feature = "gadgets")]
+pub(crate) use session_bridge::CaptureBuildOwner;
+#[cfg(all(test, feature = "gadgets"))]
+pub(crate) use session_bridge::script_capture_tests::script_capture_fixture;
 mod shutdown;
 mod terminal;
 
