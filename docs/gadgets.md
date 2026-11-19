@@ -19,7 +19,8 @@ language scope and compatibility gates. These interpreters and the virtual
 file-change review layer are not part of the shipped gadget runtime yet.
 
 The private [session-capture foundation](session-script-capture.md) and
-[test-only bundle validation](script-bundle-admission.md) are under review.
+[test-only bundle validation](script-bundle-admission.md) have scoped source reviews;
+full native delivery checks remain pending.
 Current public routes select neither; they do not execute scripts or approve
 code, input scopes or native file changes.
 
