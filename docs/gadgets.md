@@ -57,6 +57,13 @@ Microsoft identifies ProgramData as an enumeration prerequisite; one bounded
 comparison now adds only that captured field to the original query environment.
 It retains the original refusal and grants no compiler execution. Actual Windows
 differential evidence and complete native delivery proof remain pending.
+Run44739865841 measures the same strict query admitting one installation-path
+record with only ProgramData added, after the original query admits none in both
+helpers. The narrow fixture correction now validates the existing private native
+transfer and applies that field to the original query. All later physical
+installation, host-linker, library, source-approval and guest checks remain.
+Fresh corrected Windows compilation/runtime and full native proof are pending;
+the measured discovery result does not establish successful guest execution.
 
 ## Enable the agent surface
 

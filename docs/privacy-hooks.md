@@ -274,14 +274,36 @@ and cleared environment. It records field identity, actual process/output facts
 and whole validated summaries. It does not restore profiles, inspect setup-state
 contents or change compiler/source grants.
 
-The original selection still refuses regardless of comparison results. This
-diagnostic preserves the existing capture, query, cleanup and guest bounds; its
+That diagnostic retained the original refusal regardless of comparison results.
+It preserves the existing capture, query, cleanup and guest bounds; its
 serialized failure plus framing fits the original 64 KiB supervisor capture.
 The dependency documentation and local controls do not identify the current
 loaded server implementation or prove the Windows cause. Actual differential
 evidence must precede a separately reviewed selection correction and genuine
 source-built detector execution. Fresh full local/native and independent main
 proof remain required before delivery; normal-session privacy remains inactive.
+
+Run
+[44739865841](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44739865841)
+passes fmt, Linux and macOS but still retains both Windows preparation failures.
+In both actual helpers, the original query and five historical comparisons admit
+no instances, while the same strict component-filtered query with only captured
+ProgramData admits one installation-path record. The original failure, complete
+child output, native field identity and unavailable raw values remain explicit.
+This is a measured prerequisite failure in that source/environment context;
+it does not identify a universal server implementation or prove compilation.
+
+The narrow correction validates the existing private native ProgramData transfer
+and its physical directory before preparation work. It adds that field only to
+the original strict `vswhere` query and consumes the new actual query output
+through the original installation, VC containment, host PE, SDK/library and
+source-build checks. It does not select a compiler from diagnostic metadata or
+add the field to VsDevCmd, Cargo or guest environments. Existing helper/test
+bodies, input rules, isolation and native/guest limits remain unchanged.
+Fresh full local and all-four native validation must now establish usable
+compiler inputs and actual source-built WASM execution before merge, followed
+by separate independent merged-main proof. The earlier failed run remains
+failed; normal-session privacy and the separate request consumer remain inactive.
 
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
