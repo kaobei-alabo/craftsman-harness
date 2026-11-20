@@ -111,7 +111,7 @@ are not proof of OS containment or blocking-worker quiescence.
 |---|---|---|
 | Terminal usability and reporting | Merged and locally installed | Gray/turquoise 匠 splash, grouped model → effort menus, OSC 7501; [splash](terminal-splash.md), [status](terminal-status.md) |
 | Terminal lifecycle and recovery | Merged | Actual turn/session ownership, cancellation, final saves and unknown-effect recovery; [lifecycle](terminal-lifecycle.md), [recovery](terminal-recovery.md) |
-| File checkpoints and long turns | Merged and locally installed | Mutation-driven bounded snapshots with stable creation time across same-checkpoint updates, notices in chat, 200-round default and saved pauses; [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
+| File checkpoints and long turns | Existing features merged; creation-time correction awaits native validation | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; the locally tested same-checkpoint creation-time fix is pending merge/install. See [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |

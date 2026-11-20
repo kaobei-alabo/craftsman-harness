@@ -44,6 +44,8 @@ main turn returns. One checkpoint per turn, thread switches and the existing
 20-checkpoint retention policy remain.
 
 A checkpoint's creation time is fixed by its first successful stored insert.
+This correction is locally tested on the current candidate and awaits full
+native validation, merge and installation.
 Later saves of the same checkpoint update its summary, coverage and captured
 file contents while preserving that timestamp. Updates therefore keep their
 original creation order and cannot move an old checkpoint outside the existing
