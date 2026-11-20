@@ -1,6 +1,6 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 20, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 21, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
@@ -10,6 +10,15 @@ passed all four jobs, every mandatory step and both native modes. That main
 source is locally installed; public script execution and privacy hooks remain
 unselected. The context/failure continuation is recorded below. Source validation, live
 coding results and published releases are separate evidence.
+
+PR #32's private privacy foundations remain unmerged. Its latest native run
+[44752767140](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44752767140)
+passes fmt, Ubuntu and macOS, but Windows fails four unchanged core one-shot
+cases, one unchanged capture case and both MSVC detector preparation terminals.
+New bounded test-only command, capture and process/stream observations retain
+those failures and original assertions; their actual Windows evidence and
+corrected source-build/guest proof remain pending. They add no public command,
+normal-session privacy selection or native-containment guarantee.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -122,7 +131,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations under PR #32 correction; no normal-session activation | CI44739865841 passes fmt/Linux/macOS but still fails both Windows detector/compiler terminals. Both helpers measure zero installations without ProgramData and one with that field alone. The original strict discovery query now receives the validated prerequisite; corrected Windows source-build/guest and full delivery proof remain pending. Key ownership, native-history and actual display/file consumers remain separate; see [privacy-hooks.md](privacy-hooks.md) |
+| Privacy hooks | Private foundations under PR #32 correction; no normal-session activation | CI44752767140 reaches the later UTF-16 setup parser after the ProgramData correction, but still has seven Windows failures. Bounded command and original-case observations are now implemented as isolated tests; actual Windows diagnostics, source-build/guest and full delivery proof remain pending. Key ownership, native-history and actual display/file consumers remain separate; see [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |

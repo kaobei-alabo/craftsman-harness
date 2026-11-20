@@ -143,6 +143,6 @@ documents and folders containing several projects are supported too.
 [Task context](docs/context.md) ·
 [Failure controls](docs/failure-controls.md) ·
 [Privacy hook development](docs/privacy-hooks.md) ·
-[Development and validation](docs/production-readiness.md)
+[Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).

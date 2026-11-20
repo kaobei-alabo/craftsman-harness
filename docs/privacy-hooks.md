@@ -315,6 +315,18 @@ rules. It never adopts comparison data as compiler fields or source authority.
 The original command, approval, guest checks and deadlines remain intact;
 fresh reviewed Windows execution and full/main gates are still required.
 
+That run also fails four unchanged core one-shot waits and one unchanged gadget
+capture test. New isolated observation controls retain their actual native
+operation, source/image, requested/observed capture stage, original/result bytes,
+child exit and stream completion facts before applying the original verdicts.
+They preserve the old payloads, reader ownership, assertions, timeouts and
+production code. Fresh observation handles are labelled separately and can
+affect scheduling or access time; they are not original retained authority.
+Unavailable child internals, model usage and native EOF remain unavailable.
+These tests add no normal privacy route or source/permission grant. Combined
+source review, fresh full local/native tests and independent merged-main proof
+remain required; diagnostic success does not establish a native repair.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).

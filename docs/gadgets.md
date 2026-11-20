@@ -64,6 +64,14 @@ transfer and applies that field to the original query. All later physical
 installation, host-linker, library, source-approval and guest checks remain.
 Fresh corrected Windows compilation/runtime and full native proof are pending;
 the measured discovery result does not establish successful guest execution.
+Run44752767140 reaches the Windows UTF-16 setup-field parser, where the original
+CMD/VsDevCmd invocation returns exit0 with empty streams. Bounded test-only
+comparisons now record fixed builtin and owned synthetic CALL/redirection/batch
+controls while retaining that original refusal. Separate original capture and
+one-shot observation tests preserve actual stage/bytes, child exit and stream
+completion without replacing their old assertions. Local controls do not
+establish Windows causes or usable compiler/guest execution; fresh combined
+native validation and independent main proof still gate delivery.
 
 ## Enable the agent surface
 
