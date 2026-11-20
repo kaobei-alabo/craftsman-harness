@@ -253,7 +253,35 @@ unknown. Comparison-only diagnostics now query prerelease eligibility and bounde
 installed instance/component summaries under the same isolated environment.
 The original selection still refuses; comparison results do not grant execution.
 The run also exposed a separate checkpoint creation-time update defect, now
-corrected on the candidate and awaiting native validation.
+corrected on the candidate. Its applicable native cases passed in the later run
+below; this does not establish the new compiler diagnostic's delivery gates.
+
+Run
+[44701486328](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44701486328)
+passes fmt, Linux and macOS. Windows still fails both detector/compiler terminals
+before Cargo. The original query and all five comparison families admit no
+instances, including the unfiltered and prerelease queries. The complete audit
+retains all steps, both test modes, original cases and warning records; the
+failed run remains separate from local tests and the passing checkpoint cases.
+
+Microsoft's
+[vswhere/COM-server maintainer](https://github.com/microsoft/vswhere/issues/236#issuecomment-985741650)
+identifies ProgramData as an enumeration dependency. The isolated preparation
+omits that field. A new test-only comparison carries the actual bounded native
+ProgramData value through the two marked source-build helpers, then adds only
+that field to the same installed executable, original component-filtered query
+and cleared environment. It records field identity, actual process/output facts
+and whole validated summaries. It does not restore profiles, inspect setup-state
+contents or change compiler/source grants.
+
+The original selection still refuses regardless of comparison results. This
+diagnostic preserves the existing capture, query, cleanup and guest bounds; its
+serialized failure plus framing fits the original 64 KiB supervisor capture.
+The dependency documentation and local controls do not identify the current
+loaded server implementation or prove the Windows cause. Actual differential
+evidence must precede a separately reviewed selection correction and genuine
+source-built detector execution. Fresh full local/native and independent main
+proof remain required before delivery; normal-session privacy remains inactive.
 
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the

@@ -51,6 +51,12 @@ successful Windows detector execution remain unproved.
 Run44682051545 identifies a successful empty filtered `vswhere` response. Added
 comparison diagnostics collect installed/prerelease/component facts while retaining
 the original refusal. They do not choose another compiler or change guest grants.
+Run44701486328 passes fmt, Linux and macOS, but both Windows detector/compiler
+terminals still fail before Cargo. All five comparison families find no instances.
+Microsoft identifies ProgramData as an enumeration prerequisite; one bounded
+comparison now adds only that captured field to the original query environment.
+It retains the original refusal and grants no compiler execution. Actual Windows
+differential evidence and complete native delivery proof remain pending.
 
 ## Enable the agent surface
 

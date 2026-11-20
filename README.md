@@ -142,7 +142,7 @@ documents and folders containing several projects are supported too.
 [Declared verification](docs/verification.md) ·
 [Task context](docs/context.md) ·
 [Failure controls](docs/failure-controls.md) ·
-[Privacy hooks in development](docs/privacy-hooks.md) ·
+[Privacy hook development](docs/privacy-hooks.md) ·
 [Development and validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
