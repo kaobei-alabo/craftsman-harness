@@ -244,3 +244,28 @@ and framing allowance; no deadline/capture increase or clipped success is used.
 This comparison cannot select a compiler or turn the
 original failure into success. A fresh Windows run must establish whether that
 single field restores instance discovery before any selection change is justified.
+
+## Captured prerequisite for the strict installed query
+
+Actual run44739865841 at583cc52 retained both original Windows failures: the
+minimal-environment query and all five historical comparisons admitted no
+instances, while the same strict query with only captured ProgramData returned
+one complete matching-path record. Both helpers reported the same native field
+and path identity hashes. Those observations establish this run's limited
+environment differential; they are not physical installation, MSVC or WASM proof.
+
+The trusted preparer now validates the existing private ProgramData transfer
+and exact supplied directory before applying that one standard field to the
+original strict vswhere query. Its executable, component filter, argv and later
+physical installation/VC/host-PE/SDK/library/banner/source/Cargo/guest checks stay
+unchanged. Historical failure comparisons retain their minimal base and explicitly
+report that it differs from the corrected query. Their results still cannot
+select an installation or grant source execution.
+
+ProgramData is applied only to vswhere, with native Command.env; it is not added
+to the helper's process environment, Cargo, VsDevCmd or the guest. Private argv
+transport is not copied to their explicit argv. Missing, malformed, ambiguous or
+nonphysical transfer data refuses before the query starts, with no profile,
+other-variable, path/filter/compiler or raw fallback. Mac controls are not
+Windows execution proof; fresh changed-head full native source/runtime validation
+and independent source/main review still gate integration and installation.

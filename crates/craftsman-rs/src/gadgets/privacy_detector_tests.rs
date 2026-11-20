@@ -3144,6 +3144,15 @@ mod compiler_environment {
             command.env("ProgramData", &state.value);
         }
 
+        fn strict_discovery_state(
+            arguments: impl IntoIterator<Item = OsString>,
+        ) -> SetupResult<SetupStateRoot> {
+            let state = transferred_setup_state(arguments)?;
+            physical_directory(Path::new(&state.value))
+                .map_err(|error| error.at(Stage::CompilerEnvironment).expected("ProgramData"))?;
+            Ok(state)
+        }
+
         fn comparison_json(bytes: &[u8]) -> SetupResult<Value> {
             use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
             use std::cell::Cell;
@@ -3463,7 +3472,9 @@ mod compiler_environment {
                 program_encoding: "same-native-OsStr-encoded-bytes-as-original-query",
                 program_excerpt_cut: program.len() > 2048,
                 comparison_only_not_source_or_compiler_selection: true,
-                same_cleared_preparation_environment: true,
+                // The selected strict query now carries ProgramData. These
+                // five historical controls retain the original minimal base.
+                same_cleared_preparation_environment: false,
                 queries,
                 program_data_same_query: Some(SetupStateComparison {
                     source: "registered-native-supervisor-ProgramData",
@@ -3547,6 +3558,7 @@ mod compiler_environment {
         #[cfg(windows)]
         pub(super) fn prepare(selected: &DiscoveryRoot) -> SetupResult<Prepared> {
             use std::os::windows::process::CommandExt;
+            let state = strict_discovery_state(std::env::args_os())?;
             let host = host()?;
             let system = checked_path(std::env::var_os("SystemRoot").ok_or_else(|| {
                 Failure::new(Stage::SystemRoot, Kind::Environment).expected("SystemRoot")
@@ -3566,6 +3578,7 @@ mod compiler_environment {
             physical_file(&vswhere).map_err(|error| error.at(Stage::VswhereFile))?;
             let mut discover = Command::new(&vswhere);
             base(&mut discover, selected, &system)?;
+            setup_state_environment(&mut discover, &state);
             discover.args(original_discovery_arguments(host));
             let output = bounded_at(&mut discover, 15, Stage::VswhereDiscovery)?;
             let installation = match installation_line(&output) {
@@ -5454,6 +5467,107 @@ mod compiler_environment {
                     );
                 }
             }
+        }
+
+        #[test]
+        fn strict_discovery_adds_only_the_validated_private_machine_state_field() {
+            let home = tempfile::tempdir().unwrap();
+            let state = SetupStateRoot::new(home.path().as_os_str().to_owned()).unwrap();
+            let selected =
+                DiscoveryRoot::new("ProgramFiles(x86)", home.path().as_os_str().to_owned())
+                    .unwrap();
+            let system = system_root()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.path().to_path_buf());
+            let mut command = fact_command("env");
+            command.env(SYNTHETIC_CREDENTIAL, "synthetic-strict-query-credential");
+            base_values(&mut command, &selected, &system, |_| {
+                Some(home.path().as_os_str().to_owned())
+            })
+            .unwrap();
+            let original_arguments: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
+            let original_environment: BTreeMap<_, _> = command
+                .get_envs()
+                .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+                .collect();
+            assert!(!original_environment.contains_key(OsStr::new("ProgramData")));
+            let checked = strict_discovery_state([state.argument()]).unwrap();
+            setup_state_environment(&mut command, &checked);
+            let mut changed: BTreeMap<_, _> = command
+                .get_envs()
+                .map(|(name, value)| (name.to_owned(), value.map(OsStr::to_owned)))
+                .collect();
+            assert_eq!(
+                changed.remove(OsStr::new("ProgramData")),
+                Some(Some(state.value.clone()))
+            );
+            assert_eq!(changed, original_environment);
+            assert_eq!(
+                command.get_args().map(OsStr::to_owned).collect::<Vec<_>>(),
+                original_arguments
+            );
+            assert!(!changed.contains_key(OsStr::new(SYNTHETIC_CREDENTIAL)));
+            assert!(!command.get_args().any(|value| {
+                value
+                    .as_encoded_bytes()
+                    .starts_with(STATE_MARKER.as_bytes())
+            }));
+            let output = bounded_at(&mut command, 5, Stage::VswhereDiscovery).unwrap();
+            assert_eq!(output.status.code(), Some(17));
+            assert!(
+                !output
+                    .stdout
+                    .windows(b"synthetic-strict-query-credential".len())
+                    .any(|bytes| bytes == b"synthetic-strict-query-credential")
+            );
+            for host in [Host::X64, Host::X86, Host::Arm64] {
+                assert_eq!(
+                    DiscoveryQuery::ProgramDataSameFilter.arguments(host),
+                    original_discovery_arguments(host)
+                );
+            }
+        }
+
+        #[test]
+        fn strict_discovery_refuses_missing_ambiguous_invalid_or_nonphysical_transfers_before_start()
+         {
+            let home = tempfile::tempdir().unwrap();
+            let state = SetupStateRoot::new(home.path().as_os_str().to_owned()).unwrap();
+            let missing =
+                SetupStateRoot::new(home.path().join("owned-missing-state").into_os_string())
+                    .unwrap();
+            let mut malformed = malformed_setup_state_argument(STATE_MARKER);
+            assert!(malformed.to_str().is_none());
+            for arguments in [
+                vec![],
+                vec![state.argument(), state.argument()],
+                vec![malformed.clone(), state.argument()],
+                vec![state.argument(), malformed.clone()],
+                vec![OsString::from(format!("{STATE_MARKER}00"))],
+                vec![missing.argument()],
+            ] {
+                let mut command = Command::new(home.path().join("owned-absent-query-program"));
+                command.env_clear().arg("unchanged-query-argument");
+                let before: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
+                let error = strict_discovery_state(arguments).err().unwrap();
+                assert_eq!(error.stage, Stage::CompilerEnvironment);
+                assert_eq!(error.expected, Some("ProgramData"));
+                assert!(error.process.is_none());
+                assert!(command.get_envs().next().is_none());
+                assert_eq!(
+                    command.get_args().map(OsStr::to_owned).collect::<Vec<_>>(),
+                    before
+                );
+            }
+            malformed.push("ignored-native-tail");
+            assert!(transferred_setup_state([malformed]).is_err());
+            let file = home.path().join("owned-state-is-a-file");
+            std::fs::write(&file, b"owned non-directory state control").unwrap();
+            let state = SetupStateRoot::new(file.into_os_string()).unwrap();
+            let command = Command::new("owned-unused-query-program");
+            let error = strict_discovery_state([state.argument()]).err().unwrap();
+            assert_eq!(error.kind, Kind::NotDirectory);
+            assert!(error.process.is_none() && command.get_envs().next().is_none());
         }
     }
 }
