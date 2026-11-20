@@ -152,3 +152,35 @@ The worker report/API/integration map and source bindings live under
 `target/verification/privacy-hook-detector/`. Full local/all-four/every-step/
 both-mode/native-Windows/inventory/warning/tree/independent-main gates remain
 open; local detector proof is not privacy activation, live-model or release proof.
+
+## Bounded compiler failure facts
+
+The cfg-test installed-MSVC preparer reports a fixed typed stage and failure kind,
+optional actual OS/exit results, and the bytes actually observed by its owned
+capture. Unstarted or not-yet-observed streams retain absent counts. A cut capture
+has an observed-prefix hash; its complete original size/hash remains unknown.
+Complete captures retain the original size/hash, with explicitly marked bounded
+hex excerpts. Malformed or unregistered field contents are withheld. These records
+are test-only compiler evidence, not model, catalog, persistence or normal terminal
+diagnostics, and neither stage labels nor error text authorize source execution.
+
+The fixed native VsDevCmd invocation directs setup chatter/error stdout into the
+already owned stderr capture (`1>&2`), leaving only the selected field commands on
+UTF-16LE stdout. Its installed source, native current directory, AutoRun/delayed
+expansion policy, environment allowlist, host linker/LIB/PATH export, complete
+field/path/PE/library checks and existing limits remain unchanged. No discovered
+path enters shell syntax and no expanded environment echo is introduced.
+
+On failure, the new installed-helper parent forwards its already bounded complete
+stdout/stderr as lossless hex with original size/hash. The original supervisor
+and every existing portable test/ignored-helper body remain exact. Actual direct
+cleanup results do not establish descendant or reader quiescence; blocking spawn
+and native operations are not made interruptible by these records.
+
+Synthetic marked controls exercise actual nonzero exit, missing executable,
+binary output, overflow, timeout and credential exclusion plus fixed field,
+path/library/PE classifications. Unknown/duplicate/malformed or absent markers
+return before environment, paths, configuration or stdin inspection. No user
+home/keychain/provider/model is used. These diagnostics expose future native
+failure facts; they do not identify or fix the still-unknown Windows setup cause
+from run44668461580, nor substitute for fresh Windows/full-source validation.

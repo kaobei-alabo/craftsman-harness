@@ -1900,10 +1900,280 @@ mod compiler_environment {
         use std::io::Read;
         use std::time::{Duration, Instant};
 
-        type SetupResult<T> = Result<T, &'static str>;
+        type SetupResult<T> = Result<T, Failure>;
         const FAILURE: &str = "installed MSVC compiler preparation failed";
         const CAPTURE_BYTES: usize = 64 * 1024;
         const MAX_PATH_UNITS: usize = 16 * 1024;
+
+        mod facts {
+            use super::*;
+            use serde::Serialize;
+
+            const EXCERPT_BYTES: usize = 2048;
+
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+            #[serde(rename_all = "snake_case")]
+            pub(super) enum Stage {
+                Host,
+                SystemRoot,
+                RustcIdentity,
+                VswhereFile,
+                VswhereDiscovery,
+                Installation,
+                VsdevcmdFile,
+                CmdFile,
+                VsdevcmdSetup,
+                Utf16Fields,
+                NativePath,
+                File,
+                Directory,
+                VcDirectory,
+                SdkDirectory,
+                VcContainment,
+                LinkerFile,
+                PeIdentity,
+                LibList,
+                LibDirectory,
+                RequiredLibrary,
+                LibraryRoots,
+                CompilerEnvironment,
+                LinkerBanner,
+                Control,
+            }
+
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+            #[serde(rename_all = "snake_case")]
+            pub(super) enum Kind {
+                Host,
+                Environment,
+                Spawn,
+                Wait,
+                Timeout,
+                CaptureReader,
+                CaptureRead,
+                CaptureDrain,
+                CaptureJoin,
+                CaptureLimit,
+                Exit,
+                Empty,
+                Bounds,
+                Utf8,
+                OddUtf16,
+                Nul,
+                Shape,
+                UnknownField,
+                MissingField,
+                DuplicateField,
+                FieldValue,
+                HostMismatch,
+                NativePath,
+                Metadata,
+                NotFile,
+                Symlink,
+                EmptyFile,
+                NotDirectory,
+                Containment,
+                Read,
+                Pe,
+                Library,
+                LibraryRoots,
+                PathList,
+                Banner,
+            }
+
+            #[derive(Serialize)]
+            pub(super) struct StreamFacts {
+                pub(super) captured_bytes: Option<usize>,
+                pub(super) reached_capture_limit: bool,
+                pub(super) actual_eof: bool,
+                pub(super) original_size: Option<usize>,
+                pub(super) original_sha256: Option<String>,
+                pub(super) captured_prefix_sha256: Option<String>,
+                pub(super) excerpt_hex: Option<String>,
+                pub(super) excerpt_cut: bool,
+                pub(super) contents_withheld: bool,
+                excerpt_encoding: &'static str,
+            }
+
+            pub(super) fn hex(bytes: &[u8]) -> String {
+                const DIGITS: &[u8; 16] = b"0123456789abcdef";
+                let mut text = String::with_capacity(bytes.len() * 2);
+                for &byte in bytes {
+                    text.push(DIGITS[(byte >> 4) as usize] as char);
+                    text.push(DIGITS[(byte & 15) as usize] as char);
+                }
+                text
+            }
+
+            pub(super) fn stream(
+                bytes: Option<&[u8]>,
+                eof: bool,
+                capture_limit: bool,
+                excerpt: bool,
+                excerpt_bound: usize,
+            ) -> StreamFacts {
+                let complete = eof && !capture_limit;
+                StreamFacts {
+                    captured_bytes: bytes.map(<[u8]>::len),
+                    reached_capture_limit: capture_limit,
+                    actual_eof: eof,
+                    original_size: complete.then(|| bytes.map(<[u8]>::len)).flatten(),
+                    original_sha256: complete.then(|| bytes.map(hash)).flatten(),
+                    captured_prefix_sha256: bytes.map(hash),
+                    excerpt_hex: bytes
+                        .filter(|_| excerpt)
+                        .map(|bytes| hex(&bytes[..bytes.len().min(excerpt_bound)])),
+                    excerpt_cut: bytes.is_some_and(|bytes| excerpt && bytes.len() > excerpt_bound),
+                    contents_withheld: bytes.is_some() && !excerpt,
+                    excerpt_encoding: "hex-original-bytes",
+                }
+            }
+
+            #[derive(Serialize)]
+            pub(super) struct CleanupFacts {
+                pub(super) kill_returned_ok: bool,
+                pub(super) kill_raw_os_error: Option<i32>,
+                pub(super) try_wait_returned_status: bool,
+                pub(super) try_wait_raw_os_error: Option<i32>,
+                pub(super) exit_code_after_cleanup: Option<i32>,
+                pub(super) bound_reached_without_status: bool,
+            }
+
+            #[derive(Serialize)]
+            pub(super) struct ProcessFacts {
+                pub(super) spawn_returned_child: bool,
+                pub(super) exit_code: Option<i32>,
+                pub(super) exit_success: Option<bool>,
+                pub(super) stdout: Option<StreamFacts>,
+                pub(super) stderr: Option<StreamFacts>,
+                pub(super) cleanup: Option<CleanupFacts>,
+            }
+
+            #[derive(Serialize)]
+            pub(super) struct LibraryObservation {
+                pub(super) directory_ordinal: usize,
+                pub(super) kind: Kind,
+                pub(super) raw_os_error: Option<i32>,
+            }
+
+            #[derive(Serialize)]
+            pub(in super::super) struct Failure {
+                fixed: &'static str,
+                pub(super) stage: Stage,
+                pub(super) kind: Kind,
+                pub(super) expected: Option<&'static str>,
+                pub(super) raw_os_error: Option<i32>,
+                pub(super) process: Option<ProcessFacts>,
+                pub(super) observed_read_bytes: Option<usize>,
+                pub(super) observed_read_prefix_sha256: Option<String>,
+                pub(super) observed_pe_machine: Option<u16>,
+                pub(super) library_observations: Vec<LibraryObservation>,
+            }
+
+            impl Failure {
+                pub(super) fn new(stage: Stage, kind: Kind) -> Self {
+                    Self {
+                        fixed: FAILURE,
+                        stage,
+                        kind,
+                        expected: None,
+                        raw_os_error: None,
+                        process: None,
+                        observed_read_bytes: None,
+                        observed_read_prefix_sha256: None,
+                        observed_pe_machine: None,
+                        library_observations: Vec::new(),
+                    }
+                }
+
+                pub(super) fn io(stage: Stage, kind: Kind, error: &std::io::Error) -> Self {
+                    let mut failure = Self::new(stage, kind);
+                    failure.raw_os_error = error.raw_os_error();
+                    failure
+                }
+
+                pub(super) fn at(mut self, stage: Stage) -> Self {
+                    self.stage = stage;
+                    self
+                }
+
+                pub(super) fn expected(mut self, expected: &'static str) -> Self {
+                    // Call sites supply fixed required environment/field/library identifiers.
+                    self.expected = Some(expected);
+                    self
+                }
+
+                pub(super) fn output(
+                    mut self,
+                    output: &std::process::Output,
+                    stdout_excerpt: bool,
+                ) -> Self {
+                    self.process = Some(ProcessFacts {
+                        spawn_returned_child: true,
+                        exit_code: output.status.code(),
+                        exit_success: Some(output.status.success()),
+                        stdout: Some(stream(
+                            Some(&output.stdout),
+                            true,
+                            false,
+                            stdout_excerpt,
+                            EXCERPT_BYTES,
+                        )),
+                        stderr: Some(stream(
+                            Some(&output.stderr),
+                            true,
+                            false,
+                            true,
+                            EXCERPT_BYTES,
+                        )),
+                        cleanup: None,
+                    });
+                    self
+                }
+            }
+
+            impl std::fmt::Debug for Failure {
+                fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    // This is only the owned synthetic compiler test lane. Never print
+                    // io::Error strings, panic payloads, environment maps or decoded keys.
+                    match serde_json::to_string(self) {
+                        Ok(json) => write!(formatter, "MSVC-STAGE-FACTS:{json}"),
+                        Err(_) => formatter.write_str("MSVC-STAGE-FACTS:record-encoding-failed"),
+                    }
+                }
+            }
+
+            pub(super) fn output_failure(stage: Stage, output: &std::process::Output) -> Failure {
+                Failure::new(stage, Kind::Exit).output(output, true)
+            }
+
+            pub(super) fn require_exit(
+                stage: Stage,
+                output: &std::process::Output,
+            ) -> SetupResult<()> {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(output_failure(stage, output))
+                }
+            }
+
+            pub(super) fn helper_failure_record(stdout: &[u8], stderr: &[u8]) -> Value {
+                // The parent has already checked both complete buffers against64KiB.
+                // Hex is lossless and cannot inject native/control terminal syntax.
+                json!({
+                    "stdout": stream(Some(stdout), true, false, true, CAPTURE_BYTES),
+                    "stderr": stream(Some(stderr), true, false, true, CAPTURE_BYTES),
+                    "source":"already-bounded-new-installed-helper"
+                })
+            }
+
+            pub(super) fn helper_failure(stdout: &[u8], stderr: &[u8]) {
+                let record = helper_failure_record(stdout, stderr);
+                eprintln!("MSVC-HELPER-FAILURE:{record}");
+            }
+        }
+        use facts::{Failure, Kind, Stage};
 
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         enum Host {
@@ -1952,13 +2222,13 @@ mod compiler_environment {
                 // The API sets current_dir to the checked Common7/Tools directory.
                 match self {
                     Self::X64 => {
-                        "\"call VsDevCmd.bat -no_logo -arch=x64 -host_arch=x64 >nul 2>nul & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                        "\"call VsDevCmd.bat -no_logo -arch=x64 -host_arch=x64 1>&2 & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
                     }
                     Self::X86 => {
-                        "\"call VsDevCmd.bat -no_logo -arch=x86 -host_arch=x86 >nul 2>nul & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                        "\"call VsDevCmd.bat -no_logo -arch=x86 -host_arch=x86 1>&2 & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
                     }
                     Self::Arm64 => {
-                        "\"call VsDevCmd.bat -no_logo -arch=arm64 -host_arch=arm64 >nul 2>nul & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                        "\"call VsDevCmd.bat -no_logo -arch=arm64 -host_arch=arm64 1>&2 & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
                     }
                 }
             }
@@ -1968,8 +2238,14 @@ mod compiler_environment {
             values: BTreeMap<String, Vec<u16>>,
         }
         fn parse_utf16(bytes: &[u8], host: Host) -> SetupResult<SetupFields> {
-            if bytes.is_empty() || bytes.len() > CAPTURE_BYTES || bytes.len() % 2 != 0 {
-                return Err(FAILURE);
+            if bytes.is_empty() {
+                return Err(Failure::new(Stage::Utf16Fields, Kind::Empty));
+            }
+            if bytes.len() > CAPTURE_BYTES {
+                return Err(Failure::new(Stage::Utf16Fields, Kind::Bounds));
+            }
+            if bytes.len() % 2 != 0 {
+                return Err(Failure::new(Stage::Utf16Fields, Kind::OddUtf16));
             }
             let mut units: Vec<u16> = bytes
                 .chunks_exact(2)
@@ -1979,7 +2255,7 @@ mod compiler_environment {
                 units.remove(0);
             }
             if units.contains(&0) {
-                return Err(FAILURE);
+                return Err(Failure::new(Stage::Utf16Fields, Kind::Nul));
             }
             let mut values = BTreeMap::new();
             for raw in units.split(|u| *u == 10) {
@@ -1987,12 +2263,15 @@ mod compiler_environment {
                 if line.is_empty() {
                     continue;
                 }
-                let split = line.iter().position(|u| *u == 61).ok_or(FAILURE)?;
+                let split = line
+                    .iter()
+                    .position(|u| *u == 61)
+                    .ok_or_else(|| Failure::new(Stage::Utf16Fields, Kind::Shape))?;
                 let name: String = line[..split]
                     .iter()
                     .map(|u| u8::try_from(*u).map(char::from))
                     .collect::<Result<_, _>>()
-                    .map_err(|_| FAILURE)?;
+                    .map_err(|_| Failure::new(Stage::Utf16Fields, Kind::UnknownField))?;
                 let name = name.to_ascii_uppercase();
                 if !matches!(
                     name.as_str(),
@@ -2003,14 +2282,17 @@ mod compiler_environment {
                         | "LIB"
                         | "LIBPATH"
                 ) {
-                    return Err(FAILURE);
+                    return Err(Failure::new(Stage::Utf16Fields, Kind::UnknownField));
                 }
                 let value = line[split + 1..].to_vec();
-                if value.is_empty()
-                    || value.len() > MAX_PATH_UNITS
-                    || values.insert(name, value).is_some()
-                {
-                    return Err(FAILURE);
+                if value.is_empty() {
+                    return Err(Failure::new(Stage::Utf16Fields, Kind::FieldValue));
+                }
+                if value.len() > MAX_PATH_UNITS {
+                    return Err(Failure::new(Stage::Utf16Fields, Kind::Bounds));
+                }
+                if values.insert(name, value).is_some() {
+                    return Err(Failure::new(Stage::Utf16Fields, Kind::DuplicateField));
                 }
             }
             for name in [
@@ -2021,12 +2303,17 @@ mod compiler_environment {
                 "LIB",
             ] {
                 if !values.contains_key(name) {
-                    return Err(FAILURE);
+                    return Err(Failure::new(Stage::Utf16Fields, Kind::MissingField).expected(name));
                 }
             }
             let arch: Vec<u16> = host.architecture().encode_utf16().collect();
-            if values["VSCMD_ARG_HOST_ARCH"] != arch || values["VSCMD_ARG_TGT_ARCH"] != arch {
-                return Err(FAILURE);
+            if values["VSCMD_ARG_HOST_ARCH"] != arch {
+                return Err(Failure::new(Stage::Utf16Fields, Kind::HostMismatch)
+                    .expected("VSCMD_ARG_HOST_ARCH"));
+            }
+            if values["VSCMD_ARG_TGT_ARCH"] != arch {
+                return Err(Failure::new(Stage::Utf16Fields, Kind::HostMismatch)
+                    .expected("VSCMD_ARG_TGT_ARCH"));
             }
             Ok(SetupFields { values })
         }
@@ -2037,11 +2324,13 @@ mod compiler_environment {
             let mut quoted = false;
             for &unit in units {
                 match unit {
-                    0 | 10 | 13 => return Err(FAILURE),
+                    0 | 10 | 13 => {
+                        return Err(Failure::new(Stage::LibList, Kind::Nul).expected("LIB"));
+                    }
                     34 => quoted = !quoted,
                     59 if !quoted => {
                         if path.is_empty() {
-                            return Err(FAILURE);
+                            return Err(Failure::new(Stage::LibList, Kind::Shape).expected("LIB"));
                         }
                         paths.push(std::mem::take(&mut path));
                     }
@@ -2049,7 +2338,7 @@ mod compiler_environment {
                 }
             }
             if quoted {
-                return Err(FAILURE);
+                return Err(Failure::new(Stage::LibList, Kind::Shape).expected("LIB"));
             }
             // A final list separator names no installed directory. Never pass
             // an empty element to LIB, where it could admit current_dir search.
@@ -2061,7 +2350,7 @@ mod compiler_environment {
                 || paths.len() > 32
                 || paths.iter().any(|p| p.len() > MAX_PATH_UNITS)
             {
-                return Err(FAILURE);
+                return Err(Failure::new(Stage::LibList, Kind::Bounds).expected("LIB"));
             }
             Ok(paths)
         }
@@ -2079,76 +2368,331 @@ mod compiler_environment {
         struct OwnedCommand {
             child: std::process::Child,
             reaped: bool,
+            cleanup_attempted: bool,
         }
-        impl Drop for OwnedCommand {
-            fn drop(&mut self) {
-                if self.reaped {
-                    return;
+        impl OwnedCommand {
+            fn cleanup(&mut self) -> Option<facts::CleanupFacts> {
+                if self.reaped || self.cleanup_attempted {
+                    return None;
                 }
-                let _ = self.child.kill();
+                self.cleanup_attempted = true;
+                let kill = self.child.kill();
+                let mut result = facts::CleanupFacts {
+                    kill_returned_ok: kill.is_ok(),
+                    kill_raw_os_error: kill.err().and_then(|error| error.raw_os_error()),
+                    try_wait_returned_status: false,
+                    try_wait_raw_os_error: None,
+                    exit_code_after_cleanup: None,
+                    bound_reached_without_status: false,
+                };
                 let started = Instant::now();
                 while started.elapsed() < Duration::from_secs(5) {
-                    if matches!(self.child.try_wait(), Ok(Some(_))) {
-                        return;
+                    match self.child.try_wait() {
+                        Ok(Some(status)) => {
+                            self.reaped = true;
+                            result.try_wait_returned_status = true;
+                            result.exit_code_after_cleanup = status.code();
+                            return Some(result);
+                        }
+                        Err(error) => {
+                            result.try_wait_raw_os_error = error.raw_os_error();
+                        }
+                        Ok(None) => {}
                     }
                     std::thread::sleep(Duration::from_millis(5));
                 }
+                result.bound_reached_without_status = true;
+                Some(result)
             }
         }
+        impl Drop for OwnedCommand {
+            fn drop(&mut self) {
+                let _ = self.cleanup();
+            }
+        }
+
+        #[derive(Default)]
+        struct CaptureProgress {
+            bytes: Vec<u8>,
+            observed_read: bool,
+            actual_eof: bool,
+            limit: bool,
+        }
+        type Progress = Arc<std::sync::Mutex<CaptureProgress>>;
+
+        fn capture(mut reader: impl Read, progress: Progress) -> std::io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            let mut scratch = [0u8; 4096];
+            loop {
+                let remaining = CAPTURE_BYTES + 1 - bytes.len();
+                if remaining == 0 {
+                    if let Ok(mut state) = progress.lock() {
+                        state.limit = true;
+                    }
+                    return Ok(bytes);
+                }
+                let count = match reader.read(&mut scratch[..remaining.min(4096)]) {
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(error),
+                };
+                bytes.extend_from_slice(&scratch[..count]);
+                if let Ok(mut state) = progress.lock() {
+                    state.bytes.clone_from(&bytes);
+                    state.observed_read = true;
+                    state.actual_eof = count == 0;
+                    state.limit = bytes.len() == CAPTURE_BYTES + 1;
+                }
+                if count == 0 {
+                    return Ok(bytes);
+                }
+            }
+        }
+
+        fn snapshot(progress: &Progress) -> Option<facts::StreamFacts> {
+            progress.try_lock().ok().map(|state| {
+                facts::stream(
+                    state.observed_read.then_some(state.bytes.as_slice()),
+                    state.actual_eof,
+                    state.limit,
+                    true,
+                    2048,
+                )
+            })
+        }
+
+        fn command_failure(
+            stage: Stage,
+            kind: Kind,
+            error: Option<&std::io::Error>,
+            owned: &mut OwnedCommand,
+            status: Option<std::process::ExitStatus>,
+            stdout: &Progress,
+            stderr: &Progress,
+        ) -> Failure {
+            let cleanup = owned.cleanup();
+            let mut failure = error.map_or_else(
+                || Failure::new(stage, kind),
+                |error| Failure::io(stage, kind, error),
+            );
+            failure.process = Some(facts::ProcessFacts {
+                spawn_returned_child: true,
+                exit_code: status.and_then(|status| status.code()),
+                exit_success: status.map(|status| status.success()),
+                stdout: snapshot(stdout),
+                stderr: snapshot(stderr),
+                cleanup,
+            });
+            failure
+        }
+
         fn bounded(mut command: Command, seconds: u64) -> SetupResult<std::process::Output> {
+            bounded_at(&mut command, seconds, Stage::Control)
+        }
+
+        fn bounded_at(
+            command: &mut Command,
+            seconds: u64,
+            stage: Stage,
+        ) -> SetupResult<std::process::Output> {
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            let child = command.spawn().map_err(|error| {
+                let mut failure = Failure::io(stage, Kind::Spawn, &error);
+                failure.process = Some(facts::ProcessFacts {
+                    spawn_returned_child: false,
+                    exit_code: None,
+                    exit_success: None,
+                    stdout: None,
+                    stderr: None,
+                    cleanup: None,
+                });
+                failure
+            })?;
             let mut owned = OwnedCommand {
-                child: command.spawn().map_err(|_| FAILURE)?,
+                child,
                 reaped: false,
+                cleanup_attempted: false,
             };
-            let stdout = owned.child.stdout.take().ok_or(FAILURE)?;
-            let stderr = owned.child.stderr.take().ok_or(FAILURE)?;
+            let out_progress = Progress::default();
+            let err_progress = Progress::default();
+            let stdout = owned.child.stdout.take().ok_or_else(|| {
+                command_failure(
+                    stage,
+                    Kind::CaptureReader,
+                    None,
+                    &mut owned,
+                    None,
+                    &out_progress,
+                    &err_progress,
+                )
+            })?;
+            let stderr = owned.child.stderr.take().ok_or_else(|| {
+                command_failure(
+                    stage,
+                    Kind::CaptureReader,
+                    None,
+                    &mut owned,
+                    None,
+                    &out_progress,
+                    &err_progress,
+                )
+            })?;
             let (a_send, a_receive) = std::sync::mpsc::sync_channel(1);
             let (b_send, b_receive) = std::sync::mpsc::sync_channel(1);
-            let a = std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let result = stdout
-                    .take((CAPTURE_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .map(|_| bytes);
-                let _ = a_send.send(result);
-            });
-            let b = std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let result = stderr
-                    .take((CAPTURE_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .map(|_| bytes);
-                let _ = b_send.send(result);
-            });
+            let progress = out_progress.clone();
+            let a = std::thread::Builder::new()
+                .spawn(move || {
+                    let _ = a_send.send(capture(stdout, progress));
+                })
+                .map_err(|error| {
+                    command_failure(
+                        stage,
+                        Kind::CaptureReader,
+                        Some(&error),
+                        &mut owned,
+                        None,
+                        &out_progress,
+                        &err_progress,
+                    )
+                })?;
+            let progress = err_progress.clone();
+            let b = std::thread::Builder::new()
+                .spawn(move || {
+                    let _ = b_send.send(capture(stderr, progress));
+                })
+                .map_err(|error| {
+                    command_failure(
+                        stage,
+                        Kind::CaptureReader,
+                        Some(&error),
+                        &mut owned,
+                        None,
+                        &out_progress,
+                        &err_progress,
+                    )
+                })?;
             let started = Instant::now();
             let status = loop {
-                if let Some(status) = owned.child.try_wait().map_err(|_| FAILURE)? {
+                if let Some(status) = owned.child.try_wait().map_err(|error| {
+                    command_failure(
+                        stage,
+                        Kind::Wait,
+                        Some(&error),
+                        &mut owned,
+                        None,
+                        &out_progress,
+                        &err_progress,
+                    )
+                })? {
                     owned.reaped = true;
                     break status;
                 }
                 if started.elapsed() >= Duration::from_secs(seconds) {
-                    return Err(FAILURE);
+                    return Err(command_failure(
+                        stage,
+                        Kind::Timeout,
+                        None,
+                        &mut owned,
+                        None,
+                        &out_progress,
+                        &err_progress,
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(5));
             };
             let drain = Instant::now();
             let stdout = a_receive
                 .recv_timeout(Duration::from_secs(5))
-                .map_err(|_| FAILURE)?
-                .map_err(|_| FAILURE)?;
+                .map_err(|error| {
+                    command_failure(
+                        stage,
+                        if error == std::sync::mpsc::RecvTimeoutError::Timeout {
+                            Kind::CaptureDrain
+                        } else {
+                            Kind::CaptureReader
+                        },
+                        None,
+                        &mut owned,
+                        Some(status),
+                        &out_progress,
+                        &err_progress,
+                    )
+                })?
+                .map_err(|error| {
+                    command_failure(
+                        stage,
+                        Kind::CaptureRead,
+                        Some(&error),
+                        &mut owned,
+                        Some(status),
+                        &out_progress,
+                        &err_progress,
+                    )
+                })?;
             let remaining = Duration::from_secs(5).saturating_sub(drain.elapsed());
             let stderr = b_receive
                 .recv_timeout(remaining)
-                .map_err(|_| FAILURE)?
-                .map_err(|_| FAILURE)?;
-            a.join().map_err(|_| FAILURE)?;
-            b.join().map_err(|_| FAILURE)?;
+                .map_err(|error| {
+                    command_failure(
+                        stage,
+                        if error == std::sync::mpsc::RecvTimeoutError::Timeout {
+                            Kind::CaptureDrain
+                        } else {
+                            Kind::CaptureReader
+                        },
+                        None,
+                        &mut owned,
+                        Some(status),
+                        &out_progress,
+                        &err_progress,
+                    )
+                })?
+                .map_err(|error| {
+                    command_failure(
+                        stage,
+                        Kind::CaptureRead,
+                        Some(&error),
+                        &mut owned,
+                        Some(status),
+                        &out_progress,
+                        &err_progress,
+                    )
+                })?;
+            a.join().map_err(|_| {
+                command_failure(
+                    stage,
+                    Kind::CaptureJoin,
+                    None,
+                    &mut owned,
+                    Some(status),
+                    &out_progress,
+                    &err_progress,
+                )
+            })?;
+            b.join().map_err(|_| {
+                command_failure(
+                    stage,
+                    Kind::CaptureJoin,
+                    None,
+                    &mut owned,
+                    Some(status),
+                    &out_progress,
+                    &err_progress,
+                )
+            })?;
             if stdout.len() > CAPTURE_BYTES || stderr.len() > CAPTURE_BYTES {
-                return Err(FAILURE);
+                return Err(command_failure(
+                    stage,
+                    Kind::CaptureLimit,
+                    None,
+                    &mut owned,
+                    Some(status),
+                    &out_progress,
+                    &err_progress,
+                ));
             }
             Ok(std::process::Output {
                 status,
@@ -2163,7 +2707,7 @@ mod compiler_environment {
                 "x86_64" => Ok(Host::X64),
                 "x86" => Ok(Host::X86),
                 "aarch64" => Ok(Host::Arm64),
-                _ => Err(FAILURE),
+                _ => Err(Failure::new(Stage::Host, Kind::Host)),
             }
         }
         #[cfg(windows)]
@@ -2171,42 +2715,59 @@ mod compiler_environment {
             use std::os::windows::ffi::OsStringExt;
             OsString::from_wide(units)
         }
-        #[cfg(windows)]
         fn checked_path(value: OsString) -> SetupResult<PathBuf> {
-            DiscoveryRoot::new("ProgramFiles", value.clone()).map_err(|_| FAILURE)?;
+            DiscoveryRoot::new("ProgramFiles", value.clone())
+                .map_err(|_| Failure::new(Stage::NativePath, Kind::NativePath))?;
             if value
                 .as_encoded_bytes()
                 .iter()
                 .any(|b| matches!(b, b'\r' | b'\n'))
             {
-                return Err(FAILURE);
+                return Err(Failure::new(Stage::NativePath, Kind::NativePath));
             }
             Ok(PathBuf::from(value))
         }
-        #[cfg(windows)]
         fn physical_file(path: &Path) -> SetupResult<()> {
-            let metadata = std::fs::symlink_metadata(path).map_err(|_| FAILURE)?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
-                return Err(FAILURE);
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| Failure::io(Stage::File, Kind::Metadata, &error))?;
+            if metadata.file_type().is_symlink() {
+                return Err(Failure::new(Stage::File, Kind::Symlink));
+            }
+            if !metadata.is_file() {
+                return Err(Failure::new(Stage::File, Kind::NotFile));
+            }
+            if metadata.len() == 0 {
+                return Err(Failure::new(Stage::File, Kind::EmptyFile));
             }
             Ok(())
         }
-        #[cfg(windows)]
         fn physical_directory(path: &Path) -> SetupResult<PathBuf> {
-            let metadata = std::fs::symlink_metadata(path).map_err(|_| FAILURE)?;
-            if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(FAILURE);
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| Failure::io(Stage::Directory, Kind::Metadata, &error))?;
+            if metadata.file_type().is_symlink() {
+                return Err(Failure::new(Stage::Directory, Kind::Symlink));
+            }
+            if !metadata.is_dir() {
+                return Err(Failure::new(Stage::Directory, Kind::NotDirectory));
             }
             Ok(path.to_path_buf())
         }
-        #[cfg(windows)]
-        fn base(command: &mut Command, selected: &DiscoveryRoot, system: &Path) -> SetupResult<()> {
+        fn base_values(
+            command: &mut Command,
+            selected: &DiscoveryRoot,
+            system: &Path,
+            mut lookup: impl FnMut(&str) -> Option<OsString>,
+        ) -> SetupResult<()> {
             command.env_clear();
             for name in ["HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"] {
-                let value = std::env::var_os(name).ok_or(FAILURE)?;
+                let value = lookup(name).ok_or_else(|| {
+                    Failure::new(Stage::CompilerEnvironment, Kind::Environment).expected(name)
+                })?;
                 command.env(name, value);
             }
-            let toolchain = Path::new(env!("CARGO")).parent().ok_or(FAILURE)?;
+            let toolchain = Path::new(env!("CARGO"))
+                .parent()
+                .ok_or_else(|| Failure::new(Stage::CompilerEnvironment, Kind::NativePath))?;
             let system_bin = system.join("System32");
             command
                 .env("SystemRoot", system)
@@ -2214,9 +2775,122 @@ mod compiler_environment {
                 .env(selected.name, &selected.value)
                 .env(
                     "PATH",
-                    std::env::join_paths([toolchain, system_bin.as_path()]).map_err(|_| FAILURE)?,
+                    std::env::join_paths([toolchain, system_bin.as_path()])
+                        .map_err(|_| Failure::new(Stage::CompilerEnvironment, Kind::PathList))?,
                 );
             Ok(())
+        }
+        #[cfg(windows)]
+        fn base(command: &mut Command, selected: &DiscoveryRoot, system: &Path) -> SetupResult<()> {
+            base_values(command, selected, system, |name| std::env::var_os(name))
+        }
+
+        fn required_library(name: &'static str, dirs: &[PathBuf]) -> SetupResult<()> {
+            assert!(matches!(
+                name,
+                "kernel32.lib"
+                    | "ntdll.lib"
+                    | "userenv.lib"
+                    | "ws2_32.lib"
+                    | "dbghelp.lib"
+                    | "msvcrt.lib"
+            ));
+            if dirs.len() > 32 {
+                return Err(Failure::new(Stage::RequiredLibrary, Kind::Bounds).expected(name));
+            }
+            let mut observations = Vec::new();
+            for (directory_ordinal, dir) in dirs.iter().enumerate() {
+                match physical_file(&dir.join(name)) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => observations.push(facts::LibraryObservation {
+                        directory_ordinal,
+                        kind: error.kind,
+                        raw_os_error: error.raw_os_error,
+                    }),
+                }
+            }
+            let mut error = Failure::new(Stage::RequiredLibrary, Kind::Library).expected(name);
+            error.library_observations = observations;
+            Err(error)
+        }
+
+        fn rustc_identity(output: &std::process::Output, host: Host) -> SetupResult<()> {
+            facts::require_exit(Stage::RustcIdentity, output)?;
+            let text = std::str::from_utf8(&output.stdout).map_err(|_| {
+                Failure::new(Stage::RustcIdentity, Kind::Utf8).output(output, false)
+            })?;
+            if !text
+                .lines()
+                .any(|line| line == format!("host: {}", host.target()))
+            {
+                return Err(
+                    Failure::new(Stage::RustcIdentity, Kind::HostMismatch).output(output, true)
+                );
+            }
+            Ok(())
+        }
+
+        fn installation_line(output: &std::process::Output) -> SetupResult<&str> {
+            facts::require_exit(Stage::VswhereDiscovery, output)?;
+            let text = std::str::from_utf8(&output.stdout).map_err(|_| {
+                Failure::new(Stage::VswhereDiscovery, Kind::Utf8).output(output, false)
+            })?;
+            let lines: Vec<_> = text.lines().filter(|line| !line.is_empty()).collect();
+            match lines.as_slice() {
+                [installation] => Ok(installation),
+                _ => Err(Failure::new(Stage::VswhereDiscovery, Kind::Shape).output(output, false)),
+            }
+        }
+
+        fn linker_banner(output: &std::process::Output) -> SetupResult<()> {
+            facts::require_exit(Stage::LinkerBanner, output)?;
+            if !output
+                .stdout
+                .windows(b"Microsoft".len())
+                .any(|s| s == b"Microsoft")
+                || !output
+                    .stdout
+                    .windows(b"Linker".len())
+                    .any(|s| s == b"Linker")
+            {
+                return Err(Failure::new(Stage::LinkerBanner, Kind::Banner).output(output, true));
+            }
+            Ok(())
+        }
+
+        fn pe_identity(header: &[u8], host: Host) -> SetupResult<()> {
+            if pe_matches(header, host) {
+                return Ok(());
+            }
+            let mut error = Failure::new(Stage::PeIdentity, Kind::Pe);
+            error.observed_read_bytes = Some(header.len());
+            error.observed_read_prefix_sha256 = Some(hash(header));
+            if header.len() >= 64 && &header[..2] == b"MZ" {
+                let offset = u32::from_le_bytes(header[60..64].try_into().unwrap()) as usize;
+                if offset.checked_add(6).is_some_and(|end| end <= header.len())
+                    && &header[offset..offset + 4] == b"PE\0\0"
+                {
+                    error.observed_pe_machine = Some(u16::from_le_bytes(
+                        header[offset + 4..offset + 6].try_into().unwrap(),
+                    ));
+                }
+            }
+            Err(error)
+        }
+
+        fn read_pe_header(path: &Path) -> SetupResult<Vec<u8>> {
+            let file = std::fs::File::open(path)
+                .map_err(|error| Failure::io(Stage::PeIdentity, Kind::Read, &error))?;
+            let mut header = Vec::new();
+            if let Err(error) = file.take(CAPTURE_BYTES as u64).read_to_end(&mut header) {
+                let mut failure = Failure::io(Stage::PeIdentity, Kind::Read, &error);
+                if !header.is_empty() {
+                    failure.observed_read_bytes = Some(header.len());
+                    failure.observed_read_prefix_sha256 = Some(hash(&header));
+                }
+                return Err(failure);
+            }
+            Ok(header)
         }
 
         pub(super) struct Prepared {
@@ -2238,26 +2912,22 @@ mod compiler_environment {
         pub(super) fn prepare(selected: &DiscoveryRoot) -> SetupResult<Prepared> {
             use std::os::windows::process::CommandExt;
             let host = host()?;
-            let system = checked_path(std::env::var_os("SystemRoot").ok_or(FAILURE)?)?;
+            let system = checked_path(std::env::var_os("SystemRoot").ok_or_else(|| {
+                Failure::new(Stage::SystemRoot, Kind::Environment).expected("SystemRoot")
+            })?)
+            .map_err(|error| error.at(Stage::SystemRoot))?;
             let rustc = Path::new(env!("CARGO")).with_file_name("rustc.exe");
             let mut identify = Command::new(&rustc);
             base(&mut identify, selected, &system)?;
             identify.arg("-vV");
-            let output = bounded(identify, 5)?;
-            if !output.status.success()
-                || !std::str::from_utf8(&output.stdout)
-                    .map_err(|_| FAILURE)?
-                    .lines()
-                    .any(|line| line == format!("host: {}", host.target()))
-            {
-                return Err(FAILURE);
-            }
+            let output = bounded_at(&mut identify, 5, Stage::RustcIdentity)?;
+            rustc_identity(&output, host)?;
 
             let vswhere = Path::new(&selected.value)
                 .join("Microsoft Visual Studio")
                 .join("Installer")
                 .join("vswhere.exe");
-            physical_file(&vswhere)?;
+            physical_file(&vswhere).map_err(|error| error.at(Stage::VswhereFile))?;
             let mut discover = Command::new(&vswhere);
             base(&mut discover, selected, &system)?;
             discover.args([
@@ -2270,61 +2940,91 @@ mod compiler_environment {
                 "installationPath",
                 "-utf8",
             ]);
-            let output = bounded(discover, 15)?;
-            if !output.status.success() {
-                return Err(FAILURE);
-            }
-            let text = std::str::from_utf8(&output.stdout).map_err(|_| FAILURE)?;
-            let lines: Vec<_> = text.lines().filter(|line| !line.is_empty()).collect();
-            let [installation] = lines.as_slice() else {
-                return Err(FAILURE);
-            };
-            let installation = physical_directory(&checked_path(OsString::from(installation))?)?;
+            let output = bounded_at(&mut discover, 15, Stage::VswhereDiscovery)?;
+            let installation = installation_line(&output)?;
+            let installation = physical_directory(
+                &checked_path(OsString::from(installation))
+                    .map_err(|error| error.at(Stage::Installation).output(&output, false))?,
+            )
+            .map_err(|error| error.at(Stage::Installation).output(&output, false))?;
             let directory = installation.join("Common7").join("Tools");
-            physical_file(&directory.join("VsDevCmd.bat"))?;
+            physical_file(&directory.join("VsDevCmd.bat"))
+                .map_err(|error| error.at(Stage::VsdevcmdFile))?;
             let cmd = system.join("System32").join("cmd.exe");
-            physical_file(&cmd)?;
+            physical_file(&cmd).map_err(|error| error.at(Stage::CmdFile))?;
             let mut setup = Command::new(&cmd);
             base(&mut setup, selected, &system)?;
             setup
                 .current_dir(&directory)
                 .args(["/d", "/u", "/v:off", "/s", "/c"])
                 .raw_arg(host.command());
-            let output = bounded(setup, 20)?;
-            if !output.status.success() {
-                return Err(FAILURE);
-            }
-            let fields = parse_utf16(&output.stdout, host)?;
-            let vc =
-                physical_directory(&checked_path(native(&fields.values["VCTOOLSINSTALLDIR"]))?)?;
-            let sdk = physical_directory(&checked_path(native(&fields.values["WINDOWSSDKDIR"]))?)?;
-            let canonical_vc = std::fs::canonicalize(&vc).map_err(|_| FAILURE)?;
-            let canonical_installation =
-                std::fs::canonicalize(&installation).map_err(|_| FAILURE)?;
+            let output = bounded_at(&mut setup, 20, Stage::VsdevcmdSetup)?;
+            facts::require_exit(Stage::VsdevcmdSetup, &output)?;
+            let fields =
+                parse_utf16(&output.stdout, host).map_err(|error| error.output(&output, false))?;
+            let vc = physical_directory(
+                &checked_path(native(&fields.values["VCTOOLSINSTALLDIR"])).map_err(|error| {
+                    error
+                        .at(Stage::VcDirectory)
+                        .expected("VCTOOLSINSTALLDIR")
+                        .output(&output, false)
+                })?,
+            )
+            .map_err(|error| {
+                error
+                    .at(Stage::VcDirectory)
+                    .expected("VCTOOLSINSTALLDIR")
+                    .output(&output, false)
+            })?;
+            let sdk = physical_directory(
+                &checked_path(native(&fields.values["WINDOWSSDKDIR"])).map_err(|error| {
+                    error
+                        .at(Stage::SdkDirectory)
+                        .expected("WINDOWSSDKDIR")
+                        .output(&output, false)
+                })?,
+            )
+            .map_err(|error| {
+                error
+                    .at(Stage::SdkDirectory)
+                    .expected("WINDOWSSDKDIR")
+                    .output(&output, false)
+            })?;
+            let canonical_vc = std::fs::canonicalize(&vc)
+                .map_err(|error| Failure::io(Stage::VcContainment, Kind::NativePath, &error))?;
+            let canonical_installation = std::fs::canonicalize(&installation)
+                .map_err(|error| Failure::io(Stage::VcContainment, Kind::NativePath, &error))?;
             if !canonical_vc
                 .starts_with(canonical_installation.join("VC").join("Tools").join("MSVC"))
             {
-                return Err(FAILURE);
+                return Err(Failure::new(Stage::VcContainment, Kind::Containment));
             }
             let linker = vc
                 .join("bin")
                 .join(format!("Host{}", host.architecture()))
                 .join(host.architecture())
                 .join("link.exe");
-            physical_file(&linker)?;
-            let mut header = Vec::new();
-            std::fs::File::open(&linker)
-                .map_err(|_| FAILURE)?
-                .take(CAPTURE_BYTES as u64)
-                .read_to_end(&mut header)
-                .map_err(|_| FAILURE)?;
-            if !pe_matches(&header, host) {
-                return Err(FAILURE);
-            }
-            let raw_lib = split_lib(&fields.values["LIB"])?;
+            physical_file(&linker).map_err(|error| error.at(Stage::LinkerFile))?;
+            let header = read_pe_header(&linker)?;
+            pe_identity(&header, host)?;
+            let raw_lib =
+                split_lib(&fields.values["LIB"]).map_err(|error| error.output(&output, false))?;
             let mut dirs = Vec::new();
             for units in &raw_lib {
-                dirs.push(physical_directory(&checked_path(native(units))?)?);
+                dirs.push(
+                    physical_directory(&checked_path(native(units)).map_err(|error| {
+                        error
+                            .at(Stage::LibDirectory)
+                            .expected("LIB")
+                            .output(&output, false)
+                    })?)
+                    .map_err(|error| {
+                        error
+                            .at(Stage::LibDirectory)
+                            .expected("LIB")
+                            .output(&output, false)
+                    })?,
+                );
             }
             // Paths came only from official setup. All inputs remain complete;
             // required Rust/MSVC system libraries must actually exist there.
@@ -2336,25 +3036,28 @@ mod compiler_environment {
                 "dbghelp.lib",
                 "msvcrt.lib",
             ] {
-                if !dirs
-                    .iter()
-                    .any(|dir| physical_file(&dir.join(name)).is_ok())
-                {
-                    return Err(FAILURE);
-                }
+                required_library(name, &dirs)?;
             }
             if !dirs.iter().any(|dir| dir.starts_with(&vc))
                 || !dirs.iter().any(|dir| dir.starts_with(&sdk))
             {
-                return Err(FAILURE);
+                return Err(Failure::new(Stage::LibraryRoots, Kind::LibraryRoots));
             }
-            let lib = std::env::join_paths(&dirs).map_err(|_| FAILURE)?;
+            let lib = std::env::join_paths(&dirs).map_err(|_| {
+                Failure::new(Stage::CompilerEnvironment, Kind::PathList).expected("LIB")
+            })?;
             let path = std::env::join_paths([
-                linker.parent().ok_or(FAILURE)?,
-                Path::new(env!("CARGO")).parent().ok_or(FAILURE)?,
+                linker
+                    .parent()
+                    .ok_or_else(|| Failure::new(Stage::CompilerEnvironment, Kind::NativePath))?,
+                Path::new(env!("CARGO"))
+                    .parent()
+                    .ok_or_else(|| Failure::new(Stage::CompilerEnvironment, Kind::NativePath))?,
                 system.join("System32").as_path(),
             ])
-            .map_err(|_| FAILURE)?;
+            .map_err(|_| {
+                Failure::new(Stage::CompilerEnvironment, Kind::PathList).expected("PATH")
+            })?;
             let prepared = Prepared {
                 host,
                 linker,
@@ -2364,19 +3067,8 @@ mod compiler_environment {
             let mut banner = Command::new(&prepared.linker);
             base(&mut banner, selected, &system)?;
             banner.envs(prepared_values(&prepared)).arg("/?");
-            let output = bounded(banner, 5)?;
-            if !output.status.success()
-                || !output
-                    .stdout
-                    .windows(b"Microsoft".len())
-                    .any(|s| s == b"Microsoft")
-                || !output
-                    .stdout
-                    .windows(b"Linker".len())
-                    .any(|s| s == b"Linker")
-            {
-                return Err(FAILURE);
-            }
+            let output = bounded_at(&mut banner, 5, Stage::LinkerBanner)?;
+            linker_banner(&output)?;
             Ok(prepared)
         }
         #[cfg(windows)]
@@ -2847,6 +3539,9 @@ mod compiler_environment {
             a.unwrap();
             b.unwrap();
             assert!(stdout.len() <= CAPTURE_BYTES && stderr.len() <= CAPTURE_BYTES);
+            if !status.as_ref().is_ok_and(|status| status.success()) {
+                facts::helper_failure(&stdout, &stderr);
+            }
             assert!(
                 status.unwrap().success(),
                 "installed MSVC source/guest helper failed"
@@ -2855,6 +3550,600 @@ mod compiler_environment {
                 std::str::from_utf8(&stdout)
                     .unwrap()
                     .contains("INSTALLED-MSVC:SOURCE-GUEST-COMPLETE")
+            );
+        }
+
+        const FACT_HELPER: &str = "gadgets::privacy_detector_tests::compiler_environment::msvc_setup::diagnostic_facts_native_fixture";
+        const FACT_MARKER: &str = "craftsman-msvc-stage-facts=";
+        const SYNTHETIC_CREDENTIAL: &str = "CRAFTSMAN_TEST_MSVC_STAGE_CREDENTIAL";
+
+        fn fact_mode(arguments: impl IntoIterator<Item = OsString>) -> Option<String> {
+            let values: Vec<_> = arguments
+                .into_iter()
+                .filter(|value| value.as_encoded_bytes().starts_with(FACT_MARKER.as_bytes()))
+                .collect();
+            match values.as_slice() {
+                [value] => value
+                    .to_str()
+                    .and_then(|value| value.strip_prefix(FACT_MARKER))
+                    .filter(|value| {
+                        matches!(
+                            *value,
+                            "streams"
+                                | "fields"
+                                | "overflow"
+                                | "sleep"
+                                | "env"
+                                | "credential-parent"
+                        )
+                    })
+                    .map(str::to_owned),
+                _ => None,
+            }
+        }
+
+        fn fact_command(mode: &str) -> Command {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--ignored", "--exact", FACT_HELPER, "--nocapture"])
+                .arg(format!("{FACT_MARKER}{mode}"))
+                .env_clear();
+            if let Some(root) = system_root() {
+                command.env("SystemRoot", root);
+            }
+            command
+        }
+
+        #[test]
+        #[ignore = "owned compiler diagnostic control; exactly one registered native marker required"]
+        fn diagnostic_facts_native_fixture() {
+            let Some(mode) = fact_mode(std::env::args_os()) else {
+                println!("MSVC-FACTS:NOT-SELECTED");
+                return;
+            };
+            match mode.as_str() {
+                "streams" => {
+                    std::io::stdout()
+                        .write_all(b"actual stdout\0\xff\x1b[31m\n")
+                        .unwrap();
+                    std::io::stderr()
+                        .write_all(b"actual stderr\0\xfe\n")
+                        .unwrap();
+                    std::io::stdout().flush().unwrap();
+                    std::io::stderr().flush().unwrap();
+                    std::process::exit(7);
+                }
+                "fields" => {
+                    let text = "UNREGISTERED=synthetic-private-field-value\r\n";
+                    let bytes: Vec<_> = text.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+                    std::io::stdout().write_all(&bytes).unwrap();
+                    std::io::stderr()
+                        .write_all(b"actual field probe stderr")
+                        .unwrap();
+                    std::io::stdout().flush().unwrap();
+                    std::io::stderr().flush().unwrap();
+                    std::process::exit(0);
+                }
+                "overflow" => {
+                    std::io::stdout()
+                        .write_all(&vec![b'x'; CAPTURE_BYTES + 1])
+                        .unwrap();
+                    std::io::stdout().flush().unwrap();
+                    std::process::exit(0);
+                }
+                "sleep" => {
+                    std::io::stdout()
+                        .write_all(b"actual diagnostic sleeper entered")
+                        .unwrap();
+                    std::io::stdout().flush().unwrap();
+                    std::thread::sleep(Duration::from_secs(30));
+                    std::process::exit(0);
+                }
+                "env" => {
+                    assert!(
+                        std::env::var_os(SYNTHETIC_CREDENTIAL).is_none(),
+                        "compiler child retained excluded credential"
+                    );
+                    std::io::stdout()
+                        .write_all(b"actual isolated credential absent")
+                        .unwrap();
+                    std::io::stderr()
+                        .write_all(b"actual isolated failure")
+                        .unwrap();
+                    std::io::stdout().flush().unwrap();
+                    std::io::stderr().flush().unwrap();
+                    std::process::exit(17);
+                }
+                "credential-parent" => {
+                    assert!(std::env::var_os(SYNTHETIC_CREDENTIAL).is_some());
+                    let home = std::env::var_os("HOME").unwrap();
+                    let selected = DiscoveryRoot::new("ProgramFiles(x86)", home.clone()).unwrap();
+                    let system = system_root()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from(&home));
+                    let mut child = fact_command("env");
+                    base_values(&mut child, &selected, &system, |name| {
+                        std::env::var_os(name)
+                    })
+                    .unwrap();
+                    let output = bounded_at(&mut child, 5, Stage::RustcIdentity).unwrap();
+                    assert_eq!(output.status.code(), Some(17));
+                    let failure = facts::output_failure(Stage::RustcIdentity, &output);
+                    println!("{failure:?}");
+                }
+                _ => unreachable!("registered diagnostic fixture mode"),
+            }
+        }
+
+        #[test]
+        fn diagnostic_fields_classify_whole_input_without_raw_unknown_values() {
+            let encode = |text: &str| {
+                text.encode_utf16()
+                    .flat_map(|u| u.to_le_bytes())
+                    .collect::<Vec<_>>()
+            };
+            let valid = [
+                r"VCToolsInstallDir=C:\VC\",
+                r"WindowsSdkDir=C:\SDK\",
+                "VSCMD_ARG_HOST_ARCH=x64",
+                "VSCMD_ARG_TGT_ARCH=x64",
+                r"LIB=C:\VC\lib;C:\SDK\lib",
+            ]
+            .join("\r\n");
+            for (bytes, expected) in [
+                (Vec::new(), Kind::Empty),
+                (vec![1], Kind::OddUtf16),
+                (vec![0; CAPTURE_BYTES + 2], Kind::Bounds),
+                (encode("nul\0"), Kind::Nul),
+                (encode("malformed"), Kind::Shape),
+                (
+                    encode("UNKNOWN=synthetic-private-field-value"),
+                    Kind::UnknownField,
+                ),
+                (
+                    encode(&format!("{valid}\r\nLIB=duplicate")),
+                    Kind::DuplicateField,
+                ),
+                (
+                    encode(&valid.replace(r"LIB=C:\VC\lib;C:\SDK\lib", "LIB=")),
+                    Kind::FieldValue,
+                ),
+            ] {
+                let error = parse_utf16(&bytes, Host::X64).err().unwrap();
+                assert_eq!(error.stage, Stage::Utf16Fields);
+                assert_eq!(error.kind, expected);
+                assert!(error.process.is_none());
+                let text = format!("{error:?}");
+                assert!(!text.contains("synthetic-private-field-value"));
+                assert!(!text.contains(&facts::hex(b"synthetic-private-field-value")));
+            }
+            let missing = valid
+                .lines()
+                .filter(|line| !line.starts_with("LIB="))
+                .collect::<Vec<_>>()
+                .join("\r\n");
+            let error = parse_utf16(&encode(&missing), Host::X64).err().unwrap();
+            assert_eq!(error.kind, Kind::MissingField);
+            assert_eq!(error.expected, Some("LIB"));
+            let error = parse_utf16(
+                &encode(&valid.replace("HOST_ARCH=x64", "HOST_ARCH=x86")),
+                Host::X64,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.kind, Kind::HostMismatch);
+            assert_eq!(error.expected, Some("VSCMD_ARG_HOST_ARCH"));
+            for host in [Host::X64, Host::X86, Host::Arm64] {
+                assert!(host.command().contains("1>&2"));
+                assert!(!host.command().contains("2>nul"));
+                assert!(!host.command().contains("echo %"));
+            }
+        }
+
+        #[test]
+        fn actual_diagnostic_process_exit_and_spawn_errors_are_observed() {
+            let mut command = fact_command("streams");
+            let output = bounded_at(&mut command, 5, Stage::RustcIdentity).unwrap();
+            assert_eq!(output.status.code(), Some(7));
+            let error = rustc_identity(&output, Host::X64).err().unwrap();
+            assert_eq!(error.stage, Stage::RustcIdentity);
+            assert_eq!(error.kind, Kind::Exit);
+            let process = error.process.as_ref().unwrap();
+            assert_eq!(process.exit_code, output.status.code());
+            assert_eq!(process.exit_success, Some(false));
+            assert_eq!(
+                process.stdout.as_ref().unwrap().captured_bytes,
+                Some(output.stdout.len())
+            );
+            assert_eq!(
+                process.stderr.as_ref().unwrap().original_sha256,
+                Some(hash(&output.stderr))
+            );
+            println!("ACTUAL-DIAGNOSTIC-NONZERO {error:?}");
+            let home = tempfile::tempdir().unwrap();
+            let mut absent = Command::new(home.path().join("owned-absent-tool"));
+            let error = bounded_at(&mut absent, 5, Stage::VswhereDiscovery)
+                .err()
+                .unwrap();
+            assert_eq!(error.stage, Stage::VswhereDiscovery);
+            assert_eq!(error.kind, Kind::Spawn);
+            assert!(error.raw_os_error.is_some());
+            let process = error.process.as_ref().unwrap();
+            assert!(!process.spawn_returned_child);
+            assert!(process.exit_code.is_none() && process.exit_success.is_none());
+            assert!(process.stdout.is_none() && process.stderr.is_none());
+            println!("ACTUAL-DIAGNOSTIC-SPAWN {error:?}");
+        }
+
+        #[test]
+        fn actual_diagnostic_overflow_and_timeout_do_not_fabricate_full_size_or_exit() {
+            let mut command = fact_command("overflow");
+            let error = bounded_at(&mut command, 5, Stage::VswhereDiscovery)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, Kind::CaptureLimit);
+            let stream = error.process.as_ref().unwrap().stdout.as_ref().unwrap();
+            assert_eq!(stream.captured_bytes, Some(CAPTURE_BYTES + 1));
+            assert!(stream.reached_capture_limit && stream.excerpt_cut);
+            assert!(
+                !stream.actual_eof
+                    && stream.original_size.is_none()
+                    && stream.original_sha256.is_none()
+            );
+            let excerpt = stream
+                .excerpt_hex
+                .as_ref()
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            // Libtest itself emits its original preamble before the helper body.
+            // Keep it in the whole capture and hash; never trim/normalize it.
+            let prefix_len = excerpt
+                .iter()
+                .rposition(|byte| *byte != b'x')
+                .map_or(0, |at| at + 1);
+            assert!(prefix_len < excerpt.len());
+            assert!(excerpt[prefix_len..].iter().all(|byte| *byte == b'x'));
+            let mut expected = excerpt[..prefix_len].to_vec();
+            expected.resize(CAPTURE_BYTES + 1, b'x');
+            assert_eq!(stream.captured_prefix_sha256, Some(hash(&expected)));
+            println!("ACTUAL-DIAGNOSTIC-OVERFLOW {error:?}");
+            let mut command = fact_command("sleep");
+            let started = Instant::now();
+            let error = bounded_at(&mut command, 3, Stage::VsdevcmdSetup)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, Kind::Timeout);
+            assert_eq!(error.stage, Stage::VsdevcmdSetup);
+            let process = error.process.as_ref().unwrap();
+            assert!(process.spawn_returned_child);
+            assert!(process.exit_code.is_none() && process.exit_success.is_none());
+            assert!(process.cleanup.as_ref().unwrap().try_wait_returned_status);
+            assert!(started.elapsed() < Duration::from_secs(9));
+            println!("ACTUAL-DIAGNOSTIC-TIMEOUT {error:?}");
+        }
+
+        #[test]
+        fn actual_unknown_field_capture_withholds_contents_and_keeps_complete_hash() {
+            let mut command = fact_command("fields");
+            let output = bounded_at(&mut command, 5, Stage::VsdevcmdSetup).unwrap();
+            assert!(output.status.success());
+            let error = parse_utf16(&output.stdout, Host::X64)
+                .err()
+                .unwrap()
+                .output(&output, false);
+            assert_eq!(error.kind, Kind::UnknownField);
+            let stdout = error.process.as_ref().unwrap().stdout.as_ref().unwrap();
+            assert!(stdout.contents_withheld && stdout.excerpt_hex.is_none());
+            assert_eq!(stdout.original_size, Some(output.stdout.len()));
+            assert_eq!(stdout.original_sha256, Some(hash(&output.stdout)));
+            let text = format!("{error:?}");
+            assert!(!text.contains("synthetic-private-field-value"));
+            let private: Vec<_> = "synthetic-private-field-value"
+                .encode_utf16()
+                .flat_map(|u| u.to_le_bytes())
+                .collect();
+            assert!(!text.contains(&facts::hex(&private)));
+            println!("ACTUAL-DIAGNOSTIC-WITHHELD {error:?}");
+        }
+
+        #[test]
+        fn actual_setup_failure_capture_excludes_parent_synthetic_credentials() {
+            let home = tempfile::tempdir().unwrap();
+            let mut command = fact_command("credential-parent");
+            let credential = "synthetic-credential-must-not-reach-compiler";
+            command.env(SYNTHETIC_CREDENTIAL, credential);
+            for name in ["HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"] {
+                command.env(name, home.path());
+            }
+            let output = bounded_at(&mut command, 10, Stage::Control).unwrap();
+            assert!(output.status.success());
+            let stdout = std::str::from_utf8(&output.stdout).unwrap();
+            assert!(stdout.contains("MSVC-STAGE-FACTS:"));
+            assert!(
+                stdout.contains("actual")
+                    || stdout.contains(&facts::hex(b"actual isolated credential absent"))
+            );
+            for bytes in [&output.stdout, &output.stderr] {
+                assert!(
+                    !bytes
+                        .windows(credential.len())
+                        .any(|part| part == credential.as_bytes())
+                );
+                assert!(
+                    !bytes
+                        .windows(facts::hex(credential.as_bytes()).len())
+                        .any(|part| part == facts::hex(credential.as_bytes()).as_bytes())
+                );
+            }
+        }
+
+        #[test]
+        fn native_paths_libraries_and_pe_failures_use_fixed_identifiers_and_actual_reads() {
+            let home = tempfile::tempdir().unwrap();
+            let error = physical_file(&home.path().join("owned-absent-vswhere"))
+                .err()
+                .unwrap()
+                .at(Stage::VswhereFile);
+            assert_eq!(error.stage, Stage::VswhereFile);
+            assert_eq!(error.kind, Kind::Metadata);
+            assert!(error.raw_os_error.is_some());
+            assert_eq!(
+                checked_path(OsString::from("relative-tool"))
+                    .err()
+                    .unwrap()
+                    .kind,
+                Kind::NativePath
+            );
+            assert_eq!(physical_directory(home.path()).unwrap(), home.path());
+            let error = required_library("kernel32.lib", &[home.path().to_path_buf()])
+                .err()
+                .unwrap();
+            assert_eq!(error.stage, Stage::RequiredLibrary);
+            assert_eq!(error.expected, Some("kernel32.lib"));
+            assert_eq!(error.library_observations.len(), 1);
+            assert!(error.library_observations[0].raw_os_error.is_some());
+            assert!(error.process.is_none());
+            std::fs::write(home.path().join("kernel32.lib"), b"").unwrap();
+            let error = required_library("kernel32.lib", &[home.path().to_path_buf()])
+                .err()
+                .unwrap();
+            assert_eq!(error.library_observations[0].kind, Kind::EmptyFile);
+            assert!(error.library_observations[0].raw_os_error.is_none());
+            std::fs::write(home.path().join("kernel32.lib"), b"owned synthetic library").unwrap();
+            required_library("kernel32.lib", &[home.path().to_path_buf()]).unwrap();
+            let header = [0u8; 65];
+            let error = pe_identity(&header, Host::X64).err().unwrap();
+            assert_eq!(error.kind, Kind::Pe);
+            assert_eq!(error.observed_read_bytes, Some(header.len()));
+            assert_eq!(error.observed_read_prefix_sha256, Some(hash(&header)));
+            assert!(error.observed_pe_machine.is_none());
+        }
+
+        #[test]
+        fn helper_failure_frame_preserves_all_actual_bounded_binary_streams() {
+            let mut command = fact_command("streams");
+            let output = bounded_at(&mut command, 5, Stage::Control).unwrap();
+            let record = facts::helper_failure_record(&output.stdout, &output.stderr);
+            assert_eq!(record["stdout"]["original_size"], output.stdout.len());
+            assert_eq!(record["stderr"]["original_sha256"], hash(&output.stderr));
+            assert_eq!(record["stdout"]["excerpt_hex"], facts::hex(&output.stdout));
+            assert_eq!(record["stderr"]["excerpt_hex"], facts::hex(&output.stderr));
+            assert_eq!(record["stdout"]["excerpt_cut"], false);
+            let encoded = record.to_string();
+            assert!(encoded.is_ascii());
+            assert!(!encoded.as_bytes().contains(&27));
+            facts::helper_failure(&output.stdout, &output.stderr);
+        }
+
+        #[test]
+        fn unmarked_unknown_duplicate_and_malformed_fact_helpers_return_before_environment() {
+            for markers in [
+                vec![],
+                vec![OsString::from(format!("{FACT_MARKER}unknown"))],
+                vec![
+                    OsString::from(format!("{FACT_MARKER}credential-parent")),
+                    OsString::from(format!("{FACT_MARKER}credential-parent")),
+                ],
+            ] {
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--ignored", "--exact", FACT_HELPER, "--nocapture"])
+                    .args(markers)
+                    .env_clear()
+                    .env("HOME", "relative-poisoned-unselected-root");
+                if let Some(root) = system_root() {
+                    command.env("SystemRoot", root);
+                }
+                let output = bounded(command, 5).unwrap();
+                assert!(output.status.success());
+                assert!(
+                    std::str::from_utf8(&output.stdout)
+                        .unwrap()
+                        .contains("MSVC-FACTS:NOT-SELECTED")
+                );
+            }
+            let good = OsString::from(format!("{FACT_MARKER}credential-parent"));
+            #[cfg(unix)]
+            let malformed = {
+                use std::os::unix::ffi::OsStringExt;
+                let mut bytes = FACT_MARKER.as_bytes().to_vec();
+                bytes.push(255);
+                OsString::from_vec(bytes)
+            };
+            #[cfg(windows)]
+            let malformed = {
+                use std::os::windows::ffi::OsStringExt;
+                let mut units: Vec<_> = FACT_MARKER.encode_utf16().collect();
+                units.push(0xd800);
+                OsString::from_wide(&units)
+            };
+            assert!(fact_mode([good.clone(), malformed.clone()]).is_none());
+            assert!(fact_mode([malformed.clone(), good]).is_none());
+            assert!(fact_mode([malformed]).is_none());
+        }
+
+        #[test]
+        fn diagnostic_capture_retries_interrupted_reads_without_claiming_missing_bytes() {
+            struct OnceInterrupted {
+                first: bool,
+                bytes: std::io::Cursor<Vec<u8>>,
+            }
+            impl Read for OnceInterrupted {
+                fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                    if self.first {
+                        self.first = false;
+                        return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+                    }
+                    std::io::Read::read(&mut self.bytes, output)
+                }
+            }
+            let progress = Progress::default();
+            let bytes = capture(
+                OnceInterrupted {
+                    first: true,
+                    bytes: std::io::Cursor::new(b"actual synthetic reader bytes".to_vec()),
+                },
+                progress.clone(),
+            )
+            .unwrap();
+            assert_eq!(bytes, b"actual synthetic reader bytes");
+            let snapshot = snapshot(&progress).unwrap();
+            assert_eq!(snapshot.original_sha256, Some(hash(&bytes)));
+            assert!(snapshot.actual_eof && !snapshot.reached_capture_limit);
+        }
+
+        #[test]
+        fn diagnostic_read_failures_preserve_only_actual_prefix_and_optional_os_error() {
+            struct PrefixThenError {
+                done: bool,
+            }
+            impl Read for PrefixThenError {
+                fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                    if self.done {
+                        return Err(std::io::Error::other("synthetic read failure"));
+                    }
+                    self.done = true;
+                    output[..3].copy_from_slice(b"abc");
+                    Ok(3)
+                }
+            }
+            let progress = Progress::default();
+            let error = capture(PrefixThenError { done: false }, progress.clone())
+                .err()
+                .unwrap();
+            assert!(error.raw_os_error().is_none());
+            let prefix = snapshot(&progress).unwrap();
+            assert_eq!(prefix.captured_bytes, Some(3));
+            assert_eq!(prefix.captured_prefix_sha256, Some(hash(b"abc")));
+            assert!(prefix.original_size.is_none() && prefix.original_sha256.is_none());
+            assert!(!prefix.actual_eof);
+            let home = tempfile::tempdir().unwrap();
+            let error = read_pe_header(&home.path().join("owned-absent-header"))
+                .err()
+                .unwrap();
+            assert_eq!(error.stage, Stage::PeIdentity);
+            assert_eq!(error.kind, Kind::Read);
+            assert!(error.raw_os_error.is_some());
+            assert!(error.observed_read_bytes.is_none());
+            let header = home.path().join("owned-header");
+            std::fs::write(&header, b"actual bounded header").unwrap();
+            assert_eq!(read_pe_header(&header).unwrap(), b"actual bounded header");
+        }
+
+        #[test]
+        fn all_fixed_diagnostic_identifiers_serialize_without_admitting_success() {
+            let stages = [
+                Stage::Host,
+                Stage::SystemRoot,
+                Stage::RustcIdentity,
+                Stage::VswhereFile,
+                Stage::VswhereDiscovery,
+                Stage::Installation,
+                Stage::VsdevcmdFile,
+                Stage::CmdFile,
+                Stage::VsdevcmdSetup,
+                Stage::Utf16Fields,
+                Stage::NativePath,
+                Stage::File,
+                Stage::Directory,
+                Stage::VcDirectory,
+                Stage::SdkDirectory,
+                Stage::VcContainment,
+                Stage::LinkerFile,
+                Stage::PeIdentity,
+                Stage::LibList,
+                Stage::LibDirectory,
+                Stage::RequiredLibrary,
+                Stage::LibraryRoots,
+                Stage::CompilerEnvironment,
+                Stage::LinkerBanner,
+                Stage::Control,
+            ];
+            let kinds = [
+                Kind::Host,
+                Kind::Environment,
+                Kind::Spawn,
+                Kind::Wait,
+                Kind::Timeout,
+                Kind::CaptureReader,
+                Kind::CaptureRead,
+                Kind::CaptureDrain,
+                Kind::CaptureJoin,
+                Kind::CaptureLimit,
+                Kind::Exit,
+                Kind::Empty,
+                Kind::Bounds,
+                Kind::Utf8,
+                Kind::OddUtf16,
+                Kind::Nul,
+                Kind::Shape,
+                Kind::UnknownField,
+                Kind::MissingField,
+                Kind::DuplicateField,
+                Kind::FieldValue,
+                Kind::HostMismatch,
+                Kind::NativePath,
+                Kind::Metadata,
+                Kind::NotFile,
+                Kind::Symlink,
+                Kind::EmptyFile,
+                Kind::NotDirectory,
+                Kind::Containment,
+                Kind::Read,
+                Kind::Pe,
+                Kind::Library,
+                Kind::LibraryRoots,
+                Kind::PathList,
+                Kind::Banner,
+            ];
+            for stage in stages {
+                for kind in kinds {
+                    let error = Failure::new(stage, kind);
+                    let encoded = serde_json::to_value(&error).unwrap();
+                    assert_eq!(encoded["fixed"], FAILURE);
+                    assert!(
+                        encoded["process"].is_null() && encoded["observed_read_bytes"].is_null()
+                    );
+                }
+            }
+            let progress = Progress::default();
+            let snapshot = snapshot(&progress).unwrap();
+            assert!(snapshot.captured_bytes.is_none() && snapshot.original_size.is_none());
+            assert!(
+                snapshot.original_sha256.is_none() && snapshot.captured_prefix_sha256.is_none()
+            );
+            let mut command = fact_command("streams");
+            let output = bounded_at(&mut command, 5, Stage::Control).unwrap();
+            assert_eq!(
+                installation_line(&output).err().unwrap().stage,
+                Stage::VswhereDiscovery
+            );
+            assert_eq!(
+                linker_banner(&output).err().unwrap().stage,
+                Stage::LinkerBanner
             );
         }
     }
