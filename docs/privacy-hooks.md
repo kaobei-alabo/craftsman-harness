@@ -226,6 +226,16 @@ before string decoding. The reproduced marker failure remains retained;
 Windows-only path controls await native execution. Original assertions and
 the preexisting detector selector remain unchanged.
 
+Run
+[44645950249](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44645950249)
+passed those compiler input controls and all Windows vault/restoration cases,
+but the detector still invoked the incompatible linker. Passing the installation
+root alone was insufficient. The new fixture preparation uses installed Microsoft
+tools to select the actual host MSVC linker, library paths and compiler search
+path, while keeping WASIp2 settings and guest capabilities unchanged. This
+candidate needs independent review and fresh complete Windows/all-four proof;
+the failed run remains preserved and normal privacy stays inactive.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).

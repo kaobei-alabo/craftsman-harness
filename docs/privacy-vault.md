@@ -184,3 +184,8 @@ provide raw numerical syscall/metadata output, and none is inferred. The run
 still fails the separate detector compiler fixture; its narrow compiler-discovery
 correction needs new complete native proof before merge and delivery. Existing
 vault behavior and key/ACL/normal-session integration limits remain unchanged.
+
+Run44645950249 also passes all applicable vault/restoration/opening cases in
+both Windows modes. Its sole native failure remains the separate detector host
+compiler. The explicit installed-MSVC fixture candidate does not change this
+vault; fresh full native delivery and actual key/consumer integration stay open.

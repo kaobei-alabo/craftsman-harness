@@ -40,6 +40,10 @@ Corrected-first run44629784168 passed the opening cases in both Windows modes,
 but its detector source build selected an incompatible `link.exe`. The isolated
 compiler-discovery correction is locally tested and awaits fresh complete native
 proof; neither test preparation nor source review activates normal privacy.
+Run44645950249 again passes the native opening and compiler input controls,
+but its Windows detector still selects the incompatible linker. The fixture now
+prepares explicit installed MSVC host linker/library inputs for a new validation
+run; existing WASIp2 settings, guest capabilities and normal defaults stay fixed.
 
 ## Enable the agent surface
 
