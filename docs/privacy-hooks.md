@@ -342,6 +342,14 @@ remain unchanged. Neither this input repair nor local controls establish the
 installed Windows setup cause; reviewed fresh native/full and separate main
 proof remain required before merge or installation.
 
+The five original Windows cases and their applicable observation controls pass
+in that run. Their earlier failed evidence remains separate and their causes
+remain unknown. Successful runner-owned observation packets were not published,
+so current passing assertions do not expose their native field values or prove
+a general process/filesystem fix. The remaining work is the measured builtin
+input correction, bounded tail comparison and genuine installed setup/guest
+validation; normal-session privacy remains inactive.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).

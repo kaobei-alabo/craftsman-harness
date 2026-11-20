@@ -72,6 +72,13 @@ one-shot observation tests preserve actual stage/bytes, child exit and stream
 completion without replacing their old assertions. Local controls do not
 establish Windows causes or usable compiler/guest execution; fresh combined
 native validation and independent main proof still gate delivery.
+Run44809143594 passes the five original Windows cases, but both setup terminals
+still refuse empty fields. The new builtin control exits7 with a trailing space
+from its fixed echo input. Only that input byte is removed; the strict output
+assertion remains. Four compact no-IF and separate-line guarded tail controls
+share the existing command budget and cannot supply real compiler fields.
+Fresh reviewed Windows execution must verify these inputs and any supported
+setup differential; local controls do not establish an installed setup repair.
 
 ## Enable the agent surface
 
