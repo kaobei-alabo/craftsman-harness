@@ -1349,6 +1349,17 @@ mod compiler_environment {
             {
                 return Err("invalid compiler discovery root");
             }
+            #[cfg(windows)]
+            {
+                use std::path::{Component, Prefix};
+                let mut components = Path::new(&value).components();
+                if matches!(components.next(), Some(Component::Prefix(prefix))
+                    if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+                    && !matches!(components.next(), Some(Component::RootDir))
+                {
+                    return Err("invalid compiler discovery root");
+                }
+            }
             Ok(Self { name, value })
         }
 
@@ -1474,7 +1485,15 @@ mod compiler_environment {
     fn probe_mode(arguments: impl IntoIterator<Item = OsString>) -> Option<&'static str> {
         let values: Vec<_> = arguments
             .into_iter()
-            .filter_map(|argument| {
+            // The registered ASCII prefix is self-synchronizing in the native
+            // encoding. Count it before UTF-8 conversion so a malformed
+            // registered companion cannot disappear beside a valid marker.
+            .filter(|argument| {
+                argument
+                    .as_encoded_bytes()
+                    .starts_with(PROBE_MARKER.as_bytes())
+            })
+            .map(|argument| {
                 argument
                     .to_str()
                     .and_then(|argument| argument.strip_prefix(PROBE_MARKER))
@@ -1482,8 +1501,8 @@ mod compiler_environment {
             })
             .collect();
         match values.as_slice() {
-            [value] if value == "parent" => Some("parent"),
-            [value] if value == "snapshot" => Some("snapshot"),
+            [Some(value)] if value == "parent" => Some("parent"),
+            [Some(value)] if value == "snapshot" => Some("snapshot"),
             _ => None,
         }
     }
@@ -1803,5 +1822,74 @@ mod compiler_environment {
         let returned = output(execute).await;
         assert!(returned.status.success());
         assert!(returned.stdout.is_empty() && returned.stderr.is_empty());
+    }
+
+    #[test]
+    fn compiler_native_marker_counts_malformed_registered_companions_before_decoding() {
+        #[cfg(unix)]
+        let malformed = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = format!("{PROBE_MARKER}unknown").into_bytes();
+            bytes.push(0xff);
+            OsString::from_vec(bytes)
+        };
+        #[cfg(windows)]
+        let malformed = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units: Vec<_> = format!("{PROBE_MARKER}unknown").encode_utf16().collect();
+            units.push(0xd800);
+            OsString::from_wide(&units)
+        };
+        assert!(malformed.to_str().is_none());
+        for arguments in [
+            vec![
+                OsString::from(format!("{PROBE_MARKER}parent")),
+                malformed.clone(),
+            ],
+            vec![
+                malformed.clone(),
+                OsString::from(format!("{PROBE_MARKER}snapshot")),
+            ],
+            vec![malformed],
+        ] {
+            assert_eq!(probe_mode(arguments), None);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_compiler_discovery_drive_roots_require_a_physical_separator_before_transfer() {
+        for incomplete in [r"C:", r"\\?\C:", r"\Program Files"] {
+            let value = OsString::from(incomplete);
+            assert!(DiscoveryRoot::new("ProgramFiles(x86)", value.clone()).is_err());
+            assert!(
+                transferred(|name| { (name == TRANSPORT_X86).then(|| value.clone()) }).is_err()
+            );
+            let mut consulted = Vec::new();
+            assert!(
+                discovery(|name| {
+                    consulted.push(name.to_owned());
+                    Some(value.clone())
+                })
+                .is_err()
+            );
+            assert_eq!(consulted, ["ProgramFiles(x86)"]);
+        }
+        for complete in [
+            r"C:\",
+            r"\\?\C:\",
+            r"C:\Program Files (x86)",
+            r"\\?\C:\Program Files (x86)",
+            r"\\server\share",
+            r"\\?\UNC\server\share",
+        ] {
+            let value = OsString::from(complete);
+            let selected = DiscoveryRoot::new("ProgramFiles(x86)", value.clone()).unwrap();
+            assert_eq!(selected.value.as_encoded_bytes(), value.as_encoded_bytes());
+            let translated = transferred(|name| (name == TRANSPORT_X86).then(|| value.clone()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(translated, selected);
+        }
     }
 }

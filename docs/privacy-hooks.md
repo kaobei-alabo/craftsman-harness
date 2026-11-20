@@ -219,6 +219,13 @@ frozen validation scripts remain unchanged. Actual isolated-child and native
 compiler probes pass locally; fresh complete Windows and all-four delivery
 proof remain required. This compiler preparation does not select privacy hooks.
 
+Independent compiler review also identified incomplete verbatim-drive and
+malformed native-marker inputs omitted by the new fixture checks. The narrow
+correction requires complete drive roots and counts registered native prefixes
+before string decoding. The reproduced marker failure remains retained;
+Windows-only path controls await native execution. Original assertions and
+the preexisting detector selector remain unchanged.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).

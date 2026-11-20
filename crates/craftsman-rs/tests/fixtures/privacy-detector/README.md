@@ -99,6 +99,15 @@ and native-linker probes are macOS evidence; fresh complete Windows validation
 is required for this discovery preparation. SDK/WIT/source/dependency locks,
 production behavior and the frozen CI/verification scripts are unchanged.
 
+Independent review found two gaps in the new compiler input checks. Drive and
+verbatim-drive discovery roots now require their physical root separator;
+incomplete roots refuse without normalization or fallback. The new compiler
+probe counts registered native marker prefixes before decoding their values,
+so a malformed native companion cannot disappear beside a valid marker.
+The first failed native-marker control is retained. Windows path controls need
+actual Windows execution; the preexisting detector selector and old test bodies
+remain unchanged.
+
 For create-only detailed records, select the same compiled native test executable
 with `--ignored --exact gadgets::privacy_detector_tests::privacy_detector_native_fixture
 --nocapture craftsman-privacy-detector=collect`. The actual executable path is
