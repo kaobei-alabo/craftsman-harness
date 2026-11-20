@@ -44,6 +44,10 @@ Run44645950249 again passes the native opening and compiler input controls,
 but its Windows detector still selects the incompatible linker. The fixture now
 prepares explicit installed MSVC host linker/library inputs for a new validation
 run; existing WASIp2 settings, guest capabilities and normal defaults stay fixed.
+Run44668461580 fails both Windows detector preparation terminals before Cargo,
+while the old storage and compiler-input controls pass. Test-only stage facts
+now preserve the bounded native error observations; the actual setup cause and
+successful Windows detector execution remain unproved.
 
 ## Enable the agent surface
 

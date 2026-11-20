@@ -189,3 +189,7 @@ Run44645950249 also passes all applicable vault/restoration/opening cases in
 both Windows modes. Its sole native failure remains the separate detector host
 compiler. The explicit installed-MSVC fixture candidate does not change this
 vault; fresh full native delivery and actual key/consumer integration stay open.
+
+Run44668461580 still passes all77 applicable Windows private cases per mode.
+Its two failures are separate detector preparation terminals. The bounded
+compiler stage diagnostics leave this vault and its integration limits unchanged.

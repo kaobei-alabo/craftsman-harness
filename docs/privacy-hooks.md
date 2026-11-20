@@ -236,6 +236,15 @@ path, while keeping WASIp2 settings and guest capabilities unchanged. This
 candidate needs independent review and fresh complete Windows/all-four proof;
 the failed run remains preserved and normal privacy stays inactive.
 
+Run
+[44668461580](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44668461580)
+passes the existing Windows storage and compiler-input cases, but both detector
+terminals fail during MSVC preparation before Cargo. The internal stage was
+hidden by the fixed error. New test-only diagnostics retain bounded actual
+stage, exit, IO and captured-output facts without exposing a raw environment or
+changing compiler grants. They do not identify or fix the native cause yet;
+fresh Windows evidence must establish that cause before a supported repair.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).
