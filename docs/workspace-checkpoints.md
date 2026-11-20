@@ -43,6 +43,13 @@ Background mutation tickets retain the shared original observations after the
 main turn returns. One checkpoint per turn, thread switches and the existing
 20-checkpoint retention policy remain.
 
+A checkpoint's creation time is fixed by its first successful stored insert.
+Later saves of the same checkpoint update its summary, coverage and captured
+file contents while preserving that timestamp. Updates therefore keep their
+original creation order and cannot move an old checkpoint outside the existing
+retention window. A failed transaction retains the earlier record; a new
+checkpoint receives its own creation time.
+
 Approved gadget filesystem writes enroll their exact target after the existing
 capability and per-write approval checks. Checkpoint work shares the gadget's
 existing call clock; read-only gadget calls take no file snapshots. The app-only
