@@ -99,6 +99,35 @@ and native-linker probes are macOS evidence; fresh complete Windows validation
 is required for this discovery preparation. SDK/WIT/source/dependency locks,
 production behavior and the frozen CI/verification scripts are unchanged.
 
+Run44645950249 showed that passing only the validated ProgramFiles discovery
+root still let the native host build scripts select a filesystem-link utility.
+That failed run remains failed. The Windows trusted compiler child now performs
+bounded installed-tool preparation: official `vswhere` selects the actual C++
+installation, and its actual `Common7/Tools/VsDevCmd.bat` initializes the native
+host architecture in an isolated `cmd /d /u /v:off` process. The command is fixed
+text with a static batch basename and API-selected current directory; no
+discovered pathname or caller text is interpolated as shell code. AutoRun and
+user stdin/environment inheritance are disabled.
+
+Complete UTF-16LE output supplies only compiler fields. Missing, malformed,
+duplicate, oversized or wrong-host setup refuses before Cargo. The actual
+VCTools path, native PE machine, MSVC linker identity and existing system/CRT
+libraries are validated. A final LIB separator contributes no directory and is
+never forwarded as an empty search path; leading/interior empty entries refuse.
+Owned setup commands attempt bounded kill/reap on early failures and timeouts.
+Cargo receives an absolute installed MSVC `link.exe`
+through its explicit **host-target** linker setting, actual LIB paths and a
+restricted compiler PATH. WASIp2's linker/flags/source, SDK/WIT/locks and the
+original240s/64KiB/5s supervisor/30s guest limits remain unchanged. Helpers and
+guests receive no compiler LIB/linker variables.
+
+Mac tests exercise native encoding/selection/capture and prove that the pinned
+Cargo host-target setting controls a real host build script during a WASIp2
+build. They are not Windows execution proof. A new required Windows source/guest
+case and the unchanged original supervisor must both pass fresh full native CI;
+unknown setup does not fall back to GNU link. No missing-LIB/kernel32 root-cause,
+toolset/SDK version guess, download or normal privacy activation is inferred.
+
 Independent review found two gaps in the new compiler input checks. Drive and
 verbatim-drive discovery roots now require their physical root separator;
 incomplete roots refuse without normalization or fallback. The new compiler

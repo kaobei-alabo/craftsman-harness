@@ -1429,10 +1429,12 @@ mod compiler_environment {
     pub(super) fn build_environment() -> Vec<(&'static str, OsString)> {
         #[cfg(windows)]
         {
-            transferred(|name| std::env::var_os(name))
+            let selected = transferred(|name| std::env::var_os(name))
                 .expect("invalid compiler discovery transfer")
                 .or_else(host_discovery)
-                .expect("compiler discovery root unavailable")
+                .expect("compiler discovery root unavailable");
+            msvc_setup::prepare(&selected)
+                .expect("installed MSVC compiler preparation failed")
                 .environment()
         }
         #[cfg(not(windows))]
@@ -1890,6 +1892,970 @@ mod compiler_environment {
                 .unwrap()
                 .unwrap();
             assert_eq!(translated, selected);
+        }
+    }
+
+    mod msvc_setup {
+        use super::*;
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+
+        type SetupResult<T> = Result<T, &'static str>;
+        const FAILURE: &str = "installed MSVC compiler preparation failed";
+        const CAPTURE_BYTES: usize = 64 * 1024;
+        const MAX_PATH_UNITS: usize = 16 * 1024;
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Host {
+            X64,
+            X86,
+            Arm64,
+        }
+        impl Host {
+            fn architecture(self) -> &'static str {
+                match self {
+                    Self::X64 => "x64",
+                    Self::X86 => "x86",
+                    Self::Arm64 => "arm64",
+                }
+            }
+            fn target(self) -> &'static str {
+                match self {
+                    Self::X64 => "x86_64-pc-windows-msvc",
+                    Self::X86 => "i686-pc-windows-msvc",
+                    Self::Arm64 => "aarch64-pc-windows-msvc",
+                }
+            }
+            fn linker_key(self) -> &'static str {
+                match self {
+                    Self::X64 => "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER",
+                    Self::X86 => "CARGO_TARGET_I686_PC_WINDOWS_MSVC_LINKER",
+                    Self::Arm64 => "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER",
+                }
+            }
+            #[cfg(windows)]
+            fn component(self) -> &'static str {
+                match self {
+                    Self::X64 | Self::X86 => "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                    Self::Arm64 => "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+                }
+            }
+            fn pe_machine(self) -> u16 {
+                match self {
+                    Self::X64 => 0x8664,
+                    Self::X86 => 0x14c,
+                    Self::Arm64 => 0xaa64,
+                }
+            }
+            fn command(self) -> &'static str {
+                // No discovered pathname or caller shell text is interpolated.
+                // The API sets current_dir to the checked Common7/Tools directory.
+                match self {
+                    Self::X64 => {
+                        "\"call VsDevCmd.bat -no_logo -arch=x64 -host_arch=x64 >nul 2>nul & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                    }
+                    Self::X86 => {
+                        "\"call VsDevCmd.bat -no_logo -arch=x86 -host_arch=x86 >nul 2>nul & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                    }
+                    Self::Arm64 => {
+                        "\"call VsDevCmd.bat -no_logo -arch=arm64 -host_arch=arm64 >nul 2>nul & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                    }
+                }
+            }
+        }
+
+        struct SetupFields {
+            values: BTreeMap<String, Vec<u16>>,
+        }
+        fn parse_utf16(bytes: &[u8], host: Host) -> SetupResult<SetupFields> {
+            if bytes.is_empty() || bytes.len() > CAPTURE_BYTES || bytes.len() % 2 != 0 {
+                return Err(FAILURE);
+            }
+            let mut units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            if units.first() == Some(&0xfeff) {
+                units.remove(0);
+            }
+            if units.contains(&0) {
+                return Err(FAILURE);
+            }
+            let mut values = BTreeMap::new();
+            for raw in units.split(|u| *u == 10) {
+                let line = raw.strip_suffix(&[13]).unwrap_or(raw);
+                if line.is_empty() {
+                    continue;
+                }
+                let split = line.iter().position(|u| *u == 61).ok_or(FAILURE)?;
+                let name: String = line[..split]
+                    .iter()
+                    .map(|u| u8::try_from(*u).map(char::from))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| FAILURE)?;
+                let name = name.to_ascii_uppercase();
+                if !matches!(
+                    name.as_str(),
+                    "VCTOOLSINSTALLDIR"
+                        | "WINDOWSSDKDIR"
+                        | "VSCMD_ARG_HOST_ARCH"
+                        | "VSCMD_ARG_TGT_ARCH"
+                        | "LIB"
+                        | "LIBPATH"
+                ) {
+                    return Err(FAILURE);
+                }
+                let value = line[split + 1..].to_vec();
+                if value.is_empty()
+                    || value.len() > MAX_PATH_UNITS
+                    || values.insert(name, value).is_some()
+                {
+                    return Err(FAILURE);
+                }
+            }
+            for name in [
+                "VCTOOLSINSTALLDIR",
+                "WINDOWSSDKDIR",
+                "VSCMD_ARG_HOST_ARCH",
+                "VSCMD_ARG_TGT_ARCH",
+                "LIB",
+            ] {
+                if !values.contains_key(name) {
+                    return Err(FAILURE);
+                }
+            }
+            let arch: Vec<u16> = host.architecture().encode_utf16().collect();
+            if values["VSCMD_ARG_HOST_ARCH"] != arch || values["VSCMD_ARG_TGT_ARCH"] != arch {
+                return Err(FAILURE);
+            }
+            Ok(SetupFields { values })
+        }
+
+        fn split_lib(units: &[u16]) -> SetupResult<Vec<Vec<u16>>> {
+            let mut paths = Vec::new();
+            let mut path = Vec::new();
+            let mut quoted = false;
+            for &unit in units {
+                match unit {
+                    0 | 10 | 13 => return Err(FAILURE),
+                    34 => quoted = !quoted,
+                    59 if !quoted => {
+                        if path.is_empty() {
+                            return Err(FAILURE);
+                        }
+                        paths.push(std::mem::take(&mut path));
+                    }
+                    _ => path.push(unit),
+                }
+            }
+            if quoted {
+                return Err(FAILURE);
+            }
+            // A final list separator names no installed directory. Never pass
+            // an empty element to LIB, where it could admit current_dir search.
+            // Leading/interior empty elements still fail in the loop above.
+            if !path.is_empty() {
+                paths.push(path);
+            }
+            if paths.is_empty()
+                || paths.len() > 32
+                || paths.iter().any(|p| p.len() > MAX_PATH_UNITS)
+            {
+                return Err(FAILURE);
+            }
+            Ok(paths)
+        }
+        fn pe_matches(bytes: &[u8], host: Host) -> bool {
+            if bytes.len() < 64 || &bytes[..2] != b"MZ" {
+                return false;
+            }
+            let offset = u32::from_le_bytes(bytes[60..64].try_into().unwrap()) as usize;
+            offset.checked_add(6).is_some_and(|end| end <= bytes.len())
+                && &bytes[offset..offset + 4] == b"PE\0\0"
+                && u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap())
+                    == host.pe_machine()
+        }
+
+        struct OwnedCommand {
+            child: std::process::Child,
+            reaped: bool,
+        }
+        impl Drop for OwnedCommand {
+            fn drop(&mut self) {
+                if self.reaped {
+                    return;
+                }
+                let _ = self.child.kill();
+                let started = Instant::now();
+                while started.elapsed() < Duration::from_secs(5) {
+                    if matches!(self.child.try_wait(), Ok(Some(_))) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+        fn bounded(mut command: Command, seconds: u64) -> SetupResult<std::process::Output> {
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut owned = OwnedCommand {
+                child: command.spawn().map_err(|_| FAILURE)?,
+                reaped: false,
+            };
+            let stdout = owned.child.stdout.take().ok_or(FAILURE)?;
+            let stderr = owned.child.stderr.take().ok_or(FAILURE)?;
+            let (a_send, a_receive) = std::sync::mpsc::sync_channel(1);
+            let (b_send, b_receive) = std::sync::mpsc::sync_channel(1);
+            let a = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = stdout
+                    .take((CAPTURE_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .map(|_| bytes);
+                let _ = a_send.send(result);
+            });
+            let b = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let result = stderr
+                    .take((CAPTURE_BYTES + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .map(|_| bytes);
+                let _ = b_send.send(result);
+            });
+            let started = Instant::now();
+            let status = loop {
+                if let Some(status) = owned.child.try_wait().map_err(|_| FAILURE)? {
+                    owned.reaped = true;
+                    break status;
+                }
+                if started.elapsed() >= Duration::from_secs(seconds) {
+                    return Err(FAILURE);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let drain = Instant::now();
+            let stdout = a_receive
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|_| FAILURE)?
+                .map_err(|_| FAILURE)?;
+            let remaining = Duration::from_secs(5).saturating_sub(drain.elapsed());
+            let stderr = b_receive
+                .recv_timeout(remaining)
+                .map_err(|_| FAILURE)?
+                .map_err(|_| FAILURE)?;
+            a.join().map_err(|_| FAILURE)?;
+            b.join().map_err(|_| FAILURE)?;
+            if stdout.len() > CAPTURE_BYTES || stderr.len() > CAPTURE_BYTES {
+                return Err(FAILURE);
+            }
+            Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
+        }
+
+        #[cfg(windows)]
+        fn host() -> SetupResult<Host> {
+            match std::env::consts::ARCH {
+                "x86_64" => Ok(Host::X64),
+                "x86" => Ok(Host::X86),
+                "aarch64" => Ok(Host::Arm64),
+                _ => Err(FAILURE),
+            }
+        }
+        #[cfg(windows)]
+        fn native(units: &[u16]) -> OsString {
+            use std::os::windows::ffi::OsStringExt;
+            OsString::from_wide(units)
+        }
+        #[cfg(windows)]
+        fn checked_path(value: OsString) -> SetupResult<PathBuf> {
+            DiscoveryRoot::new("ProgramFiles", value.clone()).map_err(|_| FAILURE)?;
+            if value
+                .as_encoded_bytes()
+                .iter()
+                .any(|b| matches!(b, b'\r' | b'\n'))
+            {
+                return Err(FAILURE);
+            }
+            Ok(PathBuf::from(value))
+        }
+        #[cfg(windows)]
+        fn physical_file(path: &Path) -> SetupResult<()> {
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| FAILURE)?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() == 0 {
+                return Err(FAILURE);
+            }
+            Ok(())
+        }
+        #[cfg(windows)]
+        fn physical_directory(path: &Path) -> SetupResult<PathBuf> {
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| FAILURE)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(FAILURE);
+            }
+            Ok(path.to_path_buf())
+        }
+        #[cfg(windows)]
+        fn base(command: &mut Command, selected: &DiscoveryRoot, system: &Path) -> SetupResult<()> {
+            command.env_clear();
+            for name in ["HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"] {
+                let value = std::env::var_os(name).ok_or(FAILURE)?;
+                command.env(name, value);
+            }
+            let toolchain = Path::new(env!("CARGO")).parent().ok_or(FAILURE)?;
+            let system_bin = system.join("System32");
+            command
+                .env("SystemRoot", system)
+                .env("ComSpec", system_bin.join("cmd.exe"))
+                .env(selected.name, &selected.value)
+                .env(
+                    "PATH",
+                    std::env::join_paths([toolchain, system_bin.as_path()]).map_err(|_| FAILURE)?,
+                );
+            Ok(())
+        }
+
+        pub(super) struct Prepared {
+            host: Host,
+            linker: PathBuf,
+            lib: OsString,
+            path: OsString,
+        }
+        impl Prepared {
+            pub(super) fn environment(self) -> Vec<(&'static str, OsString)> {
+                vec![
+                    (self.host.linker_key(), self.linker.into_os_string()),
+                    ("LIB", self.lib),
+                    ("PATH", self.path),
+                ]
+            }
+        }
+        #[cfg(windows)]
+        pub(super) fn prepare(selected: &DiscoveryRoot) -> SetupResult<Prepared> {
+            use std::os::windows::process::CommandExt;
+            let host = host()?;
+            let system = checked_path(std::env::var_os("SystemRoot").ok_or(FAILURE)?)?;
+            let rustc = Path::new(env!("CARGO")).with_file_name("rustc.exe");
+            let mut identify = Command::new(&rustc);
+            base(&mut identify, selected, &system)?;
+            identify.arg("-vV");
+            let output = bounded(identify, 5)?;
+            if !output.status.success()
+                || !std::str::from_utf8(&output.stdout)
+                    .map_err(|_| FAILURE)?
+                    .lines()
+                    .any(|line| line == format!("host: {}", host.target()))
+            {
+                return Err(FAILURE);
+            }
+
+            let vswhere = Path::new(&selected.value)
+                .join("Microsoft Visual Studio")
+                .join("Installer")
+                .join("vswhere.exe");
+            physical_file(&vswhere)?;
+            let mut discover = Command::new(&vswhere);
+            base(&mut discover, selected, &system)?;
+            discover.args([
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                host.component(),
+                "-property",
+                "installationPath",
+                "-utf8",
+            ]);
+            let output = bounded(discover, 15)?;
+            if !output.status.success() {
+                return Err(FAILURE);
+            }
+            let text = std::str::from_utf8(&output.stdout).map_err(|_| FAILURE)?;
+            let lines: Vec<_> = text.lines().filter(|line| !line.is_empty()).collect();
+            let [installation] = lines.as_slice() else {
+                return Err(FAILURE);
+            };
+            let installation = physical_directory(&checked_path(OsString::from(installation))?)?;
+            let directory = installation.join("Common7").join("Tools");
+            physical_file(&directory.join("VsDevCmd.bat"))?;
+            let cmd = system.join("System32").join("cmd.exe");
+            physical_file(&cmd)?;
+            let mut setup = Command::new(&cmd);
+            base(&mut setup, selected, &system)?;
+            setup
+                .current_dir(&directory)
+                .args(["/d", "/u", "/v:off", "/s", "/c"])
+                .raw_arg(host.command());
+            let output = bounded(setup, 20)?;
+            if !output.status.success() {
+                return Err(FAILURE);
+            }
+            let fields = parse_utf16(&output.stdout, host)?;
+            let vc =
+                physical_directory(&checked_path(native(&fields.values["VCTOOLSINSTALLDIR"]))?)?;
+            let sdk = physical_directory(&checked_path(native(&fields.values["WINDOWSSDKDIR"]))?)?;
+            let canonical_vc = std::fs::canonicalize(&vc).map_err(|_| FAILURE)?;
+            let canonical_installation =
+                std::fs::canonicalize(&installation).map_err(|_| FAILURE)?;
+            if !canonical_vc
+                .starts_with(canonical_installation.join("VC").join("Tools").join("MSVC"))
+            {
+                return Err(FAILURE);
+            }
+            let linker = vc
+                .join("bin")
+                .join(format!("Host{}", host.architecture()))
+                .join(host.architecture())
+                .join("link.exe");
+            physical_file(&linker)?;
+            let mut header = Vec::new();
+            std::fs::File::open(&linker)
+                .map_err(|_| FAILURE)?
+                .take(CAPTURE_BYTES as u64)
+                .read_to_end(&mut header)
+                .map_err(|_| FAILURE)?;
+            if !pe_matches(&header, host) {
+                return Err(FAILURE);
+            }
+            let raw_lib = split_lib(&fields.values["LIB"])?;
+            let mut dirs = Vec::new();
+            for units in &raw_lib {
+                dirs.push(physical_directory(&checked_path(native(units))?)?);
+            }
+            // Paths came only from official setup. All inputs remain complete;
+            // required Rust/MSVC system libraries must actually exist there.
+            for name in [
+                "kernel32.lib",
+                "ntdll.lib",
+                "userenv.lib",
+                "ws2_32.lib",
+                "dbghelp.lib",
+                "msvcrt.lib",
+            ] {
+                if !dirs
+                    .iter()
+                    .any(|dir| physical_file(&dir.join(name)).is_ok())
+                {
+                    return Err(FAILURE);
+                }
+            }
+            if !dirs.iter().any(|dir| dir.starts_with(&vc))
+                || !dirs.iter().any(|dir| dir.starts_with(&sdk))
+            {
+                return Err(FAILURE);
+            }
+            let lib = std::env::join_paths(&dirs).map_err(|_| FAILURE)?;
+            let path = std::env::join_paths([
+                linker.parent().ok_or(FAILURE)?,
+                Path::new(env!("CARGO")).parent().ok_or(FAILURE)?,
+                system.join("System32").as_path(),
+            ])
+            .map_err(|_| FAILURE)?;
+            let prepared = Prepared {
+                host,
+                linker,
+                lib,
+                path,
+            };
+            let mut banner = Command::new(&prepared.linker);
+            base(&mut banner, selected, &system)?;
+            banner.envs(prepared_values(&prepared)).arg("/?");
+            let output = bounded(banner, 5)?;
+            if !output.status.success()
+                || !output
+                    .stdout
+                    .windows(b"Microsoft".len())
+                    .any(|s| s == b"Microsoft")
+                || !output
+                    .stdout
+                    .windows(b"Linker".len())
+                    .any(|s| s == b"Linker")
+            {
+                return Err(FAILURE);
+            }
+            Ok(prepared)
+        }
+        #[cfg(windows)]
+        fn prepared_values(prepared: &Prepared) -> Vec<(&'static str, OsString)> {
+            vec![
+                (
+                    prepared.host.linker_key(),
+                    prepared.linker.as_os_str().to_owned(),
+                ),
+                ("LIB", prepared.lib.clone()),
+                ("PATH", prepared.path.clone()),
+            ]
+        }
+
+        #[test]
+        fn native_setup_utf16_preserves_unicode_equals_quotes_and_opaque_units() {
+            let vc = r"C:\VS 中文 & % ! (tools)\VC\Tools\MSVC\selected\";
+            let lines = [
+                format!("VCToolsInstallDir={vc}"),
+                r"WindowsSdkDir=C:\Windows Kits\10\".into(),
+                "VSCMD_ARG_HOST_ARCH=x64".into(),
+                "VSCMD_ARG_TGT_ARCH=x64".into(),
+                r#"LIB="C:\VS 中文\lib;x64";C:\Windows Kits\10\um\x64"#.into(),
+                r"LIBPATH=C:\not-forwarded".into(),
+            ];
+            let mut value: Vec<u16> = lines.join("\r\n").encode_utf16().collect();
+            let at = value.iter().position(|u| *u == 59).unwrap();
+            value.insert(at, 0xd800);
+            let bytes: Vec<u8> = value.iter().flat_map(|u| u.to_le_bytes()).collect();
+            let parsed = parse_utf16(&bytes, Host::X64).unwrap();
+            assert!(parsed.values["LIB"].contains(&0xd800));
+            let paths = split_lib(&parsed.values["LIB"]).unwrap();
+            assert_eq!(paths.len(), 2);
+            assert!(paths[0].contains(&59));
+            assert_eq!(
+                parsed.values["VCTOOLSINSTALLDIR"],
+                vc.encode_utf16().collect::<Vec<_>>()
+            );
+            assert!(parsed.values.contains_key("LIBPATH"));
+        }
+        #[test]
+        fn setup_rejects_incomplete_ambiguous_overbound_and_wrong_host_outputs() {
+            let encode = |s: &str| {
+                s.encode_utf16()
+                    .flat_map(|u| u.to_le_bytes())
+                    .collect::<Vec<_>>()
+            };
+            let valid = [
+                r"VCToolsInstallDir=C:\VC\",
+                r"WindowsSdkDir=C:\SDK\",
+                "VSCMD_ARG_HOST_ARCH=x64",
+                "VSCMD_ARG_TGT_ARCH=x64",
+                r"LIB=C:\VC\lib;C:\SDK\lib",
+            ]
+            .join("\r\n");
+            assert!(parse_utf16(&encode(&valid), Host::X64).is_ok());
+            for bad in [
+                valid.replace("x64", "x86"),
+                valid.replace("LIB=", "missing="),
+                format!("{valid}\r\nLIB=duplicate"),
+                format!("{valid}\r\nUSER_SECRET=not-permitted"),
+                valid.replace("C:\\VC", "bad\0value"),
+            ] {
+                assert!(parse_utf16(&encode(&bad), Host::X64).is_err());
+            }
+            let mut odd = encode(&valid);
+            odd.pop();
+            assert!(parse_utf16(&odd, Host::X64).is_err());
+            assert!(parse_utf16(&vec![65; CAPTURE_BYTES + 2], Host::X64).is_err());
+            for bad in [
+                "",
+                ";",
+                r"C:\one;;",
+                r";C:\two",
+                r#""C:\unterminated"#,
+                "C:\\first\r\n",
+            ] {
+                assert!(split_lib(&bad.encode_utf16().collect::<Vec<_>>()).is_err());
+            }
+            let terminated =
+                split_lib(&r"C:\one;C:\two;".encode_utf16().collect::<Vec<_>>()).unwrap();
+            assert_eq!(terminated.len(), 2);
+            assert!(terminated.iter().all(|path| !path.is_empty()));
+        }
+        #[test]
+        fn msvc_prepared_settings_are_host_only_and_pe_host_identity_is_checked() {
+            for host in [Host::X64, Host::X86, Host::Arm64] {
+                let mut pe = vec![0; 512];
+                pe[..2].copy_from_slice(b"MZ");
+                pe[60..64].copy_from_slice(&128u32.to_le_bytes());
+                pe[128..132].copy_from_slice(b"PE\0\0");
+                pe[132..134].copy_from_slice(&host.pe_machine().to_le_bytes());
+                assert!(pe_matches(&pe, host));
+                let wrong = if host == Host::X64 {
+                    Host::X86
+                } else {
+                    Host::X64
+                };
+                assert!(!pe_matches(&pe, wrong));
+                pe[128] = 0;
+                assert!(!pe_matches(&pe, host));
+                let prepared = Prepared {
+                    host,
+                    linker: PathBuf::from("synthetic-owned-msvc-link.exe"),
+                    lib: OsString::from("synthetic-native-libraries"),
+                    path: OsString::from("synthetic-owned-tool-bins"),
+                };
+                let environment: BTreeMap<_, _> = prepared.environment().into_iter().collect();
+                assert_eq!(environment.len(), 3);
+                assert!(environment.contains_key(host.linker_key()));
+                assert!(!environment.keys().any(|key| key.contains("WASM32")
+                    || key.contains("RUSTFLAGS")
+                    || key.contains("HOME")
+                    || key.contains("CREDENTIAL")));
+                assert!(host.target().ends_with("-pc-windows-msvc"));
+                assert!(host.command().contains("call VsDevCmd.bat"));
+                assert!(
+                    !host.command().contains("%CRAFTSMAN") && !host.command().contains("echo %")
+                );
+            }
+        }
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn explicit_host_cargo_linker_controls_real_build_script_without_changing_wasm_linker()
+         {
+            let home = tempfile::tempdir().unwrap();
+            let project = home.path().join("project");
+            std::fs::create_dir_all(project.join("src")).unwrap();
+            std::fs::write(project.join("Cargo.toml"),"[package]\nname=\"msvc-host-contract\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[workspace]\n[lib]\ncrate-type=[\"cdylib\"]\n").unwrap();
+            std::fs::write(
+                project.join("Cargo.lock"),
+                "version=4\n[[package]]\nname=\"msvc-host-contract\"\nversion=\"0.1.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(
+                project.join("build.rs"),
+                "fn main(){println!(\"cargo:rerun-if-changed=build.rs\");}\n",
+            )
+            .unwrap();
+            std::fs::write(project.join("src/lib.rs"),"#![no_std]\n#[panic_handler] fn panic(_: &core::panic::PanicInfo)->!{loop{}}\n#[unsafe(no_mangle)] pub extern \"C\" fn value()->u32{19}\n").unwrap();
+            let cargo = Path::new(env!("CARGO"));
+            let tools = cargo.parent().unwrap();
+            let host_output = bounded(
+                {
+                    let mut command = Command::new(tools.join("rustc"));
+                    command.env_clear().env("PATH", "/usr/bin:/bin").arg("-vV");
+                    command
+                },
+                5,
+            )
+            .unwrap();
+            let text = std::str::from_utf8(&host_output.stdout).unwrap();
+            let target = text
+                .lines()
+                .find_map(|line| line.strip_prefix("host: "))
+                .unwrap();
+            let key = format!(
+                "CARGO_TARGET_{}_LINKER",
+                target.to_ascii_uppercase().replace('-', "_")
+            );
+            let utility = if cfg!(target_os = "macos") {
+                "/bin/link"
+            } else {
+                "/usr/bin/link"
+            };
+            for (label, linker, success) in
+                [("wrong", utility, false), ("native", "/usr/bin/cc", true)]
+            {
+                let build = home.path().join(label);
+                let mut command = Command::new(cargo);
+                command
+                    .env_clear()
+                    .env("HOME", home.path())
+                    .env("USERPROFILE", home.path())
+                    .env("TMPDIR", home.path())
+                    .env("CARGO_HOME", home.path().join("empty-cargo-home"))
+                    .env(
+                        "PATH",
+                        std::env::join_paths([tools, Path::new("/usr/bin"), Path::new("/bin")])
+                            .unwrap(),
+                    )
+                    .env("RUSTC", tools.join("rustc"))
+                    .env("RUSTDOC", tools.join("rustdoc"))
+                    .env(&key, linker);
+                #[cfg(target_os = "macos")]
+                command.env("DYLD_LIBRARY_PATH", tools.parent().unwrap().join("lib"));
+                command
+                    .args([
+                        "build",
+                        "--offline",
+                        "--locked",
+                        "--release",
+                        "--target",
+                        "wasm32-wasip2",
+                        "--manifest-path",
+                    ])
+                    .arg(project.join("Cargo.toml"))
+                    .arg("--target-dir")
+                    .arg(&build);
+                let result = bounded(command, 20).unwrap();
+                assert_eq!(
+                    result.status.success(),
+                    success,
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                if success {
+                    assert!(
+                        build
+                            .join("wasm32-wasip2/release/msvc_host_contract.wasm")
+                            .is_file()
+                    );
+                    assert!(
+                        !std::str::from_utf8(&result.stderr)
+                            .unwrap()
+                            .lines()
+                            .any(|line| line.starts_with("warning:"))
+                    );
+                } else {
+                    let error = std::str::from_utf8(&result.stderr).unwrap();
+                    assert!(error.contains(utility) && error.contains("build script"));
+                    println!("ACTUAL-HOST-LINKER-FAILURE {error}");
+                }
+            }
+        }
+        #[cfg(unix)]
+        #[test]
+        fn bounded_capture_observes_complete_native_streams_and_refuses_overflow() {
+            let make = |script: &str| {
+                let mut command = Command::new("/bin/sh");
+                command
+                    .env_clear()
+                    .env("PATH", "/usr/bin:/bin")
+                    .args(["-c", script]);
+                command
+            };
+            let output = bounded(
+                make("printf 'actual stdout'; printf 'actual stderr' >&2"),
+                5,
+            )
+            .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"actual stdout");
+            assert_eq!(output.stderr, b"actual stderr");
+            assert!(bounded(make("head -c 65537 /dev/zero"), 5).is_err());
+            assert_eq!(bounded(make("exit 7"), 5).unwrap().status.code(), Some(7));
+            let started = Instant::now();
+            assert!(bounded(make("printf 'entered'; exec sleep 30"), 1).is_err());
+            assert!(started.elapsed() < Duration::from_secs(7));
+        }
+        const NATIVE_HELPER: &str = "gadgets::privacy_detector_tests::compiler_environment::msvc_setup::installed_msvc_guest_fixture";
+        const NATIVE_MARKER: &str = "craftsman-detector-msvc=";
+        fn native_selected(arguments: impl IntoIterator<Item = OsString>) -> bool {
+            let values: Vec<_> = arguments
+                .into_iter()
+                .filter(|arg| arg.as_encoded_bytes().starts_with(NATIVE_MARKER.as_bytes()))
+                .collect();
+            matches!(values.as_slice(),[value] if value.to_str().and_then(|value|value.strip_prefix(NATIVE_MARKER))==Some("guest"))
+        }
+        #[test]
+        fn new_msvc_native_marker_refuses_registered_malformed_companions_before_decoding() {
+            assert!(!native_selected([]));
+            assert!(!native_selected([OsString::from(format!(
+                "{NATIVE_MARKER}unknown"
+            ))]));
+            assert!(!native_selected([
+                OsString::from(format!("{NATIVE_MARKER}guest")),
+                OsString::from(format!("{NATIVE_MARKER}guest"))
+            ]));
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                let mut malformed = NATIVE_MARKER.as_bytes().to_vec();
+                malformed.push(255);
+                assert!(!native_selected([
+                    OsString::from(format!("{NATIVE_MARKER}guest")),
+                    OsString::from_vec(malformed)
+                ]));
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStringExt;
+                let mut malformed: Vec<u16> = NATIVE_MARKER.encode_utf16().collect();
+                malformed.push(0xd800);
+                assert!(!native_selected([
+                    OsString::from(format!("{NATIVE_MARKER}guest")),
+                    OsString::from_wide(&malformed)
+                ]));
+            }
+        }
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[ignore = "installed MSVC source/guest case; exactly one native marker required"]
+        async fn installed_msvc_guest_fixture() {
+            if !native_selected(std::env::args_os()) {
+                println!("INSTALLED-MSVC:NOT-SELECTED");
+                return;
+            }
+            #[cfg(not(windows))]
+            panic!("installed MSVC source case requires its actual Windows host");
+            #[cfg(windows)]
+            {
+                let selected = transferred(|name| std::env::var_os(name))
+                    .unwrap()
+                    .or_else(host_discovery)
+                    .unwrap();
+                let prepared =
+                    prepare(&selected).expect("installed MSVC compiler preparation failed");
+                assert!(std::env::var_os(prepared.host.linker_key()).is_none());
+                assert!(std::env::var_os("LIB").is_none());
+                let repo = root();
+                let before = sources(&repo);
+                let home = tempfile::tempdir().unwrap();
+                let build = home.path().join("cold-wasm-build");
+                assert!(!build.exists());
+                let mut command = Command::new(env!("CARGO"));
+                command
+                    .args([
+                        "build",
+                        "--offline",
+                        "--locked",
+                        "--release",
+                        "--target",
+                        "wasm32-wasip2",
+                        "--manifest-path",
+                    ])
+                    .arg(
+                        repo.join("crates/craftsman-rs/tests/fixtures/privacy-detector/Cargo.toml"),
+                    )
+                    .arg("--target-dir")
+                    .arg(&build)
+                    .envs(prepared.environment())
+                    .env_remove(TRANSPORT_X86)
+                    .env_remove(TRANSPORT_NATIVE);
+                let output =
+                    bounded(command, 180).expect("installed MSVC source build did not complete");
+                assert!(
+                    output.status.success(),
+                    "installed MSVC trusted offline source build failed"
+                );
+                assert_eq!(before, sources(&repo));
+                let image = std::fs::read(
+                    build.join("wasm32-wasip2/release/privacy_detector_fixture.wasm"),
+                )
+                .unwrap();
+                let workspace = home.path().join("workspace");
+                let config = home.path().join("config");
+                let bundle = config.join("gadgets/privacy-detector");
+                std::fs::create_dir_all(&workspace).unwrap();
+                std::fs::create_dir_all(&bundle).unwrap();
+                std::fs::copy(
+                    repo.join("crates/craftsman-rs/tests/fixtures/privacy-detector/gadget.toml"),
+                    bundle.join("gadget.toml"),
+                )
+                .unwrap();
+                std::fs::write(bundle.join("gadget.wasm"), &image).unwrap();
+                let options = RuntimeOptions {
+                    disk_cache: false,
+                    ..Default::default()
+                };
+                assert_eq!(options.timeout, Duration::from_secs(30));
+                assert_eq!(options.memory_bytes, 256 * 1024 * 1024);
+                let denied = GadgetRuntime::new(&workspace, &config, options.clone()).unwrap();
+                let list = denied.list().await.unwrap();
+                assert_eq!(list[0].status, "needs-approval");
+                assert!(list[0].functions.is_empty());
+                assert_eq!(denied.compiled_count(), 0);
+                drop(denied);
+                // The dispatched task approves this exact source-built synthetic image.
+                let runtime = GadgetRuntime::new(
+                    &workspace,
+                    &config,
+                    RuntimeOptions {
+                        allowed_gadgets: BTreeSet::from([ID.into()]),
+                        ..options
+                    },
+                )
+                .unwrap();
+                let input = nodes(&[(
+                    "request/0/text",
+                    "中文 alice@example.invalid +886 912 345 678",
+                )]);
+                let request = admitted_request(&input).unwrap();
+                let result = runtime.call(ID, "detect", request).await.unwrap();
+                assert_eq!(
+                    validate_returned(&input, &result.json).unwrap().spans.len(),
+                    2
+                );
+                assert_eq!(result.network_calls, 0);
+                assert!(result.logs.is_empty());
+                assert!(!result.logs_truncated);
+                assert_eq!(before, sources(&repo));
+                println!("INSTALLED-MSVC:SOURCE-GUEST-COMPLETE");
+            }
+        }
+        #[tokio::test]
+        async fn unmarked_new_setup_helper_returns_before_environment_paths_or_stdin() {
+            for markers in [vec![], vec!["unknown"], vec!["guest", "guest"]] {
+                let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--ignored", "--exact", NATIVE_HELPER, "--nocapture"])
+                    .env_clear()
+                    .env(TRANSPORT_X86, "relative poisoned root");
+                for marker in markers {
+                    command.arg(format!("{NATIVE_MARKER}{marker}"));
+                }
+                if let Some(root) = system_root() {
+                    command.env("SystemRoot", root);
+                }
+                let observed = super::output(command).await;
+                assert!(observed.status.success());
+                assert!(
+                    std::str::from_utf8(&observed.stdout)
+                        .unwrap()
+                        .contains("INSTALLED-MSVC:NOT-SELECTED")
+                );
+            }
+        }
+        #[cfg(windows)]
+        #[tokio::test]
+        async fn installed_msvc_host_linker_and_libraries_source_build_and_execute_the_guest() {
+            let home = tempfile::tempdir().unwrap();
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--ignored", "--exact", NATIVE_HELPER, "--nocapture"])
+                .arg(format!("{NATIVE_MARKER}guest"));
+            isolated_supervisor_environment(
+                command.as_std_mut(),
+                home.path(),
+                &std::env::var_os("CARGO_HOME")
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(|home| PathBuf::from(home).join(".cargo").into_os_string())
+                    })
+                    .unwrap(),
+                &std::env::var_os("PATH").unwrap(),
+                system_root(),
+                host_discovery(),
+            );
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let mut child = command.spawn().unwrap();
+            let mut out = child.stdout.take().unwrap().take(65537);
+            let mut err = child.stderr.take().unwrap().take(65537);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let (a, b, status) = match tokio::time::timeout(Duration::from_secs(240), async {
+                tokio::join!(
+                    out.read_to_end(&mut stdout),
+                    err.read_to_end(&mut stderr),
+                    child.wait()
+                )
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    child.start_kill().unwrap();
+                    tokio::time::timeout(Duration::from_secs(5), child.wait())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    panic!("installed MSVC native case exceeded its owned bound");
+                }
+            };
+            a.unwrap();
+            b.unwrap();
+            assert!(stdout.len() <= CAPTURE_BYTES && stderr.len() <= CAPTURE_BYTES);
+            assert!(
+                status.unwrap().success(),
+                "installed MSVC source/guest helper failed"
+            );
+            assert!(
+                std::str::from_utf8(&stdout)
+                    .unwrap()
+                    .contains("INSTALLED-MSVC:SOURCE-GUEST-COMPLETE")
+            );
         }
     }
 }
