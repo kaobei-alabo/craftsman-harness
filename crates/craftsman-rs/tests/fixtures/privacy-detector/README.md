@@ -99,6 +99,21 @@ and native-linker probes are macOS evidence; fresh complete Windows validation
 is required for this discovery preparation. SDK/WIT/source/dependency locks,
 production behavior and the frozen CI/verification scripts are unchanged.
 
+The cfg-test compiler's late UTF-16 failure now carries bounded command
+comparison facts. The original setup failure/command stays authoritative.
+Seven controls use the same checked cmd.exe, flags, cleared compiler base and
+null stdin: a builtin exit-7 token, the unchanged command against owned batches
+returning 0/7, and separate compound-redirection/batch-context variants. Only
+owned temporary directories contain synthetic batches; installed Visual Studio
+files stay read-only, and no discovered path enters shell text. Whole output
+observation, optional exit/error/EOF/prefix hashes and explicitly cut excerpts
+remain distinct from setup acceptance. A 120-second pre-start comparison budget
+reserves the existing20s poll+5s drain+5s cleanup and reports later unstarted
+controls without invented status/streams. Original240s/64KiB/5s/30s bounds stay.
+Comparison records cannot produce Prepared, source grants, Cargo or guest
+success. The new marked Windows case requires actual builtin, CALL return/field
+and variant observations; local macOS checks do not establish CMD behavior.
+
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.
 That failed run remains failed. The Windows trusted compiler child now performs

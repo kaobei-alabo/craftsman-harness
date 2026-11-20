@@ -2070,6 +2070,9 @@ mod compiler_environment {
                 pub(super) observed_pe_machine: Option<u16>,
                 pub(super) library_observations: Vec<LibraryObservation>,
                 pub(super) discovery_comparisons: Option<super::DiscoveryComparisons>,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                pub(super) command_comparisons:
+                    Option<super::command_comparison::CommandComparisons>,
             }
 
             impl Failure {
@@ -2086,6 +2089,7 @@ mod compiler_environment {
                         observed_pe_machine: None,
                         library_observations: Vec::new(),
                         discovery_comparisons: None,
+                        command_comparisons: None,
                     }
                 }
 
@@ -3607,8 +3611,15 @@ mod compiler_environment {
                 .raw_arg(host.command());
             let output = bounded_at(&mut setup, 20, Stage::VsdevcmdSetup)?;
             facts::require_exit(Stage::VsdevcmdSetup, &output)?;
-            let fields =
-                parse_utf16(&output.stdout, host).map_err(|error| error.output(&output, false))?;
+            let fields = parse_utf16(&output.stdout, host).map_err(|error| {
+                command_comparison::attach(
+                    error.output(&output, false),
+                    &setup,
+                    selected,
+                    &system,
+                    host,
+                )
+            })?;
             let vc = physical_directory(
                 &checked_path(native(&fields.values["VCTOOLSINSTALLDIR"])).map_err(|error| {
                     error
@@ -3728,6 +3739,10 @@ mod compiler_environment {
                 ("LIB", prepared.lib.clone()),
                 ("PATH", prepared.path.clone()),
             ]
+        }
+
+        mod command_comparison {
+            include!("privacy_msvc_command_comparison.rs");
         }
 
         #[test]

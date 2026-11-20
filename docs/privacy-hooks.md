@@ -305,6 +305,16 @@ compiler inputs and actual source-built WASM execution before merge, followed
 by separate independent merged-main proof. The earlier failed run remains
 failed; normal-session privacy and the separate request consumer remain inactive.
 
+Run [44752767140](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44752767140)
+reaches the later Windows UTF-16 field parser, but both source-build helpers
+still fail: the fixed CMD/VsDevCmd command returns exit 0 with complete empty
+streams. Its cause remains unproved. A new test-only comparison preserves that
+original refusal and records a fixed builtin plus owned synthetic CALL,
+redirection and batch-context controls under the same command/environment
+rules. It never adopts comparison data as compiler fields or source authority.
+The original command, approval, guest checks and deadlines remain intact;
+fresh reviewed Windows execution and full/main gates are still required.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).
