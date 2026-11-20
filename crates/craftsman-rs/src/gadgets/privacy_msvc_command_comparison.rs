@@ -46,7 +46,7 @@ impl Case {
     }
     fn text(self, host: Host) -> String {
         match self {
-            Self::BuiltinExitSeven => "\"echo MSVC-CMD:BUILTIN & exit /b 7\"".into(),
+            Self::BuiltinExitSeven => "\"echo MSVC-CMD:BUILTIN& exit /b 7\"".into(),
             Self::OriginalInlineZero | Self::OriginalInlineSeven => host.command().into(),
             Self::CompoundRedirectZero | Self::CompoundRedirectSeven => {
                 // Both replacements operate only on the host-owned static string.
@@ -460,6 +460,8 @@ pub(super) struct CommandComparisons {
     setup_failure: Option<FailureSummary>,
     sources: Vec<SourceBytes>,
     cases: Vec<CaseFacts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tails: Option<tail_comparison::TailComparisons>,
 }
 impl CommandComparisons {
     fn empty() -> Self {
@@ -473,6 +475,7 @@ impl CommandComparisons {
             setup_failure: None,
             sources: Vec::new(),
             cases: Vec::new(),
+            tails: None,
         }
     }
 }
@@ -606,6 +609,7 @@ fn collect(
             host,
         ));
     }
+    record.tails = Some(tail_comparison::collect(&base, owned.path(), host, started));
     record
 }
 #[cfg(windows)]
@@ -626,6 +630,10 @@ fn eligible(error: &Failure) -> bool {
     error.stage == Stage::Utf16Fields
         && error.discovery_comparisons.is_none()
         && error.command_comparisons.is_none()
+}
+
+mod tail_comparison {
+    include!("privacy_cmd_tail_comparison.rs");
 }
 
 fn selected(arguments: impl IntoIterator<Item = OsString>) -> Option<&'static str> {

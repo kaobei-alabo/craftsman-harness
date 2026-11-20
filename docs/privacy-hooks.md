@@ -327,6 +327,21 @@ These tests add no normal privacy route or source/permission grant. Combined
 source review, fresh full local/native tests and independent merged-main proof
 remain required; diagnostic success does not establish a native repair.
 
+Run [44809143594](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44809143594)
+still fails Windows gadget mode. Its builtin control emitted38 complete UTF-16
+bytes at exit7, including the input's space before `&`, so the exact token
+assertion correctly refused it. Only that owned input space is removed; unknown
+output remains refused. All21 recorded command attempts completed, but no
+original, redirection or batch-context control produced the selected fields.
+Four small owned tail comparisons now retain the seven original controls and
+share their existing budget: a diagnostic no-IF chain and a separate-line wrapper
+with the unchanged guard, each for requested0/7. Their bounded output facts are
+collected before verdicts and cannot become compiler or source authority. The
+real setup command, original field refusal, source/guest checks and deadlines
+remain unchanged. Neither this input repair nor local controls establish the
+installed Windows setup cause; reviewed fresh native/full and separate main
+proof remain required before merge or installation.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).

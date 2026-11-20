@@ -114,6 +114,24 @@ Comparison records cannot produce Prepared, source grants, Cargo or guest
 success. The new marked Windows case requires actual builtin, CALL return/field
 and variant observations; local macOS checks do not establish CMD behavior.
 
+Run44809143594 observed the builtin's complete UTF-16 token followed by one
+space and CRLF:38 bytes at exit7. The owned input now removes only the space
+before `&`; the decoder and exact-token assertion stay unchanged. The same run's
+original, redirection and batch-context controls produced no selected fields.
+Their existing assertions and all seven records are retained.
+
+Four additional tail controls run only in those owned synthetic directories:
+the same CALL/five SET chain without IF for requested0/7, and an owned fixed
+wrapper with the unchanged IF guard, each SET and final exit on separate lines
+for requested0/7. They run after the original seven cases and share the same
+120-second budget. Compact records retain actual status, error, EOF, byte counts,
+hashes and whole-output token/field observations while withholding raw output;
+unstarted work has no invented exit or stream facts. The complete nested packet
+and framing remain within the original64KiB cap. All cases are collected before
+the original native verdicts. These controls leave the real Host command and
+setup acceptance exact; a tail or installed cause still needs actual Windows
+comparison evidence and a separate review before any setup correction.
+
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.
 That failed run remains failed. The Windows trusted compiler child now performs
