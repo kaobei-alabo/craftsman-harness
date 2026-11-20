@@ -2068,6 +2068,7 @@ mod compiler_environment {
                 pub(super) observed_read_prefix_sha256: Option<String>,
                 pub(super) observed_pe_machine: Option<u16>,
                 pub(super) library_observations: Vec<LibraryObservation>,
+                pub(super) discovery_comparisons: Option<super::DiscoveryComparisons>,
             }
 
             impl Failure {
@@ -2083,6 +2084,7 @@ mod compiler_environment {
                         observed_read_prefix_sha256: None,
                         observed_pe_machine: None,
                         library_observations: Vec::new(),
+                        discovery_comparisons: None,
                     }
                 }
 
@@ -2203,7 +2205,6 @@ mod compiler_environment {
                     Self::Arm64 => "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER",
                 }
             }
-            #[cfg(windows)]
             fn component(self) -> &'static str {
                 match self {
                     Self::X64 | Self::X86 => "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
@@ -2842,6 +2843,396 @@ mod compiler_environment {
             }
         }
 
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+        #[serde(rename_all = "snake_case")]
+        enum DiscoveryQuery {
+            SameFilterPrerelease,
+            StableInstances,
+            PrereleaseInstances,
+            StableComponentInstances,
+            PrereleaseComponentInstances,
+        }
+
+        fn original_discovery_arguments(host: Host) -> Vec<&'static str> {
+            vec![
+                "-latest",
+                "-products",
+                "*",
+                "-requires",
+                host.component(),
+                "-property",
+                "installationPath",
+                "-utf8",
+            ]
+        }
+
+        impl DiscoveryQuery {
+            fn arguments(self, host: Host) -> Vec<&'static str> {
+                if self == Self::SameFilterPrerelease {
+                    let mut args = original_discovery_arguments(host);
+                    args.push("-prerelease");
+                    return args;
+                }
+                let mut args = vec!["-all", "-products", "*"];
+                if matches!(
+                    self,
+                    Self::PrereleaseInstances | Self::PrereleaseComponentInstances
+                ) {
+                    args.push("-prerelease");
+                }
+                if matches!(
+                    self,
+                    Self::StableComponentInstances | Self::PrereleaseComponentInstances
+                ) {
+                    args.extend(["-requires", host.component()]);
+                }
+                args.extend(["-format", "json", "-utf8"]);
+                args
+            }
+        }
+
+        #[derive(serde::Serialize)]
+        struct InstanceSummary {
+            instance_id_sha256: Option<String>,
+            installation_path_bytes: Option<usize>,
+            installation_path_sha256: Option<String>,
+            installation_version: Option<String>,
+            is_prerelease: Option<bool>,
+            is_complete: Option<bool>,
+            is_launchable: Option<bool>,
+            is_reboot_required: Option<bool>,
+            state: Option<u64>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct DiscoverySummary {
+            output_kind: &'static str,
+            records: usize,
+            instances: Vec<InstanceSummary>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct QueryComparison {
+            query: DiscoveryQuery,
+            arguments: Vec<&'static str>,
+            required_component_filter: Option<&'static str>,
+            output: Option<facts::ProcessFacts>,
+            summary: Option<DiscoverySummary>,
+            failure: Option<Box<Failure>>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct DiscoveryComparisons {
+            program_encoded_bytes: usize,
+            program_encoded_sha256: String,
+            program_encoded_hex: String,
+            program_encoding: &'static str,
+            program_excerpt_cut: bool,
+            comparison_only_not_source_or_compiler_selection: bool,
+            same_cleared_preparation_environment: bool,
+            queries: Vec<QueryComparison>,
+        }
+
+        fn comparison_json(bytes: &[u8]) -> SetupResult<Value> {
+            use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+            use std::cell::Cell;
+            if bytes.len() > CAPTURE_BYTES {
+                return Err(Failure::new(Stage::VswhereDiscovery, Kind::Bounds));
+            }
+            struct Seed<'a> {
+                nodes: &'a Cell<usize>,
+                depth: usize,
+            }
+            impl<'de> DeserializeSeed<'de> for Seed<'_> {
+                type Value = Value;
+                fn deserialize<D: serde::Deserializer<'de>>(
+                    self,
+                    deserializer: D,
+                ) -> Result<Value, D::Error> {
+                    if self.depth > 32 || self.nodes.get() >= 4096 {
+                        return Err(serde::de::Error::custom("bounded installed instance JSON"));
+                    }
+                    self.nodes.set(self.nodes.get() + 1);
+                    deserializer.deserialize_any(self)
+                }
+            }
+            impl<'de> Visitor<'de> for Seed<'_> {
+                type Value = Value;
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    formatter.write_str("bounded duplicate-free installed instance JSON")
+                }
+                fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Value, E> {
+                    Ok(Value::Bool(value))
+                }
+                fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Value, E> {
+                    Ok(Value::from(value))
+                }
+                fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Value, E> {
+                    Ok(Value::from(value))
+                }
+                fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Value, E> {
+                    serde_json::Number::from_f64(value)
+                        .map(Value::Number)
+                        .ok_or_else(|| E::custom("nonfinite instance number"))
+                }
+                fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
+                    Ok(Value::String(value.to_owned()))
+                }
+                fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
+                    Ok(Value::String(value))
+                }
+                fn visit_none<E: serde::de::Error>(self) -> Result<Value, E> {
+                    Ok(Value::Null)
+                }
+                fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+                    Ok(Value::Null)
+                }
+                fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
+                    let mut values = Vec::new();
+                    while let Some(value) = sequence.next_element_seed(Seed {
+                        nodes: self.nodes,
+                        depth: self.depth + 1,
+                    })? {
+                        values.push(value);
+                    }
+                    Ok(Value::Array(values))
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+                    let mut values = serde_json::Map::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        if self.nodes.get() >= 4096 || values.contains_key(&key) {
+                            return Err(serde::de::Error::custom(
+                                "duplicate or overbound instance member",
+                            ));
+                        }
+                        self.nodes.set(self.nodes.get() + 1);
+                        let value = map.next_value_seed(Seed {
+                            nodes: self.nodes,
+                            depth: self.depth + 1,
+                        })?;
+                        values.insert(key, value);
+                    }
+                    Ok(Value::Object(values))
+                }
+            }
+            let nodes = Cell::new(0);
+            let mut decoder = serde_json::Deserializer::from_slice(bytes);
+            let value = Seed {
+                nodes: &nodes,
+                depth: 0,
+            }
+            .deserialize(&mut decoder)
+            .map_err(|_| Failure::new(Stage::VswhereDiscovery, Kind::Shape))?;
+            decoder
+                .end()
+                .map_err(|_| Failure::new(Stage::VswhereDiscovery, Kind::Shape))?;
+            Ok(value)
+        }
+
+        fn summary_string<'a>(
+            object: &'a serde_json::Map<String, Value>,
+            name: &str,
+            bound: usize,
+        ) -> SetupResult<Option<&'a str>> {
+            match object.get(name) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(value)) if value.len() <= bound => Ok(Some(value)),
+                _ => Err(Failure::new(Stage::VswhereDiscovery, Kind::Shape)),
+            }
+        }
+
+        fn summary_bool(
+            object: &serde_json::Map<String, Value>,
+            name: &str,
+        ) -> SetupResult<Option<bool>> {
+            match object.get(name) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::Bool(value)) => Ok(Some(*value)),
+                _ => Err(Failure::new(Stage::VswhereDiscovery, Kind::Shape)),
+            }
+        }
+
+        fn discovery_summary(query: DiscoveryQuery, bytes: &[u8]) -> SetupResult<DiscoverySummary> {
+            if query == DiscoveryQuery::SameFilterPrerelease {
+                if bytes.len() > CAPTURE_BYTES {
+                    return Err(Failure::new(Stage::VswhereDiscovery, Kind::Bounds));
+                }
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|_| Failure::new(Stage::VswhereDiscovery, Kind::Utf8))?;
+                let lines: Vec<_> = text.lines().filter(|line| !line.is_empty()).collect();
+                if lines.len() > 1 || lines.iter().any(|line| line.len() > MAX_PATH_UNITS) {
+                    return Err(Failure::new(Stage::VswhereDiscovery, Kind::Shape));
+                }
+                let instances = lines
+                    .iter()
+                    .map(|line| InstanceSummary {
+                        instance_id_sha256: None,
+                        installation_path_bytes: Some(line.len()),
+                        installation_path_sha256: Some(hash(line.as_bytes())),
+                        installation_version: None,
+                        is_prerelease: None,
+                        is_complete: None,
+                        is_launchable: None,
+                        is_reboot_required: None,
+                        state: None,
+                    })
+                    .collect();
+                return Ok(DiscoverySummary {
+                    output_kind: "installation-path-records",
+                    records: lines.len(),
+                    instances,
+                });
+            }
+            let value = comparison_json(bytes)?;
+            let array = value
+                .as_array()
+                .ok_or_else(|| Failure::new(Stage::VswhereDiscovery, Kind::Shape))?;
+            if array.len() > 8 {
+                return Err(Failure::new(Stage::VswhereDiscovery, Kind::Bounds));
+            }
+            let mut instances = Vec::new();
+            for value in array {
+                let object = value
+                    .as_object()
+                    .ok_or_else(|| Failure::new(Stage::VswhereDiscovery, Kind::Shape))?;
+                let id = summary_string(object, "instanceId", 128)?;
+                let path = summary_string(object, "installationPath", MAX_PATH_UNITS)?;
+                let version = summary_string(object, "installationVersion", 64)?;
+                if version.is_some_and(|version| {
+                    !version.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                }) {
+                    return Err(Failure::new(Stage::VswhereDiscovery, Kind::Shape));
+                }
+                let state = match object.get("state") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => Some(
+                        value
+                            .as_u64()
+                            .ok_or_else(|| Failure::new(Stage::VswhereDiscovery, Kind::Shape))?,
+                    ),
+                };
+                instances.push(InstanceSummary {
+                    instance_id_sha256: id.map(|id| hash(id.as_bytes())),
+                    installation_path_bytes: path.map(str::len),
+                    installation_path_sha256: path.map(|path| hash(path.as_bytes())),
+                    installation_version: version.map(str::to_owned),
+                    is_prerelease: summary_bool(object, "isPrerelease")?,
+                    is_complete: summary_bool(object, "isComplete")?,
+                    is_launchable: summary_bool(object, "isLaunchable")?,
+                    is_reboot_required: summary_bool(object, "isRebootRequired")?,
+                    state,
+                });
+            }
+            Ok(DiscoverySummary {
+                output_kind: "installed-instance-records",
+                records: instances.len(),
+                instances,
+            })
+        }
+
+        fn comparison_result(
+            query: DiscoveryQuery,
+            host: Host,
+            output: SetupResult<std::process::Output>,
+        ) -> QueryComparison {
+            let arguments = query.arguments(host);
+            let required_component_filter = matches!(
+                query,
+                DiscoveryQuery::SameFilterPrerelease
+                    | DiscoveryQuery::StableComponentInstances
+                    | DiscoveryQuery::PrereleaseComponentInstances
+            )
+            .then(|| host.component());
+            match output {
+                Err(mut failure) => {
+                    // Unfiltered installed-tool metadata may contain private display/
+                    // property strings. Keep prefix sizes/hashes, never dump those bytes.
+                    if let Some(stdout) = failure
+                        .process
+                        .as_mut()
+                        .and_then(|process| process.stdout.as_mut())
+                    {
+                        stdout.excerpt_hex = None;
+                        stdout.contents_withheld = stdout.captured_bytes.is_some();
+                        stdout.excerpt_cut = false;
+                    }
+                    QueryComparison {
+                        query,
+                        arguments,
+                        required_component_filter,
+                        output: None,
+                        summary: None,
+                        failure: Some(Box::new(failure)),
+                    }
+                }
+                Ok(output) => {
+                    let facts = Failure::new(Stage::VswhereDiscovery, Kind::Shape)
+                        .output(&output, false)
+                        .process;
+                    let summary = if output.status.success() {
+                        discovery_summary(query, &output.stdout)
+                    } else {
+                        // Actual exit/capture data is in `output`; do not duplicate an
+                        // unfiltered stdout excerpt into the failed summary record.
+                        Err(Failure::new(Stage::VswhereDiscovery, Kind::Exit))
+                    };
+                    match summary {
+                        Ok(summary) => QueryComparison {
+                            query,
+                            arguments,
+                            required_component_filter,
+                            output: facts,
+                            summary: Some(summary),
+                            failure: None,
+                        },
+                        Err(failure) => QueryComparison {
+                            query,
+                            arguments,
+                            required_component_filter,
+                            output: facts,
+                            summary: None,
+                            failure: Some(Box::new(failure)),
+                        },
+                    }
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        fn compare_discovery(
+            vswhere: &Path,
+            selected: &DiscoveryRoot,
+            system: &Path,
+            host: Host,
+        ) -> DiscoveryComparisons {
+            let program = vswhere.as_os_str().as_encoded_bytes();
+            let mut queries = Vec::new();
+            for query in [
+                DiscoveryQuery::SameFilterPrerelease,
+                DiscoveryQuery::StableInstances,
+                DiscoveryQuery::PrereleaseInstances,
+                DiscoveryQuery::StableComponentInstances,
+                DiscoveryQuery::PrereleaseComponentInstances,
+            ] {
+                let mut command = Command::new(vswhere);
+                let output = base(&mut command, selected, system).and_then(|_| {
+                    command.args(query.arguments(host));
+                    bounded_at(&mut command, 15, Stage::VswhereDiscovery)
+                });
+                queries.push(comparison_result(query, host, output));
+            }
+            DiscoveryComparisons {
+                program_encoded_bytes: program.len(),
+                program_encoded_sha256: hash(program),
+                program_encoded_hex: facts::hex(&program[..program.len().min(2048)]),
+                program_encoding: "same-native-OsStr-encoded-bytes-as-original-query",
+                program_excerpt_cut: program.len() > 2048,
+                comparison_only_not_source_or_compiler_selection: true,
+                same_cleared_preparation_environment: true,
+                queries,
+            }
+        }
+
         fn linker_banner(output: &std::process::Output) -> SetupResult<()> {
             facts::require_exit(Stage::LinkerBanner, output)?;
             if !output
@@ -2930,18 +3321,16 @@ mod compiler_environment {
             physical_file(&vswhere).map_err(|error| error.at(Stage::VswhereFile))?;
             let mut discover = Command::new(&vswhere);
             base(&mut discover, selected, &system)?;
-            discover.args([
-                "-latest",
-                "-products",
-                "*",
-                "-requires",
-                host.component(),
-                "-property",
-                "installationPath",
-                "-utf8",
-            ]);
+            discover.args(original_discovery_arguments(host));
             let output = bounded_at(&mut discover, 15, Stage::VswhereDiscovery)?;
-            let installation = installation_line(&output)?;
+            let installation = match installation_line(&output) {
+                Ok(installation) => installation,
+                Err(mut failure) => {
+                    failure.discovery_comparisons =
+                        Some(compare_discovery(&vswhere, selected, &system, host));
+                    return Err(failure);
+                }
+            };
             let installation = physical_directory(
                 &checked_path(OsString::from(installation))
                     .map_err(|error| error.at(Stage::Installation).output(&output, false))?,
@@ -4144,6 +4533,219 @@ mod compiler_environment {
             assert_eq!(
                 linker_banner(&output).err().unwrap().stage,
                 Stage::LinkerBanner
+            );
+        }
+
+        #[test]
+        fn discovery_comparison_arguments_preserve_original_selector_and_do_not_select_prerelease()
+        {
+            for host in [Host::X64, Host::X86, Host::Arm64] {
+                let original = original_discovery_arguments(host);
+                assert_eq!(
+                    original,
+                    [
+                        "-latest",
+                        "-products",
+                        "*",
+                        "-requires",
+                        host.component(),
+                        "-property",
+                        "installationPath",
+                        "-utf8"
+                    ]
+                );
+                let mut plus_prerelease = original.clone();
+                plus_prerelease.push("-prerelease");
+                assert_eq!(
+                    DiscoveryQuery::SameFilterPrerelease.arguments(host),
+                    plus_prerelease
+                );
+                for query in [
+                    DiscoveryQuery::StableInstances,
+                    DiscoveryQuery::PrereleaseInstances,
+                    DiscoveryQuery::StableComponentInstances,
+                    DiscoveryQuery::PrereleaseComponentInstances,
+                ] {
+                    let args = query.arguments(host);
+                    assert_eq!(
+                        args.contains(&"-prerelease"),
+                        matches!(
+                            query,
+                            DiscoveryQuery::PrereleaseInstances
+                                | DiscoveryQuery::PrereleaseComponentInstances
+                        )
+                    );
+                    assert_eq!(
+                        args.contains(&"-requires"),
+                        matches!(
+                            query,
+                            DiscoveryQuery::StableComponentInstances
+                                | DiscoveryQuery::PrereleaseComponentInstances
+                        )
+                    );
+                    assert!(
+                        args.contains(&"-all") && args.contains(&"json") && args.contains(&"-utf8")
+                    );
+                    assert!(
+                        !args.contains(&"-property")
+                            && !args
+                                .iter()
+                                .any(|arg| arg.contains("HOME") || arg.contains("LIB"))
+                    );
+                }
+            }
+            let summary = discovery_summary(DiscoveryQuery::SameFilterPrerelease, b"").unwrap();
+            assert_eq!(summary.records, 0);
+            assert!(summary.instances.is_empty());
+        }
+
+        #[test]
+        fn instance_comparison_summaries_keep_flags_and_hash_private_strings_without_publication() {
+            let private = "synthetic-private-display-credential";
+            let bytes = json!([{
+                "instanceId":"owned-instance", "installationPath": "C:\\VS 中文 & % !\\", "installationVersion":"18.12.3",
+                "isPrerelease":true,"isComplete":true,"isLaunchable":false,"isRebootRequired":false,"state":5,
+                "displayName":private,"description":private,"properties":{"custom":private},
+                "catalog":{"productName":private}
+            }]).to_string().into_bytes();
+            let summary = discovery_summary(DiscoveryQuery::PrereleaseInstances, &bytes).unwrap();
+            assert_eq!(summary.records, 1);
+            let instance = &summary.instances[0];
+            assert_eq!(instance.instance_id_sha256, Some(hash(b"owned-instance")));
+            assert_eq!(
+                instance.installation_path_sha256,
+                Some(hash("C:\\VS 中文 & % !\\".as_bytes()))
+            );
+            assert_eq!(instance.is_prerelease, Some(true));
+            assert_eq!(instance.is_launchable, Some(false));
+            assert_eq!(instance.state, Some(5));
+            let encoded = serde_json::to_string(&summary).unwrap();
+            assert!(
+                !encoded.contains(private)
+                    && !encoded.contains("displayName")
+                    && !encoded.contains("custom")
+            );
+            let missing = discovery_summary(DiscoveryQuery::StableInstances, b"[{}]").unwrap();
+            assert!(
+                missing.instances[0].is_complete.is_none()
+                    && missing.instances[0].installation_path_sha256.is_none()
+            );
+        }
+
+        #[test]
+        fn instance_comparison_rejects_whole_ambiguous_malformed_and_overbound_json() {
+            for bytes in [
+                b"{malformed".as_slice(),
+                b"{}",
+                b"[false]",
+                br#"[{"isPrerelease":true,"isPrerelease":false}]"#,
+                br#"[{"isPrerelease":true,"\u0069sPrerelease":false}]"#,
+                br#"[{"isComplete":"true"}]"#,
+                br#"[{"installationVersion":"synthetic-secret"}]"#,
+                br#"[{"state":-1}]"#,
+                b"[] trailing",
+            ] {
+                assert!(discovery_summary(DiscoveryQuery::StableInstances, bytes).is_err());
+            }
+            assert!(
+                discovery_summary(
+                    DiscoveryQuery::StableInstances,
+                    &vec![b' '; CAPTURE_BYTES + 1]
+                )
+                .is_err()
+            );
+            assert!(
+                discovery_summary(
+                    DiscoveryQuery::StableInstances,
+                    &json!(vec![json!({}); 9]).to_string().into_bytes()
+                )
+                .is_err()
+            );
+            let deep = format!("{}0{}", "[".repeat(35), "]".repeat(35));
+            assert!(comparison_json(deep.as_bytes()).is_err());
+            let work = json!(vec![0; 4097]).to_string();
+            assert!(comparison_json(work.as_bytes()).is_err());
+            assert!(
+                discovery_summary(
+                    DiscoveryQuery::SameFilterPrerelease,
+                    b"C:\\one\r\nC:\\two\r\n"
+                )
+                .is_err()
+            );
+            assert!(discovery_summary(DiscoveryQuery::SameFilterPrerelease, &[255]).is_err());
+        }
+
+        #[test]
+        fn actual_comparison_failures_preserve_exit_and_cut_hashes_without_metadata_contents() {
+            let mut command = fact_command("streams");
+            let output = bounded_at(&mut command, 5, Stage::VswhereDiscovery).unwrap();
+            let code = output.status.code();
+            let stderr_hash = hash(&output.stderr);
+            let comparison =
+                comparison_result(DiscoveryQuery::PrereleaseInstances, Host::X64, Ok(output));
+            assert!(comparison.summary.is_none());
+            assert_eq!(comparison.failure.as_ref().unwrap().kind, Kind::Exit);
+            let facts = comparison.output.as_ref().unwrap();
+            assert_eq!(facts.exit_code, code);
+            assert_eq!(
+                facts.stderr.as_ref().unwrap().original_sha256,
+                Some(stderr_hash)
+            );
+            assert!(facts.stdout.as_ref().unwrap().contents_withheld);
+            let mut command = fact_command("overflow");
+            let failed = bounded_at(&mut command, 5, Stage::VswhereDiscovery);
+            let comparison =
+                comparison_result(DiscoveryQuery::StableComponentInstances, Host::X64, failed);
+            assert!(comparison.output.is_none() && comparison.summary.is_none());
+            let stdout = comparison
+                .failure
+                .as_ref()
+                .unwrap()
+                .process
+                .as_ref()
+                .unwrap()
+                .stdout
+                .as_ref()
+                .unwrap();
+            assert_eq!(stdout.captured_bytes, Some(CAPTURE_BYTES + 1));
+            assert!(
+                stdout.original_sha256.is_none()
+                    && stdout.contents_withheld
+                    && stdout.excerpt_hex.is_none()
+            );
+        }
+
+        #[test]
+        fn actual_comparison_environment_remains_the_same_cleared_allowlist() {
+            let home = tempfile::tempdir().unwrap();
+            let selected =
+                DiscoveryRoot::new("ProgramFiles(x86)", home.path().as_os_str().to_owned())
+                    .unwrap();
+            let system = system_root()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.path().to_path_buf());
+            let secret = "synthetic-comparison-credential";
+            let mut command = fact_command("env");
+            command.env(SYNTHETIC_CREDENTIAL, secret);
+            base_values(&mut command, &selected, &system, |_| {
+                Some(home.path().as_os_str().to_owned())
+            })
+            .unwrap();
+            let output = bounded_at(&mut command, 5, Stage::VswhereDiscovery).unwrap();
+            assert_eq!(output.status.code(), Some(17));
+            let comparison =
+                comparison_result(DiscoveryQuery::SameFilterPrerelease, Host::X64, Ok(output));
+            assert!(comparison.summary.is_none());
+            let json = serde_json::to_string(&comparison).unwrap();
+            assert!(!json.contains(secret) && !json.contains(&facts::hex(secret.as_bytes())));
+            let fields: BTreeMap<_, _> = command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+                .collect();
+            assert!(!fields.contains_key(OsStr::new(SYNTHETIC_CREDENTIAL)));
+            assert_eq!(
+                fields.get(OsStr::new("HOME")),
+                Some(&Some(home.path().as_os_str().to_owned()))
             );
         }
     }

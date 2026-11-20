@@ -184,3 +184,31 @@ return before environment, paths, configuration or stdin inspection. No user
 home/keychain/provider/model is used. These diagnostics expose future native
 failure facts; they do not identify or fix the still-unknown Windows setup cause
 from run44668461580, nor substitute for fresh Windows/full-source validation.
+
+## Installed-vswhere comparison after a refused query
+
+Run44682051545 localized both Windows failures to a successful installed-vswhere
+query with complete empty stdout/stderr. Those facts do not identify why the
+query returned no installation. The original stable, latest, C++-component-filtered
+query and its strict single-path refusal remain exact.
+
+Only after that original path result is refused, the cfg-test preparer runs five
+bounded queries through the same absolute installed vswhere and the same cleared
+preparation environment: the exact original filter plus prerelease eligibility,
+stable/prerelease unfiltered instance summaries, and stable/prerelease component
+filtered instance summaries. Every query keeps its fixed argv, actual optional
+exit/capture/EOF/hash facts and at most15seconds of direct process waiting under
+the original supervisor bound. No alternate path or compiler is selected from
+these observations, and the original failure remains the returned failure.
+
+Complete JSON is validated before summary extraction, including duplicate decoded
+keys, bounds and types. Only fixed instance flags/state, bounded version data and
+exact hashes of instance/path identities are summarized. Display/description/
+property content is withheld, including cut captures. Component membership can
+be compared through exact identity hashes and the fixed component query; unknown
+or failed query facts remain unknown. No full environment, user profile, keychain,
+model/provider, guessed SDK/version/path or new ambient variable is inspected.
+
+These comparisons require a fresh native diagnostic run. They are an evidence
+correction authorized after the observed empty query, not a claim that the
+underlying Windows cause or the separate old macOS checkpoint failure is fixed.
