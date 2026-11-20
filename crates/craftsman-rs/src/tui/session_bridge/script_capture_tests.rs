@@ -328,3 +328,6 @@ async fn rejection_case(
     assert!(fixture.server.received_requests().await.unwrap().is_empty());
     fixture.originals_preserved();
 }
+
+#[path = "original_windows_probe.rs"]
+mod original_windows_probe;
