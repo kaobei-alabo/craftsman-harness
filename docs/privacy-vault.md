@@ -193,3 +193,8 @@ vault; fresh full native delivery and actual key/consumer integration stay open.
 Run44668461580 still passes all77 applicable Windows private cases per mode.
 Its two failures are separate detector preparation terminals. The bounded
 compiler stage diagnostics leave this vault and its integration limits unchanged.
+
+Run44682051545 again passes the Windows vault/restoration cases. Its detector
+discovery query returns no installation, so bounded comparison facts are still
+needed. The separate workspace-checkpoint timestamp correction preserves
+threads.db layout and does not change this encrypted mapping vault.

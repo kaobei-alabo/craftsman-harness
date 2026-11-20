@@ -48,6 +48,9 @@ Run44668461580 fails both Windows detector preparation terminals before Cargo,
 while the old storage and compiler-input controls pass. Test-only stage facts
 now preserve the bounded native error observations; the actual setup cause and
 successful Windows detector execution remain unproved.
+Run44682051545 identifies a successful empty filtered `vswhere` response. Added
+comparison diagnostics collect installed/prerelease/component facts while retaining
+the original refusal. They do not choose another compiler or change guest grants.
 
 ## Enable the agent surface
 

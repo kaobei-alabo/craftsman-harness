@@ -245,6 +245,16 @@ stage, exit, IO and captured-output facts without exposing a raw environment or
 changing compiler grants. They do not identify or fix the native cause yet;
 fresh Windows evidence must establish that cause before a supported repair.
 
+Run
+[44682051545](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44682051545)
+identified the Windows stage: the filtered installed `vswhere` query exited
+successfully with complete empty output. Why it matched no installation remains
+unknown. Comparison-only diagnostics now query prerelease eligibility and bounded
+installed instance/component summaries under the same isolated environment.
+The original selection still refuses; comparison results do not grant execution.
+The run also exposed a separate checkpoint creation-time update defect, now
+corrected on the candidate and awaiting native validation.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).
