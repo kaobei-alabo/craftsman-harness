@@ -212,3 +212,35 @@ model/provider, guessed SDK/version/path or new ambient variable is inspected.
 These comparisons require a fresh native diagnostic run. They are an evidence
 correction authorized after the observed empty query, not a claim that the
 underlying Windows cause or the separate old macOS checkpoint failure is fixed.
+
+## Machine-wide setup-state directory comparison
+
+The complete native run44701486328 returned no instances in all five queries,
+including prerelease and unfiltered enumeration. A selector change is therefore
+unsupported. Microsoft documents the machine-wide instance store beneath
+ProgramData, and its vswhere integration tests mount that store explicitly.
+Microsoft's vswhere/COM-server author also identifies `%ProgramData%` as a
+server dependency in issue236 comment985741650. These sources justify one
+precise environment comparison, without proving this hosted failure's cause
+or identifying the actual loaded server version.
+
+The diagnostic-only follow-up privately transfers the actual bounded absolute
+ProgramData root across the two marked source-build supervisors as encoded native
+argv data, with at most8KiB of hex for4KiB of complete native data. Unmarked,
+unknown, duplicate or malformed controls do not request it; transport collisions
+refuse before capture. Missing/invalid captured data refuses fixed.
+The path is never normalized or guessed, and no real HOME/profile or whole parent
+environment is inherited. Original helper/compiler argv are separate, so this
+private marker is not forwarded to Cargo or the guest.
+
+The original minimal-environment query and its five existing comparisons remain
+unchanged. One additional comparison runs the exact original component-filtered
+query with only ProgramData added to the same cleared environment. Missing or
+invalid transport/directory data fails fixed, while actual exit/EOF/capture/hash
+facts remain distinct. Only the field identity, native byte count/hash and
+directory acceptance are recorded; the root value and setup-state files are
+not dumped. Whole serialized failure controls keep the original64KiB capture
+and framing allowance; no deadline/capture increase or clipped success is used.
+This comparison cannot select a compiler or turn the
+original failure into success. A fresh Windows run must establish whether that
+single field restores instance discovery before any selection change is justified.

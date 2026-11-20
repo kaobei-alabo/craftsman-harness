@@ -1451,6 +1451,7 @@ mod compiler_environment {
         system_root: Option<OsString>,
         discovery: Option<DiscoveryRoot>,
     ) {
+        msvc_setup::transport_setup_state_comparison(command);
         command
             .env_clear()
             .env("HOME", home)
@@ -2851,6 +2852,7 @@ mod compiler_environment {
             PrereleaseInstances,
             StableComponentInstances,
             PrereleaseComponentInstances,
+            ProgramDataSameFilter,
         }
 
         fn original_discovery_arguments(host: Host) -> Vec<&'static str> {
@@ -2868,6 +2870,9 @@ mod compiler_environment {
 
         impl DiscoveryQuery {
             fn arguments(self, host: Host) -> Vec<&'static str> {
+                if self == Self::ProgramDataSameFilter {
+                    return original_discovery_arguments(host);
+                }
                 if self == Self::SameFilterPrerelease {
                     let mut args = original_discovery_arguments(host);
                     args.push("-prerelease");
@@ -2931,6 +2936,212 @@ mod compiler_environment {
             comparison_only_not_source_or_compiler_selection: bool,
             same_cleared_preparation_environment: bool,
             queries: Vec<QueryComparison>,
+            program_data_same_query: Option<SetupStateComparison>,
+        }
+
+        #[derive(serde::Serialize)]
+        struct SetupStateComparison {
+            source: &'static str,
+            only_added_environment_field: &'static str,
+            original_program_arguments_and_base_unchanged: bool,
+            native_encoding: &'static str,
+            native_bytes: Option<usize>,
+            native_sha256: Option<String>,
+            physical_directory_accepted: Option<bool>,
+            query: QueryComparison,
+        }
+
+        const STATE_MARKER: &str = "craftsman-msvc-program-data=";
+        // Keep the additional native argv contribution well below Windows'
+        // whole command-line limit without changing old discovery path bounds.
+        const MAX_SETUP_STATE_HEX_BYTES: usize = 8 * 1024;
+
+        struct SetupStateRoot {
+            value: OsString,
+        }
+        impl SetupStateRoot {
+            fn new(value: OsString) -> SetupResult<Self> {
+                checked_path(value.clone()).map_err(|error| {
+                    error.at(Stage::CompilerEnvironment).expected("ProgramData")
+                })?;
+                if value.as_encoded_bytes().iter().any(u8::is_ascii_control) {
+                    return Err(Failure::new(Stage::CompilerEnvironment, Kind::NativePath)
+                        .expected("ProgramData"));
+                }
+                let state = Self { value };
+                if state.encoded().len() * 2 > MAX_SETUP_STATE_HEX_BYTES {
+                    return Err(Failure::new(Stage::CompilerEnvironment, Kind::Bounds)
+                        .expected("ProgramData"));
+                }
+                Ok(state)
+            }
+            fn encoded(&self) -> Vec<u8> {
+                #[cfg(windows)]
+                {
+                    use std::os::windows::ffi::OsStrExt;
+                    self.value
+                        .encode_wide()
+                        .flat_map(|unit| unit.to_le_bytes())
+                        .collect()
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStrExt;
+                    self.value.as_bytes().to_vec()
+                }
+            }
+            fn argument(&self) -> OsString {
+                OsString::from(format!("{STATE_MARKER}{}", facts::hex(&self.encoded())))
+            }
+        }
+
+        fn transferred_setup_state(
+            arguments: impl IntoIterator<Item = OsString>,
+        ) -> SetupResult<SetupStateRoot> {
+            let values: Vec<_> = arguments
+                .into_iter()
+                .filter(|value| {
+                    value
+                        .as_encoded_bytes()
+                        .starts_with(STATE_MARKER.as_bytes())
+                })
+                .collect();
+            let [value] = values.as_slice() else {
+                let kind = if values.is_empty() {
+                    Kind::Environment
+                } else {
+                    Kind::DuplicateField
+                };
+                return Err(Failure::new(Stage::CompilerEnvironment, kind).expected("ProgramData"));
+            };
+            let text = value
+                .to_str()
+                .and_then(|text| text.strip_prefix(STATE_MARKER))
+                .ok_or_else(|| {
+                    Failure::new(Stage::CompilerEnvironment, Kind::NativePath)
+                        .expected("ProgramData")
+                })?;
+            if text.is_empty() || text.len() > MAX_SETUP_STATE_HEX_BYTES || text.len() % 2 != 0 {
+                return Err(
+                    Failure::new(Stage::CompilerEnvironment, Kind::Bounds).expected("ProgramData")
+                );
+            }
+            if !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Failure::new(Stage::CompilerEnvironment, Kind::NativePath)
+                    .expected("ProgramData"));
+            }
+            let mut bytes = Vec::new();
+            for pair in text.as_bytes().chunks_exact(2) {
+                let text = std::str::from_utf8(pair).map_err(|_| {
+                    Failure::new(Stage::CompilerEnvironment, Kind::NativePath)
+                        .expected("ProgramData")
+                })?;
+                bytes.push(u8::from_str_radix(text, 16).map_err(|_| {
+                    Failure::new(Stage::CompilerEnvironment, Kind::NativePath)
+                        .expected("ProgramData")
+                })?);
+            }
+            #[cfg(windows)]
+            let value = {
+                use std::os::windows::ffi::OsStringExt;
+                if bytes.len() % 2 != 0 {
+                    return Err(Failure::new(Stage::CompilerEnvironment, Kind::NativePath)
+                        .expected("ProgramData"));
+                }
+                let units: Vec<_> = bytes
+                    .chunks_exact(2)
+                    .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                    .collect();
+                OsString::from_wide(&units)
+            };
+            #[cfg(unix)]
+            let value = {
+                use std::os::unix::ffi::OsStringExt;
+                OsString::from_vec(bytes)
+            };
+            SetupStateRoot::new(value)
+        }
+
+        fn needs_setup_state_comparison(command: &Command) -> bool {
+            let arguments: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
+            if arguments.iter().any(|value| {
+                value
+                    .as_encoded_bytes()
+                    .starts_with(STATE_MARKER.as_bytes())
+            }) {
+                return false;
+            }
+            let source_values = registered_marker_values(&arguments, MARKER);
+            let installed_values = registered_marker_values(&arguments, NATIVE_MARKER);
+            let source_count = arguments.iter().filter(|value| *value == HELPER).count();
+            let installed_count = arguments
+                .iter()
+                .filter(|value| *value == NATIVE_HELPER)
+                .count();
+            let source_helper = source_count == 1
+                && installed_count == 0
+                && installed_values.is_empty()
+                && matches!(source_values.as_slice(), [Some("suite" | "collect")]);
+            let installed_helper = installed_count == 1
+                && source_count == 0
+                && source_values.is_empty()
+                && matches!(installed_values.as_slice(), [Some("guest")]);
+            source_helper || installed_helper
+        }
+
+        fn registered_marker_values<'a>(
+            arguments: &'a [OsString],
+            prefix: &str,
+        ) -> Vec<Option<&'a str>> {
+            arguments
+                .iter()
+                // Retain undecodable registered companions as None records.
+                .filter(|value| value.as_encoded_bytes().starts_with(prefix.as_bytes()))
+                .map(|value| value.to_str().and_then(|value| value.strip_prefix(prefix)))
+                .collect()
+        }
+
+        fn capture_setup_state_comparison(
+            command: &mut Command,
+            mut lookup: impl FnMut(&str) -> Option<OsString>,
+        ) -> SetupResult<()> {
+            if command.get_args().any(|value| {
+                value
+                    .as_encoded_bytes()
+                    .starts_with(STATE_MARKER.as_bytes())
+            }) {
+                return Err(
+                    Failure::new(Stage::CompilerEnvironment, Kind::DuplicateField)
+                        .expected("ProgramData"),
+                );
+            }
+            if !needs_setup_state_comparison(command) {
+                return Ok(());
+            }
+            let state = lookup("ProgramData")
+                .ok_or_else(|| {
+                    Failure::new(Stage::CompilerEnvironment, Kind::Environment)
+                        .expected("ProgramData")
+                })
+                .and_then(SetupStateRoot::new)?;
+            command.arg(state.argument());
+            Ok(())
+        }
+
+        pub(super) fn transport_setup_state_comparison(command: &mut Command) {
+            #[cfg(windows)]
+            {
+                capture_setup_state_comparison(command, |name| std::env::var_os(name))
+                    .expect("invalid machine-wide setup-state comparison root");
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = command;
+            }
+        }
+
+        fn setup_state_environment(command: &mut Command, state: &SetupStateRoot) {
+            command.env("ProgramData", &state.value);
         }
 
         fn comparison_json(bytes: &[u8]) -> SetupResult<Value> {
@@ -3053,7 +3264,10 @@ mod compiler_environment {
         }
 
         fn discovery_summary(query: DiscoveryQuery, bytes: &[u8]) -> SetupResult<DiscoverySummary> {
-            if query == DiscoveryQuery::SameFilterPrerelease {
+            if matches!(
+                query,
+                DiscoveryQuery::SameFilterPrerelease | DiscoveryQuery::ProgramDataSameFilter
+            ) {
                 if bytes.len() > CAPTURE_BYTES {
                     return Err(Failure::new(Stage::VswhereDiscovery, Kind::Bounds));
                 }
@@ -3141,6 +3355,7 @@ mod compiler_environment {
                 DiscoveryQuery::SameFilterPrerelease
                     | DiscoveryQuery::StableComponentInstances
                     | DiscoveryQuery::PrereleaseComponentInstances
+                    | DiscoveryQuery::ProgramDataSameFilter
             )
             .then(|| host.component());
             match output {
@@ -3221,6 +3436,26 @@ mod compiler_environment {
                 });
                 queries.push(comparison_result(query, host, output));
             }
+            let program_data_query = DiscoveryQuery::ProgramDataSameFilter;
+            let mut native_bytes = None;
+            let mut native_sha256 = None;
+            let mut physical_directory_accepted = None;
+            let program_data_output =
+                transferred_setup_state(std::env::args_os()).and_then(|state| {
+                    let encoded = state.encoded();
+                    native_bytes = Some(encoded.len());
+                    native_sha256 = Some(hash(&encoded));
+                    if let Err(error) = physical_directory(Path::new(&state.value)) {
+                        physical_directory_accepted = Some(false);
+                        return Err(error.at(Stage::CompilerEnvironment).expected("ProgramData"));
+                    }
+                    physical_directory_accepted = Some(true);
+                    let mut command = Command::new(vswhere);
+                    base(&mut command, selected, system)?;
+                    setup_state_environment(&mut command, &state);
+                    command.args(program_data_query.arguments(host));
+                    bounded_at(&mut command, 15, Stage::VswhereDiscovery)
+                });
             DiscoveryComparisons {
                 program_encoded_bytes: program.len(),
                 program_encoded_sha256: hash(program),
@@ -3230,6 +3465,16 @@ mod compiler_environment {
                 comparison_only_not_source_or_compiler_selection: true,
                 same_cleared_preparation_environment: true,
                 queries,
+                program_data_same_query: Some(SetupStateComparison {
+                    source: "registered-native-supervisor-ProgramData",
+                    only_added_environment_field: "ProgramData",
+                    original_program_arguments_and_base_unchanged: true,
+                    native_encoding: "UTF-16LE-native-Windows-units",
+                    native_bytes,
+                    native_sha256,
+                    physical_directory_accepted,
+                    query: comparison_result(program_data_query, host, program_data_output),
+                }),
             }
         }
 
@@ -4747,6 +4992,468 @@ mod compiler_environment {
                 fields.get(OsStr::new("HOME")),
                 Some(&Some(home.path().as_os_str().to_owned()))
             );
+        }
+
+        #[test]
+        fn setup_state_transport_keeps_complete_owned_root_and_refuses_ambiguous_or_invalid_data() {
+            let home = tempfile::tempdir().unwrap();
+            let root = SetupStateRoot::new(home.path().as_os_str().to_owned()).unwrap();
+            let argument = root.argument();
+            let recovered = transferred_setup_state([argument.clone()]).unwrap();
+            assert_eq!(
+                recovered.value.as_encoded_bytes(),
+                root.value.as_encoded_bytes()
+            );
+            assert!(transferred_setup_state([]).is_err());
+            assert_eq!(
+                transferred_setup_state([argument.clone(), argument])
+                    .err()
+                    .unwrap()
+                    .kind,
+                Kind::DuplicateField
+            );
+            for data in [
+                "",
+                "0",
+                "gg",
+                "+0",
+                "-0",
+                "00",
+                &"f".repeat(MAX_SETUP_STATE_HEX_BYTES + 1),
+            ] {
+                assert!(
+                    transferred_setup_state([OsString::from(format!("{STATE_MARKER}{data}"))])
+                        .is_err()
+                );
+            }
+            for invalid in [
+                OsString::from("relative"),
+                OsString::from("bad\0root"),
+                OsString::from("/bad\nroot"),
+                home.path().join("bad\troot").into_os_string(),
+                home.path().join("bad\x1broot").into_os_string(),
+                home.path().join("bad\x7froot").into_os_string(),
+            ] {
+                assert!(SetupStateRoot::new(invalid).is_err());
+            }
+            #[cfg(windows)]
+            {
+                for invalid in [r"C:", r"\\?\C:", r"\root-relative"] {
+                    assert!(SetupStateRoot::new(OsString::from(invalid)).is_err());
+                }
+                for complete in [
+                    r"C:\",
+                    r"\\?\C:\",
+                    r"C:\ProgramData",
+                    r"\\?\C:\ProgramData",
+                    r"\\server\share",
+                    r"\\?\UNC\server\share",
+                ] {
+                    let value = OsString::from(complete);
+                    let state = SetupStateRoot::new(value.clone()).unwrap();
+                    let returned = transferred_setup_state([state.argument()]).unwrap();
+                    assert_eq!(returned.value.as_encoded_bytes(), value.as_encoded_bytes());
+                }
+            }
+            let value = home
+                .path()
+                .join(malformed_setup_state_argument("owned-opaque-"))
+                .into_os_string();
+            assert!(value.to_str().is_none());
+            let state = SetupStateRoot::new(value.clone()).unwrap();
+            let returned = transferred_setup_state([state.argument()]).unwrap();
+            assert_eq!(returned.value.as_encoded_bytes(), value.as_encoded_bytes());
+            let malformed = malformed_setup_state_argument(STATE_MARKER);
+            for arguments in [
+                vec![root.argument(), malformed.clone()],
+                vec![malformed.clone(), root.argument()],
+                vec![malformed],
+            ] {
+                assert!(transferred_setup_state(arguments).is_err());
+            }
+            #[cfg(unix)]
+            let full = OsString::from(format!(
+                "/{}",
+                "x".repeat(MAX_SETUP_STATE_HEX_BYTES / 2 - 1)
+            ));
+            #[cfg(windows)]
+            let full = OsString::from(format!(
+                "C:\\{}",
+                "x".repeat(MAX_SETUP_STATE_HEX_BYTES / 4 - 3)
+            ));
+            let state = SetupStateRoot::new(full.clone()).unwrap();
+            assert_eq!(
+                state.argument().len(),
+                STATE_MARKER.len() + MAX_SETUP_STATE_HEX_BYTES
+            );
+            assert_eq!(
+                transferred_setup_state([state.argument()]).unwrap().value,
+                full
+            );
+            let mut too_long = full;
+            too_long.push("x");
+            assert_eq!(
+                SetupStateRoot::new(too_long).err().unwrap().kind,
+                Kind::Bounds
+            );
+        }
+
+        fn malformed_setup_state_argument(prefix: &str) -> OsString {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                let mut bytes = prefix.as_bytes().to_vec();
+                bytes.push(0xff);
+                OsString::from_vec(bytes)
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::ffi::OsStringExt;
+                let mut units: Vec<_> = prefix.encode_utf16().collect();
+                units.push(0xd800);
+                OsString::from_wide(&units)
+            }
+        }
+
+        #[test]
+        fn only_marked_source_build_supervisors_request_machine_state_transport() {
+            let mut unrelated = fact_command("streams");
+            assert!(!needs_setup_state_comparison(&unrelated));
+            transport_setup_state_comparison(&mut unrelated);
+            assert!(!unrelated.get_args().any(|value| {
+                value
+                    .as_encoded_bytes()
+                    .starts_with(STATE_MARKER.as_bytes())
+            }));
+            let mut source = Command::new("owned-unused-supervisor-program");
+            source
+                .args(["--ignored", "--exact", HELPER, "--nocapture"])
+                .arg(format!("{MARKER}suite"));
+            assert!(needs_setup_state_comparison(&source));
+            source.arg(format!("{MARKER}suite"));
+            assert!(!needs_setup_state_comparison(&source));
+            let mut installed = Command::new("owned-unused-supervisor-program");
+            installed
+                .args(["--ignored", "--exact", NATIVE_HELPER, "--nocapture"])
+                .arg(format!("{NATIVE_MARKER}guest"));
+            assert!(needs_setup_state_comparison(&installed));
+            for (helper, prefix, mode) in [
+                (HELPER, MARKER, "suite"),
+                (HELPER, MARKER, "collect"),
+                (NATIVE_HELPER, NATIVE_MARKER, "guest"),
+            ] {
+                for markers in [
+                    vec![],
+                    vec![OsString::from(format!("{prefix}unknown"))],
+                    vec![
+                        OsString::from(format!("{prefix}{mode}")),
+                        OsString::from(format!("{prefix}{mode}")),
+                    ],
+                    vec![
+                        OsString::from(format!("{prefix}{mode}")),
+                        malformed_setup_state_argument(prefix),
+                    ],
+                    vec![
+                        malformed_setup_state_argument(prefix),
+                        OsString::from(format!("{prefix}{mode}")),
+                    ],
+                    vec![malformed_setup_state_argument(prefix)],
+                ] {
+                    let mut command = Command::new("owned-unused-supervisor-program");
+                    command
+                        .args(["--ignored", "--exact", helper, "--nocapture"])
+                        .args(markers);
+                    assert!(!needs_setup_state_comparison(&command));
+                    let mut requested = Vec::new();
+                    capture_setup_state_comparison(&mut command, |name| {
+                        requested.push(name.to_owned());
+                        panic!("unselected supervisor inspected a setup field")
+                    })
+                    .unwrap();
+                    assert!(requested.is_empty());
+                }
+            }
+            let mut crossed = Command::new("owned-unused-supervisor-program");
+            crossed
+                .args([HELPER, NATIVE_HELPER])
+                .arg(format!("{MARKER}suite"));
+            assert!(!needs_setup_state_comparison(&crossed));
+            let mut companion = Command::new("owned-unused-supervisor-program");
+            companion
+                .arg(HELPER)
+                .arg(format!("{MARKER}suite"))
+                .arg(format!("{NATIVE_MARKER}unknown"));
+            assert!(!needs_setup_state_comparison(&companion));
+            let mut duplicate_helper = Command::new("owned-unused-supervisor-program");
+            duplicate_helper
+                .args([HELPER, HELPER])
+                .arg(format!("{MARKER}suite"));
+            assert!(!needs_setup_state_comparison(&duplicate_helper));
+            let mut collision = Command::new("owned-unused-supervisor-program");
+            collision
+                .arg(HELPER)
+                .arg(format!("{MARKER}suite"))
+                .arg(format!("{STATE_MARKER}2f"));
+            assert!(!needs_setup_state_comparison(&collision));
+            assert_eq!(
+                capture_setup_state_comparison(&mut collision, |_| panic!(
+                    "collided transport inspected environment"
+                ))
+                .err()
+                .unwrap()
+                .kind,
+                Kind::DuplicateField
+            );
+        }
+
+        #[test]
+        fn selected_setup_state_capture_is_exact_and_refuses_missing_or_invalid_owned_inputs() {
+            let home = tempfile::tempdir().unwrap();
+            let mut command = Command::new("owned-unused-supervisor-program");
+            command.arg(HELPER).arg(format!("{MARKER}suite"));
+            let before: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
+            let mut requested = Vec::new();
+            capture_setup_state_comparison(&mut command, |name| {
+                requested.push(name.to_owned());
+                Some(home.path().as_os_str().to_owned())
+            })
+            .unwrap();
+            assert_eq!(requested, ["ProgramData"]);
+            assert!(command.get_envs().next().is_none());
+            let after: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
+            assert_eq!(&after[..before.len()], &before);
+            assert_eq!(after.len(), before.len() + 1);
+            assert_eq!(
+                transferred_setup_state(after).unwrap().value,
+                home.path().as_os_str()
+            );
+            assert!(
+                capture_setup_state_comparison(&mut command, |_| panic!(
+                    "duplicate capture inspected environment"
+                ))
+                .is_err()
+            );
+            for (value, expected) in [
+                (None, Kind::Environment),
+                (Some(OsString::new()), Kind::NativePath),
+                (Some(OsString::from("relative")), Kind::NativePath),
+                (
+                    Some(home.path().join("bad\0root").into_os_string()),
+                    Kind::NativePath,
+                ),
+                (
+                    Some(home.path().join("bad\nroot").into_os_string()),
+                    Kind::NativePath,
+                ),
+                (
+                    Some(
+                        home.path()
+                            .join("x".repeat(MAX_SETUP_STATE_HEX_BYTES))
+                            .into_os_string(),
+                    ),
+                    Kind::Bounds,
+                ),
+            ] {
+                let mut command = Command::new("owned-unused-supervisor-program");
+                command.arg(HELPER).arg(format!("{MARKER}suite"));
+                let error = capture_setup_state_comparison(&mut command, |name| {
+                    assert_eq!(name, "ProgramData");
+                    value.clone()
+                })
+                .err()
+                .unwrap();
+                assert_eq!(error.stage, Stage::CompilerEnvironment);
+                assert_eq!(error.kind, expected);
+                assert_eq!(error.expected, Some("ProgramData"));
+                assert!(error.process.is_none());
+                assert_eq!(command.get_args().count(), 2);
+                let text = format!("{error:?}");
+                assert!(!text.contains("bad") && !text.contains(&facts::hex(b"bad")));
+            }
+        }
+
+        #[test]
+        fn machine_state_is_one_comparison_environment_field_and_never_a_selector_change() {
+            let home = tempfile::tempdir().unwrap();
+            let state = SetupStateRoot::new(home.path().as_os_str().to_owned()).unwrap();
+            let selected =
+                DiscoveryRoot::new("ProgramFiles(x86)", home.path().as_os_str().to_owned())
+                    .unwrap();
+            let system = system_root()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.path().to_path_buf());
+            let mut command = fact_command("env");
+            command.env(SYNTHETIC_CREDENTIAL, "synthetic-parent-credential");
+            base_values(&mut command, &selected, &system, |_| {
+                Some(home.path().as_os_str().to_owned())
+            })
+            .unwrap();
+            let original: BTreeMap<_, _> = command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+                .collect();
+            assert!(!original.contains_key(OsStr::new("ProgramData")));
+            setup_state_environment(&mut command, &state);
+            let mut changed: BTreeMap<_, _> = command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(OsStr::to_owned)))
+                .collect();
+            assert_eq!(
+                changed.remove(OsStr::new("ProgramData")),
+                Some(Some(state.value.clone()))
+            );
+            assert_eq!(changed, original);
+            assert!(!changed.contains_key(OsStr::new(SYNTHETIC_CREDENTIAL)));
+            assert_eq!(
+                DiscoveryQuery::ProgramDataSameFilter.arguments(Host::X64),
+                original_discovery_arguments(Host::X64)
+            );
+            let output = bounded_at(&mut command, 5, Stage::VswhereDiscovery).unwrap();
+            assert_eq!(output.status.code(), Some(17));
+            assert!(
+                !output
+                    .stdout
+                    .windows(b"synthetic-parent-credential".len())
+                    .any(|bytes| bytes == b"synthetic-parent-credential")
+            );
+        }
+
+        #[test]
+        fn machine_state_comparison_packet_fits_the_unchanged_whole_supervisor_capture() {
+            let successful = bounded_at(&mut fact_command("fields"), 5, Stage::Control)
+                .unwrap()
+                .status;
+            let refused = bounded_at(&mut fact_command("streams"), 5, Stage::Control)
+                .unwrap()
+                .status;
+            assert!(successful.success() && !refused.success());
+            let raw = vec![b'x'; CAPTURE_BYTES];
+            let objects: Vec<_> = (0..8)
+                .map(|ordinal| {
+                    json!({
+                        "instanceId": "i".repeat(128),
+                        // Six five-digit path byte counts fit complete64KiB
+                        // JSON; seven cannot. Keep all eight admitted records.
+                        "installationPath": format!("C:\\{}", "v".repeat(if ordinal < 6 { 10000 } else { 300 })),
+                        "installationVersion": "9".repeat(64),
+                        "isPrerelease": false, "isComplete": false,
+                        "isLaunchable": false, "isRebootRequired": false,
+                        "state": u64::MAX,
+                    })
+                })
+                .collect();
+            let json_bytes = serde_json::to_vec(&objects).unwrap();
+            assert!(json_bytes.len() < CAPTURE_BYTES);
+            let path_bytes = format!("C:\\{}", "v".repeat(MAX_PATH_UNITS - 3)).into_bytes();
+            for host in [Host::X64, Host::X86, Host::Arm64] {
+                for query_failed in [false, true] {
+                    let mut queries = Vec::new();
+                    for query in [
+                        DiscoveryQuery::SameFilterPrerelease,
+                        DiscoveryQuery::StableInstances,
+                        DiscoveryQuery::PrereleaseInstances,
+                        DiscoveryQuery::StableComponentInstances,
+                        DiscoveryQuery::PrereleaseComponentInstances,
+                    ] {
+                        let stdout = if query == DiscoveryQuery::SameFilterPrerelease {
+                            path_bytes.clone()
+                        } else {
+                            json_bytes.clone()
+                        };
+                        queries.push(comparison_result(
+                            query,
+                            host,
+                            Ok(std::process::Output {
+                                status: successful,
+                                stdout,
+                                stderr: raw.clone(),
+                            }),
+                        ));
+                    }
+                    let added_output = if query_failed {
+                        let mut error = Failure::new(Stage::VswhereDiscovery, Kind::CaptureDrain);
+                        error.raw_os_error = Some(i32::MIN);
+                        error.process = Some(facts::ProcessFacts {
+                            spawn_returned_child: true,
+                            exit_code: Some(i32::MIN),
+                            exit_success: Some(false),
+                            stdout: Some(facts::stream(Some(&raw), true, false, true, 2048)),
+                            stderr: Some(facts::stream(Some(&raw), true, false, true, 2048)),
+                            cleanup: Some(facts::CleanupFacts {
+                                kill_returned_ok: false,
+                                kill_raw_os_error: Some(i32::MIN),
+                                try_wait_returned_status: false,
+                                try_wait_raw_os_error: Some(i32::MIN),
+                                exit_code_after_cleanup: Some(i32::MIN),
+                                bound_reached_without_status: false,
+                            }),
+                        });
+                        Err(error)
+                    } else {
+                        Ok(std::process::Output {
+                            status: successful,
+                            stdout: path_bytes.clone(),
+                            stderr: raw.clone(),
+                        })
+                    };
+                    let added_query = comparison_result(
+                        DiscoveryQuery::ProgramDataSameFilter,
+                        host,
+                        added_output,
+                    );
+                    if query_failed {
+                        assert!(added_query.failure.is_some() && added_query.summary.is_none());
+                    } else {
+                        assert_eq!(added_query.summary.as_ref().unwrap().records, 1);
+                    }
+                    // Only installation_line's refusal receives comparisons. Its
+                    // original output/exit facts can be maximal, but PE/library/read
+                    // contexts and recursive comparisons are unreachable here.
+                    let mut original = Failure::new(Stage::VswhereDiscovery, Kind::Exit).output(
+                        &std::process::Output {
+                            status: refused,
+                            stdout: raw.clone(),
+                            stderr: raw.clone(),
+                        },
+                        true,
+                    );
+                    // Synthetic numeric extreme bounds the Windows exit field;
+                    // this constructed record is not a native observation.
+                    original.process.as_mut().unwrap().exit_code = Some(i32::MIN);
+                    original.discovery_comparisons = Some(DiscoveryComparisons {
+                        program_encoded_bytes: MAX_PATH_UNITS,
+                        program_encoded_sha256: hash(&raw),
+                        program_encoded_hex: facts::hex(&raw[..2048]),
+                        program_encoding: "same-native-OsStr-encoded-bytes-as-original-query",
+                        program_excerpt_cut: true,
+                        comparison_only_not_source_or_compiler_selection: true,
+                        same_cleared_preparation_environment: true,
+                        queries,
+                        program_data_same_query: Some(SetupStateComparison {
+                            source: "registered-native-supervisor-ProgramData",
+                            only_added_environment_field: "ProgramData",
+                            original_program_arguments_and_base_unchanged: true,
+                            native_encoding: "UTF-16LE-native-Windows-units",
+                            native_bytes: Some(MAX_SETUP_STATE_HEX_BYTES / 2),
+                            native_sha256: Some(hash(&raw)),
+                            physical_directory_accepted: Some(false),
+                            query: added_query,
+                        }),
+                    });
+                    let encoded = format!("{original:?}");
+                    assert!(encoded.is_ascii());
+                    assert!(
+                        encoded.len() + 4096 < CAPTURE_BYTES,
+                        "combined failure and original framing exceed capture: {}",
+                        encoded.len()
+                    );
+                    println!(
+                        "SYNTHETIC-MACHINE-STATE-FAILURE-BOUND host={host:?} query_failed={query_failed} bytes={} sha256={} framing=4096 cap={CAPTURE_BYTES}",
+                        encoded.len(),
+                        hash(encoded.as_bytes())
+                    );
+                }
+            }
         }
     }
 }
