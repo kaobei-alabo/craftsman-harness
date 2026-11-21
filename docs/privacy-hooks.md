@@ -373,6 +373,11 @@ busy/native/SQL/rollback limits and every old test body remain unchanged; no
 deadline repair or normal privacy activation is claimed. Independent source
 review and actual future native phase evidence are still required.
 
+The elapsed sample follows the original Deadline predicate. The record marks
+return from the opening future; thread join, caller return and complete log
+delivery require separate observations. Subsequent serialization and stdout
+writing can delay those returns, and stdout can block or write a partial record.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).
