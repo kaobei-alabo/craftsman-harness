@@ -99,14 +99,16 @@ links fixed98-byte data-only COFF through that same selected native tool into an
 initially absent owned destination. Real exit0, the unchanged banner check,
 complete stable PE/marker data and cleanup are all required. The DLL is never
 loaded or executed; its data/hashes cannot become a gadget SourceGrant. The
-tables/ownership code await independent review and actual Windows results;
+tables, ownership and corrected PE code have passed independent source reviews.
+Actual Windows results remain pending;
 original pinned Cargo/approved WASM and all-four/main gates remain pending.
 
 The probe's source-format correction refuses unsupported section alignment
 below4096 and nonzero reserved Win32VersionValue/LoaderFlags. Its existing
 4096-aligned headers, data marker, timestamps and padding remain accepted.
 This private format constraint adds no native flag, timer or source authority;
-corrected-source review and actual Windows output remain pending.
+independent re-review accepts the corrected source; actual Windows output
+remains pending.
 
 ## Enable the agent surface
 
