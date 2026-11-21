@@ -431,11 +431,12 @@ actual LINK0 and banner acceptance. The first PE group is `pe.directories` on
 and full image remain unavailable. The declaration clash is absent and the
 17 existing Windows warnings remain. This does not identify a loader/tool cause.
 
-The private diagnostic now uses closed `pe.d00.rva` through `pe.d15.rva` and
-`pe.d00.size` through `pe.d15.size` labels for the first checked directory
-operand, through the same `expected` field. It preserves every checked DWORD,
-short-circuit order and the strict all-directory-zero acceptance rule; invalid
-indices retain the generic refusal. No field/value/image dump or new native
-flag, bound or source grant is added. Ordinary header/data controls verify
-ordinal/operand and first-failure identity; the new Windows label is unobserved
-until independent review and fresh combined native source/WASM validation.
+Run44925496617 at dd79 observed `pe.d06.rva` after LINK0/banner: directory6's
+RVA check refused, while its size, contents and cause remain unavailable. The
+private data-only fixture now appends `/NOCOFFGRPINFO` after the unchanged object
+input. [LLVM's compatibility table](https://github.com/llvm/llvm-project/blob/a037d2ad7312adc58664358893c20927efae22cf/lld/COFF/Options.td#L402)
+corroborates the option name; Microsoft does not document it. Its effect remains
+a conditional candidate pending fresh Windows acceptance of the unchanged PE
+validator and original Prepared/source-Cargo-WASM gates. The closed refusal
+labels, strict all-directory-zero rule, native bounds and source approval stay
+unchanged. Normal privacy remains off; this adds no public command or capability.

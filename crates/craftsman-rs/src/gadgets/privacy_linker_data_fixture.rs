@@ -46,7 +46,7 @@ fn object(host: Host) -> &'static [u8; 98] {
         Host::Arm64 => &ARM64_OBJECT,
     }
 }
-fn arguments(host: Host) -> [&'static str; 9] {
+fn arguments(host: Host) -> [&'static str; 10] {
     let (symbol, machine) = match host {
         Host::X64 => ("/INCLUDE:cfprobe", "/MACHINE:X64"),
         Host::X86 => ("/INCLUDE:_cfprobe", "/MACHINE:X86"),
@@ -62,6 +62,7 @@ fn arguments(host: Host) -> [&'static str; 9] {
         machine,
         "/OUT:LinkerProbe.dll",
         INPUT,
+        "/NOCOFFGRPINFO",
     ]
 }
 fn failure(kind: Kind, step: &'static str) -> Failure {
