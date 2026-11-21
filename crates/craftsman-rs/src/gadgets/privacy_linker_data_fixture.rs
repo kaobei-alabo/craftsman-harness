@@ -46,7 +46,7 @@ fn object(host: Host) -> &'static [u8; 98] {
         Host::Arm64 => &ARM64_OBJECT,
     }
 }
-fn arguments(host: Host) -> [&'static str; 9] {
+fn arguments(host: Host) -> [&'static str; 10] {
     let (symbol, machine) = match host {
         Host::X64 => ("/INCLUDE:cfprobe", "/MACHINE:X64"),
         Host::X86 => ("/INCLUDE:_cfprobe", "/MACHINE:X86"),
@@ -62,6 +62,7 @@ fn arguments(host: Host) -> [&'static str; 9] {
         machine,
         "/OUT:LinkerProbe.dll",
         INPUT,
+        "/NOCOFFGRPINFO",
     ]
 }
 fn failure(kind: Kind, step: &'static str) -> Failure {
@@ -795,9 +796,47 @@ enum PeRejection {
     OptionalExtent,
     EntryReserved,
     Directories,
+    DirectoryRva(usize),
+    DirectorySize(usize),
     AlignmentSection,
     ImageRawMarker,
 }
+const DIRECTORY_RVA_REJECTIONS: [&str; 16] = [
+    "pe.d00.rva",
+    "pe.d01.rva",
+    "pe.d02.rva",
+    "pe.d03.rva",
+    "pe.d04.rva",
+    "pe.d05.rva",
+    "pe.d06.rva",
+    "pe.d07.rva",
+    "pe.d08.rva",
+    "pe.d09.rva",
+    "pe.d10.rva",
+    "pe.d11.rva",
+    "pe.d12.rva",
+    "pe.d13.rva",
+    "pe.d14.rva",
+    "pe.d15.rva",
+];
+const DIRECTORY_SIZE_REJECTIONS: [&str; 16] = [
+    "pe.d00.size",
+    "pe.d01.size",
+    "pe.d02.size",
+    "pe.d03.size",
+    "pe.d04.size",
+    "pe.d05.size",
+    "pe.d06.size",
+    "pe.d07.size",
+    "pe.d08.size",
+    "pe.d09.size",
+    "pe.d10.size",
+    "pe.d11.size",
+    "pe.d12.size",
+    "pe.d13.size",
+    "pe.d14.size",
+    "pe.d15.size",
+];
 impl PeRejection {
     fn expected(self) -> &'static str {
         match self {
@@ -808,6 +847,14 @@ impl PeRejection {
             Self::OptionalExtent => "pe.optional.extent",
             Self::EntryReserved => "pe.entry.reserved",
             Self::Directories => "pe.directories",
+            Self::DirectoryRva(ordinal) => DIRECTORY_RVA_REJECTIONS
+                .get(ordinal)
+                .copied()
+                .unwrap_or("pe.directories"),
+            Self::DirectorySize(ordinal) => DIRECTORY_SIZE_REJECTIONS
+                .get(ordinal)
+                .copied()
+                .unwrap_or("pe.directories"),
             Self::AlignmentSection => "pe.align.section",
             Self::ImageRawMarker => "pe.image.raw.marker",
         }
@@ -876,7 +923,13 @@ fn pe_shape(bytes: &[u8], host: Host) -> Result<(), PeRejection> {
             let offset = optional
                 .checked_add(directory_offset)?
                 .checked_add(ordinal.checked_mul(8)?)?;
-            if dword(bytes, offset)? != 0 || dword(bytes, offset.checked_add(4)?)? != 0 {
+            if {
+                reason = PeRejection::DirectoryRva(ordinal);
+                dword(bytes, offset)? != 0
+            } || {
+                reason = PeRejection::DirectorySize(ordinal);
+                dword(bytes, offset.checked_add(4)?)? != 0
+            } {
                 return None;
             }
         }
@@ -1289,7 +1342,7 @@ fn pe_refusal_labels_identify_the_first_failed_header_or_data_group() {
             (152, original[152] ^ 1, "pe.optional.header"),
             (count, 17, "pe.optional.extent"),
             (152 + 52, 1, "pe.entry.reserved"),
-            (directory, 1, "pe.directories"),
+            (directory, 1, "pe.d00.rva"),
             (152 + 32, 1, "pe.align.section"),
             (512, b'X', "pe.image.raw.marker"),
         ] {
@@ -1334,5 +1387,75 @@ fn missing_pe_fields_refuse_in_their_first_checked_group_without_value_defaults(
         assert_eq!(error.observed_read_bytes, Some(end));
         assert_eq!(error.observed_read_prefix_sha256, Some(hash(bytes)));
         assert_eq!(error.observed_pe_machine, (end >= 134).then_some(0x8664));
+    }
+}
+
+#[test]
+fn every_pe_directory_rva_and_size_identifies_its_first_nonzero_operand() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let retained = original.clone();
+        let directories = 152 + if host == Host::X86 { 96 } else { 112 };
+        validate_pe(&original, host).unwrap();
+        for ordinal in 0..16 {
+            let offset = directories + ordinal * 8;
+            for (rva, size, operand) in [(4096u32, 0u32, "rva"), (0, 16, "size"), (4096, 16, "rva")]
+            {
+                let mut bytes = original.clone();
+                bytes[offset..offset + 4].copy_from_slice(&rva.to_le_bytes());
+                bytes[offset + 4..offset + 8].copy_from_slice(&size.to_le_bytes());
+                let error = validate_pe(&bytes, host).unwrap_err();
+                let expected = format!("pe.d{ordinal:02}.{operand}");
+                assert_eq!(error.stage, Stage::LinkerBanner);
+                assert_eq!(error.kind, Kind::Pe);
+                assert_eq!(error.expected, Some(expected.as_str()));
+                assert_eq!(error.observed_read_bytes, Some(bytes.len()));
+                assert_eq!(error.observed_read_prefix_sha256, Some(hash(&bytes)));
+                assert_eq!(
+                    error.observed_pe_machine,
+                    Some(if host == Host::X86 {
+                        0x14c
+                    } else if host == Host::X64 {
+                        0x8664
+                    } else {
+                        0xaa64
+                    })
+                );
+            }
+        }
+        validate_pe(&original, host).unwrap();
+        assert_eq!(original, retained);
+    }
+}
+
+#[test]
+fn directory_order_and_incomplete_headers_keep_the_first_refusal_and_actual_read_facts() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let directories = 152 + if host == Host::X86 { 96 } else { 112 };
+        let mut bytes = original.clone();
+        bytes[directories + 4..directories + 8].copy_from_slice(&16u32.to_le_bytes());
+        bytes[directories + 15 * 8..directories + 15 * 8 + 4]
+            .copy_from_slice(&4096u32.to_le_bytes());
+        assert_eq!(
+            validate_pe(&bytes, host).unwrap_err().expected,
+            Some("pe.d00.size")
+        );
+        bytes[132] ^= 1;
+        assert_eq!(
+            validate_pe(&bytes, host).unwrap_err().expected,
+            Some("pe.coff")
+        );
+        for ordinal in 0..16 {
+            for end in [directories + ordinal * 8 + 3, directories + ordinal * 8 + 7] {
+                let bytes = &original[..end];
+                let error = validate_pe(bytes, host).unwrap_err();
+                assert_eq!(error.kind, Kind::Pe);
+                assert_eq!(error.expected, Some("pe.optional.extent"));
+                assert_eq!(error.observed_read_bytes, Some(end));
+                assert_eq!(error.observed_read_prefix_sha256, Some(hash(bytes)));
+            }
+        }
+        validate_pe(&original, host).unwrap();
     }
 }

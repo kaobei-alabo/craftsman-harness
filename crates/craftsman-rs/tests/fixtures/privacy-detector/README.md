@@ -353,3 +353,19 @@ nonphysical transfer data refuses before the query starts, with no profile,
 other-variable, path/filter/compiler or raw fallback. Mac controls are not
 Windows execution proof; fresh changed-head full native source/runtime validation
 and independent source/main review still gate integration and installation.
+
+Run44912859439 at ac798 retained both original source/Cargo/WASM failures after
+actual LINK0 and banner acceptance. The first PE group is `pe.directories` on
+1024 observed bytes with machine8664; the directory ordinal, RVA/size values
+and full image remain unavailable. The declaration clash is absent and the
+17 existing Windows warnings remain. This does not identify a loader/tool cause.
+
+Run44925496617 at dd79 observed `pe.d06.rva` after LINK0/banner: directory6's
+RVA check refused, while its size, contents and cause remain unavailable. The
+private data-only fixture now appends `/NOCOFFGRPINFO` after the unchanged object
+input. [LLVM's compatibility table](https://github.com/llvm/llvm-project/blob/a037d2ad7312adc58664358893c20927efae22cf/lld/COFF/Options.td#L402)
+corroborates the option name; Microsoft does not document it. Its effect remains
+a conditional candidate pending fresh Windows acceptance of the unchanged PE
+validator and original Prepared/source-Cargo-WASM gates. The closed refusal
+labels, strict all-directory-zero rule, native bounds and source approval stay
+unchanged. Normal privacy remains off; this adds no public command or capability.
