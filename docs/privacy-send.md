@@ -6,6 +6,10 @@ there is no configuration key, command, frontend option, key source, detector
 run, masking, restoration or hook registration. Normal sessions behave exactly
 as before, and privacy remains inactive.
 
+Its source has a source-scoped independent acceptance and one passing full
+local run on macOS, described under [Evidence](#evidence). It has no hosted
+run, is not merged to main and is not installed.
+
 This is one slice of the work described in [privacy hooks](privacy-hooks.md).
 It builds on the [private vault](privacy-vault.md). It is a separate candidate
 and is not part of PR #32.
@@ -238,10 +242,35 @@ middleware, so a harness profile cannot exclude it once selected.
 
 ## Evidence
 
-Local evidence on macOS, in core feature mode and gadget feature mode. The
-first candidate's records are in `target/verification/privacy-send-fable52/`;
-the corrections' are in `target/verification/privacy-send-fable52-correction/`
-and `target/verification/privacy-send-fable52-copy-bound/`.
+**Review.** The guard source at commit `70d4b0e` has a source-scoped
+independent acceptance. It judges the stated contracts of this private refusal
+seam. It is not an acceptance of a privacy feature or of production readiness.
+
+**Full local run.** Merged with the separately reviewed fixture foundation
+(`ac17c4d`) as commit `38da30b`, the unchanged `scripts/verify.sh` passed once
+on macOS, 17 of 17 checks:
+
+- `default-build` build-checks the default voice-and-gadget configuration. No
+  test ran in that configuration.
+- The two test modes are the script's no-default-feature modes. Core: 2208
+  passed, 0 failed, 36 ignored. Gadgets: 2527 passed, 0 failed, 48 ignored.
+  Each mode has 26 test groups.
+- Every case of the foundation's own accepted local run is preserved with its
+  status and ignored reason. The only additions are this guard's 24 cases and
+  its one ignored helper.
+- No compiler warning, no download, and no change to the source or the
+  installed tools during the run.
+
+That run is bound to `38da30b` (log of 523,809 bytes, SHA-256
+`e5543eac5a8c022cf787c9a4ab16c9a001907d025045bdf7655dc9155f5f690f`). It was
+not repeated for later documentation-only commits, whose Rust and other
+implementation files are identical to `38da30b`.
+
+**Records.** `target/verification/privacy-send-fable52/` (first candidate),
+`privacy-send-fable52-correction/` and `privacy-send-fable52-copy-bound/`
+(corrections), `privacy-send-aligned-full17/` (alignment and the full run).
+
+**The guard's own cases.**
 
 - 17 ordinary cases use an actual vault with host-supplied detector reports and
   loopback HTTP. They cover exact sealing, each supported form, each refusal
@@ -259,20 +288,33 @@ and `target/verification/privacy-send-fable52-copy-bound/`.
 
 Nine uncommitted single-fault controls ran against the first candidate; each
 removed one guard behaviour and made at least one case fail. They were not
-repeated for the correction.
+repeated for the corrections.
 
 These are synthetic, sequential tests. No detector ran, no model service was
-contacted and no paid call was made. Linux and Windows have not run these
-cases, and the voice feature build was not exercised. Full local validation,
-all four hosted contexts in both native modes, and independent review remain
-delivery gates.
+contacted and no paid call was made.
+
+**What has not run.**
+
+- Linux and Windows have not run these cases. There is no hosted run of the
+  guard.
+- The foundation's hosted run
+  [44937824282](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44937824282)
+  refused its Windows data fixture at `pe.align.section`. It ran without this
+  guard and gives the guard no coverage.
+- No test ran in the default voice configuration.
+- The guard is not merged to main and not installed, and no key, policy, hook,
+  masking, restoration or activation exists.
+
+Hosted validation on all four contexts in both native modes, and the foundation
+and main gates, remain before delivery.
 
 ## Known gaps
 
 - The locking and ordering described under "Decisions, admissions and their
   limits" are shown by the source only. No test admits originals, closes a
   guard or runs anything else concurrently with a decision or between two
-  attempts of one request.
+  attempts of one request. The full local run executed existing cases only and
+  adds no evidence on these points.
 - That a refused charge stops the candidate search is shown by the source; the
   tests pin the counts, not a refusal at a chosen count.
 - That an admission reserves each value's length against the total before it
