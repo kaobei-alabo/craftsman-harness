@@ -80,6 +80,8 @@ pub struct LlmClient {
     pub model: String,
     request_defaults: serde_json::Map<String, Value>,
     request_source: Option<std::sync::Arc<crate::exec::provider::request::Source>>,
+    // Explicitly selected private final-send guard. Absent in every frontend.
+    send_guard: Option<std::sync::Arc<crate::privacy_send::SendGuard>>,
     // Bounded last private failure only, NOT a usage/admission/trace ledger.
     diagnostic:
         std::sync::Mutex<Option<std::sync::Arc<crate::exec::provider::diagnostics::Diagnostic>>>,
@@ -190,8 +192,26 @@ impl LlmClient {
             model: model.to_string(),
             request_defaults,
             request_source: None,
+            send_guard: None,
             diagnostic: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Binds this client and its native transport to one explicitly selected
+    /// guard. From here on it sends only bodies that guard sealed. A private
+    /// headless client has its own checked source and refuses the combination.
+    pub(crate) fn with_send_guard(
+        mut self,
+        guard: std::sync::Arc<crate::privacy_send::SendGuard>,
+    ) -> Result<Self, crate::privacy_send::SendRefusal> {
+        if self.request_source.is_some() || self.send_guard.is_some() {
+            return Err(crate::privacy_send::SendRefusal::Unsupported);
+        }
+        if let Some(native) = &mut self.native {
+            native.bind_send_guard(guard.clone())?;
+        }
+        self.send_guard = Some(guard);
+        Ok(self)
     }
 
     /// Private source construction accepts only the actual builder's opaque
@@ -366,6 +386,21 @@ impl LlmClient {
         self.stream_body(RequestBody::Checked(request), |_| {}, |_| {})
             .await
     }
+    /// Test-only: offers an already sealed body to the real send loop.
+    #[cfg(test)]
+    pub(crate) async fn send_sealed_for_tests(
+        &self,
+        sealed: &crate::privacy_send::Sealed,
+    ) -> anyhow::Result<TurnResult> {
+        self.stream_body(RequestBody::Sealed(sealed), |_| {}, |_| {})
+            .await
+    }
+    /// Test-only: offers an unsealed body to the real send loop.
+    #[cfg(test)]
+    pub(crate) async fn send_unsealed_for_tests(&self, body: &Value) -> anyhow::Result<TurnResult> {
+        self.stream_body(RequestBody::Legacy(body), |_| {}, |_| {})
+            .await
+    }
 
     #[cfg(test)]
     pub(crate) fn diagnostic_for_tests(
@@ -412,6 +447,11 @@ impl LlmClient {
             body["tools"] = Value::Array(tools.to_vec());
         }
 
+        if let Some(guard) = &self.send_guard {
+            return self
+                .stream_sealed_turn(guard, &body, on_text, on_status)
+                .await;
+        }
         let result = self
             .stream_body(RequestBody::Legacy(&body), on_text, on_status)
             .await;
@@ -419,6 +459,48 @@ impl LlmClient {
             result.map_err(|_| anyhow::anyhow!("Configured Chat Completions request failed; verify endpoint, model and credentials."))
         } else {
             result
+        }
+    }
+
+    /// Selected sessions send the SAME serialization as bytes their guard
+    /// verified. A refusal keeps its own fixed text and sends nothing.
+    async fn stream_sealed_turn(
+        &self,
+        guard: &std::sync::Arc<crate::privacy_send::SendGuard>,
+        body: &Value,
+        on_text: impl FnMut(&str),
+        on_status: impl FnMut(&str),
+    ) -> anyhow::Result<TurnResult> {
+        let encoded =
+            serde_json::to_vec(body).map_err(|_| crate::privacy_send::SendRefusal::Unsupported)?;
+        let sealed = guard.seal(encoded, &[])?;
+        let result = self
+            .stream_body(RequestBody::Sealed(&sealed), on_text, on_status)
+            .await;
+        if self.configured_connection {
+            result.map_err(|error| {
+                if error.is::<crate::privacy_send::SendRefusal>() {
+                    error
+                } else {
+                    anyhow::anyhow!("Configured Chat Completions request failed; verify endpoint, model and credentials.")
+                }
+            })
+        } else {
+            result
+        }
+    }
+
+    /// The selected guard's check for one attempt. A bound client accepts only
+    /// its own sealed body; an unbound client never accepts a sealed one.
+    fn send_guard_ready(
+        &self,
+        body: RequestBody<'_>,
+    ) -> Result<(), crate::privacy_send::SendRefusal> {
+        match (&self.send_guard, body) {
+            (None, RequestBody::Sealed(_)) => Err(crate::privacy_send::SendRefusal::Foreign),
+            (None, _) => Ok(()),
+            (Some(guard), RequestBody::Sealed(sealed)) => guard.ready(sealed, &[]),
+            (Some(_), _) => Err(crate::privacy_send::SendRefusal::Unsealed),
         }
     }
 
@@ -455,7 +537,7 @@ impl LlmClient {
                     source.lease(admitted.checked())?,
                 ))
             }
-            RequestBody::Legacy(_) => None,
+            RequestBody::Legacy(_) | RequestBody::Sealed(_) => None,
         };
         let observations = match (body, diagnostics.as_ref()) {
             (RequestBody::Admitted(admitted), Some(call)) => {
@@ -464,6 +546,7 @@ impl LlmClient {
             _ => None, // Existing default/request-only frontends do not opt in.
         };
         for attempt in 0..MAX_ATTEMPTS {
+            self.send_guard_ready(body)?;
             if let Err(fault) = body.ready(self) {
                 if let Some(call) = diagnostics.take() {
                     return Err(self.private_failure(call, diagnostic_fault(fault), None));
@@ -487,7 +570,12 @@ impl LlmClient {
                 RequestBody::Admitted(admitted) => builder
                     .header(reqwest::header::CONTENT_TYPE, "application/json")
                     .body(admitted.checked().bytes().to_vec()),
+                RequestBody::Sealed(sealed) => builder
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .body(sealed.bytes().to_vec()),
             };
+            // SAME selected guard after the sealed-byte copy, before EVERY send/retry.
+            self.send_guard_ready(body)?;
             // SAME source/latch after the checked-byte copy, before EVERY send/retry.
             if let Err(fault) = body.ready(self) {
                 if let Some(call) = diagnostics.take() {
@@ -739,11 +827,12 @@ enum RequestBody<'a> {
     Legacy(&'a Value),
     Checked(&'a crate::exec::provider::request::Checked),
     Admitted(&'a crate::exec::meter::tokens::Admitted),
+    Sealed(&'a crate::privacy_send::Sealed),
 }
 impl RequestBody<'_> {
     fn ready(self, client: &LlmClient) -> Result<(), crate::exec::provider::request::Fault> {
         match (self, client.request_source.as_ref()) {
-            (Self::Legacy(_), None) => Ok(()),
+            (Self::Legacy(_) | Self::Sealed(_), None) => Ok(()),
             (Self::Checked(request), Some(source)) => source.ready(request),
             (Self::Admitted(admitted), Some(source)) => admitted.ready_for(source),
             _ => Err(crate::exec::provider::request::Fault::Collision),

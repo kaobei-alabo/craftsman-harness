@@ -27,6 +27,8 @@ pub struct NativeClient {
     model: String,
     options: BTreeMap<String, Value>,
     pub history: Arc<NativeHistory>,
+    // Explicitly selected private final-send guard. Absent in every frontend.
+    send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -177,7 +179,20 @@ impl NativeClient {
                 protocol,
                 records: Mutex::new(Vec::new()),
             }),
+            send_guard: None,
         })
+    }
+
+    /// Only the owning client's explicit selection binds this transport.
+    pub(crate) fn bind_send_guard(
+        &mut self,
+        guard: Arc<crate::privacy_send::SendGuard>,
+    ) -> Result<(), crate::privacy_send::SendRefusal> {
+        if self.send_guard.is_some() {
+            return Err(crate::privacy_send::SendRefusal::Unsupported);
+        }
+        self.send_guard = Some(guard);
+        Ok(())
     }
 
     pub async fn complete(
@@ -230,6 +245,25 @@ impl NativeClient {
                 .header("anthropic-version", "2026-10-21"),
             Protocol::GeminiGenerateContent => builder.header("x-goog-api-key", &self.api_key),
             _ => builder.bearer_auth(&self.api_key),
+        };
+        let encoded = match &self.send_guard {
+            None => encoded,
+            Some(guard) => {
+                // Provider-owned replay items may split one visible text node
+                // across parts, so the request's own text nodes are checked as
+                // well. The encoded bytes, including every signed or opaque
+                // item, are sent exactly as sealed.
+                let mut portable = vec![req.system.as_str()];
+                portable.extend(req.messages.iter().map(|message| match message {
+                    Msg::System { content }
+                    | Msg::User { content }
+                    | Msg::Assistant { content, .. }
+                    | Msg::Tool { content, .. } => content.as_str(),
+                }));
+                let sealed = guard.seal(encoded, &portable)?;
+                guard.ready(&sealed, &portable)?;
+                sealed.into_bytes()
+            }
         };
         let response = builder
             .body(encoded)
