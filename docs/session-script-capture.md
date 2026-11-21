@@ -86,8 +86,9 @@ full native timestamp fields, and uses full 128-bit file identifiers. Metadata
 is checked within each source before/after pair and across fields with the same
 meaning. Access times are retained exactly but may change from the read itself.
 Unsupported native information refuses capture. Windows namespace/ACL behavior
-remains best effort; a held directory can prevent a rename. Native Windows proof
-is still required before delivery integration.
+remains best effort; a held directory can prevent a rename. PR #31's independent
+main proof below includes the actual Windows core and gadget modes and their
+unchanged full-field child assertions; it does not establish OS containment.
 
 A preview is labeled **historical-prospective**. It does not re-read current
 content or establish staleness, approval, source consent, native permission or
@@ -107,4 +108,15 @@ markers return before config/environment/artifact work. Targeted local commands,
 source hashes, inventories and all failed attempts are retained under
 target/verification/session-script-capture/; they do not replace the full
 local17, four exact-head hosted jobs/every mandatory step/both native modes,
-warning/tree and independent-main gates.
+warning/tree and independent-main gates for each later implementation slice.
+
+This foundation is merged as PR #31 at `29349c5`, tree `93748936`. Final local17
+passed with core2105/gadgets2348 and no Rust warnings. Independent merged-main
+[44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
+passed all four jobs/every mandatory step/both modes: Ubuntu2104/2347,
+macOS2105/2348 and Windows2087/2319, retaining all original test bodies, ignored
+reasons and the 17-occurrence Windows warning baseline. Complete raw logs,
+source/native assertions and inventories were audited; hidden passing-test
+numeric metadata was not reconstructed. Source is installed locally without
+configuration/storage changes. Public source selection, interpreter execution,
+code consent, task-root derivation and native apply remain absent.

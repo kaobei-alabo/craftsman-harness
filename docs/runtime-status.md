@@ -1,11 +1,32 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 19, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 21, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
-The context/failure continuation is recorded below. Source validation, live
+The private script-capture/bundle foundations are merged as PR #31 at `29349c5`;
+independent main run [44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
+passed all four jobs, every mandatory step and both native modes. That main
+source is locally installed; public script execution and privacy hooks remain
+unselected. The context/failure continuation is recorded below. Source validation, live
 coding results and published releases are separate evidence.
+
+PR #32's private privacy foundations remain unmerged. Native run
+[44891734880](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44891734880)
+at cea9 returned actual selected LINK exit0 and passed the unchanged banner
+gate, then refused PE validation on1024 bytes with machine8664. The full image
+and rejected predicate were unavailable. Both original detector source/Cargo/WASM
+parents failed; Windows core, the seven-case CMD supervisor and77 vault cases
+per mode passed, with no vault Deadline phase recorded. Successful raw control
+packets remain unavailable. Earlier run44856159033's Deadline, batch-return and
+linker-help failures remain retained. Independent source reviews accepted the
+multiline batch correction, bounded opening observer and stricter data operation.
+The PE checker now adds fixed first-refusal labels through the existing field,
+without changing acceptance. Its new CreateFileW security pointer/NULL match
+the existing declaration; that warning is separate from the unknown PE refusal.
+These source changes await review and fresh native validation. Original
+source-Cargo-WASM and all-four/main gates remain pending; normal privacy and
+OS containment are not claimed.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -107,7 +128,7 @@ are not proof of OS containment or blocking-worker quiescence.
 |---|---|---|
 | Terminal usability and reporting | Merged and locally installed | Gray/turquoise 匠 splash, grouped model → effort menus, OSC 7501; [splash](terminal-splash.md), [status](terminal-status.md) |
 | Terminal lifecycle and recovery | Merged | Actual turn/session ownership, cancellation, final saves and unknown-effect recovery; [lifecycle](terminal-lifecycle.md), [recovery](terminal-recovery.md) |
-| File checkpoints and long turns | Merged and locally installed | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
+| File checkpoints and long turns | Existing features merged; creation-time correction awaits native validation | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; the locally tested same-checkpoint creation-time fix is pending merge/install. See [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
@@ -117,7 +138,8 @@ are not proof of OS containment or blocking-worker quiescence.
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
-| Reusable script runner | Private capture and test-only bundle foundations reviewed; native delivery pending | Python/JavaScript/TypeScript compatibility proof has scoped functional reviews; source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
+| Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
+| Privacy hooks | Private foundations under PR #32; normal sessions inactive | CI44891734880 returns selected LINK0 then an unattributed PE refusal; both source/Cargo/WASM parents fail. Windows core, CMD controls and77 vault cases per mode pass without a vault Deadline phase. Earlier failures remain. Fixed PE refusal labels and the new declaration correction await source review/native validation; key ownership, native-history and actual display/file consumers remain separate. See [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -374,3 +396,18 @@ restore/save has been exercised. Binary/container publication remains disabled
 by owner request. Remaining attribution/provenance/distribution review is
 separate from the resolved MIT choice; see [NOTICE](../NOTICE) and
 [OSS review](oss-review.md).
+
+Run44912859439 at ac798 retained both original source/Cargo/WASM failures after
+actual LINK0 and banner acceptance. The first PE group is `pe.directories` on
+1024 observed bytes with machine8664; the directory ordinal, RVA/size values
+and full image remain unavailable. The declaration clash is absent and the
+17 existing Windows warnings remain. This does not identify a loader/tool cause.
+
+The private diagnostic now uses closed `pe.d00.rva` through `pe.d15.rva` and
+`pe.d00.size` through `pe.d15.size` labels for the first checked directory
+operand, through the same `expected` field. It preserves every checked DWORD,
+short-circuit order and the strict all-directory-zero acceptance rule; invalid
+indices retain the generic refusal. No field/value/image dump or new native
+flag, bound or source grant is added. Ordinary header/data controls verify
+ordinal/operand and first-failure identity; the new Windows label is unobserved
+until independent review and fresh combined native source/WASM validation.

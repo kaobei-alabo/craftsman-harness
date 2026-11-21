@@ -688,7 +688,6 @@ impl LibsqlCheckpointer {
                  ON CONFLICT(id) DO UPDATE SET
                     thread_id = excluded.thread_id,
                     turn_seq = excluded.turn_seq,
-                    created = excluded.created,
                     summary = excluded.summary,
                     partial = excluded.partial",
                 libsql::params![

@@ -445,3 +445,6 @@ async fn the_live_database_is_never_snapshotted_or_rewound_as_a_workspace_file()
     assert_eq!(report.unrestorable, ["threads.db"]);
     assert_eq!(manager.list().await.unwrap().len(), 2);
 }
+
+#[path = "created_tests.rs"]
+mod created_tests;
