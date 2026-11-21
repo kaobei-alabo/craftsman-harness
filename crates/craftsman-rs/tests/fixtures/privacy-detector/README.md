@@ -154,6 +154,15 @@ lines. Only its pinned source-layout expectation changes; all native status,
 field and capture assertions remain. The new wrapper awaits fresh Windows
 execution, and the installed linker/source-build/guest gates remain pending.
 
+That run's selected linker help input separately returned1100. The cfg-test
+preparation now uses a real data-only link of a fixed98-byte host COFF object,
+with the same selected linker and cleared HOST/LIB/PATH inputs. Its owned output
+must be absent before dispatch; only real exit0 plus the unchanged banner gate,
+complete stable PE/marker validation and owned cleanup can return Prepared.
+The three immutable tables and bounded file owner await independent source
+review and new Windows execution. The DLL is never loaded or executed, and
+this fixture cannot replace pinned Cargo/source-built approved WASM proof.
+
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.
 That failed run remains failed. The Windows trusted compiler child now performs

@@ -22,6 +22,15 @@ locally; their fresh native results remain pending. A genuine zero-exit linker
 data operation is being implemented and remains natively unverified. These
 changes select no public command, normal privacy hook or OS containment.
 
+Run [44856159033](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44856159033)
+retains the selected-linker help return1100 and one synthetic batch refusal
+failure. The reviewed batch initializer now uses physical lines. A new cfg-test
+source candidate performs a real selected-linker data operation with fixed
+host COFF input, an initially absent owned output, the unchanged zero/banner
+gate and complete PE/cleanup checks. Its tables and file owner require source
+review; the new Windows operation, pinned Cargo build and approved WASM guest
+are unobserved. This changes no production privacy or process limits.
+
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
 failed/corrected implementation evidence. Those dated records do not describe

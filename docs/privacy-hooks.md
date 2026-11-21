@@ -362,6 +362,15 @@ its source-layout expectation updated. Native assertions and the real setup
 command remain unchanged. Fresh Windows execution must validate this wrapper;
 the installed linker, pinned source build and approved guest remain unproved.
 
+Both selected-linker help calls in that failed run returned1100. A new cfg-test
+data operation replaces only the late help input: three fixed98-byte COFF tables
+link a read-only marker with no entry point or default libraries. The original
+selected tool/environment, real zero-exit/banner gate and source/guest checks
+remain. A fresh owned destination must be absent before LINK; complete stable
+PE data and cleanup qualify the result. This source awaits independent review
+and actual Windows execution. It grants no gadget source or normal privacy
+authority, and the generated DLL is never loaded or executed.
+
 The five original Windows cases and their applicable observation controls pass
 in that run. Their earlier failed evidence remains separate and their causes
 remain unknown. Successful runner-owned observation packets were not published,

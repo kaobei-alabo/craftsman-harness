@@ -3724,9 +3724,8 @@ mod compiler_environment {
             };
             let mut banner = Command::new(&prepared.linker);
             base(&mut banner, selected, &system)?;
-            banner.envs(prepared_values(&prepared)).arg("/?");
-            let output = bounded_at(&mut banner, 5, Stage::LinkerBanner)?;
-            linker_banner(&output)?;
+            banner.envs(prepared_values(&prepared));
+            linker_data_fixture::run(&mut banner, host)?;
             Ok(prepared)
         }
         #[cfg(windows)]
@@ -3743,6 +3742,10 @@ mod compiler_environment {
 
         mod command_comparison {
             include!("privacy_msvc_command_comparison.rs");
+        }
+
+        mod linker_data_fixture {
+            include!("privacy_linker_data_fixture.rs");
         }
 
         #[test]

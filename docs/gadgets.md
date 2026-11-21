@@ -94,6 +94,14 @@ error exit, selected field commands and later host/library/source/guest checks
 remain. Fresh Windows execution must validate that new grouping and actual
 installed compiler/WASM work; the earlier controlled result is not guest proof.
 
+Run44856159033 retains selected-linker help exit1100. The new cfg-test candidate
+links fixed98-byte data-only COFF through that same selected native tool into an
+initially absent owned destination. Real exit0, the unchanged banner check,
+complete stable PE/marker data and cleanup are all required. The DLL is never
+loaded or executed; its data/hashes cannot become a gadget SourceGrant. The
+tables/ownership code await independent review and actual Windows results;
+original pinned Cargo/approved WASM and all-four/main gates remain pending.
+
 ## Enable the agent surface
 
 The `gadgets` Cargo feature is on in the default build, independently of voice.
