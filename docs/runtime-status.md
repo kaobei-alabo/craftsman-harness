@@ -12,15 +12,15 @@ unselected. The context/failure continuation is recorded below. Source validatio
 coding results and published releases are separate evidence.
 
 PR #32's private privacy foundations remain unmerged. Native run
-[44837420491](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44837420491)
-passes fmt, Ubuntu and macOS, and the five previously failing original Windows
-cases now pass without changes to their bodies or assertions. Windows still
-fails both MSVC detector preparation terminals and the original inline field
-assertion. The builtin correction passes, and controlled separate-line guard
-cases return fields for input0 and refuse input7 with exit91. The narrow
-candidate groups only the existing inline IF refusal; its Windows results and
-corrected source-build/guest proof remain pending. These test-only
-observations add no public command, normal privacy selection or containment.
+[44856159033](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44856159033)
+passes fmt, Ubuntu and macOS. The grouped Windows controls now return all five
+fields for input0 and refuse inline/compound input7 with exit91. Windows retains
+four core vault-open Deadline failures, the batch-context input7 return0, and
+both original MSVC preparation failures at linker_banner/exit1100. The reviewed
+multiline batch correction and bounded cfg(test) opening observer are integrated
+locally; their fresh native results remain pending. A genuine zero-exit linker
+data operation is being implemented and remains natively unverified. These
+changes select no public command, normal privacy hook or OS containment.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant

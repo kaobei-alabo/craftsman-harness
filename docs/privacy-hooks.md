@@ -366,9 +366,10 @@ The five original Windows cases and their applicable observation controls pass
 in that run. Their earlier failed evidence remains separate and their causes
 remain unknown. Successful runner-owned observation packets were not published,
 so current passing assertions do not expose their native field values or prove
-a general process/filesystem fix. The remaining work is the measured builtin
-input correction, bounded tail comparison and genuine installed setup/guest
-validation; normal-session privacy remains inactive.
+a general process/filesystem fix. The measured builtin and inline-field
+corrections passed their current native controls. The reviewed multiline
+wrapper, genuine selected-linker operation and original source/guest gates
+still require fresh native validation; normal-session privacy remains inactive.
 
 Run [44856159033](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44856159033)
 retains four core Windows `Vault::open` Deadline refusals in restoration setup;
@@ -379,8 +380,9 @@ call/work counters at the original Deadline branch, then emits at most one
 bounded private record after a failed worker operation actually returns.
 Missing phase/return facts remain unavailable. The original 5s elapsed/200ms
 busy/native/SQL/rollback limits and every old test body remain unchanged; no
-deadline repair or normal privacy activation is claimed. Independent source
-review and actual future native phase evidence are still required.
+deadline repair or normal privacy activation is claimed. Independent review
+accepts the bounded observer source; actual future native phase evidence is
+still required.
 
 The elapsed sample follows the original Deadline predicate. The record marks
 return from the opening future; thread join, caller return and complete log

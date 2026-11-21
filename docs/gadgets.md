@@ -32,9 +32,10 @@ has passed its isolated WASM tests; encrypted storage and restoration views
 are implemented as private foundations.
 The failed guard-scope run44856159033 also retains four core Windows vault-open
 Deadline refusals, with separate gadget-mode passes. Their phase remains
-unobserved. New cfg(test)-only fixed opening records keep the same original
-clock and limits; they are diagnostics awaiting source/native review, not an
-opening repair or privacy selection.
+unobserved. Independent source review accepts the new cfg(test)-only fixed
+opening records under their bounded observation contract. They retain the
+original clock and limits; native phase evidence and opening recovery remain
+separate from source acceptance and normal privacy selection.
 
 Normal sessions do not yet mask model traffic or restore reply/file fields
 through this hook.
