@@ -30,7 +30,7 @@ impl TailCase {
 }
 fn no_if(host: Host) -> String {
     host.command()
-        .replacen(" & if errorlevel 1 (exit /b 91)", "", 1)
+        .replacen(" & (if errorlevel 1 (exit /b 91))", "", 1)
 }
 fn separate_lines(host: Host) -> String {
     let original = host.command();
@@ -271,7 +271,7 @@ fn tail_sources_preserve_original_call_sets_and_guard_on_separate_lines() {
         assert_eq!(
             diagnostic.replace(
                 " & set VCToolsInstallDir",
-                " & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir"
+                " & (if errorlevel 1 (exit /b 91)) & set VCToolsInstallDir"
             ),
             original
         );
@@ -286,7 +286,7 @@ fn tail_sources_preserve_original_call_sets_and_guard_on_separate_lines() {
         assert!(
             multiline
                 .lines()
-                .any(|line| line == "if errorlevel 1 (exit /b 91)")
+                .any(|line| line == "(if errorlevel 1 (exit /b 91))")
         );
         assert_eq!(
             multiline
@@ -506,6 +506,26 @@ fn observation_for_bound(host: Host) -> ObservedText {
     value.return_seven_request_token = false;
     value.builtin_token = false;
     value
+}
+#[test]
+fn measured_tail_scope_changes_only_the_fixed_refusal_command_group() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let command = host.command();
+        let grouped = " & (if errorlevel 1 (exit /b 91))";
+        let original = " & if errorlevel 1 (exit /b 91)";
+        assert_eq!(command.matches(grouped).count(), 1);
+        let before = command.replacen(grouped, original, 1);
+        assert_eq!(before.len() + 2, command.len());
+        assert_eq!(before.matches(" & set ").count(), 5);
+        assert_eq!(command.matches(" & set ").count(), 5);
+        assert_eq!(
+            before.replacen(original, "", 1),
+            no_if(host),
+            "the same CALL and all five field commands must survive guard isolation"
+        );
+        assert!(command.contains("1>&2") && command.ends_with(" & exit /b 0\""));
+        assert!(!command.contains("%") && !command.contains("2>nul"));
+    }
 }
 fn max_process(raw: &[u8], complete: bool) -> facts::ProcessFacts {
     facts::ProcessFacts {

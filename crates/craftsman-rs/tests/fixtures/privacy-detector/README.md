@@ -132,6 +132,19 @@ the original native verdicts. These controls leave the real Host command and
 setup acceptance exact; a tail or installed cause still needs actual Windows
 comparison evidence and a separate review before any setup correction.
 
+Run44837420491 confirmed the corrected builtin token at exit7 and a narrow
+conditional-tail differential in all three Windows helper families. The owned
+separate-line guard printed all five fields after exit0 and retained actual
+exit91/empty fields for requested7; the original one-line tail printed none.
+The cfg-test host command now groups the whole unchanged IF refusal so its five
+SET commands remain outside that conditional scope. CALL, flags, native cwd,
+environment, strict field parsing and every later physical/compiler/source/guest
+check stay intact. Tail template checks copy the grouped guard exactly; the
+protected original2607 test bodies and twelve command test/helper bodies retain
+their assertions. This candidate needs fresh Windows installed setup, source
+compilation and actual guest proof; synthetic fields and their hashes remain
+diagnostic data. Earlier native failures remain retained.
+
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.
 That failed run remains failed. The Windows trusted compiler child now performs

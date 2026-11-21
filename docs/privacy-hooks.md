@@ -342,6 +342,17 @@ remain unchanged. Neither this input repair nor local controls establish the
 installed Windows setup cause; reviewed fresh native/full and separate main
 proof remain required before merge or installation.
 
+Run [44837420491](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44837420491)
+confirmed the builtin input repair but retained the Windows setup failures.
+Across three helpers, the owned separate-line IF guard produced all five fields
+at exit0 and preserved actual exit91 with no fields for requested7. The original
+inline tail produced none. The cfg-test command now encloses the whole original
+IF refusal in an explicit command group, keeping the five SET commands outside
+the conditional scope. This is a source candidate based on that limited command
+differential; the installed batch, compiler libraries, pinned source build and
+WASM execution still require fresh native proof. Original checks and bounds
+remain, and diagnostic metadata never supplies compiler or source authority.
+
 The five original Windows cases and their applicable observation controls pass
 in that run. Their earlier failed evidence remains separate and their causes
 remain unknown. Successful runner-owned observation packets were not published,

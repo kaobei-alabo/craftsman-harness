@@ -2228,13 +2228,13 @@ mod compiler_environment {
                 // The API sets current_dir to the checked Common7/Tools directory.
                 match self {
                     Self::X64 => {
-                        "\"call VsDevCmd.bat -no_logo -arch=x64 -host_arch=x64 1>&2 & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                        "\"call VsDevCmd.bat -no_logo -arch=x64 -host_arch=x64 1>&2 & (if errorlevel 1 (exit /b 91)) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
                     }
                     Self::X86 => {
-                        "\"call VsDevCmd.bat -no_logo -arch=x86 -host_arch=x86 1>&2 & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                        "\"call VsDevCmd.bat -no_logo -arch=x86 -host_arch=x86 1>&2 & (if errorlevel 1 (exit /b 91)) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
                     }
                     Self::Arm64 => {
-                        "\"call VsDevCmd.bat -no_logo -arch=arm64 -host_arch=arm64 1>&2 & if errorlevel 1 (exit /b 91) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
+                        "\"call VsDevCmd.bat -no_logo -arch=arm64 -host_arch=arm64 1>&2 & (if errorlevel 1 (exit /b 91)) & set VCToolsInstallDir & set WindowsSdkDir & set VSCMD_ARG_HOST_ARCH & set VSCMD_ARG_TGT_ARCH & set LIB & exit /b 0\""
                     }
                 }
             }
