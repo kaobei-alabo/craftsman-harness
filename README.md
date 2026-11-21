@@ -35,6 +35,11 @@ shell commands retain their separate permission checks.
 Text statistics, slug generation, checked CSV totals and JSON inspection have
 already been built and used in [live model sessions](docs/live-gadget-evaluation.md).
 
+Also in development: **privacy hooks** that mask supported personal data before
+model requests and restore it in local replies and file edits. The encrypted
+vault, WASM detector and restoration views are implemented privately;
+normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
+
 ## Planned WASM enhancement
 
 Rust gadgets already run in Wasmtime. Work has resumed on a common sandbox for
