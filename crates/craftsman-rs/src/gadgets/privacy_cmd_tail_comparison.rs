@@ -32,7 +32,7 @@ fn no_if(host: Host) -> String {
     host.command()
         .replacen(" & (if errorlevel 1 (exit /b 91))", "", 1)
 }
-fn separate_lines(host: Host) -> String {
+pub(super) fn separate_lines(host: Host) -> String {
     let original = host.command();
     let chain = &original[1..original.len() - 1];
     format!(

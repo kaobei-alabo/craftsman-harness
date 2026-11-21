@@ -492,9 +492,7 @@ fn script(host: Host, seven: bool) -> String {
     text
 }
 fn wrapper(host: Host) -> String {
-    let text = host.command();
-    // The quotes delimit /c's string. The underlying chain is byte-exact here.
-    format!("@echo off\r\n{}\r\n", &text[1..text.len() - 1])
+    tail_comparison::separate_lines(host)
 }
 fn create_source(
     directory: &Path,
@@ -901,7 +899,7 @@ fn fixed_command_variants_change_only_the_declared_call_context_or_redirection()
             wrapper(host),
             format!(
                 "@echo off\r\n{}\r\n",
-                &host.command()[1..host.command().len() - 1]
+                host.command()[1..host.command().len() - 1].replace(" & ", "\r\n")
             )
         );
         for seven in [false, true] {

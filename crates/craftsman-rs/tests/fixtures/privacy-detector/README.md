@@ -145,6 +145,15 @@ their assertions. This candidate needs fresh Windows installed setup, source
 compilation and actual guest proof; synthetic fields and their hashes remain
 diagnostic data. Earlier native failures remain retained.
 
+Run44856159033 observed grouped inline/compound controls at exit0 with all five
+fields and requested7 at exit91 with none. The one-line synthetic batch wrapper
+still returned0 for requested7, while the separate-line wrapper returned91.
+The synthetic batch wrapper now reuses that observed separate-line layout: the
+same CALL, grouped guard, five SETs and final exit remain in order on physical
+lines. Only its pinned source-layout expectation changes; all native status,
+field and capture assertions remain. The new wrapper awaits fresh Windows
+execution, and the installed linker/source-build/guest gates remain pending.
+
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.
 That failed run remains failed. The Windows trusted compiler child now performs

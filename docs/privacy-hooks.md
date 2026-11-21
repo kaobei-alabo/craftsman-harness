@@ -353,6 +353,15 @@ differential; the installed batch, compiler libraries, pinned source build and
 WASM execution still require fresh native proof. Original checks and bounds
 remain, and diagnostic metadata never supplies compiler or source authority.
 
+Run [44856159033](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44856159033)
+confirmed the grouped inline/compound controls: exit0 retained all five fields,
+and requested7 refused with exit91. The one-line synthetic batch wrapper still
+returned0 for requested7; the separate-line control refused with91. The owned
+wrapper now uses those same eight fixed commands on physical lines, with only
+its source-layout expectation updated. Native assertions and the real setup
+command remain unchanged. Fresh Windows execution must validate this wrapper;
+the installed linker, pinned source build and approved guest remain unproved.
+
 The five original Windows cases and their applicable observation controls pass
 in that run. Their earlier failed evidence remains separate and their causes
 remain unknown. Successful runner-owned observation packets were not published,
