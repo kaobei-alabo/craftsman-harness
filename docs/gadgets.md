@@ -927,3 +927,18 @@ public exec/usage/settlement/callables/P2g/live/default-on/release remain off.
 Config, MCP, route and HTTP/WS auth tests preserve their original assertions
 using immutable child environments and per-router state. See
 [environment-test isolation](test-environment-isolation.md) for the maintained contract.
+
+Run44912859439 at ac798 retained both original source/Cargo/WASM failures after
+actual LINK0 and banner acceptance. The first PE group is `pe.directories` on
+1024 observed bytes with machine8664; the directory ordinal, RVA/size values
+and full image remain unavailable. The declaration clash is absent and the
+17 existing Windows warnings remain. This does not identify a loader/tool cause.
+
+The private diagnostic now uses closed `pe.d00.rva` through `pe.d15.rva` and
+`pe.d00.size` through `pe.d15.size` labels for the first checked directory
+operand, through the same `expected` field. It preserves every checked DWORD,
+short-circuit order and the strict all-directory-zero acceptance rule; invalid
+indices retain the generic refusal. No field/value/image dump or new native
+flag, bound or source grant is added. Ordinary header/data controls verify
+ordinal/operand and first-failure identity; the new Windows label is unobserved
+until independent review and fresh combined native source/WASM validation.
