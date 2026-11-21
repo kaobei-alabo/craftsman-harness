@@ -248,7 +248,8 @@ async fn lanes(
         .unwrap();
 
     // Compaction client: a clean transcript is summarized over the wire; the
-    // same transcript holding a known original sends nothing.
+    // same transcript holding a known original is refused, and the loopback
+    // server receives no further request.
     let mut transcript: Vec<Msg> = (0..5)
         .flat_map(|turn| {
             [
@@ -276,7 +277,8 @@ async fn lanes(
 
     // Delegated client: the main model's own clean request is sent once and
     // answers with a delegation whose task text holds the known original. The
-    // child's request and the main follow-up are both refused unsent.
+    // child's request and the main follow-up are both refused, and neither
+    // reaches the loopback server. The first request and its usage remain.
     refused(session.agent.run_turn(CLEAN).await);
     assert_eq!(requests.load(Ordering::SeqCst), 2);
     let state = session.agent.state.lock().unwrap().clone();

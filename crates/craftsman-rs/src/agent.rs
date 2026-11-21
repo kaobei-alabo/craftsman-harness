@@ -80,6 +80,9 @@ pub struct Session {
     /// The explicitly selected private final-send guard shared by this
     /// session's main, delegated and compaction model clients. Absent in every
     /// frontend; reopening or transferring a bound conversation is refused.
+    /// `set_thread_id` has no error path and is NOT refused: on a bound
+    /// session it still rebinds the agent, checkpoint, verification and
+    /// control state while the clients stay guarded. That use is unsupported.
     pub(crate) send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
     /// The durable long-term-memory store, when it opened — the SAME `Arc` routed
     /// into the composite backend. Kept here so `/memories` can list the files
@@ -1791,7 +1794,10 @@ async fn build_session_with_capture_profile(
         .ok()
     };
     // Main, delegated and compaction clients all come from this one closure,
-    // so an explicit selection binds every one of them to the SAME guard.
+    // so an explicit selection binds every one of them to the SAME guard. Each
+    // client is moved into its provider at once and is never mutated again;
+    // replacing a bound client or its native transport later would need the
+    // same binding and a new review.
     let make_client = || {
         let client = make_unguarded_client()?;
         match &send_guard {

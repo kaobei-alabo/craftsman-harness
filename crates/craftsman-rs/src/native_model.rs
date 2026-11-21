@@ -251,8 +251,9 @@ impl NativeClient {
             Some(guard) => {
                 // Provider-owned replay items may split one visible text node
                 // across parts, so the request's own text nodes are checked as
-                // well. The encoded bytes, including every signed or opaque
-                // item, are sent exactly as sealed.
+                // well and kept with the seal. The encoded bytes, including
+                // every signed or opaque item, are sent exactly as sealed. The
+                // decision is made here, immediately before the one send.
                 let mut portable = vec![req.system.as_str()];
                 portable.extend(req.messages.iter().map(|message| match message {
                     Msg::System { content }
@@ -261,7 +262,7 @@ impl NativeClient {
                     | Msg::Tool { content, .. } => content.as_str(),
                 }));
                 let sealed = guard.seal(encoded, &portable)?;
-                guard.ready(&sealed, &portable)?;
+                guard.ready(&sealed)?;
                 sealed.into_bytes()
             }
         };

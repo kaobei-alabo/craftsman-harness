@@ -185,8 +185,8 @@ async fn clean_final_bytes_are_sealed_exactly_and_stay_ready() {
     ],"stream":true}));
     let sealed = guard.seal(body.clone(), &[]).unwrap();
     assert_eq!(sealed.bytes(), body.as_slice());
-    guard.ready(&sealed, &[]).unwrap();
-    guard.ready(&sealed, &[]).unwrap();
+    guard.ready(&sealed).unwrap();
+    guard.ready(&sealed).unwrap();
     assert_eq!(sealed.into_bytes(), body);
 }
 
@@ -381,7 +381,7 @@ async fn originals_outside_the_supported_shape_close_the_guard() {
         let guard = guard_for(&session, &supported);
         let sealed = guard.seal(clean.clone(), &[]).unwrap();
         assert_eq!(guard.admit(records).unwrap_err(), SendRefusal::Unsupported);
-        assert_eq!(guard.ready(&sealed, &[]).unwrap_err(), SendRefusal::Closed);
+        assert_eq!(guard.ready(&sealed).unwrap_err(), SendRefusal::Closed);
         assert_eq!(
             guard.seal(clean.clone(), &[]).unwrap_err(),
             SendRefusal::Closed
@@ -429,15 +429,12 @@ async fn records_and_seals_of_another_session_are_refused() {
     let clean = bytes(&json!({"messages":[{"role":"user","content":"hello"}]}));
     let sealed = first_guard.seal(clean.clone(), &[]).unwrap();
     assert_eq!(
-        second_guard.ready(&sealed, &[]).unwrap_err(),
+        second_guard.ready(&sealed).unwrap_err(),
         SendRefusal::Foreign
     );
     // Even a guard over the same session and records is a different guard.
-    assert_eq!(
-        twin_guard.ready(&sealed, &[]).unwrap_err(),
-        SendRefusal::Foreign
-    );
-    first_guard.ready(&sealed, &[]).unwrap();
+    assert_eq!(twin_guard.ready(&sealed).unwrap_err(), SendRefusal::Foreign);
+    first_guard.ready(&sealed).unwrap();
 
     assert_eq!(
         second_guard.admit(first_records).unwrap_err(),
@@ -466,7 +463,7 @@ async fn a_seal_is_verified_again_when_more_originals_are_admitted() {
         .admit(first.resolution_records_for_host_fields().unwrap())
         .unwrap();
     assert_eq!(guard.admitted_generation(), before);
-    guard.ready(&sealed, &[]).unwrap();
+    guard.ready(&sealed).unwrap();
 
     // An unrelated new original: the seal is checked again and still holds.
     let unrelated = mask(&session, &[(PHONE, Category::Telephone)]).await;
@@ -474,7 +471,7 @@ async fn a_seal_is_verified_again_when_more_originals_are_admitted() {
         .admit(unrelated.resolution_records_for_host_fields().unwrap())
         .unwrap();
     assert_eq!(guard.admitted_generation(), before + 1);
-    guard.ready(&sealed, &[]).unwrap();
+    guard.ready(&sealed).unwrap();
 
     // The body's own value is admitted: the earlier seal is no longer usable.
     let present = mask(
@@ -486,11 +483,11 @@ async fn a_seal_is_verified_again_when_more_originals_are_admitted() {
         .admit(present.resolution_records_for_host_fields().unwrap())
         .unwrap();
     assert_eq!(
-        guard.ready(&sealed, &[]).unwrap_err(),
+        guard.ready(&sealed).unwrap_err(),
         SendRefusal::KnownOriginal
     );
     assert_eq!(
-        guard.ready(&sealed, &[]).unwrap_err(),
+        guard.ready(&sealed).unwrap_err(),
         SendRefusal::KnownOriginal
     );
     assert_eq!(
@@ -507,7 +504,7 @@ async fn a_closed_session_vault_or_guard_refuses_seal_and_ready() {
     let (_root, _vault, session, guard) = fixture().await;
     let sealed = guard.seal(clean.clone(), &[]).unwrap();
     session.close();
-    assert_eq!(guard.ready(&sealed, &[]).unwrap_err(), SendRefusal::Closed);
+    assert_eq!(guard.ready(&sealed).unwrap_err(), SendRefusal::Closed);
     assert_eq!(
         guard.seal(clean.clone(), &[]).unwrap_err(),
         SendRefusal::Closed
@@ -517,7 +514,7 @@ async fn a_closed_session_vault_or_guard_refuses_seal_and_ready() {
     let (_root, vault, _session, guard) = fixture().await;
     let sealed = guard.seal(clean.clone(), &[]).unwrap();
     vault.close();
-    assert_eq!(guard.ready(&sealed, &[]).unwrap_err(), SendRefusal::Closed);
+    assert_eq!(guard.ready(&sealed).unwrap_err(), SendRefusal::Closed);
     assert_eq!(
         guard.seal(clean.clone(), &[]).unwrap_err(),
         SendRefusal::Closed
@@ -526,7 +523,7 @@ async fn a_closed_session_vault_or_guard_refuses_seal_and_ready() {
     let (_root, _vault, session, guard) = fixture().await;
     let sealed = guard.seal(clean.clone(), &[]).unwrap();
     guard.close();
-    assert_eq!(guard.ready(&sealed, &[]).unwrap_err(), SendRefusal::Closed);
+    assert_eq!(guard.ready(&sealed).unwrap_err(), SendRefusal::Closed);
     assert_eq!(guard.seal(clean, &[]).unwrap_err(), SendRefusal::Closed);
     // Closing a guard is its own decision; the vault session is untouched.
     session.capture_text("still live").unwrap();
@@ -567,8 +564,153 @@ async fn refusals_and_private_types_expose_only_fixed_text() {
         SendRefusal::Unsealed,
         SendRefusal::Foreign,
     ] {
-        assert!(refusal.to_string().ends_with("not sent."));
+        // Each names the refused operation or attempt and nothing else: no
+        // statement that a request was never sent, about usage or billing.
+        let text = refusal.to_string();
+        assert!(text.starts_with("The private send guard "));
+        assert!(text.contains("refused this "));
+        for claim in ["not sent", "never", "usage", "billing", "no request"] {
+            assert!(!text.contains(claim), "{text}");
+        }
     }
+}
+
+#[tokio::test]
+async fn a_verification_charges_every_prefix_comparison_and_pass_it_documents() {
+    let root = tempfile::tempdir().unwrap();
+    let (_vault, session) = open(root.path(), "owned-thread").await;
+    let customer = Category::Identifier(IdentifierKind::Customer);
+    let masked = mask(
+        &session,
+        &[
+            ("CUSTOMER-0001", customer),
+            ("CUSTOMER-0002", customer),
+            ("CUSTOMER-0003", customer),
+        ],
+    )
+    .await;
+    let guard = guard_for(&session, &masked);
+    let prefix = 4;
+    let candidate = "CUSTOMER-0001".len() as u64;
+
+    // No escapes, so nothing is decoded: three whole-body passes (literal,
+    // UTF-8, parse) and the candidate searches at the three "CU" positions.
+    let body = br#"{"note":"CUSTARD and CUSTODY, CURRENT"}"#;
+    let (result, work) = guard.verification_work(body, &[]);
+    result.unwrap();
+    let passes = 3 * body.len() as u64;
+    // Three sorted originals share one prefix: two binary-search steps, then
+    // for "CUST" three accepted candidates each compared in full, and for
+    // "CURR" one equality test that ends the run.
+    let search = 2 * prefix;
+    let matching_prefix = search + 3 * (prefix + candidate);
+    let other_prefix = search + prefix;
+    assert_eq!(work, passes + 2 * matching_prefix + other_prefix);
+
+    // A supplied text node: one bookkeeping unit and its own literal pass.
+    let (result, with_node) = guard.verification_work(body, &["plain"]);
+    result.unwrap();
+    assert_eq!(with_node, work + 1 + 5);
+
+    // An escaped string that holds a JSON document after one space: its
+    // literal pass, two bytes examined for the leading whitespace, and its
+    // parse. The document itself has no escaped string.
+    let inner = r#" {"b":1}"#;
+    let nested = serde_json::to_vec(&json!({"a":inner})).unwrap();
+    let (result, work) = guard.verification_work(&nested, &[]);
+    result.unwrap();
+    let inner = inner.len() as u64;
+    assert_eq!(work, 3 * nested.len() as u64 + inner + 2 + inner);
+
+    // The same count is what a refusal reports having reached.
+    let found = br#"{"note":"CUSTOMER-0002"}"#;
+    let (result, work) = guard.verification_work(found, &[]);
+    assert_eq!(result.unwrap_err(), SendRefusal::KnownOriginal);
+    assert_eq!(
+        work,
+        found.len() as u64 + search + 2 * (prefix + candidate),
+        "refused in the literal pass at the second candidate"
+    );
+}
+
+#[tokio::test]
+async fn a_seal_keeps_the_request_text_it_was_verified_with() {
+    let root = tempfile::tempdir().unwrap();
+    let (_vault, session) = open(root.path(), "owned-thread").await;
+    let first = mask(&session, &[(EMAIL, Category::Email)]).await;
+    let guard = guard_for(&session, &first);
+    // The encoded parts split the value; only the request's own text joins it.
+    let (head, tail) = CUSTOMER.split_at(6);
+    let split = bytes(&json!({"contents":[{"parts":[{"text":head},{"text":tail}]}]}));
+    assert!(!contains(&split, CUSTOMER));
+    let sealed = guard
+        .seal(split, &["Earlier question", CUSTOMER, "Later question"])
+        .unwrap();
+    guard.ready(&sealed).unwrap();
+
+    // A later decision verifies the seal's own retained text. There is no
+    // way to hand it a different one.
+    let present = mask(
+        &session,
+        &[(CUSTOMER, Category::Identifier(IdentifierKind::Customer))],
+    )
+    .await;
+    guard
+        .admit(present.resolution_records_for_host_fields().unwrap())
+        .unwrap();
+    assert_eq!(
+        guard.ready(&sealed).unwrap_err(),
+        SendRefusal::KnownOriginal
+    );
+
+    // Supplied text shares the body ceiling, one byte per node included.
+    let tight = SendGuard::with_limits(
+        session.clone(),
+        first.resolution_records_for_host_fields().unwrap(),
+        Limits {
+            body_bytes: 64,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let small = b"{}".to_vec();
+    tight
+        .seal(small.clone(), &["x".repeat(63).as_str()])
+        .unwrap();
+    assert_eq!(
+        tight
+            .seal(small.clone(), &["x".repeat(64).as_str()])
+            .unwrap_err(),
+        SendRefusal::Bounds
+    );
+    assert_eq!(
+        tight.seal(small, &[""; 65]).unwrap_err(),
+        SendRefusal::Bounds
+    );
+}
+
+#[tokio::test]
+async fn a_refused_admission_leaves_the_admitted_set_and_generation_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let (_vault, session) = open(root.path(), "owned-thread").await;
+    let first = mask(&session, &[(EMAIL, Category::Email)]).await;
+    let guard = guard_for(&session, &first);
+    let more = mask(&session, &[(PHONE, Category::Telephone)]).await;
+    // The generation counter is at its last value: the next one is decided
+    // before anything is committed, so nothing may change.
+    guard.state.write().unwrap().generation = u64::MAX;
+    assert_eq!(
+        guard
+            .admit(more.resolution_records_for_host_fields().unwrap())
+            .unwrap_err(),
+        SendRefusal::Bounds
+    );
+    let state = guard.state.read().unwrap();
+    assert_eq!(state.generation, u64::MAX);
+    assert_eq!(state.originals.len(), 1);
+    assert!(state.closed);
+    drop(state);
+    assert_eq!(guard.check().unwrap_err(), SendRefusal::Closed);
 }
 
 async fn server(protocol: &'static str) -> MockServer {

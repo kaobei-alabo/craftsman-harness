@@ -200,6 +200,8 @@ impl LlmClient {
     /// Binds this client and its native transport to one explicitly selected
     /// guard. From here on it sends only bodies that guard sealed. A private
     /// headless client has its own checked source and refuses the combination.
+    /// The binding is made once, on an owned client, before it is shared; the
+    /// crate-visible `native` field must not be replaced afterwards.
     pub(crate) fn with_send_guard(
         mut self,
         guard: std::sync::Arc<crate::privacy_send::SendGuard>,
@@ -463,7 +465,8 @@ impl LlmClient {
     }
 
     /// Selected sessions send the SAME serialization as bytes their guard
-    /// verified. A refusal keeps its own fixed text and sends nothing.
+    /// verified. A refusal keeps its own fixed text; the refused attempt is
+    /// not handed to the HTTP client.
     async fn stream_sealed_turn(
         &self,
         guard: &std::sync::Arc<crate::privacy_send::SendGuard>,
@@ -490,8 +493,10 @@ impl LlmClient {
         }
     }
 
-    /// The selected guard's check for one attempt. A bound client accepts only
-    /// its own sealed body; an unbound client never accepts a sealed one.
+    /// The selected guard's decision for one attempt. A bound client accepts
+    /// only its own sealed body; an unbound client never accepts a sealed one.
+    /// A refusal here stops this attempt. It does not undo an earlier attempt
+    /// of the same request or anything that attempt caused.
     fn send_guard_ready(
         &self,
         body: RequestBody<'_>,
@@ -499,7 +504,7 @@ impl LlmClient {
         match (&self.send_guard, body) {
             (None, RequestBody::Sealed(_)) => Err(crate::privacy_send::SendRefusal::Foreign),
             (None, _) => Ok(()),
-            (Some(guard), RequestBody::Sealed(sealed)) => guard.ready(sealed, &[]),
+            (Some(guard), RequestBody::Sealed(sealed)) => guard.ready(sealed),
             (Some(_), _) => Err(crate::privacy_send::SendRefusal::Unsealed),
         }
     }
