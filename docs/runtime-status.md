@@ -139,7 +139,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations under PR #32; normal sessions inactive | CI44891734880 returns selected LINK0 then an unattributed PE refusal; both source/Cargo/WASM parents fail. Windows core, CMD controls and77 vault cases per mode pass without a vault Deadline phase. Earlier failures remain. Fixed PE refusal labels and the new declaration correction await source review/native validation; key ownership, native-history and actual display/file consumers remain separate. See [privacy-hooks.md](privacy-hooks.md) |
+| Privacy hooks | Reviewed private foundations/candidates; normal sessions inactive | ac17/run44937824282: fmt/Ubuntu/macOS pass; Windows two original source-Cargo-WASM parents refuse `pe.align.section` after LINK0. Exact alignment operands await the diagnostic; NOCOFFGRPINFO lacks full native acceptance. Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -412,3 +412,12 @@ a conditional candidate pending fresh Windows acceptance of the unchanged PE
 validator and original Prepared/source-Cargo-WASM gates. The closed refusal
 labels, strict all-directory-zero rule, native bounds and source approval stay
 unchanged. Normal privacy remains off; this adds no public command or capability.
+
+The private alignment diagnostic preserves `pe.align.section` and every original
+predicate/read/short-circuit. On its first failed predicate it attempts one fixed
+`PEA:<id>:<16hex>[:<16hex>]` stderr line (at most41 bytes including newline)
+using only that predicate's owned header operands. Success stays silent; missing
+reads retain the coarse fallback. The line can block or be partial and is not a
+new time or quiescence guarantee. Actual first operands remain pending a fresh
+Windows run; PE acceptance, native/source-Cargo-WASM gates and normal privacy
+activation remain unchanged and unmet.

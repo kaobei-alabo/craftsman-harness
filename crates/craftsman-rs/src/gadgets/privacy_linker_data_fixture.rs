@@ -785,6 +785,67 @@ fn aligned(value: usize, alignment: usize) -> Option<usize> {
         .checked_div(alignment)?
         .checked_mul(alignment)
 }
+// Closed observations of the first ORIGINAL alignment/section predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum AlignmentPredicate {
+    FileAlignmentRange = 0,
+    FileAlignmentPower = 1,
+    SectionAlignmentPower = 2,
+    SectionAlignmentMinimum = 3,
+    SectionVsFileAlignment = 4,
+    HeadersVsSectionEnd = 5,
+    HeadersVsFile = 6,
+    HeadersModuloFileAlignment = 7,
+    SectionName = 8,
+    VirtualSize = 9,
+    RelocationPointer = 10,
+    LinePointer = 11,
+    RelocationCount = 12,
+    LineCount = 13,
+    SectionFlags = 14,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AlignmentOperands {
+    One(u64),
+    Two(u64, u64),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AlignmentDetail {
+    predicate: AlignmentPredicate,
+    operands: AlignmentOperands,
+}
+impl AlignmentDetail {
+    fn line(self) -> ([u8; 41], usize) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut line = [0; 41];
+        line[..4].copy_from_slice(b"PEA:");
+        line[4] = b'0';
+        line[5] = HEX[self.predicate as usize];
+        line[6] = b':';
+        let first = match self.operands {
+            AlignmentOperands::One(first) | AlignmentOperands::Two(first, _) => first,
+        };
+        for (index, byte) in line[7..23].iter_mut().enumerate() {
+            *byte = HEX[((first >> ((15 - index) * 4)) & 15) as usize];
+        }
+        match self.operands {
+            AlignmentOperands::One(_) => {
+                line[23] = b'\n';
+                (line, 24)
+            }
+            AlignmentOperands::Two(_, second) => {
+                line[23] = b':';
+                for (index, byte) in line[24..40].iter_mut().enumerate() {
+                    *byte = HEX[((second >> ((15 - index) * 4)) & 15) as usize];
+                }
+                line[40] = b'\n';
+                (line, 41)
+            }
+        }
+    }
+}
+
 // Fixed first-refusal groups for the original acceptance checks. These labels
 // identify checked data, not a native cause or permission to accept that data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -799,6 +860,7 @@ enum PeRejection {
     DirectoryRva(usize),
     DirectorySize(usize),
     AlignmentSection,
+    AlignmentDetail(AlignmentDetail),
     ImageRawMarker,
 }
 const DIRECTORY_RVA_REJECTIONS: [&str; 16] = [
@@ -855,7 +917,7 @@ impl PeRejection {
                 .get(ordinal)
                 .copied()
                 .unwrap_or("pe.directories"),
-            Self::AlignmentSection => "pe.align.section",
+            Self::AlignmentSection | Self::AlignmentDetail(_) => "pe.align.section",
             Self::ImageRawMarker => "pe.image.raw.marker",
         }
     }
@@ -938,22 +1000,102 @@ fn pe_shape(bytes: &[u8], host: Host) -> Result<(), PeRejection> {
         let section_alignment = usize::try_from(dword(bytes, optional.checked_add(32)?)?).ok()?;
         let headers = usize::try_from(dword(bytes, optional.checked_add(60)?)?).ok()?;
         let image = usize::try_from(dword(bytes, optional.checked_add(56)?)?).ok()?;
-        if !(512..=65536).contains(&file_alignment)
-            || !file_alignment.is_power_of_two()
-            || !section_alignment.is_power_of_two()
-            || section_alignment < 4096
-            || section_alignment < file_alignment
-            || headers < section_end
-            || headers > bytes.len()
-            || headers % file_alignment != 0
-            || bytes.get(section..section.checked_add(8)?)? != b".rdata\0\0"
-            || dword(bytes, section.checked_add(8)?)? != 16
-            || dword(bytes, section.checked_add(24)?)? != 0
-            || dword(bytes, section.checked_add(28)?)? != 0
-            || word(bytes, section.checked_add(32)?)? != 0
-            || word(bytes, section.checked_add(34)?)? != 0
-            || dword(bytes, section.checked_add(36)?)? != 0x40000040
-        {
+        macro_rules! alignment {
+            ($condition:expr, $predicate:ident, $operands:expr) => {{
+                let failed = $condition;
+                if failed {
+                    reason = PeRejection::AlignmentDetail(AlignmentDetail {
+                        predicate: AlignmentPredicate::$predicate,
+                        operands: $operands,
+                    });
+                }
+                failed
+            }};
+        }
+        if alignment!(
+            !(512..=65536).contains(&file_alignment),
+            FileAlignmentRange,
+            AlignmentOperands::One(file_alignment as u64)
+        ) || alignment!(
+            !file_alignment.is_power_of_two(),
+            FileAlignmentPower,
+            AlignmentOperands::One(file_alignment as u64)
+        ) || alignment!(
+            !section_alignment.is_power_of_two(),
+            SectionAlignmentPower,
+            AlignmentOperands::One(section_alignment as u64)
+        ) || alignment!(
+            section_alignment < 4096,
+            SectionAlignmentMinimum,
+            AlignmentOperands::One(section_alignment as u64)
+        ) || alignment!(
+            section_alignment < file_alignment,
+            SectionVsFileAlignment,
+            AlignmentOperands::Two(section_alignment as u64, file_alignment as u64)
+        ) || alignment!(
+            headers < section_end,
+            HeadersVsSectionEnd,
+            AlignmentOperands::Two(headers as u64, section_end as u64)
+        ) || alignment!(
+            headers > bytes.len(),
+            HeadersVsFile,
+            AlignmentOperands::Two(headers as u64, bytes.len() as u64)
+        ) || alignment!(
+            headers % file_alignment != 0,
+            HeadersModuloFileAlignment,
+            AlignmentOperands::Two(headers as u64, file_alignment as u64)
+        ) || {
+            let name = bytes.get(section..section.checked_add(8)?)?;
+            alignment!(
+                name != b".rdata\0\0",
+                SectionName,
+                AlignmentOperands::One(name.iter().enumerate().fold(0, |value, (index, byte)| {
+                    value | (u64::from(*byte) << (index * 8))
+                }))
+            )
+        } || {
+            let value = dword(bytes, section.checked_add(8)?)?;
+            alignment!(
+                value != 16,
+                VirtualSize,
+                AlignmentOperands::One(u64::from(value))
+            )
+        } || {
+            let value = dword(bytes, section.checked_add(24)?)?;
+            alignment!(
+                value != 0,
+                RelocationPointer,
+                AlignmentOperands::One(u64::from(value))
+            )
+        } || {
+            let value = dword(bytes, section.checked_add(28)?)?;
+            alignment!(
+                value != 0,
+                LinePointer,
+                AlignmentOperands::One(u64::from(value))
+            )
+        } || {
+            let value = word(bytes, section.checked_add(32)?)?;
+            alignment!(
+                value != 0,
+                RelocationCount,
+                AlignmentOperands::One(u64::from(value))
+            )
+        } || {
+            let value = word(bytes, section.checked_add(34)?)?;
+            alignment!(
+                value != 0,
+                LineCount,
+                AlignmentOperands::One(u64::from(value))
+            )
+        } || {
+            let value = dword(bytes, section.checked_add(36)?)?;
+            alignment!(
+                value != 0x40000040,
+                SectionFlags,
+                AlignmentOperands::One(u64::from(value))
+            )
+        } {
             return None;
         }
         reason = PeRejection::ImageRawMarker;
@@ -985,6 +1127,12 @@ fn validate_pe(bytes: &[u8], host: Host) -> SetupResult<()> {
         Ok(()) => return Ok(()),
         Err(reason) => reason,
     };
+    if let PeRejection::AlignmentDetail(detail) = reason {
+        let (line, length) = detail.line();
+        // A partial/failed observation cannot replace the original PE refusal.
+        // This existing cfg-test stderr path may block; it is not a time bound.
+        let _ = std::io::stderr().write_all(&line[..length]);
+    }
     let mut error = failure(Kind::Pe, reason.expected());
     error.observed_read_bytes = Some(bytes.len());
     error.observed_read_prefix_sha256 = Some(hash(bytes));
@@ -1457,5 +1605,164 @@ fn directory_order_and_incomplete_headers_keep_the_first_refusal_and_actual_read
             }
         }
         validate_pe(&original, host).unwrap();
+    }
+}
+
+#[test]
+fn alignment_header_refusals_keep_the_first_actual_scalar_or_pair() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let pe = dword(&original, 60).unwrap() as usize;
+        let optional = pe + 24;
+        let section_end = optional + usize::from(word(&original, pe + 20).unwrap()) + 40;
+        let cases = [
+            (
+                36,
+                511,
+                AlignmentPredicate::FileAlignmentRange,
+                AlignmentOperands::One(511),
+            ),
+            (
+                36,
+                768,
+                AlignmentPredicate::FileAlignmentPower,
+                AlignmentOperands::One(768),
+            ),
+            (
+                32,
+                6144,
+                AlignmentPredicate::SectionAlignmentPower,
+                AlignmentOperands::One(6144),
+            ),
+            (
+                32,
+                2048,
+                AlignmentPredicate::SectionAlignmentMinimum,
+                AlignmentOperands::One(2048),
+            ),
+            (
+                36,
+                8192,
+                AlignmentPredicate::SectionVsFileAlignment,
+                AlignmentOperands::Two(4096, 8192),
+            ),
+            (
+                60,
+                section_end as u32 - 1,
+                AlignmentPredicate::HeadersVsSectionEnd,
+                AlignmentOperands::Two(section_end as u64 - 1, section_end as u64),
+            ),
+            (
+                60,
+                1025,
+                AlignmentPredicate::HeadersVsFile,
+                AlignmentOperands::Two(1025, 1024),
+            ),
+            (
+                60,
+                513,
+                AlignmentPredicate::HeadersModuloFileAlignment,
+                AlignmentOperands::Two(513, 512),
+            ),
+        ];
+        for (offset, value, predicate, operands) in cases {
+            let mut bytes = original.clone();
+            bytes[optional + offset..optional + offset + 4].copy_from_slice(&value.to_le_bytes());
+            let reason = pe_shape(&bytes, host).unwrap_err();
+            assert_eq!(
+                reason,
+                PeRejection::AlignmentDetail(AlignmentDetail {
+                    predicate,
+                    operands
+                })
+            );
+            assert_eq!(reason.expected(), "pe.align.section");
+        }
+    }
+}
+
+#[test]
+fn alignment_section_refusals_use_the_checked_header_fields() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let pe = dword(&original, 60).unwrap() as usize;
+        let section = pe + 24 + usize::from(word(&original, pe + 20).unwrap());
+        let cases = [
+            (8, 4, 17u32, AlignmentPredicate::VirtualSize),
+            (24, 4, 1, AlignmentPredicate::RelocationPointer),
+            (28, 4, 2, AlignmentPredicate::LinePointer),
+            (32, 2, 1, AlignmentPredicate::RelocationCount),
+            (34, 2, 2, AlignmentPredicate::LineCount),
+            (36, 4, 0x60000040, AlignmentPredicate::SectionFlags),
+        ];
+        for (offset, width, value, predicate) in cases {
+            let mut bytes = original.clone();
+            bytes[section + offset..section + offset + width]
+                .copy_from_slice(&value.to_le_bytes()[..width]);
+            let reason = pe_shape(&bytes, host).unwrap_err();
+            assert_eq!(
+                reason,
+                PeRejection::AlignmentDetail(AlignmentDetail {
+                    predicate,
+                    operands: AlignmentOperands::One(u64::from(value)),
+                })
+            );
+            assert_eq!(reason.expected(), "pe.align.section");
+        }
+        let mut name = original.clone();
+        name[section..section + 8].copy_from_slice(b".owned\0\0");
+        let reason = pe_shape(&name, host).unwrap_err();
+        assert_eq!(
+            reason,
+            PeRejection::AlignmentDetail(AlignmentDetail {
+                predicate: AlignmentPredicate::SectionName,
+                operands: AlignmentOperands::One(u64::from_le_bytes(*b".owned\0\0")),
+            })
+        );
+    }
+}
+
+#[test]
+fn alignment_observation_is_fixed_ascii_and_later_image_failure_stays_later() {
+    let detail = AlignmentDetail {
+        predicate: AlignmentPredicate::HeadersVsFile,
+        operands: AlignmentOperands::Two(u64::MAX, 0),
+    };
+    let (bytes, len) = detail.line();
+    assert_eq!(len, 41);
+    assert_eq!(&bytes[..len], b"PEA:06:ffffffffffffffff:0000000000000000\n");
+    let (bytes, len) = AlignmentDetail {
+        predicate: AlignmentPredicate::SectionFlags,
+        operands: AlignmentOperands::One(0x60000040),
+    }
+    .line();
+    assert_eq!(len, 24);
+    assert_eq!(&bytes[..len], b"PEA:0e:0000000060000040\n");
+    let original = sample_pe(Host::X64);
+    pe_shape(&original, Host::X64).unwrap();
+    let pe = dword(&original, 60).unwrap() as usize;
+    let optional = pe + 24;
+    let section = optional + usize::from(word(&original, pe + 20).unwrap());
+    let mut image = original.clone();
+    image[optional + 56..optional + 60].copy_from_slice(&0u32.to_le_bytes());
+    assert_eq!(
+        pe_shape(&image, Host::X64),
+        Err(PeRejection::ImageRawMarker)
+    );
+    let mut first = original.clone();
+    first[optional + 36..optional + 40].copy_from_slice(&511u32.to_le_bytes());
+    first[section + 8..section + 12].copy_from_slice(&17u32.to_le_bytes());
+    assert_eq!(
+        pe_shape(&first, Host::X64),
+        Err(PeRejection::AlignmentDetail(AlignmentDetail {
+            predicate: AlignmentPredicate::FileAlignmentRange,
+            operands: AlignmentOperands::One(511),
+        }))
+    );
+    for end in [0, 63, optional + 36, section + 39] {
+        assert!(!matches!(
+            pe_shape(&original[..end], Host::X64),
+            Err(PeRejection::AlignmentDetail(_))
+        ));
     }
 }

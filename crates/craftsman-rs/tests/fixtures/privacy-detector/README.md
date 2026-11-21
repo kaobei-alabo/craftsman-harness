@@ -369,3 +369,12 @@ a conditional candidate pending fresh Windows acceptance of the unchanged PE
 validator and original Prepared/source-Cargo-WASM gates. The closed refusal
 labels, strict all-directory-zero rule, native bounds and source approval stay
 unchanged. Normal privacy remains off; this adds no public command or capability.
+
+The private alignment diagnostic preserves `pe.align.section` and every original
+predicate/read/short-circuit. On its first failed predicate it attempts one fixed
+`PEA:<id>:<16hex>[:<16hex>]` stderr line (at most41 bytes including newline)
+using only that predicate's owned header operands. Success stays silent; missing
+reads retain the coarse fallback. The line can block or be partial and is not a
+new time or quiescence guarantee. Actual first operands remain pending a fresh
+Windows run; PE acceptance, native/source-Cargo-WASM gates and normal privacy
+activation remain unchanged and unmet.
