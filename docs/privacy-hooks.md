@@ -449,3 +449,16 @@ reads retain the coarse fallback. The line can block or be partial and is not a
 new time or quiescence guarantee. Actual first operands remain pending a fresh
 Windows run; PE acceptance, native/source-Cargo-WASM gates and normal privacy
 activation remain unchanged and unmet.
+
+Run [44949456781](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44949456781)
+at 56aa observed `PEA:09:0000000000000028` after LINK0 and the banner: every
+directory was zero, and the one section declares 40 bytes where the unchanged
+check requires 16. What the other 24 bytes are, the section's flags and raw
+layout, and the cause remain unknown; no linker switch is chosen from the size.
+The diagnostic now also attempts one `PES:<hex>` line (at most 133 bytes) with
+exactly the declared 17 to 64 bytes, only when that predicate fails first and
+the bytes lie in the already captured image and begin with the public fixture
+marker. Otherwise it writes `PES:unavailable`. It reads no file again and
+changes no predicate, label or limit. Its data awaits a fresh Windows run; PE
+acceptance, the source-Cargo-WASM gates and normal privacy remain unmet and
+inactive.

@@ -844,6 +844,58 @@ impl AlignmentDetail {
             }
         }
     }
+
+    // One further closed observation, attempted only after the original
+    // refusal and only when its first failed predicate is VirtualSize with an
+    // observed 17..=64 bytes. Data is published only if the section's declared
+    // prefix lies in the SAME owned image and begins with the public fixture
+    // marker; otherwise one fixed sentinel says it is unavailable. Nothing is
+    // guessed, repaired or accepted, and no file or OS state is read again.
+    fn section_prefix_line(self, bytes: &[u8]) -> Option<([u8; 133], usize)> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let AlignmentOperands::One(size) = self.operands else {
+            return None;
+        };
+        if self.predicate != AlignmentPredicate::VirtualSize {
+            return None;
+        }
+        let size = usize::try_from(size)
+            .ok()
+            .filter(|size| (17..=64).contains(size))?;
+        let mut line = [0; 133];
+        let Some(prefix) = section_prefix(bytes, size) else {
+            line[..16].copy_from_slice(b"PES:unavailable\n");
+            return Some((line, 16));
+        };
+        line[..4].copy_from_slice(b"PES:");
+        for (index, byte) in prefix.iter().enumerate() {
+            line[4 + index * 2] = HEX[usize::from(byte >> 4)];
+            line[5 + index * 2] = HEX[usize::from(byte & 15)];
+        }
+        line[4 + size * 2] = b'\n';
+        Some((line, 5 + size * 2))
+    }
+}
+
+// Diagnostic only. The declared virtual prefix of the one section, read from
+// the already owned complete image at the checked header offsets pe_shape
+// walked for the same refusal. The header's VirtualSize must be the observed
+// operand, the whole raw extent must lie inside the captured image and cover
+// the prefix, and the prefix must begin with the immutable public marker.
+fn section_prefix(bytes: &[u8], size: usize) -> Option<&[u8]> {
+    let header = usize::try_from(dword(bytes, 60)?).ok()?.checked_add(4)?;
+    let optional = header.checked_add(20)?;
+    let section = optional.checked_add(usize::from(word(bytes, header.checked_add(16)?)?))?;
+    if usize::try_from(dword(bytes, section.checked_add(8)?)?).ok()? != size {
+        return None;
+    }
+    let raw_size = usize::try_from(dword(bytes, section.checked_add(16)?)?).ok()?;
+    let raw = usize::try_from(dword(bytes, section.checked_add(20)?)?).ok()?;
+    if size > raw_size || raw.checked_add(raw_size)? > bytes.len() {
+        return None;
+    }
+    let prefix = bytes.get(raw..raw.checked_add(size)?)?;
+    prefix.starts_with(MARKER).then_some(prefix)
 }
 
 // Fixed first-refusal groups for the original acceptance checks. These labels
@@ -1132,6 +1184,10 @@ fn validate_pe(bytes: &[u8], host: Host) -> SetupResult<()> {
         // A partial/failed observation cannot replace the original PE refusal.
         // This existing cfg-test stderr path may block; it is not a time bound.
         let _ = std::io::stderr().write_all(&line[..length]);
+        // The same holds for the section-prefix record that may follow it.
+        if let Some((line, length)) = detail.section_prefix_line(bytes) {
+            let _ = std::io::stderr().write_all(&line[..length]);
+        }
     }
     let mut error = failure(Kind::Pe, reason.expected());
     error.observed_read_bytes = Some(bytes.len());
@@ -1764,5 +1820,176 @@ fn alignment_observation_is_fixed_ascii_and_later_image_failure_stays_later() {
             pe_shape(&original[..end], Host::X64),
             Err(PeRejection::AlignmentDetail(_))
         ));
+    }
+}
+
+#[test]
+fn section_prefix_observation_is_the_marker_led_declared_bytes_or_one_fixed_sentinel() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let pe = dword(&original, 60).unwrap() as usize;
+        let optional = pe + 24;
+        let section = optional + usize::from(word(&original, pe + 20).unwrap());
+        let raw = dword(&original, section + 20).unwrap() as usize;
+        let observe = |image: &[u8]| match pe_shape(image, host) {
+            Err(PeRejection::AlignmentDetail(detail)) => detail
+                .section_prefix_line(image)
+                .map(|(line, length)| line[..length].to_vec()),
+            _ => None,
+        };
+        let field = |offset: usize, value: u32| {
+            let mut image = original.clone();
+            image[section + 8..section + 12].copy_from_slice(&40u32.to_le_bytes());
+            image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            image
+        };
+
+        // Forty declared bytes: the public marker, then the image's own next 24.
+        let mut image = field(section + 8, 40);
+        for (index, byte) in image[raw + 16..raw + 40].iter_mut().enumerate() {
+            *byte = 0x0f + index as u8 * 10;
+        }
+        let retained = image.clone();
+        let line = observe(&image).unwrap();
+        assert_eq!(
+            line,
+            format!("PES:{}\n", facts::hex(&image[raw..raw + 40])).into_bytes()
+        );
+        assert_eq!(line.len(), 85);
+        assert!(line.starts_with(b"PES:4d5356432d434d443a4255494c54494e0f19"));
+        assert!(
+            line[4..84]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        );
+        // The original refusal and its facts are exactly what they were.
+        let error = validate_pe(&image, host).unwrap_err();
+        assert_eq!(error.stage, Stage::LinkerBanner);
+        assert_eq!(error.kind, Kind::Pe);
+        assert_eq!(error.expected, Some("pe.align.section"));
+        assert_eq!(error.observed_read_bytes, Some(image.len()));
+        assert_eq!(error.observed_read_prefix_sha256, Some(hash(&image)));
+        assert_eq!(image, retained);
+
+        // Only 17..=64 observed bytes, and only when VirtualSize fails first.
+        assert_eq!(observe(&field(section + 8, 17)).unwrap().len(), 39);
+        assert_eq!(observe(&field(section + 8, 64)).unwrap().len(), 133);
+        for size in [0, 15, 65, 4096, u32::MAX] {
+            assert_eq!(observe(&field(section + 8, size)), None);
+        }
+        assert_eq!(observe(&original), None);
+        assert_eq!(observe(&field(optional + 36, 511)), None);
+        let mut later = original.clone();
+        later[section + 36..section + 40].copy_from_slice(&0x60000040u32.to_le_bytes());
+        assert_eq!(observe(&later), None);
+
+        // A prefix that is not marker-led, not covered by raw data or not
+        // inside the captured image publishes no data at all.
+        let mut unmarked = field(section + 8, 40);
+        unmarked[raw] ^= 1;
+        let mut shifted = field(section + 8, 40);
+        shifted.copy_within(raw..raw + 16, raw + 24);
+        shifted[raw..raw + 16].fill(0);
+        for unavailable in [
+            unmarked,
+            shifted,
+            field(section + 16, 39),
+            field(section + 16, 513),
+            field(section + 20, 1024),
+            field(section + 20, u32::MAX),
+        ] {
+            assert_eq!(observe(&unavailable).unwrap(), b"PES:unavailable\n");
+            assert_eq!(
+                validate_pe(&unavailable, host).unwrap_err().expected,
+                Some("pe.align.section")
+            );
+        }
+        // A buffer that does not hold the header the operand came from.
+        let detail = AlignmentDetail {
+            predicate: AlignmentPredicate::VirtualSize,
+            operands: AlignmentOperands::One(40),
+        };
+        for missing in [&image[..0], &image[..63], &image[..section + 12], &original[..]] {
+            let (line, length) = detail.section_prefix_line(missing).unwrap();
+            assert_eq!(&line[..length], b"PES:unavailable\n");
+        }
+    }
+}
+
+#[test]
+fn alignment_and_section_prefix_lines_fit_the_reviewed_linker_packet_with_full_extremes() {
+    // Source/serialization extrema, never native status/EOF observations. Both
+    // lines are written only before the PE refusal of this same helper, so its
+    // stderr is these lines followed by that one failure.
+    let pair = AlignmentDetail {
+        predicate: AlignmentPredicate::HeadersVsFile,
+        operands: AlignmentOperands::Two(u64::MAX, u64::MAX),
+    }
+    .line();
+    let mut image = sample_pe(Host::X64);
+    let section = 152 + 240;
+    image[section + 8..section + 12].copy_from_slice(&64u32.to_le_bytes());
+    let prefix = AlignmentDetail {
+        predicate: AlignmentPredicate::VirtualSize,
+        operands: AlignmentOperands::One(64),
+    }
+    .section_prefix_line(&image)
+    .unwrap();
+    assert_eq!((pair.1, prefix.1), (41, 133));
+    let mut lines = pair.0[..pair.1].to_vec();
+    lines.extend_from_slice(&prefix.0[..prefix.1]);
+    assert!(lines.is_ascii() && lines.len() == 174);
+
+    let raw = vec![0xff; CAPTURE_BYTES + 1];
+    for complete in [false, true] {
+        for process_present in [false, true] {
+            let mut error = failure(Kind::CaptureReader, "probe.output.absent");
+            error.raw_os_error = Some(i32::MIN);
+            error.observed_read_bytes = Some(usize::MAX);
+            error.observed_read_prefix_sha256 = Some("f".repeat(64));
+            error.observed_pe_machine = Some(u16::MAX);
+            if process_present {
+                error.process = Some(facts::ProcessFacts {
+                    spawn_returned_child: false,
+                    exit_code: Some(i32::MIN),
+                    exit_success: Some(false),
+                    stdout: Some(facts::stream(Some(&raw), complete, !complete, true, 2048)),
+                    stderr: Some(facts::stream(Some(&raw), complete, !complete, true, 2048)),
+                    cleanup: Some(facts::CleanupFacts {
+                        kill_returned_ok: false,
+                        kill_raw_os_error: Some(i32::MIN),
+                        try_wait_returned_status: false,
+                        try_wait_raw_os_error: Some(i32::MIN),
+                        exit_code_after_cleanup: Some(i32::MIN),
+                        bound_reached_without_status: false,
+                    }),
+                });
+            }
+            let encoded = format!("{error:?}");
+            let without = format!(
+                "MSVC-HELPER-FAILURE:{}",
+                facts::helper_failure_record(b"", encoded.as_bytes())
+            );
+            let mut stderr = lines.clone();
+            stderr.extend_from_slice(encoded.as_bytes());
+            let nested = format!(
+                "MSVC-HELPER-FAILURE:{}",
+                facts::helper_failure_record(b"", &stderr)
+            );
+            assert!(nested.is_ascii());
+            // The helper's own captured stream, then its parent's hex record,
+            // each with the reviewed framing allowance under the unchanged cap.
+            assert!(stderr.len() + 4096 < CAPTURE_BYTES);
+            assert!(nested.len() + 4096 < CAPTURE_BYTES);
+            // Hex doubles both lines; a decimal width may grow by one.
+            assert!(nested.len() - without.len() <= 2 * lines.len() + 2);
+            println!(
+                "SYNTHETIC-SECTION-PREFIX-BOUND complete={complete} process={process_present} lines={} stderr={} nested={} without_lines={} framing=4096 cap={CAPTURE_BYTES}",
+                lines.len(),
+                stderr.len(),
+                nested.len(),
+                without.len()
+            );
+        }
     }
 }
