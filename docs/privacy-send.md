@@ -131,9 +131,16 @@ seal, or liveness probes; those are bounded by the 4 MiB ceilings, not by this
 count.
 
 Admission is separate and is never charged to it. Admission is bounded by the
-originals ceilings alone: at most 512 records are read, each value is checked
-in place and copied only if supported, at most 256 KiB is copied, and at most
-1024 values are sorted.
+originals ceilings alone: at most 512 records are read; each value is checked
+in place, and its length is reserved against the 256 KiB total, before it is
+copied, so at most 256 KiB of new values is copied; the existing set, itself
+at most 256 KiB, is copied once to build the union; and at most 1024 values
+are sorted.
+
+All of these ceilings are conservative refusal policies. They can refuse a
+real request, including one that an earlier decision allowed: a later
+verification of a seal checks its retained text as one joined string, which
+can cost slightly more counted work than the first verification did.
 
 ## What is not detected
 
@@ -233,7 +240,8 @@ middleware, so a harness profile cannot exclude it once selected.
 
 Local evidence on macOS, in core feature mode and gadget feature mode. The
 first candidate's records are in `target/verification/privacy-send-fable52/`;
-the correction's are in `target/verification/privacy-send-fable52-correction/`.
+the corrections' are in `target/verification/privacy-send-fable52-correction/`
+and `target/verification/privacy-send-fable52-copy-bound/`.
 
 - 17 ordinary cases use an actual vault with host-supplied detector reports and
   loopback HTTP. They cover exact sealing, each supported form, each refusal
@@ -267,6 +275,8 @@ delivery gates.
   attempts of one request.
 - That a refused charge stops the candidate search is shown by the source; the
   tests pin the counts, not a refusal at a chosen count.
+- That an admission reserves each value's length against the total before it
+  copies the value is shown by the source order; no test targets that ceiling.
 - `Session::set_thread_id` on a bound session, as described above.
 - Verification is synchronous work on the calling task, and an admission or a
   close waits for verifications in flight.

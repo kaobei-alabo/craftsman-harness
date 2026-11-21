@@ -37,9 +37,10 @@
 //! are bounded by the body ceiling, not by this budget.
 //!
 //! Admission is separate and is never charged here. It is bounded by the
-//! originals ceilings alone: at most that many records are read, each value is
-//! checked in place and copied only if it has a supported size and shape, and
-//! at most twice that many values are sorted.
+//! originals ceilings alone: at most that many records are read; each value is
+//! checked in place, and its length is reserved against the total ceiling,
+//! before it is copied; the existing set is copied once to build the union;
+//! and at most twice that many values are sorted.
 
 use super::{Limits, MIN_ORIGINAL_BYTES, SendRefusal};
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -173,8 +174,9 @@ impl<'a> Scan<'a> {
             return Err(SendRefusal::Bounds);
         }
         // The supplied text nodes, one byte each for the separator a seal
-        // keeps between them, share the body's ceiling. Each of them is part
-        // of the body it was encoded into, so this refuses no real request.
+        // keeps between them, share the body's ceiling. Like the body and work
+        // ceilings, this is a conservative refusal policy: it can refuse a
+        // real request, or one that an earlier decision allowed.
         let mut text_bytes = 0usize;
         for text in portable {
             self.charge(1)?;

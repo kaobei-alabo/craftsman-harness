@@ -221,19 +221,21 @@ impl SendGuard {
         let mut bytes = 0usize;
         for index in 0..count {
             // The vault's checked host-field view. Shape and size are checked
-            // on the borrowed value; only a supported one is copied, into this
-            // guard's zeroized store, and it is never returned or formatted.
+            // on the borrowed value, and its length is reserved against the
+            // total ceiling, before anything is copied. Only then is it copied
+            // into this guard's zeroized store; it is never returned or
+            // formatted.
             let original = records
                 .with_host_field(index, |field| {
                     let original = field.original_for_validated_host_field().as_bytes();
                     scan::supported_original(original, &self.limits)?;
+                    bytes = bytes
+                        .checked_add(original.len())
+                        .filter(|total| *total <= self.limits.total_original_bytes)
+                        .ok_or(SendRefusal::Bounds)?;
                     Ok::<_, SendRefusal>(Zeroizing::new(original.to_vec()))
                 })
                 .map_err(|_| SendRefusal::Closed)??;
-            bytes = bytes.saturating_add(original.len());
-            if bytes > self.limits.total_original_bytes {
-                return Err(SendRefusal::Bounds);
-            }
             added.push(original);
         }
         let mut state = self.state.write().map_err(|_| SendRefusal::Closed)?;
