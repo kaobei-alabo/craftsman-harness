@@ -79,6 +79,13 @@ assertion remains. Four compact no-IF and separate-line guarded tail controls
 share the existing command budget and cannot supply real compiler fields.
 Fresh reviewed Windows execution must verify these inputs and any supported
 setup differential; local controls do not establish an installed setup repair.
+Run44837420491 confirms the corrected builtin token and a controlled tail
+differential: the original inline guard suppresses fields, while a separate-line
+guard emits all five fields for input0 and returns91 with no fields for input7.
+The narrow candidate groups only the existing inline IF refusal. CALL, threshold,
+error exit, selected field commands and later host/library/source/guest checks
+remain. Fresh Windows execution must validate that new grouping and actual
+installed compiler/WASM work; the earlier controlled result is not guest proof.
 
 ## Enable the agent surface
 
