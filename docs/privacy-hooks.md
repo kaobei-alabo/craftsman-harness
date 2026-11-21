@@ -371,6 +371,12 @@ PE data and cleanup qualify the result. This source awaits independent review
 and actual Windows execution. It grants no gadget source or normal privacy
 authority, and the generated DLL is never loaded or executed.
 
+Independent source review identified two PE-format omissions. The private
+data probe now refuses section alignment below4096 and requires zero reserved
+Win32VersionValue/LoaderFlags fields on every typed host. Native operation,
+ownership, clocks and source approval stay unchanged; Windows results await
+review and fresh execution.
+
 The five original Windows cases and their applicable observation controls pass
 in that run. Their earlier failed evidence remains separate and their causes
 remain unknown. Successful runner-owned observation packets were not published,

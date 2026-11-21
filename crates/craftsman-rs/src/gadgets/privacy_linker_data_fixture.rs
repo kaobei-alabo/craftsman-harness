@@ -825,6 +825,11 @@ fn pe_shape(bytes: &[u8], host: Host) -> Option<()> {
     if dword(bytes, optional.checked_add(4)?)? != 0
         || dword(bytes, optional.checked_add(12)?)? != 0
         || dword(bytes, optional.checked_add(16)?)? != 0
+        || dword(bytes, optional.checked_add(52)?)? != 0
+        || dword(
+            bytes,
+            optional.checked_add(if host == Host::X86 { 88 } else { 104 })?,
+        )? != 0
     {
         return None;
     }
@@ -845,6 +850,7 @@ fn pe_shape(bytes: &[u8], host: Host) -> Option<()> {
     if !(512..=65536).contains(&file_alignment)
         || !file_alignment.is_power_of_two()
         || !section_alignment.is_power_of_two()
+        || section_alignment < 4096
         || section_alignment < file_alignment
         || headers < section_end
         || headers > bytes.len()
@@ -1184,5 +1190,44 @@ fn later_linker_failure_codec_uses_original_fields_and_fits_the_reviewed_envelop
                 nested.len()
             );
         }
+    }
+}
+
+#[test]
+fn private_probe_refuses_unsupported_subpage_raw_and_rva_layouts() {
+    let original = sample_pe(Host::X86);
+    validate_pe(&original, Host::X86).unwrap();
+    for (section_alignment, image_size) in [(1024u32, 2048u32), (512, 1536)] {
+        let mut bytes = original.clone();
+        let optional = 152usize;
+        let section = optional + 224;
+        bytes[optional + 32..optional + 36].copy_from_slice(&section_alignment.to_le_bytes());
+        bytes[optional + 56..optional + 60].copy_from_slice(&image_size.to_le_bytes());
+        bytes[section + 12..section + 16].copy_from_slice(&1024u32.to_le_bytes());
+        // These reviewed data-only shapes satisfy the old independent raw/RVA
+        // guards, but are unsupported by this private regular-alignment probe.
+        let error = validate_pe(&bytes, Host::X86).unwrap_err();
+        assert_eq!(error.kind, Kind::Pe);
+        assert_eq!(error.observed_read_bytes, Some(bytes.len()));
+    }
+    validate_pe(&original, Host::X86).unwrap();
+}
+
+#[test]
+fn reserved_win32_version_and_loader_flags_refuse_on_all_typed_hosts() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let retained = original.clone();
+        validate_pe(&original, host).unwrap();
+        for offset in [52usize, if host == Host::X86 { 88 } else { 104 }] {
+            let mut bytes = original.clone();
+            bytes[152 + offset..156 + offset].copy_from_slice(&1u32.to_le_bytes());
+            let error = validate_pe(&bytes, host).unwrap_err();
+            assert_eq!(error.kind, Kind::Pe);
+            assert_eq!(error.observed_read_bytes, Some(bytes.len()));
+            assert_eq!(error.observed_read_prefix_sha256, Some(hash(&bytes)));
+        }
+        validate_pe(&original, host).unwrap();
+        assert_eq!(original, retained);
     }
 }

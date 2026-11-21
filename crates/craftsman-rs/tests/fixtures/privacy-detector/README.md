@@ -163,6 +163,11 @@ The three immutable tables and bounded file owner await independent source
 review and new Windows execution. The DLL is never loaded or executed, and
 this fixture cannot replace pinned Cargo/source-built approved WASM proof.
 
+The private probe now refuses section alignment below4096 and checks the
+Microsoft-reserved Win32VersionValue/LoaderFlags fields are zero. This narrow
+format policy keeps the original4096-aligned data fixtures and vendor bytes;
+it makes no universal page-size or new Windows-execution claim.
+
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.
 That failed run remains failed. The Windows trusted compiler child now performs

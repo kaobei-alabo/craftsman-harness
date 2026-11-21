@@ -102,6 +102,12 @@ loaded or executed; its data/hashes cannot become a gadget SourceGrant. The
 tables/ownership code await independent review and actual Windows results;
 original pinned Cargo/approved WASM and all-four/main gates remain pending.
 
+The probe's source-format correction refuses unsupported section alignment
+below4096 and nonzero reserved Win32VersionValue/LoaderFlags. Its existing
+4096-aligned headers, data marker, timestamps and padding remain accepted.
+This private format constraint adds no native flag, timer or source authority;
+corrected-source review and actual Windows output remain pending.
+
 ## Enable the agent surface
 
 The `gadgets` Cargo feature is on in the default build, independently of voice.

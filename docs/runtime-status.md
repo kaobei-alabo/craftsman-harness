@@ -31,6 +31,12 @@ gate and complete PE/cleanup checks. Its tables and file owner require source
 review; the new Windows operation, pinned Cargo build and approved WASM guest
 are unobserved. This changes no production privacy or process limits.
 
+The independent PE source review's alignment/reserved-field findings are now
+corrected in the private probe: section alignment must be at least4096, and
+Win32VersionValue/LoaderFlags must be zero. Existing native ownership and limits
+remain exact. This is implemented format validation with new Windows execution
+still unobserved, not a production privacy or Deadline result.
+
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
 failed/corrected implementation evidence. Those dated records do not describe
