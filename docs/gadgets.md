@@ -100,15 +100,24 @@ initially absent owned destination. Real exit0, the unchanged banner check,
 complete stable PE/marker data and cleanup are all required. The DLL is never
 loaded or executed; its data/hashes cannot become a gadget SourceGrant. The
 tables, ownership and corrected PE code have passed independent source reviews.
-Actual Windows results remain pending;
-original pinned Cargo/approved WASM and all-four/main gates remain pending.
+Run44891734880 at cea9 returned selected LINK exit0 and passed the unchanged
+banner check, then refused PE validation on1024 bytes with machine8664. Full
+image bytes and the rejected predicate were unavailable. Both original
+source/Cargo/WASM parents failed; the seven-case CMD supervisor, Windows core
+and77 vault cases per mode passed without a vault Deadline phase. Unprinted
+successful control fields remain unavailable. Original pinned Cargo/approved
+WASM and all-four/main gates remain pending; earlier failures stay retained.
 
 The probe's source-format correction refuses unsupported section alignment
 below4096 and nonzero reserved Win32VersionValue/LoaderFlags. Its existing
 4096-aligned headers, data marker, timestamps and padding remain accepted.
 This private format constraint adds no native flag, timer or source authority;
-independent re-review accepts the corrected source; actual Windows output
-remains pending.
+independent re-review accepts the corrected source.
+The cfg-test checker now reports its first failed PE check group with a fixed
+ASCII `expected` label of at most19 bytes while retaining exact acceptance and
+read/process facts. Its new CreateFileW security pointer and NULL now match the
+existing mutable-pointer declaration. These source changes await review and
+fresh Windows execution; the prior warning does not explain the PE refusal.
 
 ## Enable the agent surface
 

@@ -159,14 +159,29 @@ preparation now uses a real data-only link of a fixed98-byte host COFF object,
 with the same selected linker and cleared HOST/LIB/PATH inputs. Its owned output
 must be absent before dispatch; only real exit0 plus the unchanged banner gate,
 complete stable PE/marker validation and owned cleanup can return Prepared.
-The three immutable tables and bounded file owner await independent source
-review and new Windows execution. The DLL is never loaded or executed, and
+The three immutable tables, bounded file owner and stricter PE format passed
+independent source review. The DLL is never loaded or executed, and
 this fixture cannot replace pinned Cargo/source-built approved WASM proof.
 
 The private probe now refuses section alignment below4096 and checks the
 Microsoft-reserved Win32VersionValue/LoaderFlags fields are zero. This narrow
 format policy keeps the original4096-aligned data fixtures and vendor bytes;
 it makes no universal page-size or new Windows-execution claim.
+
+Run44891734880 at cea9 returned actual selected LINK exit0 and passed the
+unchanged banner gate, then refused PE validation on1024 bytes with machine8664.
+The full image and rejected predicate were unavailable. Both original detector
+source/Cargo/WASM parents failed; the seven-case CMD supervisor, Windows core
+and77 vault cases per mode passed, with no vault Deadline phase recorded.
+Successful control packets remain unpublished, and earlier failures remain.
+
+The private PE checker now reports its first failed check group through the
+existing bounded `expected` field, with fixed ASCII labels no longer than19
+bytes. Its accepted byte formats, missing-field refusal and original read facts
+stay identical. The new CreateFileW security-pointer declaration and NULL now
+match the existing mutable-pointer declaration. These are source changes
+awaiting independent review and fresh Windows execution; neither diagnoses
+the prior PE refusal or supplies Prepared/source/guest authority.
 
 Run44645950249 showed that passing only the validated ProgramFiles discovery
 root still let the native host build scripts select a filesystem-link utility.

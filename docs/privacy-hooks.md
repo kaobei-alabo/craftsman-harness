@@ -368,14 +368,31 @@ link a read-only marker with no entry point or default libraries. The original
 selected tool/environment, real zero-exit/banner gate and source/guest checks
 remain. A fresh owned destination must be absent before LINK; complete stable
 PE data and cleanup qualify the result. Independent reviews accept the corrected
-source; actual Windows execution remains pending. It grants no gadget source
+source. It grants no gadget source
 or normal privacy authority, and the generated DLL is never loaded or executed.
 
 Independent source review identified two PE-format omissions. The private
 data probe now refuses section alignment below4096 and requires zero reserved
 Win32VersionValue/LoaderFlags fields on every typed host. Native operation,
 ownership, clocks and source approval stay unchanged. Independent re-review
-accepts these corrections; fresh Windows results remain pending.
+accepts these corrections.
+
+Run [44891734880](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44891734880)
+at cea9 returned actual selected LINK exit0 and passed the unchanged banner gate,
+then refused PE validation on1024 bytes with machine8664. The full image and
+failed predicate were unavailable. Both original detector source/Cargo/WASM
+parents failed. The seven-case CMD supervisor, Windows core and77 vault cases
+per mode passed, with no vault Deadline phase recorded; unprinted successful
+control fields remain unavailable. All earlier failed runs stay failed history.
+
+The cfg-test checker now labels the first failed PE check group through the
+existing `expected` field. Fixed ASCII labels fit19 bytes; every acceptance
+predicate and original failure/read/process fact remains. The new CreateFileW
+security pointer and NULL are corrected to match the existing mutable-pointer
+declaration, without suppressing the recorded signature warning. These source
+changes await review and fresh Windows execution; the warning is separate from
+the unknown PE refusal, and neither labels nor diagnostic success grant compiler,
+gadget source or normal privacy authority.
 
 The five original Windows cases and their applicable observation controls pass
 in that run. Their earlier failed evidence remains separate and their causes

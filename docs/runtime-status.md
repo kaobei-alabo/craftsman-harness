@@ -12,18 +12,21 @@ unselected. The context/failure continuation is recorded below. Source validatio
 coding results and published releases are separate evidence.
 
 PR #32's private privacy foundations remain unmerged. Native run
-[44856159033](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44856159033)
-passes fmt, Ubuntu and macOS. The grouped Windows controls now return all five
-fields for input0 and refuse inline/compound input7 with exit91. Windows retains
-four core vault-open Deadline failures, the batch-context input7 return0, and
-both original MSVC preparation failures at linker_banner/exit1100. Independent
-source reviews accept the locally integrated multiline batch correction,
-bounded cfg(test) opening observer and genuine selected-linker data operation.
-The latter retains the real zero-exit/banner gate, owned initially absent
-output and complete PE/cleanup checks; its alignment and reserved-field
-corrections also passed re-review. Fresh combined local/native validation,
-actual Windows linking and the original source-Cargo-WASM gates remain pending.
-These changes add no normal privacy selection or OS containment claim.
+[44891734880](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44891734880)
+at cea9 returned actual selected LINK exit0 and passed the unchanged banner
+gate, then refused PE validation on1024 bytes with machine8664. The full image
+and rejected predicate were unavailable. Both original detector source/Cargo/WASM
+parents failed; Windows core, the seven-case CMD supervisor and77 vault cases
+per mode passed, with no vault Deadline phase recorded. Successful raw control
+packets remain unavailable. Earlier run44856159033's Deadline, batch-return and
+linker-help failures remain retained. Independent source reviews accepted the
+multiline batch correction, bounded opening observer and stricter data operation.
+The PE checker now adds fixed first-refusal labels through the existing field,
+without changing acceptance. Its new CreateFileW security pointer/NULL match
+the existing declaration; that warning is separate from the unknown PE refusal.
+These source changes await review and fresh native validation. Original
+source-Cargo-WASM and all-four/main gates remain pending; normal privacy and
+OS containment are not claimed.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -136,7 +139,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations under PR #32; local corrections source-reviewed, normal sessions inactive | CI44856159033 retains Windows vault-open Deadline, batch-return and linker-help failures. The bounded opening observer, multiline wrapper and corrected genuine-zero linker data operation passed independent source review; fresh combined local/native and original Windows source-Cargo-WASM proof remain pending. Key ownership, native-history and actual display/file consumers are separate; see [privacy-hooks.md](privacy-hooks.md) |
+| Privacy hooks | Private foundations under PR #32; normal sessions inactive | CI44891734880 returns selected LINK0 then an unattributed PE refusal; both source/Cargo/WASM parents fail. Windows core, CMD controls and77 vault cases per mode pass without a vault Deadline phase. Earlier failures remain. Fixed PE refusal labels and the new declaration correction await source review/native validation; key ownership, native-history and actual display/file consumers remain separate. See [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |

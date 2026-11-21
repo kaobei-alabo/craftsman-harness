@@ -270,7 +270,7 @@ fn native_open(path: &Path, directory: bool, create: bool) -> std::io::Result<Fi
                 name: *const u16,
                 access: u32,
                 share: u32,
-                security: *const std::ffi::c_void,
+                security: *mut std::ffi::c_void,
                 disposition: u32,
                 flags: u32,
                 template: *mut std::ffi::c_void,
@@ -302,7 +302,7 @@ fn native_open(path: &Path, directory: bool, create: bool) -> std::io::Result<Fi
                 name.as_ptr(),
                 access,
                 share,
-                std::ptr::null(),
+                std::ptr::null_mut(),
                 if create { CREATE_NEW } else { OPEN_EXISTING },
                 flags,
                 std::ptr::null_mut(),
@@ -784,113 +784,155 @@ fn aligned(value: usize, alignment: usize) -> Option<usize> {
         .checked_div(alignment)?
         .checked_mul(alignment)
 }
-fn pe_shape(bytes: &[u8], host: Host) -> Option<()> {
-    if bytes.len() > CAPTURE_BYTES || bytes.get(..2)? != b"MZ" {
-        return None;
-    }
-    let pe = usize::try_from(dword(bytes, 60)?).ok()?;
-    if pe < 64 || bytes.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
-        return None;
-    }
-    let header = pe.checked_add(4)?;
-    let machine = match host {
-        Host::X64 => 0x8664,
-        Host::X86 => 0x14c,
-        Host::Arm64 => 0xaa64,
-    };
-    if word(bytes, header)? != machine
-        || word(bytes, header.checked_add(2)?)? != 1
-        || dword(bytes, header.checked_add(8)?)? != 0
-        || dword(bytes, header.checked_add(12)?)? != 0
-        || word(bytes, header.checked_add(18)?)? & 0x2002 != 0x2002
-    {
-        return None;
-    }
-    let optional = header.checked_add(20)?;
-    let optional_size = usize::from(word(bytes, header.checked_add(16)?)?);
-    let (magic, directory_offset, count_offset) = match host {
-        Host::X86 => (0x10b, 96usize, 92usize),
-        Host::X64 | Host::Arm64 => (0x20b, 112, 108),
-    };
-    if word(bytes, optional)? != magic || optional_size < directory_offset {
-        return None;
-    }
-    let count = usize::try_from(dword(bytes, optional.checked_add(count_offset)?)?).ok()?;
-    if count > 16 || optional_size != directory_offset.checked_add(count.checked_mul(8)?)? {
-        return None;
-    }
-    let section = optional.checked_add(optional_size)?;
-    let section_end = section.checked_add(40)?;
-    bytes.get(optional..section_end)?;
-    if dword(bytes, optional.checked_add(4)?)? != 0
-        || dword(bytes, optional.checked_add(12)?)? != 0
-        || dword(bytes, optional.checked_add(16)?)? != 0
-        || dword(bytes, optional.checked_add(52)?)? != 0
-        || dword(
-            bytes,
-            optional.checked_add(if host == Host::X86 { 88 } else { 104 })?,
-        )? != 0
-    {
-        return None;
-    }
-    // This fixed data-only input has no image directories. In particular no
-    // imports/exports/TLS/bound or delay imports, code, loader data or signatures.
-    for ordinal in 0..count {
-        let offset = optional
-            .checked_add(directory_offset)?
-            .checked_add(ordinal.checked_mul(8)?)?;
-        if dword(bytes, offset)? != 0 || dword(bytes, offset.checked_add(4)?)? != 0 {
-            return None;
+// Fixed first-refusal groups for the original acceptance checks. These labels
+// identify checked data, not a native cause or permission to accept that data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeRejection {
+    File,
+    Signature,
+    Coff,
+    OptionalHeader,
+    OptionalExtent,
+    EntryReserved,
+    Directories,
+    AlignmentSection,
+    ImageRawMarker,
+}
+impl PeRejection {
+    fn expected(self) -> &'static str {
+        match self {
+            Self::File => "pe.file",
+            Self::Signature => "pe.signature",
+            Self::Coff => "pe.coff",
+            Self::OptionalHeader => "pe.optional.header",
+            Self::OptionalExtent => "pe.optional.extent",
+            Self::EntryReserved => "pe.entry.reserved",
+            Self::Directories => "pe.directories",
+            Self::AlignmentSection => "pe.align.section",
+            Self::ImageRawMarker => "pe.image.raw.marker",
         }
     }
-    let file_alignment = usize::try_from(dword(bytes, optional.checked_add(36)?)?).ok()?;
-    let section_alignment = usize::try_from(dword(bytes, optional.checked_add(32)?)?).ok()?;
-    let headers = usize::try_from(dword(bytes, optional.checked_add(60)?)?).ok()?;
-    let image = usize::try_from(dword(bytes, optional.checked_add(56)?)?).ok()?;
-    if !(512..=65536).contains(&file_alignment)
-        || !file_alignment.is_power_of_two()
-        || !section_alignment.is_power_of_two()
-        || section_alignment < 4096
-        || section_alignment < file_alignment
-        || headers < section_end
-        || headers > bytes.len()
-        || headers % file_alignment != 0
-        || bytes.get(section..section.checked_add(8)?)? != b".rdata\0\0"
-        || dword(bytes, section.checked_add(8)?)? != 16
-        || dword(bytes, section.checked_add(24)?)? != 0
-        || dword(bytes, section.checked_add(28)?)? != 0
-        || word(bytes, section.checked_add(32)?)? != 0
-        || word(bytes, section.checked_add(34)?)? != 0
-        || dword(bytes, section.checked_add(36)?)? != 0x40000040
-    {
-        return None;
-    }
-    let virtual_address = usize::try_from(dword(bytes, section.checked_add(12)?)?).ok()?;
-    let raw_size = usize::try_from(dword(bytes, section.checked_add(16)?)?).ok()?;
-    let raw = usize::try_from(dword(bytes, section.checked_add(20)?)?).ok()?;
-    let end = raw.checked_add(raw_size)?;
-    if virtual_address < aligned(headers, section_alignment)?
-        || virtual_address % section_alignment != 0
-        || image != aligned(virtual_address.checked_add(16)?, section_alignment)?
-        || raw_size < MARKER.len()
-        || raw_size % file_alignment != 0
-        || raw < headers
-        || raw % file_alignment != 0
-        || end != bytes.len()
-        || dword(bytes, optional.checked_add(8)?)? as usize != raw_size
-        || bytes.get(raw..raw.checked_add(MARKER.len())?)? != MARKER
-    {
-        return None;
-    }
-    // Vendor timestamps, DOS stub and alignment padding are retained verbatim.
-    // No image/DLL is ever loaded or executed by this helper.
-    Some(())
+}
+fn pe_shape(bytes: &[u8], host: Host) -> Result<(), PeRejection> {
+    let mut reason = PeRejection::File;
+    let accepted = (|| {
+        if bytes.len() > CAPTURE_BYTES || bytes.get(..2)? != b"MZ" {
+            return None;
+        }
+        reason = PeRejection::Signature;
+        let pe = usize::try_from(dword(bytes, 60)?).ok()?;
+        if pe < 64 || bytes.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
+            return None;
+        }
+        reason = PeRejection::Coff;
+        let header = pe.checked_add(4)?;
+        let machine = match host {
+            Host::X64 => 0x8664,
+            Host::X86 => 0x14c,
+            Host::Arm64 => 0xaa64,
+        };
+        if word(bytes, header)? != machine
+            || word(bytes, header.checked_add(2)?)? != 1
+            || dword(bytes, header.checked_add(8)?)? != 0
+            || dword(bytes, header.checked_add(12)?)? != 0
+            || word(bytes, header.checked_add(18)?)? & 0x2002 != 0x2002
+        {
+            return None;
+        }
+        reason = PeRejection::OptionalHeader;
+        let optional = header.checked_add(20)?;
+        let optional_size = usize::from(word(bytes, header.checked_add(16)?)?);
+        let (magic, directory_offset, count_offset) = match host {
+            Host::X86 => (0x10b, 96usize, 92usize),
+            Host::X64 | Host::Arm64 => (0x20b, 112, 108),
+        };
+        if word(bytes, optional)? != magic || optional_size < directory_offset {
+            return None;
+        }
+        reason = PeRejection::OptionalExtent;
+        let count = usize::try_from(dword(bytes, optional.checked_add(count_offset)?)?).ok()?;
+        if count > 16 || optional_size != directory_offset.checked_add(count.checked_mul(8)?)? {
+            return None;
+        }
+        let section = optional.checked_add(optional_size)?;
+        let section_end = section.checked_add(40)?;
+        bytes.get(optional..section_end)?;
+        reason = PeRejection::EntryReserved;
+        if dword(bytes, optional.checked_add(4)?)? != 0
+            || dword(bytes, optional.checked_add(12)?)? != 0
+            || dword(bytes, optional.checked_add(16)?)? != 0
+            || dword(bytes, optional.checked_add(52)?)? != 0
+            || dword(
+                bytes,
+                optional.checked_add(if host == Host::X86 { 88 } else { 104 })?,
+            )? != 0
+        {
+            return None;
+        }
+        reason = PeRejection::Directories;
+        // This fixed data-only input has no image directories. In particular no
+        // imports/exports/TLS/bound or delay imports, code, loader data or signatures.
+        for ordinal in 0..count {
+            let offset = optional
+                .checked_add(directory_offset)?
+                .checked_add(ordinal.checked_mul(8)?)?;
+            if dword(bytes, offset)? != 0 || dword(bytes, offset.checked_add(4)?)? != 0 {
+                return None;
+            }
+        }
+        reason = PeRejection::AlignmentSection;
+        let file_alignment = usize::try_from(dword(bytes, optional.checked_add(36)?)?).ok()?;
+        let section_alignment = usize::try_from(dword(bytes, optional.checked_add(32)?)?).ok()?;
+        let headers = usize::try_from(dword(bytes, optional.checked_add(60)?)?).ok()?;
+        let image = usize::try_from(dword(bytes, optional.checked_add(56)?)?).ok()?;
+        if !(512..=65536).contains(&file_alignment)
+            || !file_alignment.is_power_of_two()
+            || !section_alignment.is_power_of_two()
+            || section_alignment < 4096
+            || section_alignment < file_alignment
+            || headers < section_end
+            || headers > bytes.len()
+            || headers % file_alignment != 0
+            || bytes.get(section..section.checked_add(8)?)? != b".rdata\0\0"
+            || dword(bytes, section.checked_add(8)?)? != 16
+            || dword(bytes, section.checked_add(24)?)? != 0
+            || dword(bytes, section.checked_add(28)?)? != 0
+            || word(bytes, section.checked_add(32)?)? != 0
+            || word(bytes, section.checked_add(34)?)? != 0
+            || dword(bytes, section.checked_add(36)?)? != 0x40000040
+        {
+            return None;
+        }
+        reason = PeRejection::ImageRawMarker;
+        let virtual_address = usize::try_from(dword(bytes, section.checked_add(12)?)?).ok()?;
+        let raw_size = usize::try_from(dword(bytes, section.checked_add(16)?)?).ok()?;
+        let raw = usize::try_from(dword(bytes, section.checked_add(20)?)?).ok()?;
+        let end = raw.checked_add(raw_size)?;
+        if virtual_address < aligned(headers, section_alignment)?
+            || virtual_address % section_alignment != 0
+            || image != aligned(virtual_address.checked_add(16)?, section_alignment)?
+            || raw_size < MARKER.len()
+            || raw_size % file_alignment != 0
+            || raw < headers
+            || raw % file_alignment != 0
+            || end != bytes.len()
+            || dword(bytes, optional.checked_add(8)?)? as usize != raw_size
+            || bytes.get(raw..raw.checked_add(MARKER.len())?)? != MARKER
+        {
+            return None;
+        }
+        // Vendor timestamps, DOS stub and alignment padding are retained verbatim.
+        // No image/DLL is ever loaded or executed by this helper.
+        Some(())
+    })();
+    accepted.ok_or(reason)
 }
 fn validate_pe(bytes: &[u8], host: Host) -> SetupResult<()> {
-    if pe_shape(bytes, host).is_some() {
-        return Ok(());
-    }
-    let mut error = failure(Kind::Pe, "probe.pe");
+    let reason = match pe_shape(bytes, host) {
+        Ok(()) => return Ok(()),
+        Err(reason) => reason,
+    };
+    let mut error = failure(Kind::Pe, reason.expected());
     error.observed_read_bytes = Some(bytes.len());
     error.observed_read_prefix_sha256 = Some(hash(bytes));
     if bytes.get(..2) == Some(b"MZ") {
@@ -1229,5 +1271,68 @@ fn reserved_win32_version_and_loader_flags_refuse_on_all_typed_hosts() {
         }
         validate_pe(&original, host).unwrap();
         assert_eq!(original, retained);
+    }
+}
+
+#[test]
+fn pe_refusal_labels_identify_the_first_failed_header_or_data_group() {
+    for host in [Host::X64, Host::X86, Host::Arm64] {
+        let original = sample_pe(host);
+        let retained = original.clone();
+        validate_pe(&original, host).unwrap();
+        let directory = 152 + if host == Host::X86 { 96 } else { 112 };
+        let count = 152 + if host == Host::X86 { 92 } else { 108 };
+        for (offset, value, expected) in [
+            (0, b'X', "pe.file"),
+            (128, b'X', "pe.signature"),
+            (132, original[132] ^ 1, "pe.coff"),
+            (152, original[152] ^ 1, "pe.optional.header"),
+            (count, 17, "pe.optional.extent"),
+            (152 + 52, 1, "pe.entry.reserved"),
+            (directory, 1, "pe.directories"),
+            (152 + 32, 1, "pe.align.section"),
+            (512, b'X', "pe.image.raw.marker"),
+        ] {
+            let mut bytes = original.clone();
+            bytes[offset] = value;
+            // A later invalid marker must not replace the first refusal.
+            bytes[512] = b'X';
+            let error = validate_pe(&bytes, host).unwrap_err();
+            assert_eq!(error.stage, Stage::LinkerBanner);
+            assert_eq!(error.kind, Kind::Pe);
+            assert_eq!(error.expected, Some(expected));
+            assert!(expected.is_ascii() && expected.len() <= 19);
+            assert_eq!(error.observed_read_bytes, Some(bytes.len()));
+            assert_eq!(error.observed_read_prefix_sha256, Some(hash(&bytes)));
+        }
+        validate_pe(&original, host).unwrap();
+        assert_eq!(original, retained);
+    }
+}
+
+#[test]
+fn missing_pe_fields_refuse_in_their_first_checked_group_without_value_defaults() {
+    let original = sample_pe(Host::X64);
+    for (end, expected) in [
+        (0, "pe.file"),
+        (1, "pe.file"),
+        (2, "pe.signature"),
+        (63, "pe.signature"),
+        (132, "pe.coff"),
+        (151, "pe.coff"),
+        (152, "pe.optional.header"),
+        (154, "pe.optional.extent"),
+        (391, "pe.optional.extent"),
+        (432, "pe.align.section"),
+        (512, "pe.image.raw.marker"),
+        (1023, "pe.image.raw.marker"),
+    ] {
+        let bytes = &original[..end];
+        let error = validate_pe(bytes, Host::X64).unwrap_err();
+        assert_eq!(error.kind, Kind::Pe);
+        assert_eq!(error.expected, Some(expected));
+        assert_eq!(error.observed_read_bytes, Some(end));
+        assert_eq!(error.observed_read_prefix_sha256, Some(hash(bytes)));
+        assert_eq!(error.observed_pe_machine, (end >= 134).then_some(0x8664));
     }
 }
