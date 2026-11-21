@@ -30,6 +30,12 @@ engine for automatic lifecycle functions. Trusted user policy, rather than a
 gadget declaration, decides which hooks are required. The source-built detector
 has passed its isolated WASM tests; encrypted storage and restoration views
 are implemented as private foundations.
+The failed guard-scope run44856159033 also retains four core Windows vault-open
+Deadline refusals, with separate gadget-mode passes. Their phase remains
+unobserved. New cfg(test)-only fixed opening records keep the same original
+clock and limits; they are diagnostics awaiting source/native review, not an
+opening repair or privacy selection.
+
 Normal sessions do not yet mask model traffic or restore reply/file fields
 through this hook.
 First PR #32 CI44602915778 failed the new detector's offline lock dependency

@@ -18,6 +18,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zeroize::Zeroizing;
 
+#[cfg(test)]
+#[path = "open_observation.rs"]
+mod open_observation;
+
 #[cfg(all(test, windows))]
 mod windows_tests;
 
@@ -82,13 +86,19 @@ impl Vault {
         started: Instant,
         #[cfg(test)] hook: Option<InitHook>,
     ) -> Result<Self> {
+        #[cfg(test)]
+        let (observation, _observation_waiter) = open_observation::Opening::new(started);
         let open = Arc::new(AtomicBool::new(true));
         let mut guard = OpenGuard {
             open: open.clone(),
             accepted: false,
         };
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
+        #[cfg(test)]
+        observation.pre_dispatch();
         let opened = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            observation.worker_entry();
             let result = runtime.block_on(open_worker(
                 location,
                 key,
@@ -97,11 +107,15 @@ impl Vault {
                 started,
                 #[cfg(test)]
                 hook.as_ref(),
+                #[cfg(test)]
+                observation.clone(),
             ));
             #[cfg(test)]
             if let Some(hook) = hook {
                 hook(InitPhase::AfterIoReturn);
             }
+            #[cfg(test)]
+            observation.finish(result.as_ref().err().copied());
             result
         })
         .await
@@ -290,6 +304,8 @@ pub(super) struct Budget {
     calls: usize,
     work: usize,
     live: Option<Arc<SessionLife>>,
+    #[cfg(test)]
+    opening: Option<Arc<open_observation::Opening>>,
 }
 
 impl Budget {
@@ -300,6 +316,8 @@ impl Budget {
             calls: 0,
             work: 0,
             live,
+            #[cfg(test)]
+            opening: None,
         }
     }
 
@@ -308,9 +326,27 @@ impl Budget {
             live.check()?;
         }
         if self.started.elapsed() > self.limits.elapsed {
+            #[cfg(test)]
+            if let Some(opening) = &self.opening {
+                opening.deadline(self.started.elapsed(), self.calls, self.work);
+            }
             return Err(PrivacyError::Deadline);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn opening_enter(&self, phase: open_observation::Phase) {
+        if let Some(opening) = &self.opening {
+            opening.enter(phase);
+        }
+    }
+
+    #[cfg(test)]
+    fn opening_returned(&self) {
+        if let Some(opening) = &self.opening {
+            opening.returned();
+        }
     }
 
     pub(super) fn work(&mut self, bytes: usize) -> Result<()> {
@@ -425,10 +461,18 @@ async fn open_worker(
     open: &AtomicBool,
     started: Instant,
     #[cfg(test)] hook: Option<&InitHook>,
+    #[cfg(test)] observation: Arc<open_observation::Opening>,
 ) -> Result<Inner> {
     let mut budget = Budget::new(limits, None);
     budget.started = started;
+    #[cfg(test)]
+    {
+        budget.opening = Some(observation);
+        budget.opening_enter(open_observation::Phase::NativeCapture);
+    }
     let native = NativeLocation::capture(location, &mut budget)?;
+    #[cfg(test)]
+    budget.opening_returned();
     #[cfg(test)]
     if native.created
         && let Some(hook) = hook
@@ -438,17 +482,33 @@ async fn open_worker(
     if !open.load(Ordering::Acquire) {
         return Err(PrivacyError::Closed);
     }
+    #[cfg(test)]
+    budget.opening_enter(open_observation::Phase::KeyDerivation);
     let keys = Keys::derive(key)?;
+    #[cfg(test)]
+    {
+        budget.opening_returned();
+        budget.opening_enter(open_observation::Phase::DatabaseBuild);
+    }
     budget.io()?;
     let database = libsql::Builder::new_local(&native.path)
         .build()
         .await
         .map_err(sql_error)?;
+    #[cfg(test)]
+    budget.opening_returned();
     budget.check()?;
+    #[cfg(test)]
+    budget.opening_enter(open_observation::Phase::ConnectionSetup);
     budget.io()?;
     let conn = database.connect().map_err(sql_error)?;
     budget.io()?;
     conn.busy_timeout(limits.busy_timeout).map_err(sql_error)?;
+    #[cfg(test)]
+    {
+        budget.opening_returned();
+        budget.opening_enter(open_observation::Phase::InitialLayout);
+    }
     let table_count = integer(
         &conn,
         "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
@@ -476,6 +536,11 @@ async fn open_worker(
         // Reject a wrong supplied key before altering even connection pragmas.
         read_header(&conn, &keys, &mut budget).await?;
     }
+    #[cfg(test)]
+    {
+        budget.opening_returned();
+        budget.opening_enter(open_observation::Phase::WalSetup);
+    }
     let mut mode = query(&conn, "PRAGMA journal_mode = WAL", vec![], &mut budget).await?;
     let row = next(&mut mode, &mut budget)
         .await?
@@ -488,6 +553,11 @@ async fn open_worker(
         return Err(PrivacyError::Integrity);
     }
     drop(mode);
+    #[cfg(test)]
+    {
+        budget.opening_returned();
+        budget.opening_enter(open_observation::Phase::Pragmas);
+    }
     execute(&conn, "PRAGMA synchronous = FULL", vec![], &mut budget).await?;
     execute(&conn, "PRAGMA temp_store = MEMORY", vec![], &mut budget).await?;
     if integer(&conn, "PRAGMA wal_autocheckpoint = 64", &mut budget).await? != 64
@@ -499,8 +569,12 @@ async fn open_worker(
     {
         return Err(PrivacyError::Integrity);
     }
+    #[cfg(test)]
+    budget.opening_returned();
     let mut id = [0; 16];
     if fresh {
+        #[cfg(test)]
+        budget.opening_enter(open_observation::Phase::FreshTransaction);
         getrandom::fill(&mut id).map_err(|_| PrivacyError::Key)?;
         let sealed = keys.seal(&crypto::header_aad(&id), Zeroizing::new(HEADER.to_vec()))?;
         begin(&conn, "BEGIN IMMEDIATE", &mut budget).await?;
@@ -548,14 +622,22 @@ async fn open_worker(
             Ok(())
         }
         .await;
+        #[cfg(test)]
+        if created.is_ok() {
+            budget.opening_returned();
+        }
         match created {
             Ok(()) => {
+                #[cfg(test)]
+                budget.opening_enter(open_observation::Phase::Commit);
                 if let Err(error) = execute(&conn, "COMMIT", vec![], &mut budget).await {
                     if !conn.is_autocommit() {
                         rollback(&conn, &mut budget).await?;
                     }
                     return Err(error);
                 }
+                #[cfg(test)]
+                budget.opening_returned();
                 #[cfg(test)]
                 if let Some(hook) = hook {
                     hook(InitPhase::AfterCommit);
@@ -567,16 +649,25 @@ async fn open_worker(
             }
         }
     }
+    #[cfg(test)]
+    budget.opening_enter(open_observation::Phase::PostValidation);
     validate_layout(&conn, &mut budget).await?;
     let read_id = read_header(&conn, &keys, &mut budget).await?;
     if fresh && read_id != id {
         return Err(PrivacyError::Integrity);
+    }
+    #[cfg(test)]
+    {
+        budget.opening_returned();
+        budget.opening_enter(open_observation::Phase::NativeReturn);
     }
     native.recheck(&mut budget)?;
     if !open.load(Ordering::Acquire) {
         return Err(PrivacyError::Closed);
     }
     budget.check()?;
+    #[cfg(test)]
+    budget.opening_returned();
     Ok(Inner {
         conn: Mutex::new(conn),
         _database: database,

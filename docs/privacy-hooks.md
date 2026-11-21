@@ -361,6 +361,18 @@ a general process/filesystem fix. The remaining work is the measured builtin
 input correction, bounded tail comparison and genuine installed setup/guest
 validation; normal-session privacy remains inactive.
 
+Run [44856159033](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44856159033)
+retains four core Windows `Vault::open` Deadline refusals in restoration setup;
+the same cases pass separately in gadget mode. Their generic error does not
+identify an opening phase or underlying cause. A new cfg(test)-only observer
+records fixed opening-phase markers, actual original-clock samples and admitted
+call/work counters at the original Deadline branch, then emits at most one
+bounded private record after a failed worker operation actually returns.
+Missing phase/return facts remain unavailable. The original 5s elapsed/200ms
+busy/native/SQL/rollback limits and every old test body remain unchanged; no
+deadline repair or normal privacy activation is claimed. Independent source
+review and actual future native phase evidence are still required.
+
 See [private vault](privacy-vault.md), [gadget runtime](gadgets.md),
 [current runtime](runtime-status.md) and the
 separate [WASM script-runner plan](wasm-script-runner.md).
