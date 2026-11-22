@@ -1899,7 +1899,7 @@ async fn build_session_with_capture_profile(
     let verification_plan = if construction.prepared().is_none() && extras.verification {
         let captured_config = cfg.clone();
         let captured_root = cwd.clone();
-        match tokio::task::spawn_blocking(move || {
+        match crate::util::spawn_blocking(move || {
             crate::verification::VerificationPlan::load(&captured_config, &captured_root)
         })
         .await
