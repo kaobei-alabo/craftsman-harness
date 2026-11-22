@@ -23,6 +23,10 @@ async fn key_and_policy_owner(root: &Path, workspace: &Path) -> PrivateConversat
     // This is a real key/policy/vault owner test, not detector or model proof.
     // The pinned source is never described/executed here. Its actual approved
     // source-built coverage remains in the owned WASM/PTY cases.
+    // The real derivation below takes the process-wide production admission,
+    // which answers Busy instead of waiting. Hold the key tests' own serial
+    // gate from before it until the key owner has closed and waited.
+    let _serial = crate::privacy_key::Passphrase::kdf_test_serial();
     let bootstrap = PrivateBootstrap::from_captured_root(
         ConfigRoot::capture_owned_test_root(root).unwrap(),
         workspace,
