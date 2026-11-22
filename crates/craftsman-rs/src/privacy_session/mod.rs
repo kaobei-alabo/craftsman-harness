@@ -63,6 +63,14 @@ const ADMISSION_BOUND: Duration = Duration::from_secs(45);
 /// waiting. A further one is turned away at entry.
 const ADMISSION_SLOTS: usize = 16;
 
+fn admission_deadline(deadline: Instant, now: Instant) -> Result<(), SessionStop> {
+    if now >= deadline {
+        Err(SessionStop::Deadline)
+    } else {
+        Ok(())
+    }
+}
+
 /// A refusal of one unaccepted draft, decided before any vault or detector
 /// effect that the mandatory policy treats as fatal. The session stays usable
 /// and the draft is unchanged.
@@ -377,6 +385,9 @@ struct Inner {
     operation: tokio::sync::Mutex<Ledger>,
     slots: tokio::sync::Semaphore,
     stopped: AtomicBool,
+    // The most recent actual map return survives a late admission stop. It is
+    // private retention, never a model node or permission to resolve a value.
+    last_map_commit: std::sync::Mutex<Option<Arc<MaskedText>>>,
     #[cfg(test)]
     after_commit: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -439,6 +450,7 @@ impl PrivacySession {
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
+                last_map_commit: std::sync::Mutex::new(None),
                 #[cfg(test)]
                 after_commit: std::sync::Mutex::new(None),
             }),
@@ -542,6 +554,11 @@ impl PrivacySession {
                 .await
                 .map_err(vault)?,
         );
+        *inner.last_map_commit.lock().unwrap() = Some(masked.clone());
+        // Keep the actual completed map result even if its owner must stop
+        // below. This is a retained commit, not a new admitted model node.
+        ledger.absorb(&masked).map_err(vault)?;
+        admission_deadline(deadline, Instant::now()).map_err(|stop| inner.stopped(stop))?;
         #[cfg(test)]
         if let Some(hook) = inner.after_commit.lock().unwrap().as_ref() {
             hook();
@@ -563,6 +580,7 @@ impl PrivacySession {
             .guard
             .seal(b"null".to_vec(), &[view])
             .map_err(|refusal| inner.stopped(SessionStop::Guard(refusal)))?;
+        admission_deadline(deadline, Instant::now()).map_err(|stop| inner.stopped(stop))?;
         Ok(AdmittedNode {
             inner: Arc::new(NodeInner {
                 raw: raw.clone(),

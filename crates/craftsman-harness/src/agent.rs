@@ -310,6 +310,7 @@ impl Agent {
 
         // 1. Commit the user message.
         let user_msg = Msg::user(user_input);
+        let observed_input = self.model_view.as_ref().map(|_| user_msg.clone());
         self.journal("user", serde_json::to_value(&user_msg).unwrap_or_default());
         let input_error = {
             let mut committed = self.state.lock().unwrap();
@@ -323,8 +324,10 @@ impl Agent {
             }
             let message_index = committed.messages.len();
             committed.messages.push(user_msg);
-            if let (Some(view), Some(source)) = (&self.model_view, source) {
-                view.note_inputs(vec![Some(source)]);
+            if let (Some(view), Some(source), Some(message)) =
+                (&self.model_view, source, observed_input)
+            {
+                view.note_inputs(&[message], vec![Some(source)]);
             }
             self.boundary_policy.as_ref().and_then(|policy| {
                 policy
@@ -456,12 +459,12 @@ impl Agent {
                 let model = model.clone();
                 Box::pin(async move { model.complete(req).await })
             };
-            let mut view_receipt = None;
+            let mut view_received = None;
             let response = if let Some(view) = &self.model_view {
                 let Some(delivery) = self.deliver_with_view(view, &working).await? else {
                     return self.finish_cancelled().await;
                 };
-                view_receipt = Some(delivery.receipt);
+                view_received = Some(view.received(&delivery.response, delivery.receipt));
                 delivery.response
             } else if self.interrupt_model_on_cancel {
                 // Only model sampling is dropped. Tool dispatch, prepare/review
@@ -491,7 +494,44 @@ impl Agent {
             working.last_usage_msg_count = working.messages.len();
 
             let kept = self.view_phase_start(&working);
-            let decision = self.chain.review_model_flow(&mut working).await?;
+            let reviewed = self.chain.review_model_flow(&mut working).await;
+            if self.model_view.is_some() {
+                let failure = match &reviewed {
+                    Err(_) => true,
+                    Ok(_) => self.view_phase_end(kept.clone(), &working).is_err(),
+                };
+                if failure {
+                    // Keep the real provider reply/usage, including calls that
+                    // did not run. Keep actual non-message hook changes too.
+                    if let Some(messages) = kept {
+                        working.messages = messages;
+                    }
+                    working.last_usage = Some(response.usage.clone());
+                    working.last_usage_msg_count = working.messages.len();
+                    self.commit(working);
+                    self.journal(
+                        "assistant",
+                        serde_json::to_value(&response.message).unwrap_or_default(),
+                    );
+                    if let (Some(view), Some(received)) = (&self.model_view, view_received) {
+                        let commit = view.retained(
+                            RetainedEvent::ModelReply,
+                            &response.message,
+                            Some(received),
+                        );
+                        view.sources
+                            .lock()
+                            .unwrap()
+                            .push(model_view::Slot::Pending(commit));
+                    }
+                    let error = match reviewed {
+                        Err(error) => error,
+                        Ok(_) => AgentError::State("A middleware of this conversation changed a recorded message. Nothing further was sent.".into()),
+                    };
+                    return Err(error);
+                }
+            }
+            let decision = reviewed?;
             self.view_phase_end(kept, &working)?;
 
             // End and Remodel both leave this round's tool_calls unanswered
@@ -519,10 +559,22 @@ impl Agent {
                 "assistant",
                 serde_json::to_value(&assistant).unwrap_or_default(),
             );
+            let view_commit = match (&self.model_view, view_received) {
+                (Some(view), Some(received)) => {
+                    let commit =
+                        view.retained(RetainedEvent::ModelReply, &assistant, Some(received));
+                    view.sources
+                        .lock()
+                        .unwrap()
+                        .push(model_view::Slot::Pending(commit.clone()));
+                    Some(commit)
+                }
+                _ => None,
+            };
             self.save_checkpoint(None).await?;
-            if let (Some(view), Some(receipt)) = (&self.model_view, view_receipt) {
+            if let (Some(view), Some(commit)) = (&self.model_view, view_commit) {
                 // The actual reply is committed, journaled and saved above.
-                self.record_model_source(view, receipt, &assistant, assistant_idx)
+                self.record_model_source(view, commit, assistant_idx)
                     .await?;
             }
 
@@ -616,7 +668,7 @@ impl Agent {
                         .is_some_and(|turn| turn.is_cancelled());
                 if cancelled {
                     input.cancel_requested = false;
-                    if self.boundary_policy.is_none() {
+                    if self.boundary_policy.is_none() && self.model_view.is_none() {
                         input.pending.clear();
                     }
                     (true, Vec::new())
@@ -686,12 +738,13 @@ impl Agent {
                 } else {
                     format!("{deny_default} Feedback: {feedback}")
                 };
-                self.state.lock().unwrap().messages.push(Msg::Tool {
+                let message = Msg::Tool {
                     tool_call_id: call.id,
                     content,
                     is_error: true,
-                });
-                self.note_framework_commits(FrameworkCommit::Denial, 1);
+                };
+                self.state.lock().unwrap().messages.push(message.clone());
+                self.note_framework_commits(FrameworkCommit::Denial, &[message]);
                 self.save_progress_checkpoint(None).await?;
             }
             HitlAction::Approve => {
@@ -758,12 +811,13 @@ impl Agent {
                 .filter(|id| !answered.contains(id))
                 .collect();
             for id in unanswered {
-                committed.messages.push(Msg::Tool {
+                let message = Msg::Tool {
                     tool_call_id: id,
                     content: "Tool call was not executed (the session was interrupted while awaiting approval).".into(),
                     is_error: true,
-                });
-                self.note_framework_commits(FrameworkCommit::UnansweredCall, 1);
+                };
+                committed.messages.push(message.clone());
+                self.note_framework_commits(FrameworkCommit::UnansweredCall, &[message]);
             }
         }
 
@@ -958,7 +1012,7 @@ impl Agent {
     }
 
     async fn finish_cancelled(&self) -> Result<TurnResult, AgentError> {
-        if self.boundary_policy.is_some() {
+        if self.boundary_policy.is_some() || self.model_view.is_some() {
             let pending = {
                 let mut input = self.turn_input.lock().unwrap();
                 input.idle_operation = true;
@@ -979,7 +1033,7 @@ impl Agent {
             serde_json::to_value(&message).unwrap_or_default(),
         );
         self.state.lock().unwrap().messages.push(message.clone());
-        self.note_framework_commits(FrameworkCommit::CancelNote, 1);
+        self.note_framework_commits(FrameworkCommit::CancelNote, std::slice::from_ref(&message));
         let result = self.finish(message).await?;
         if self.boundary_policy.is_some() && self.checkpoint_failed() {
             return Err(checkpoint_save_error());
@@ -1010,8 +1064,11 @@ impl Agent {
         for message in &messages {
             self.journal("tool", serde_json::to_value(message).unwrap_or_default());
         }
-        self.note_framework_commits(FrameworkCommit::CancelledCall, messages.len());
+        let observed = self.model_view.as_ref().map(|_| messages.clone());
         self.state.lock().unwrap().messages.extend(messages);
+        if let Some(observed) = observed {
+            self.note_framework_commits(FrameworkCommit::CancelledCall, &observed);
+        }
     }
 
     /// Dispatch a single tool call through the middleware onion, commit any
@@ -1032,6 +1089,7 @@ impl Agent {
         call: ToolCall,
         bypass_chain: bool,
     ) -> Result<(), AgentError> {
+        let proposed_call = self.model_view.as_ref().map(|_| call.clone());
         if let Some(view) = &self.model_view {
             // Nothing has run yet. A refusal leaves the call without a result.
             view.boundary.before_dispatch(&call, bypass_chain).await?;
@@ -1040,8 +1098,15 @@ impl Agent {
             .model_view
             .as_ref()
             .map(|_| Arc::new(Mutex::new(Vec::new())));
+        let terminal_view = self.model_view.clone();
+        let decision = self.model_view.as_ref().and_then(|view| {
+            if bypass_chain {
+                view.decision.lock().unwrap().take()
+            } else {
+                None
+            }
+        });
         let id = call.id.clone();
-        let tool_name = call.name.clone();
         // t0 = the committed state snapshot the tool starts from. Keep it so the
         // commit can distinguish the tool's `ctx.state` file deltas from the
         // backend's mid-dispatch writes to committed.files (see
@@ -1067,6 +1132,8 @@ impl Agent {
                 let found = tools.get(&call.name).cloned();
                 let names = names.clone();
                 let record = record.clone();
+                let view = terminal_view.clone();
+                let decision = decision.clone();
                 Box::pin(async move {
                     match found {
                         Some(tool) => match record {
@@ -1074,11 +1141,40 @@ impl Agent {
                             // before any middleware sees the outcome.
                             Some(record) => {
                                 let given = call.clone();
+                                let view =
+                                    view.as_ref().expect("selected terminal has its view owner");
+                                view.live()?;
+                                let invocation = ActualToolInvocation::issued(
+                                    &view.owner,
+                                    call.clone(),
+                                    bypass_chain,
+                                    decision,
+                                );
+                                let source = match view.boundary.before_terminal(&invocation).await
+                                {
+                                    Ok(source) => source,
+                                    Err(error) => {
+                                        view.close();
+                                        return Err(error);
+                                    }
+                                };
+                                if let Err(error) = view
+                                    .live()
+                                    .and_then(|()| view.boundary.terminal_live(&invocation))
+                                {
+                                    view.close();
+                                    return Err(error);
+                                }
                                 let result = tool.call(call.args, ctx).await;
-                                record
-                                    .lock()
-                                    .unwrap()
-                                    .push(ReachedTool::new(given, &result));
+                                let actual = ActualTerminalOutcome::issued(
+                                    invocation,
+                                    source,
+                                    ReachedTool::new(given, &result),
+                                );
+                                // Owned before any middleware can project or
+                                // replace the result or fail afterwards.
+                                view.terminal(actual.clone());
+                                record.lock().unwrap().push(actual);
                                 result
                             }
                             None => tool.call(call.args, ctx).await,
@@ -1109,6 +1205,24 @@ impl Agent {
             .model_view
             .as_ref()
             .and_then(|_| result.as_ref().ok().cloned());
+        let chain_fact = match (&self.model_view, proposed_call) {
+            (Some(view), Some(proposed_call)) => {
+                let terminals = reached
+                    .as_ref()
+                    .map(|record| record.lock().unwrap().clone())
+                    .unwrap_or_default();
+                let fact = ActualToolFact::issued(
+                    &view.owner,
+                    proposed_call,
+                    terminals,
+                    returned.clone(),
+                    result.as_ref().err().map(ToString::to_string),
+                );
+                view.chain(fact.clone());
+                Some(fact)
+            }
+            _ => None,
+        };
         let msg = match result {
             Ok(outcome) => Msg::Tool {
                 tool_call_id: id,
@@ -1127,15 +1241,25 @@ impl Agent {
         self.journal("tool", serde_json::to_value(&msg).unwrap_or_default());
         let observed = self.model_view.as_ref().map(|_| msg.clone());
         self.state.lock().unwrap().messages.push(msg);
+        let retained_fact = match (&self.model_view, observed, chain_fact) {
+            (Some(view), Some(message), Some(fact)) => {
+                let commit = view.retained(RetainedEvent::ToolResult, &message, None);
+                view.sources
+                    .lock()
+                    .unwrap()
+                    .push(model_view::Slot::Pending(commit.clone()));
+                let fact = fact.retained(commit);
+                view.chain(fact.clone());
+                Some(fact)
+            }
+            _ => None,
+        };
         self.save_progress_checkpoint(None).await?;
-        if let (Some(view), Some(observed)) = (&self.model_view, observed) {
+        if let (Some(view), Some(fact)) = (&self.model_view, retained_fact) {
             // The actual result is journaled and committed above, and saved
             // there when durable turn checkpoints are selected.
-            let reached = reached
-                .map(|record| std::mem::take(&mut *record.lock().unwrap()))
-                .unwrap_or_default();
-            self.record_tool_source(view, &tool_name, &observed, &reached, returned.as_ref())
-                .await?;
+            view.live()?;
+            self.record_tool_source(view, &fact).await?;
         }
         Ok(())
     }
@@ -1171,7 +1295,7 @@ impl Agent {
             return false;
         }
         input.cancel_requested = true;
-        if self.boundary_policy.is_none() {
+        if self.boundary_policy.is_none() && self.model_view.is_none() {
             input.pending.clear();
         } else {
             // Selected observers retain already accepted originals. Reject new
@@ -1273,7 +1397,7 @@ impl Agent {
                 .is_some_and(|turn| turn.is_cancelled());
         input.cancel_requested = false;
         if requested {
-            if self.boundary_policy.is_none() {
+            if self.boundary_policy.is_none() && self.model_view.is_none() {
                 input.pending.clear();
             } else {
                 input.idle_operation = true;
@@ -1307,7 +1431,7 @@ impl Agent {
                     .is_some_and(|turn| turn.is_cancelled())
             {
                 input.cancel_requested = false;
-                if self.boundary_policy.is_none() {
+                if self.boundary_policy.is_none() && self.model_view.is_none() {
                     input.pending.clear();
                     input.active = false;
                 } else {
@@ -1316,8 +1440,10 @@ impl Agent {
                 return TurnBoundaryAction::Cancel;
             }
             if input.pending.is_empty() && !received_notification {
-                if self.completion_check.is_none() {
+                if self.completion_check.is_none() && self.model_view.is_none() {
                     input.active = false;
+                } else if self.model_view.is_some() {
+                    input.idle_operation = true;
                 } else if close_completion_window {
                     input.idle_operation = true;
                 }
@@ -1436,9 +1562,10 @@ impl Agent {
         let mut state = self.state.lock().unwrap();
         let start = state.messages.len();
         let count = user_messages.len();
+        let observed = self.model_view.as_ref().map(|_| user_messages.clone());
         state.messages.extend(user_messages);
         if let Some(view) = &self.model_view {
-            view.note_inputs(sources);
+            view.note_inputs(observed.as_deref().unwrap_or_default(), sources);
         }
         (start, count)
     }
@@ -2164,12 +2291,19 @@ mod idle_compaction;
 
 #[path = "agent_model_view.rs"]
 mod model_view;
-use crate::provenance::{FrameworkCommit, ReachedTool};
+use crate::provenance::{
+    ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, FrameworkCommit, ReachedTool,
+    RetainedEvent,
+};
 use model_view::{ModelView, QueuedInput};
 
 #[cfg(test)]
 #[path = "agent_model_view_tests.rs"]
 mod model_view_tests;
+
+#[cfg(test)]
+#[path = "agent_frontier_tests.rs"]
+mod frontier_tests;
 
 #[cfg(test)]
 #[path = "agent_boundary_tests.rs"]

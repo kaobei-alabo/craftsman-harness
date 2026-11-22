@@ -160,3 +160,7 @@ documents and folders containing several projects are supported too.
 [Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
+
+Private source-view work also has a separate local core correction branch for
+immutable event retention and cancellation; it remains unselected and awaits
+application integration, full validation and independent review.

@@ -59,7 +59,9 @@ fn real_directories(root: &Path) -> Result<(), GadgetError> {
 /// The user configuration root and one gadget directory below it, both held
 /// by handle. Nothing here resolves a link.
 struct Anchored {
-    root: (u64, u64),
+    root: cap_std::fs::Dir,
+    root_identity: (u64, u64),
+    gadgets_identity: (u64, u64),
     directory: cap_std::fs::Dir,
     directory_identity: (u64, u64),
 }
@@ -89,7 +91,9 @@ impl Anchored {
                 _ => refused("gadget directories must not be symlinks"),
             })?;
         Ok(Self {
-            root: identity(&root.dir_metadata().map_err(io_error)?),
+            root_identity: identity(&root.dir_metadata().map_err(io_error)?),
+            gadgets_identity: identity(&gadgets.dir_metadata().map_err(io_error)?),
+            root,
             directory_identity: identity(&directory.dir_metadata().map_err(io_error)?),
             directory,
         })
@@ -119,6 +123,7 @@ impl Anchored {
         }
         let file = self.directory.open_with(name, &options).map_err(io_error)?;
         let before = file.metadata().map_err(io_error)?;
+        let modified_before = before.modified().map_err(io_error)?;
         if !before.is_file() || before.nlink() != 1 {
             return Err(refused(
                 "pinned gadget inputs must be regular single-link files",
@@ -133,12 +138,13 @@ impl Anchored {
             .read_to_end(&mut bytes)
             .map_err(io_error)?;
         let after = file.metadata().map_err(io_error)?;
+        let modified_after = after.modified().map_err(io_error)?;
         if bytes.len() > maximum
             || bytes.len() as u64 != before.len()
             || after.len() != before.len()
             || after.nlink() != 1
             || identity(&after) != identity(&before)
-            || after.modified().ok() != before.modified().ok()
+            || modified_after != modified_before
         {
             return Err(refused("a pinned gadget input changed while it was read"));
         }
@@ -149,6 +155,7 @@ impl Anchored {
     /// the objects held by handle. Returns the directory's canonical path,
     /// which is the source label a stored grant carries.
     fn confirm(&self, config: &Path, id: &str) -> Result<PathBuf, GadgetError> {
+        use cap_fs_ext::DirExt;
         real_directories(config)?;
         let open = |path: &Path| {
             cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
@@ -156,18 +163,33 @@ impl Anchored {
                 .map(|metadata| identity(&metadata))
                 .map_err(io_error)
         };
+        // Re-open the relative entries without following links from the
+        // retained root, before and after obtaining the stored source label.
+        let relative = || -> Result<(), GadgetError> {
+            let gadgets = self.root.open_dir_nofollow("gadgets").map_err(io_error)?;
+            let directory = gadgets.open_dir_nofollow(id).map_err(io_error)?;
+            if identity(&self.root.dir_metadata().map_err(io_error)?) != self.root_identity
+                || identity(&gadgets.dir_metadata().map_err(io_error)?) != self.gadgets_identity
+                || identity(&directory.dir_metadata().map_err(io_error)?) != self.directory_identity
+            {
+                return Err(refused("the pinned gadget source moved while it was read"));
+            }
+            Ok(())
+        };
+        relative()?;
         let source = config
             .join("gadgets")
             .join(id)
             .canonicalize()
             .map_err(io_error)?;
-        if open(config)? != self.root
+        if open(config)? != self.root_identity
             || open(&source)? != self.directory_identity
             || identity(&self.directory.dir_metadata().map_err(io_error)?)
                 != self.directory_identity
         {
             return Err(refused("the pinned gadget source moved while it was read"));
         }
+        relative()?;
         Ok(source)
     }
 }

@@ -264,3 +264,24 @@ nothing in it is redacted or encrypted by this work.
 - A model node is not an admitted node and gives no right to restore anything.
 - Vault capacity is fixed at 128 conversations that hold a value, 512 values
   each and 4096 in total, with no retention.
+
+
+## Core event correction branch — November 22, 2026
+
+A separate local correction branch now issues immutable retained-message and
+provider/terminal event witnesses at the actual framework event. They are
+private-memory history, with no caller constructor or serialized checkpoint
+certificate, and do not certify transport, saves, restoration or permission.
+The typed activity guard precedes the state/source check. Selected cancellation
+keeps already accepted inputs and sources through call balancing and final save.
+The one admission-entry clock is checked again after real vault work and before
+node release; the native vault bounds are unchanged and no worker quiescence is
+claimed. Final pinned-source observations require available timestamps and
+relative no-follow directory identities from the retained root.
+
+This branch is still under implementation and has not had its full local run or
+independent source review. Application consumption, actual human-input owners,
+transport integration and full-set source adapters remain pending here. The
+installed a903 guard is separate; no frontend, key/policy, restoration or normal
+privacy selection is enabled. The restricted private MAIN callback/budget and
+close-between-retry scenarios remain unexecuted and uninspected.

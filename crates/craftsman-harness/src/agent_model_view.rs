@@ -17,16 +17,19 @@
 //! resume entries, reopening, transfer and idle compaction.
 
 use super::*;
+use crate::ModelResponse;
 use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
-    FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult, ReachedTool, SourceRef,
+    ActualAgentOwner, ActualReceivedReply, ActualRetainedCommit, ActualTerminalOutcome,
+    ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary, RetainedEvent, SourceRef,
     TrackedModelRequest, ViewSupport,
 };
+use std::sync::atomic::AtomicBool;
 
 pub(super) enum Slot {
-    Bound(SourceRef),
+    Bound(SourceRef, ActualRetainedCommit),
     /// Appended by the agent itself; the boundary has not been asked yet.
-    Pending(FrameworkCommit),
+    Pending(ActualRetainedCommit),
 }
 
 /// One queued input of the active turn. `source` is set only by the typed
@@ -47,26 +50,107 @@ pub(super) struct ModelView {
     /// One slot per recorded message, in the order the messages were
     /// committed. It lives only in memory and is never read from a checkpoint.
     pub(super) sources: Mutex<Vec<Slot>>,
+    pub(super) owner: ActualAgentOwner,
+    closed: AtomicBool,
+    pub(super) decision: Mutex<Option<SourceRef>>,
+    facts: Mutex<Facts>,
+}
+
+#[derive(Default)]
+struct Facts {
+    received: Vec<ActualReceivedReply>,
+    retained: Vec<ActualRetainedCommit>,
+    terminals: Vec<ActualTerminalOutcome>,
+    chains: Vec<ActualToolFact>,
 }
 
 impl ModelView {
     pub(super) fn new(boundary: Arc<dyn ModelViewBoundary>) -> Self {
+        let owner = ActualAgentOwner::issued();
+        let closed = boundary.bind_agent(&owner).is_err();
         Self {
             boundary,
             sources: Mutex::new(Vec::new()),
+            owner,
+            closed: AtomicBool::new(closed),
+            decision: Mutex::new(None),
+            facts: Mutex::new(Facts::default()),
         }
+    }
+
+    pub(super) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.boundary.close();
+    }
+
+    pub(super) fn live(&self) -> Result<(), AgentError> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(unavailable())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn retained(
+        &self,
+        event: RetainedEvent,
+        message: &Msg,
+        received: Option<ActualReceivedReply>,
+    ) -> ActualRetainedCommit {
+        let commit = ActualRetainedCommit::issued(&self.owner, event, message.clone(), received);
+        self.facts.lock().unwrap().retained.push(commit.clone());
+        commit
+    }
+
+    pub(super) fn received(
+        &self,
+        response: &ModelResponse,
+        receipt: SourceRef,
+    ) -> ActualReceivedReply {
+        let received = ActualReceivedReply::issued(
+            &self.owner,
+            response.message.clone(),
+            response.usage.clone(),
+            receipt,
+        );
+        self.facts.lock().unwrap().received.push(received.clone());
+        received
+    }
+
+    pub(super) fn terminal(&self, outcome: ActualTerminalOutcome) {
+        self.facts.lock().unwrap().terminals.push(outcome);
+    }
+
+    pub(super) fn chain(&self, fact: ActualToolFact) {
+        self.facts.lock().unwrap().chains.push(fact);
+    }
+
+    pub(super) fn matches(&self, messages: &[Msg]) -> bool {
+        let slots = self.sources.lock().unwrap();
+        slots.len() == messages.len()
+            && slots.iter().zip(messages).all(|(slot, message)| {
+                let commit = match slot {
+                    Slot::Bound(_, commit) | Slot::Pending(commit) => commit,
+                };
+                commit.owner().same_agent(&self.owner) && commit.message() == message
+            })
     }
 
     /// Slots for inputs that were just appended, in the same order. An input
     /// that came without a source is text from another agent.
-    pub(super) fn note_inputs(&self, sources: Vec<Option<SourceRef>>) {
-        self.sources
-            .lock()
-            .unwrap()
-            .extend(sources.into_iter().map(|source| match source {
-                Some(source) => Slot::Bound(source),
-                None => Slot::Pending(FrameworkCommit::Notification),
-            }));
+    pub(super) fn note_inputs(&self, messages: &[Msg], sources: Vec<Option<SourceRef>>) {
+        let slots = messages
+            .iter()
+            .zip(sources)
+            .map(|(message, source)| {
+                let commit = self.retained(RetainedEvent::Input, message, None);
+                match source {
+                    Some(source) => Slot::Bound(source, commit),
+                    None => Slot::Pending(commit),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.sources.lock().unwrap().extend(slots);
     }
 
     /// The durable reconciliation of [`reconcile_recovered_calls`], keeping
@@ -80,8 +164,22 @@ impl ModelView {
             reconcile_recovered_calls(state, None);
             return;
         }
-        let unrecorded = |slots: &mut Vec<Slot>, added: usize| {
-            slots.extend((0..added).map(|_| Slot::Pending(FrameworkCommit::UnrecordedCall)));
+        let unrecorded = |messages: &mut Vec<Msg>,
+                          slots: &mut Vec<Slot>,
+                          pending: &mut Vec<String>| {
+            for id in pending.drain(..) {
+                let message = Msg::Tool {
+                    tool_call_id: id,
+                    content: "Completion was not recorded before the session was interrupted. This operation may have had effects. Inspect the workspace before retrying it.".into(),
+                    is_error: true,
+                };
+                messages.push(message.clone());
+                slots.push(Slot::Pending(self.retained(
+                    RetainedEvent::Framework(FrameworkCommit::UnrecordedCall),
+                    &message,
+                    None,
+                )));
+            }
         };
         let mut pending: Vec<String> = Vec::new();
         let original = std::mem::take(&mut state.messages);
@@ -94,8 +192,7 @@ impl ModelView {
                     }
                 }
                 _ => {
-                    let added = append_unknown_results(&mut state.messages, &mut pending, None);
-                    unrecorded(&mut slots, added);
+                    unrecorded(&mut state.messages, &mut slots, &mut pending);
                 }
             }
             if let Msg::Assistant { tool_calls, .. } = &message {
@@ -104,8 +201,7 @@ impl ModelView {
             state.messages.push(message);
             slots.push(slot);
         }
-        let added = append_unknown_results(&mut state.messages, &mut pending, None);
-        unrecorded(&mut slots, added);
+        unrecorded(&mut state.messages, &mut slots, &mut pending);
     }
 }
 
@@ -139,6 +235,7 @@ impl Agent {
                 "No source view boundary is selected for this agent.".into(),
             ));
         };
+        view.live()?;
         let adapted = self
             .chain
             .middlewares()
@@ -168,10 +265,17 @@ impl Agent {
         source: SourceRef,
     ) -> Result<TurnResult, AgentError> {
         let view = self.supported_view()?;
-        if view.sources.lock().unwrap().len() != self.state.lock().unwrap().messages.len() {
+        let _turn_activity = self.begin_turn()?;
+        // Activity is owned before inspecting either collection. Do not keep
+        // a sources guard while acquiring state: commits acquire state first.
+        let consistent = {
+            let state = self.state.lock().unwrap();
+            view.matches(&state.messages)
+        };
+        if !consistent {
+            view.close();
             return Err(unsourced());
         }
-        let _turn_activity = self.begin_turn()?;
         let user_input = user_input.into();
         let result = self
             .in_turn_scope(self.run_turn_inner(user_input, Some(source)))
@@ -191,10 +295,61 @@ impl Agent {
                 .unwrap()
                 .iter()
                 .map(|slot| match slot {
-                    Slot::Bound(source) => Some(source.clone()),
+                    Slot::Bound(source, _) => Some(source.clone()),
                     Slot::Pending(_) => None,
                 })
                 .collect(),
+        )
+    }
+
+    /// Actual provider/terminal/retained events of this selected agent, including
+    /// facts for which projection failed. These are private-memory history;
+    /// no token certifies transport, persistence, restoration or permission.
+    pub fn actual_received_replies(&self) -> Option<Vec<ActualReceivedReply>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .received
+                .clone(),
+        )
+    }
+
+    pub fn actual_retained_commits(&self) -> Option<Vec<ActualRetainedCommit>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .retained
+                .clone(),
+        )
+    }
+
+    pub fn actual_tool_facts(&self) -> Option<Vec<ActualToolFact>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .chains
+                .clone(),
+        )
+    }
+
+    pub fn actual_terminal_outcomes(&self) -> Option<Vec<ActualTerminalOutcome>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .terminals
+                .clone(),
         )
     }
 
@@ -209,7 +364,7 @@ impl Agent {
             return false;
         }
         let mut input = self.turn_input.lock().unwrap();
-        if !input.active || input.idle_operation {
+        if !input.active || input.idle_operation || input.cancel_requested || input.finishing {
             return false;
         }
         input.pending.push_back(QueuedInput {
@@ -243,6 +398,7 @@ impl Agent {
         view.boundary
             .accept_decision(&call, &action, &decision)
             .await?;
+        *view.decision.lock().unwrap() = Some(decision);
         let result = self
             .in_turn_scope(self.resume_inner(action, deny_default))
             .await;
@@ -256,27 +412,16 @@ impl Agent {
             let next =
                 view.sources.lock().unwrap().iter().enumerate().find_map(
                     |(index, slot)| match slot {
-                        Slot::Pending(event) => Some((index, *event)),
-                        Slot::Bound(_) => None,
+                        Slot::Pending(commit) => Some((index, commit.clone())),
+                        Slot::Bound(_, _) => None,
                     },
                 );
-            let Some((index, event)) = next else {
+            let Some((index, commit)) = next else {
                 return Ok(());
             };
-            let message = self
-                .state
-                .lock()
-                .unwrap()
-                .messages
-                .get(index)
-                .cloned()
-                .ok_or_else(unsourced)?;
-            let source = view
-                .boundary
-                .observe_framework_commit(event, &message)
-                .await?;
+            let source = view.boundary.observe_retained_framework(&commit).await?;
             match view.sources.lock().unwrap().get_mut(index) {
-                Some(slot @ Slot::Pending(_)) => *slot = Slot::Bound(source),
+                Some(slot @ Slot::Pending(_)) => *slot = Slot::Bound(source, commit),
                 _ => return Err(unsourced()),
             }
         }
@@ -290,19 +435,52 @@ impl Agent {
         view: &ModelView,
         result: Result<TurnResult, AgentError>,
     ) -> Result<TurnResult, AgentError> {
-        let settled = self.settle_sources(view).await;
-        let result = result?;
-        settled?;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => return self.view_failed(view, error).await,
+        };
+        if let Err(error) = self.settle_sources(view).await {
+            return self.view_failed(view, error).await;
+        }
+        {
+            let mut input = self.turn_input.lock().unwrap();
+            input.idle_operation = true;
+            input.control_settled = true;
+        }
         Ok(result)
     }
 
+    async fn view_failed<T>(&self, view: &ModelView, error: AgentError) -> Result<T, AgentError> {
+        let pending = {
+            let mut input = self.turn_input.lock().unwrap();
+            input.idle_operation = true;
+            input.pending.drain(..).collect()
+        };
+        // Retain originals without invoking a failed source callback again.
+        self.append_steering_messages(pending);
+        self.drain_agent_notifications_into_state();
+        view.close();
+        // A failed save is retained as failure, never retried as proof.
+        if self.checkpoint_failed() {
+            return Err(checkpoint_save_error());
+        }
+        self.save_checkpoint(None).await?;
+        if self.checkpoint_failed() {
+            return Err(checkpoint_save_error());
+        }
+        Err(error)
+    }
+
     /// Notes `count` messages the agent has just appended itself.
-    pub(super) fn note_framework_commits(&self, event: FrameworkCommit, count: usize) {
+    pub(super) fn note_framework_commits(&self, event: FrameworkCommit, messages: &[Msg]) {
         if let Some(view) = &self.model_view {
-            view.sources
-                .lock()
-                .unwrap()
-                .extend((0..count).map(|_| Slot::Pending(event)));
+            let commits = messages
+                .iter()
+                .map(|message| {
+                    Slot::Pending(view.retained(RetainedEvent::Framework(event), message, None))
+                })
+                .collect::<Vec<_>>();
+            view.sources.lock().unwrap().extend(commits);
         }
     }
 
@@ -338,14 +516,18 @@ impl Agent {
         if !working.system_extras.is_empty() {
             return Err(unavailable());
         }
+        view.live()?;
         self.settle_sources(view).await?;
+        if !view.matches(&working.messages) {
+            return Err(unsourced());
+        }
         let messages = view
             .sources
             .lock()
             .unwrap()
             .iter()
             .map(|slot| match slot {
-                Slot::Bound(source) => Some(source.clone()),
+                Slot::Bound(source, _) => Some(source.clone()),
                 Slot::Pending(_) => None,
             })
             .collect::<Option<Vec<_>>>()
@@ -367,6 +549,15 @@ impl Agent {
             },
             messages,
             tools,
+            retained: view
+                .sources
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|slot| match slot {
+                    Slot::Bound(_, commit) | Slot::Pending(commit) => commit.clone(),
+                })
+                .collect(),
         };
         let model = self.model.clone();
         let terminal = move |request: TrackedModelRequest| -> BoxedViewFuture<'_> {
@@ -387,64 +578,50 @@ impl Agent {
         }
     }
 
-    /// Records the source of a reply that is already committed and saved.
+    /// Publishes the source only after the actual model commit/save path.
     pub(super) async fn record_model_source(
         &self,
         view: &ModelView,
-        receipt: SourceRef,
-        committed: &Msg,
+        commit: ActualRetainedCommit,
         index: usize,
     ) -> Result<(), AgentError> {
-        if view.sources.lock().unwrap().len() != index {
+        if !matches!(view.sources.lock().unwrap().get(index),
+            Some(Slot::Pending(pending)) if pending.same_commit(&commit))
+        {
             return Err(unsourced());
         }
-        let source = view.boundary.commit_model(receipt, committed).await?;
+        let source = view.boundary.commit_retained_model(&commit).await?;
         let mut sources = view.sources.lock().unwrap();
-        if sources.len() != index {
-            return Err(unsourced());
+        match sources.get_mut(index) {
+            Some(slot @ Slot::Pending(_)) => *slot = Slot::Bound(source, commit),
+            _ => return Err(unsourced()),
         }
-        sources.push(Slot::Bound(source));
         Ok(())
     }
 
-    /// Records the source of a tool result that is already committed and
-    /// saved. An error leaves the result recorded and stops the turn.
+    /// Actual outcomes already belong to the private fact owner even if this
+    /// callback fails. The full immutable retained message binds the source.
     pub(super) async fn record_tool_source(
         &self,
         view: &ModelView,
-        tool: &str,
-        committed: &Msg,
-        reached: &[ReachedTool],
-        returned: Option<&ToolOutcome>,
+        fact: &ActualToolFact,
     ) -> Result<(), AgentError> {
-        let Msg::Tool {
-            tool_call_id,
-            content,
-            is_error,
-        } = committed
-        else {
-            return Err(unsourced());
+        let commit = fact.commit().ok_or_else(unsourced)?;
+        let index = {
+            let sources = view.sources.lock().unwrap();
+            sources.len().checked_sub(1).ok_or_else(unsourced)?
         };
-        let expected = self.state.lock().unwrap().messages.len();
-        if view.sources.lock().unwrap().len() + 1 != expected {
+        if !matches!(view.sources.lock().unwrap().get(index),
+            Some(Slot::Pending(pending)) if pending.same_commit(commit))
+        {
             return Err(unsourced());
         }
-        let source = view
-            .boundary
-            .observe_tool_result(ObservedToolResult {
-                call_id: tool_call_id,
-                tool,
-                content,
-                is_error: *is_error,
-                reached,
-                returned,
-            })
-            .await?;
+        let source = view.boundary.observe_retained_tool(fact).await?;
         let mut sources = view.sources.lock().unwrap();
-        if sources.len() + 1 != expected {
-            return Err(unsourced());
+        match sources.get_mut(index) {
+            Some(slot @ Slot::Pending(_)) => *slot = Slot::Bound(source, commit.clone()),
+            _ => return Err(unsourced()),
         }
-        sources.push(Slot::Bound(source));
         Ok(())
     }
 }

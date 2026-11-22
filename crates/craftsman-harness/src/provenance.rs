@@ -22,6 +22,13 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
+#[path = "provenance_facts.rs"]
+mod facts;
+pub use facts::{
+    ActualAgentOwner, ActualReceivedReply, ActualRetainedCommit, ActualTerminalOutcome,
+    ActualToolFact, ActualToolInvocation, RetainedEvent,
+};
+
 /// Opaque evidence owned by the host that selected the boundary. This crate
 /// only keeps it beside the item it belongs to and hands it back. Holding one
 /// proves nothing here: the host checks its own payload.
@@ -132,6 +139,83 @@ pub enum ViewSupport {
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// Called by the actual builder for its one selected agent owner. A host
+    /// must bind this event owner before accepting the later witnesses.
+    fn bind_agent(&self, _owner: &ActualAgentOwner) -> Result<(), AgentError> {
+        Ok(())
+    }
+
+    /// Closes future required view work after an actual selected failure.
+    fn close(&self) {}
+
+    async fn commit_retained_model(
+        &self,
+        commit: &ActualRetainedCommit,
+    ) -> Result<SourceRef, AgentError> {
+        let received = commit.received().ok_or_else(|| {
+            AgentError::State("The retained model event has no received reply.".into())
+        })?;
+        self.commit_model(received.transport_receipt().clone(), commit.message())
+            .await
+    }
+
+    async fn observe_retained_tool(&self, fact: &ActualToolFact) -> Result<SourceRef, AgentError> {
+        let commit = fact.commit().ok_or_else(|| {
+            AgentError::State("The chain outcome has no retained tool result.".into())
+        })?;
+        let Msg::Tool {
+            tool_call_id,
+            content,
+            is_error,
+        } = commit.message()
+        else {
+            return Err(AgentError::State(
+                "The retained tool event is not a tool result.".into(),
+            ));
+        };
+        let reached = fact
+            .terminals()
+            .iter()
+            .map(|terminal| terminal.reached().clone())
+            .collect::<Vec<_>>();
+        let tool = &fact.proposed_call().name;
+        self.observe_tool_result(ObservedToolResult {
+            call_id: tool_call_id,
+            tool,
+            content,
+            is_error: *is_error,
+            reached: &reached,
+            returned: fact.returned(),
+        })
+        .await
+    }
+
+    async fn observe_retained_framework(
+        &self,
+        commit: &ActualRetainedCommit,
+    ) -> Result<SourceRef, AgentError> {
+        let RetainedEvent::Framework(event) = commit.event() else {
+            return Err(AgentError::State(
+                "The retained event is not a framework message.".into(),
+            ));
+        };
+        self.observe_framework_commit(event, commit.message()).await
+    }
+
+    /// Exact post-chain invocation, before any tool effect. Returning a source
+    /// gives no permission: the original tool approval rules still apply.
+    async fn before_terminal(
+        &self,
+        _invocation: &ActualToolInvocation,
+    ) -> Result<Option<SourceRef>, AgentError> {
+        Ok(None)
+    }
+
+    /// A final synchronous source-liveness check immediately before polling
+    /// the actual tool. It makes no OS containment or rollback guarantee.
+    fn terminal_live(&self, _invocation: &ActualToolInvocation) -> Result<(), AgentError> {
+        Ok(())
+    }
     /// The sources of the system channel for the next request, in order.
     async fn system_sources(&self) -> Result<Vec<SourceRef>, AgentError>;
 
@@ -200,9 +284,16 @@ pub struct TrackedModelRequest {
     pub(crate) system: Vec<SourceRef>,
     pub(crate) messages: Vec<SourceRef>,
     pub(crate) tools: Vec<SourceRef>,
+    pub(crate) retained: Vec<ActualRetainedCommit>,
 }
 
 impl TrackedModelRequest {
+    /// One immutable actual-retention witness beside each recorded message.
+    /// The host verifies its bound agent owner and the exact message, not an
+    /// ordinal or equal source text. Nothing is loaded from a checkpoint.
+    pub fn retained_commits(&self) -> &[ActualRetainedCommit] {
+        &self.retained
+    }
     /// The recorded messages and tool definitions. The system text is empty:
     /// a selected session has no system text outside its sources.
     pub fn recorded(&self) -> &ModelRequest {

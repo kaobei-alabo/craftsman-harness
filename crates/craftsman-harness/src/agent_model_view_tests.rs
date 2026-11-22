@@ -189,6 +189,7 @@ async fn an_agent_without_a_boundary_keeps_its_paths_and_has_no_typed_entry() {
         system: vec![],
         messages: vec![source("input")],
         tools: vec![],
+        retained: vec![],
     };
     drop(requests);
     assert!(matches!(
@@ -1041,13 +1042,18 @@ async fn a_parked_call_resumes_only_through_a_checked_decision() {
 #[tokio::test]
 async fn text_from_another_agent_has_no_source_and_stops_the_next_request() {
     let f = frontier(vec![Msg::assistant("never sent")]);
-    f.agent.model_view.as_ref().unwrap().note_inputs(vec![None]);
+    let notification = Msg::user("[message from agent 'child']\nhello");
     f.agent
         .state
         .lock()
         .unwrap()
         .messages
-        .push(Msg::user("[message from agent 'child']\nhello"));
+        .push(notification.clone());
+    f.agent
+        .model_view
+        .as_ref()
+        .unwrap()
+        .note_inputs(&[notification], vec![None]);
     let error = f
         .agent
         .run_turn_with_view("go", source("input"))
@@ -1081,6 +1087,7 @@ async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
 
     let view = ModelView::new(Arc::new(Frontiers::default()));
     view.note_inputs(
+        &messages,
         ["input", "model:0", "result:c1", "later", "model:1"]
             .iter()
             .map(|name| Some(source(name)))
@@ -1097,8 +1104,11 @@ async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
     let shape: Vec<String> = slots
         .iter()
         .map(|slot| match slot {
-            Slot::Bound(kept) => tag(kept),
-            Slot::Pending(event) => format!("{event:?}"),
+            Slot::Bound(kept, _) => tag(kept),
+            Slot::Pending(commit) => match commit.event() {
+                crate::provenance::RetainedEvent::Framework(event) => format!("{event:?}"),
+                event => format!("{event:?}"),
+            },
         })
         .collect();
     assert_eq!(
