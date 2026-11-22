@@ -1005,5 +1005,7 @@ restoration cases and the macOS observer case also passed; why they failed at
 61ac is still unknown. The pass covers that run's selected tools and this exact
 operation only: which tool wrote the block, what its second value means and any
 general effect of the switch remain not established. PR #32 is merged as
-`dffddeae` with the same tree. A separate run on main, 44976215399, is under
-independent audit and is not claimed here. Normal privacy remains off.
+`dffddeae` with the same tree. The separate run on main, 44976215399, passed its
+independent audit at `dffddeae`: all four contexts, every mandatory step and
+both native modes, with both original Windows parents passing again. It covers
+this foundation only. Normal privacy remains off.
