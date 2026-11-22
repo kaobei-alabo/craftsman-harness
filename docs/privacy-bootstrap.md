@@ -83,50 +83,89 @@ release. Actual typed admission uses the original terminal draft, real detector
 reply and authenticated vault commit before the separate model view is
 released. Source/key/root liveness is sampled before and after admission;
 this is not a continuous external-writer lease or an OS race-proof guarantee.
-A private clear closes the old scope before reserving and opening a new one.
-It does not raise the 128-scope ceiling, prune, reopen, transfer or replay.
+Only pre-build clear rotates a scope while retaining its live unlock. Failed
+or abandoned rotation closes the key too. A built clear needs a fresh exclusive
+unlock and remains refused. No path raises the 128-scope ceiling, prunes,
+reopens, transfers or replays.
 
-The stable B340 admission interface masks with DeclaredIdentifiers::none(). A
+The current admission interface masks with DeclaredIdentifiers::none(). A
 nonempty actual user identifier policy therefore refuses before unlock; it is
 never quietly narrowed. The feature-off composition also refuses a detector
 selection; standalone private key initialization/unlock remains typechecked
 and available only through the owned private operation.
 
-## Full Agent construction remains unavailable
+## Private terminal construction and truthful limits
 
-B340 replaces B575's bare permission with CapturedUserPolicy and a real
-full-set selection. PrivateConversation implements that interface from its
-actual retained key/user-policy owner and matching reserved workspace digest,
-rechecking real source liveness. No arbitrary trait answer or fixture permission
-is used. The captured schema grants no opaque-item exemption, so the private
-policy conservatively requires inspectable provider items; an opaque native
-wire refuses rather than being called safe or downgraded to Chat.
+The captured real key/user-policy owner makes the full-set selection; no
+fixture permission, merged Config.extra or ready Boolean substitutes for it.
+`OwnedSecretTerminal::run_private` consumes the fresh popup, finishes secret
+input/started-key cleanup, retains the original guard/panic/signal owners,
+flushes the sole-reader descriptor, and starts one ordinary EventStream.
+The actual UiBridge receiver is pumped through the entire build and loop;
+no successful path leaves an undrained channel in the popup. The unattached
+historical request method still refuses before bridge/build effects.
 
-The owned popup requests the shared builder with the actual UiBridge's complete
-ordinary terminal extras, its real cancellation child and the same reserved
-conversation. It turns no feature off to get a build. Current terminal extras
-receive the builder's actual RequestedPart refusal before effects; other full
-extras can report missing source paths. These are genuine refusals, not an
-Agent or successful activation. A future successful return would retain the
-key/policy owner beside the real Session, verify identical thread/view/guard
-ownership and use the typed PrivacyView turn entry. Such a return is currently
-unavailable for the expected full terminal feature set.
+Every original terminal extra remains requested. The shared builder now has
+actual controller adapters in the imported core. It verifies the same thread,
+view and guard and keeps the key/policy owner with the real Session. Typed
+turn/steer/decision tasks retain the SAME four-Arc view and actual agent while
+the UI continuously drains its actual mutable notification receiver. Original
+accepted text is passed without trimming or expansion; host catalog messages
+remain their separate actual records. No shell/reopen/transfer route is silently
+substituted for a typed private entry. Unsupported commands remain explicit.
 
-Actual PrivacyView turn/steer/decide integration and accepted human input/decision
-producers, native signed items, tracked mutators, compaction/delegation,
-checkpoints, HITL, display and file restoration remain integration work. An
-eventual terminal /clear requires a new owner and full build; an old void setter
-cannot do it. Reopen, model transfer and replay are unsupported in this
-terminal/fresh-only first version. No at-rest/history masking claim follows:
-actual accepted input/results/effects/history/checkpoints/usage stay exact and
-only a separate model view is masked.
+The receiver presents core's original opaque approval request, keeps that
+exact presentation in the modal, displays the complete bounded derived call,
+and returns core's original decision after a real human choice. Raw feedback
+and Edit JSON are retained before core parsing/projection. Positive choices
+require the real review frame to be drawn; denial/cancellation stays available
+at small sizes. The raw review cap is 1 MiB, unsafe controls/backslashes are
+shown escaped before wrapping (up to six times the raw width), and full text
+is scrollable. This is a conservative display bound, not a promise that every
+real request will fit. The new private event batch is 32; ordinary 4096-event
+batching is unchanged, and no global queue-byte cap is claimed.
+
+Cancellation stops the actual agent before releasing prompt waiters. An absent
+reply is not a synthetic denial/approval/model answer. Always effects remain
+core's accepted-decision effects. Actual end/save errors and returned results
+stay errors; closing revokes session/key even when a task retains their Arcs.
+Owned shutdown awaits actual tasks/background joins/LSP under the original
+30-second error bound and reports failure honestly; dropped async waiters do
+not establish interruption or quiescence of native/blocking work.
+
+The entry intercepts settings actions BEFORE configuration/permission/model
+mutation and displays `SettingsSaveRefused`, preserving the live configuration
+and conversation. Actually changed/unavailable captured source closes both
+session and key with its separate fixed line. In-place built `/clear` requires
+fresh exclusive password acquisition and remains refused; the current owner
+is retained. Pre-build scope rotation is distinct, and its failed/abandoned
+paths close both. There is no reopen, transfer, replay or source-receipt renewal.
+
+Voice has no reviewed private input adapter: v1 requires an actual explicit
+`voice.enabled:false` and refuses other settings. The captured policy grants
+no opaque-provider exemption. Native wires that require one refuse, without
+being called inspectable or downgraded to Chat. These are current restrictions,
+not normal feature activation.
+
+Captured plain-text/JSON data-file declarations remain INERT for restoration.
+They retain actual source and no-follow parent capture, but name/format/
+operation labels cannot establish supported containing-object/schema/
+application/data-field authority or a retained final effect. Canonical JSON
+before/after/range/value-only/duplicate-key and semantic exclusions plus the
+opaque retained-directory effect API must be installed before any grant.
+The current actual terminal fixture writes an ordinary constant without
+restoring secrets; the separate restoration assertion is preserved and held.
+Normal selectors and activation, active-turn secret reacquisition, supported
+data grants, platform/full17/hosted/native/security review remain open.
 
 The new fixtures use exact argv-marked native PTYs, private temporary roots,
 synthetic passwords, real KDF/envelope/vault IO, and an approved source-built
 WASM detector. A separate full ordinary builder/loopback/checkpoint control
 after successful popup acquisition checks password isolation with privacy
-unselected; it is not full-set selected-bootstrap coverage. The WASM composition
-also exercises the captured-policy full-builder refusal. Unmarked/unknown/
+unselected; it is not full-set selected-bootstrap coverage. The current safe owned entry exercises actual question/review/constant-file/
+settings-refusal/follow-up/checkpoint behavior using the captured user owner,
+with no file-restoration grant. The old first responder and missing-field
+failures, partial captures and original client retry remain failed evidence. Unmarked/unknown/
 duplicate helper startup returns before environment/config/stdin. Restricted
 private MAIN callback/budget/interleaving probes remain uninspected/unexecuted.
 
@@ -138,10 +177,10 @@ KDF and file work stay identical. The modal still runs on its owning thread;
 the erased future's Send bound starts no extra task. No existing assertion,
 deadline, compiler flag, dependency, warning setting or bound changes.
 First fixture/interface/format failures, the failed Send attempt and compiler
-incremental error, and linker warnings are retained. The local A+B340 gadget
-test binary still exceeds the unchanged 16 MiB unwind encoding threshold,
-which blocks warning acceptance. It is not evidence of the later core50e
-union's size or a portable native performance bound.
+incremental error, and linker warnings are retained. The exact larger consumer
+also warns against the unchanged 16 MiB unwind threshold; historical A erasures
+or another worker's byte counts cannot certify this union. Canonical reductions
+remain separately coordinated and final warning acceptance is still blocked.
 
 This key/B union has no hosted or Linux/Windows validation. The independently
 validated installed guard main a903 and its separate main run cover that

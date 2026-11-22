@@ -84,8 +84,14 @@ the new owned fixture futures without changing checks, attempts or KDF work,
 and starts no extra secret worker.
 `close_and_wait` waits for actual handles; it makes no absolute time, rollback,
 OS quiescence or billing promise. Returned unlocked vault/key owners are closed
-separately on their explicit close or Drop. No lifecycle/concurrency probe is
-substituted for the restricted private MAIN scenarios.
+separately on their explicit close or Drop, including through a poisoned key
+guard. Source liveness checks no longer copy the key. The actual 32-byte vault
+key remains resident for the required KeySource contract until close; derived
+vault material can remain with existing references until their release. This
+is revocation and owned-buffer cleanup, not erasure of foreign copies.
+The popup performs one operation per entry and closes that manager afterward;
+the three-attempt manager ceiling is not a three-try UI promise. No lifecycle/
+concurrency probe substitutes for the restricted private MAIN scenarios.
 
 ## Actual trusted policy
 
@@ -129,7 +135,12 @@ through SafeBackend and keeps secret buffers outside UiEvent/composer/history.
 Real initialization asks for confirmation; unlock authenticates the existing
 envelope and vault. Escape/Ctrl-C or an owned shutdown signal returns explicit
 cancellation, closes key admission and awaits started handles. This differs
-from pending editing and an ordinary empty/no-answer event.
+from pending editing and an ordinary empty/no-answer event. Every prompt/work
+return or abandonment clears its owned decoder; TCIFLUSH on the SAME retained
+sole-reader descriptor discards all queued type-ahead, including input intended
+for what follows. Bytes arriving after that flush are outside the observation.
+Work ticks discard at most 64 raw bytes without spending the unchanged 16 KiB
+prompt-validation allowance. Started work is still awaited, not interrupted.
 
 The private composition captures actual user policy before project merges,
 retains the same root with the key owner, reserves the application's fresh
@@ -137,19 +148,37 @@ thread id and captured canonical workspace, and opens PrivacySession with a
 user-policy-pinned WASM detector. Stored exact source approval remains required
 before compilation/describe. A nonempty declared-identifier policy refuses
 because the stable admission interface currently supplies none; it is not
-silently omitted. Private clear closes the old owner and reserves a new one;
-the eventual full Agent must be rebuilt with that same new id in every lane.
-Existing 128-scope capacity and exhaustion are unchanged.
+silently omitted. Pre-build clear stops the old scope and reserves another;
+every failed/abandoned clear closes both session and key. Once an Agent has
+been built, a clear needs a fresh exclusive unlock and complete new build.
+That in-place input handoff is unsupported and refused while retaining the
+current conversation. The 128-scope ceiling and exhaustion remain unchanged.
 
-Full expected-set Agent construction is unavailable. The B340 interface now
-accepts the actual captured policy owner and permits no omission; this private
-composition implements that policy from its retained key/user-root/workspace
-owners and requests the real terminal extras. The builder currently refuses
-unsupported requested parts before effects. The captured schema grants no
-opaque-item exemption, so native opaque items also refuse conservatively.
-Normal init/status/enable and /privacy selectors, full native/mutator/HITL/
-display/file adapters, active-turn popup integration, and activation/native
-review remain pending. Reopen/transfer are unsupported; void thread setters
+The unselected owned terminal entry now requests the complete actual terminal
+extras and retains/pumps its real receiver through construction and turns.
+Its typed tasks hold the same view/agent/key-policy owners while the UI drains
+the actual notification receiver continuously. Questions and opaque core
+request/presentation/decision approvals go through actual input and SafeBackend.
+No limited-set fixture permission is used as user policy. The first current
+owned Chat/PTY check passes without file restoration, including an ordinary
+constant write, exact input/checkpoint retention and active-save refusal.
+Voice must be explicitly disabled in this private v1 entry; unsupported
+configured parts and native opaque items refuse rather than being omitted.
+
+Captured `file_data` declarations name an absolute workspace/destination,
+`plain_text` or `json_document`, and both `write_file`/`edit_file` operations.
+They have 16-rule, 4096-byte path, 128-component and existing policy/source
+bounds, retain no-follow parent chains, and reject changed or symlinked parents.
+These are INERT proposals: path/format/purpose/pointer alone grants no secret
+restoration. The actual containing-object/schema/application/data-field guard,
+semantic exclusions and retained relative-create/held-update consumer are
+pending the one canonical opaque interface. Config, credentials, key/vault,
+instructions, schema, source and executable application content must remain
+excluded. The successful ordinary file check is not restoration acceptance.
+
+Normal init/status/enable and /privacy selectors, active-turn password
+reacquisition, guarded data restoration and full native/source/security
+validation remain pending. Reopen/transfer are unsupported; void setters
 cannot replace a fresh owner and full rebuild.
 
 Canonical accepted input/results/history/journal/checkpoints remain actual

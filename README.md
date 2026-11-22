@@ -48,14 +48,17 @@ presentation and original reply from the registered UI; an ordinary callback,
 digest or operation-owned decision is insufficient. The file tool still runs
 its own checkpoint and diagnostics around such a write, and the terminal's
 bridge draws a committed reply once through its safe backend. Nothing selects
-any of it yet: the user's policy has no owner outside test fixtures and the
-terminal has no entry for a privacy turn.
+any of it in normal sessions. The local private union now has a captured user
+policy/key owner and an owned terminal entry; its normal selector and data-file
+restoration authority remain unavailable.
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
 Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrapped
 vault key and existing-only unlock backend. An unselected
 [owned password popup and private bootstrap](docs/privacy-bootstrap.md) compose
-those owners with a pinned detector and fresh conversation; normal activation remains unavailable.
+those owners with a pinned detector and fresh conversation. The actual private
+receiver carries opaque approvals and human questions, and refuses active
+settings saves and in-place clear; normal activation remains unavailable.
 The local key/UI union still has a retained macOS test-binary unwind warning;
 warning and native integration gates remain open.
 A private [detector contract and admission core](docs/privacy-admission.md)

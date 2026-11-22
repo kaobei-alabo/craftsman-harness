@@ -194,8 +194,9 @@ impl FreshConversationBinding {
 /// it. The application's policy owner implements this for the policy it
 /// captured from the user's own configuration, before any project file was
 /// merged. A flag, a label, a digest or a statement in a test is not a
-/// policy. Outside tests nothing in this crate implements the trait yet, so
-/// no selection can be made.
+/// policy. The private captured key/user-root owner implements this trait;
+/// its owned terminal entry is unselected by normal routes. Data-file format
+/// proposals remain inert until the supported-field/effect guard exists.
 pub trait CapturedUserPolicy: Send + Sync {
     /// Whether the user's policy enables privacy for a conversation in the
     /// workspace with this digest, which is the one
