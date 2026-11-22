@@ -22,6 +22,13 @@
 //! answers with a fixed refusal before any effect, and the call stays as the
 //! model wrote it.
 //!
+//! The file tool itself still runs. It notes the file for the workspace
+//! checkpoint, performs the write, finishes the checkpoint and asks for the
+//! language diagnostics, as for any other write; only the write is taken
+//! from the derived operation ([`authorized_write`]) instead of the call's
+//! arguments. A delegated agent's file tools work the same way inside that
+//! agent's own boundary, behind the gate every delegated tool has.
+//!
 //! This grants no permission. A plan or deny mode, a protected path and a
 //! person's refusal apply to the derived operation as they apply to any
 //! other. Copied content cannot be taken back, so every check that matters
@@ -37,7 +44,7 @@ use craftsman_harness::{AgentError, Tool, ToolCall, ToolCtx, ToolDef, ToolOutcom
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use zeroize::Zeroizing;
 
 /// The most bytes of a file an edit is derived for.
@@ -259,6 +266,12 @@ impl PrivacySession {
         if path_text.contains("pv1-") {
             return Err(FileRefusal::Excluded("the path"));
         }
+        // A memory file is kept in the application's store, not on the
+        // filesystem this operation binds.
+        let memory = crate::store_fs::MEMORY_PREFIX;
+        if path_text == memory.trim_end_matches('/') || path_text.starts_with(memory) {
+            return Err(FileRefusal::Excluded("a memory file"));
+        }
         // The data format is the user's rule for this file, never a guess
         // from its name.
         let format = policy
@@ -394,12 +407,19 @@ impl PrivacySession {
             }
         };
 
-        // What a decision is bound to: the call, the destination and both
-        // contents.
+        // What a decision is bound to: the call as the model wrote it, the
+        // data format, the destination and both contents. The call's id
+        // alone names nothing.
         let mut hasher = Sha256::new();
-        hasher.update(b"craftsman-privacy-file-operation-v1\0");
-        hasher.update([change as u8]);
-        for piece in [call.id.as_bytes(), path.as_os_str().as_encoded_bytes()] {
+        hasher.update(b"craftsman-privacy-file-operation-v2\0");
+        hasher.update([change as u8, format as u8]);
+        let written = call.args.to_string();
+        for piece in [
+            call.id.as_bytes(),
+            call.name.as_bytes(),
+            written.as_bytes(),
+            path.as_os_str().as_encoded_bytes(),
+        ] {
             hasher.update((piece.len() as u64).to_le_bytes());
             hasher.update(piece);
         }
@@ -453,7 +473,7 @@ impl DerivedFileOperation {
     /// the digest of the preview the decision was about. A decision about
     /// anything else approves nothing, and a refused or finished operation
     /// cannot be approved.
-    pub fn approve(&self, shown: [u8; 32]) -> Result<(), FileRefusal> {
+    pub(crate) fn approve(&self, shown: [u8; 32]) -> Result<(), FileRefusal> {
         self.owner.live().map_err(FileRefusal::Stopped)?;
         let mut state = self.state.lock().unwrap();
         if *state != State::Derived || shown != self.digest {
@@ -461,6 +481,40 @@ impl DerivedFileOperation {
         }
         *state = State::Approved;
         Ok(())
+    }
+
+    /// The decision of a gate that stands between the file tool and its
+    /// handler: the call reached the handler with exactly the arguments this
+    /// operation shows. A gate that refuses never lets the call get there,
+    /// and arguments that are not the ones shown approve nothing.
+    pub(crate) fn approve_reached(&self, arguments: &serde_json::Value) -> Result<(), FileRefusal> {
+        if *arguments != self.arguments {
+            return Err(FileRefusal::NotApproved);
+        }
+        self.approve(self.digest)
+    }
+
+    /// The call's arguments with the real content in its content fields, for
+    /// a gate that reviews a call by the arguments it is handed.
+    pub(crate) fn shown_arguments(&self) -> Result<serde_json::Value, SessionStop> {
+        self.owner.live()?;
+        Ok(self.arguments.clone())
+    }
+
+    /// Whether the operation has written its file.
+    pub fn is_done(&self) -> bool {
+        *self.state.lock().unwrap() == State::Done
+    }
+
+    /// Whether this was derived from exactly `call`.
+    fn is_for(&self, call: &ToolCall) -> bool {
+        matches!(self.operation.call(), Ok(derived) if derived == call)
+    }
+
+    /// Whether the operation was refused or has run. Nothing can come of it
+    /// any more.
+    fn is_over(&self) -> bool {
+        matches!(*self.state.lock().unwrap(), State::Refused | State::Done)
     }
 
     /// The operation was refused: by a person, a policy or a mode. It can
@@ -560,17 +614,21 @@ impl DerivedFileOperation {
 /// The most derived operations that wait for their call to run.
 const MAX_WAITING: usize = 16;
 
-/// The file review of one agent of a privacy conversation. The approval
-/// gate asks it what a write or an edit will really do before it decides,
-/// and the file tools run what was derived and approved.
+/// The file review of a privacy conversation, for its root agent and for
+/// every agent it delegates to. Whoever reviews a write or an edit asks it
+/// what the call will really do, and the file tools run what was derived
+/// and approved. An agent is found by its own boundary; the review of one
+/// agent's call is never used for another's. Holding a review, a session or
+/// a record grants no access to a file and approves nothing.
 pub struct FileReview {
     session: Arc<PrivacySession>,
+    /// The root agent's boundary. Every other agent's is one of its family.
     boundary: Arc<ConversationBoundary>,
     policy: Arc<dyn CapturedUserPolicy>,
     root: PathBuf,
-    /// Derived operations by call id, from the review of a call until that
+    /// Derived operations by agent, from the review of a call until that
     /// call runs. A parked call keeps its entry across the suspension.
-    waiting: Mutex<Vec<(String, Arc<DerivedFileOperation>)>>,
+    waiting: Mutex<Vec<(Weak<ConversationBoundary>, Arc<DerivedFileOperation>)>>,
 }
 
 impl FileReview {
@@ -589,20 +647,36 @@ impl FileReview {
         })
     }
 
-    /// Called before anything reviews `call`. For a file write or edit that
-    /// names a placeholder it derives what will really be written and keeps
-    /// it for the review and for the tool. `None` for every other call,
-    /// which runs as it always does. A refusal is the tool's answer: nothing
-    /// was touched, and the call stays as the model wrote it.
+    /// The boundary of the agent a call runs in, from what its dispatch
+    /// carries.
+    fn boundary_for(&self, tracked: &TrackedDispatch) -> Option<Arc<ConversationBoundary>> {
+        let conversation = tracked.boundary()?.conversation()?;
+        self.boundary.member(&conversation)
+    }
+
+    /// Called for the root agent before anything reviews `call`. For a file
+    /// write or edit that names a placeholder it derives what will really be
+    /// written and keeps it for the review and for the tool. `None` for
+    /// every other call, which runs as it always does. A refusal is the
+    /// tool's answer: nothing was touched, and the call stays as the model
+    /// wrote it.
     pub async fn propose(
         &self,
+        call: &ToolCall,
+    ) -> Result<Option<Arc<DerivedFileOperation>>, FileRefusal> {
+        self.propose_in(&self.boundary, call).await
+    }
+
+    /// As [`propose`](Self::propose), for the agent whose boundary this is.
+    async fn propose_in(
+        &self,
+        boundary: &Arc<ConversationBoundary>,
         call: &ToolCall,
     ) -> Result<Option<Arc<DerivedFileOperation>>, FileRefusal> {
         if !matches!(call.name.as_str(), "write_file" | "edit_file") {
             return Ok(None);
         }
-        let proposed = self
-            .boundary
+        let proposed = boundary
             .proposed_operation(call)
             .await
             .map_err(|_| FileRefusal::Stopped(SessionStop::Unbound))?;
@@ -623,48 +697,135 @@ impl FileReview {
             &self.root,
         )?);
         let mut waiting = self.waiting.lock().unwrap();
-        waiting.retain(|(id, _)| *id != call.id);
+        // What is over, what belongs to an agent that is gone and what was
+        // derived for this call before are dropped, with the files they
+        // hold open.
+        waiting.retain(|(agent, known)| {
+            agent.strong_count() > 0
+                && !known.is_over()
+                && !(is_agent(agent, boundary) && known.is_for(call))
+        });
         if waiting.len() >= MAX_WAITING {
-            waiting.remove(0);
+            waiting.remove(0).1.refuse();
         }
-        waiting.push((call.id.clone(), derived.clone()));
+        waiting.push((Arc::downgrade(boundary), derived.clone()));
         Ok(Some(derived))
     }
 
-    /// The derived operation that waits for the call `id`, for the
-    /// interface that shows it to a person.
+    /// The derived operation that waits for the root agent's call `id`, for
+    /// the interface that shows it to a person.
     pub fn waiting(&self, id: &str) -> Option<Arc<DerivedFileOperation>> {
-        self.waiting
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(known, _)| known == id)
-            .map(|(_, derived)| derived.clone())
+        let waiting = self.waiting.lock().unwrap();
+        for (agent, derived) in waiting.iter() {
+            let named = matches!(derived.operation.call(), Ok(call) if call.id == id);
+            if named && is_agent(agent, &self.boundary) {
+                return Some(derived.clone());
+            }
+        }
+        None
     }
 
-    fn take(&self, id: &str) -> Option<Arc<DerivedFileOperation>> {
+    /// The operation that waits for exactly `call` of the agent whose
+    /// boundary this is.
+    fn take(
+        &self,
+        boundary: &Arc<ConversationBoundary>,
+        call: &ToolCall,
+    ) -> Option<Arc<DerivedFileOperation>> {
         let mut waiting = self.waiting.lock().unwrap();
-        let at = waiting.iter().position(|(known, _)| known == id)?;
+        let at = waiting
+            .iter()
+            .position(|(agent, derived)| is_agent(agent, boundary) && derived.is_for(call))?;
         Some(waiting.remove(at).1)
     }
 }
 
-/// A file tool of a privacy conversation: `write_file` or `edit_file`. A
-/// call that names no placeholder runs the wrapped tool as always. A call
-/// that names one runs only what was derived, shown and approved for it,
-/// through what that operation held on to. The outcome is the wrapped
-/// tool's own success text, or the refusal.
+/// Whether `agent` is this boundary: the same object, not an equal one. The
+/// list keeps the object's place alive, so its address names nothing else.
+fn is_agent(agent: &Weak<ConversationBoundary>, boundary: &Arc<ConversationBoundary>) -> bool {
+    std::ptr::eq(agent.as_ptr(), Arc::as_ptr(boundary))
+}
+
+/// The write of one derived operation, for the handler that performs it.
+struct DerivedWrite {
+    derived: Arc<DerivedFileOperation>,
+    running: Arc<ApprovedOperation>,
+}
+
+tokio::task_local! {
+    /// Set by [`RestoredFileTool`] around the tool it wraps, for the one
+    /// call it runs.
+    static DERIVED_WRITE: DerivedWrite;
+}
+
+/// For the handler of a file tool: the write of the operation that was
+/// derived and approved for the call running now, performed here in place of
+/// the handler's own write, through what the derivation held on to. `None`
+/// when the call has no derived operation; the handler then writes as it
+/// always does. Everything the handler does around its write stays its own:
+/// its checkpoints, its diagnostics and its result.
+pub(crate) fn authorized_write() -> Option<Result<usize, FileRefusal>> {
+    DERIVED_WRITE
+        .try_with(|write| write.derived.execute(Some(&write.running)))
+        .ok()
+}
+
+/// What a file tool says about a write, as pieces: its fixed words, the path
+/// as the call wrote it, and whatever it added after that, which is host
+/// text. Stated only when the outcome is exactly of that form.
+fn state_outcome(tracked: &TrackedDispatch, call: &ToolCall, outcome: &ToolOutcome) {
+    let Some(path) = call
+        .args
+        .get("file_path")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    let Some(added) = outcome
+        .content
+        .strip_prefix("Updated file ")
+        .and_then(|rest| rest.strip_prefix(path))
+    else {
+        return;
+    };
+    let mut parts = vec![
+        OutcomePart::Fixed(Arc::from("Updated file ")),
+        OutcomePart::Argument {
+            pointer: "/file_path".into(),
+            text: Arc::from(path),
+        },
+    ];
+    if !added.is_empty() {
+        parts.push(OutcomePart::Read {
+            what: "language diagnostics".into(),
+            text: Arc::from(added),
+        });
+    }
+    tracked.outcome_is(parts);
+}
+
+/// A file tool of a privacy conversation: `write_file` or `edit_file`, for
+/// the root agent or a delegated one. A call that names no placeholder runs
+/// the wrapped tool as always. A call that names one runs only as it was
+/// derived, shown and approved: the wrapped tool does everything it always
+/// does, and takes its write from [`authorized_write`].
 ///
-/// Without a review, as for the tools of a delegated agent, nothing can be
-/// derived: a call that names a placeholder is refused, so that a
-/// placeholder is never written to a file as if it were the value.
+/// For the root agent the approval gate derives and decides before the tool
+/// runs. A delegated agent's gate is inside its tool, so the operation is
+/// derived here, before that gate, and the gate is handed the arguments
+/// with the real content: its rules, its prompt and its activity line are
+/// about what will really be written. [`ReachedFileTool`] stands behind that
+/// gate and records that the gate let the call through. The recorded call
+/// is not changed in either case.
+///
+/// A call whose derived operation did not write is answered with a refusal.
 pub struct RestoredFileTool {
     inner: Arc<dyn Tool>,
-    review: Option<Arc<FileReview>>,
+    review: Arc<FileReview>,
 }
 
 impl RestoredFileTool {
-    pub fn new(inner: Arc<dyn Tool>, review: Option<Arc<FileReview>>) -> Self {
+    pub fn new(inner: Arc<dyn Tool>, review: Arc<FileReview>) -> Self {
         Self { inner, review }
     }
 }
@@ -676,14 +837,15 @@ impl Tool for RestoredFileTool {
     }
 
     /// Without a source view there is no checked operation, so nothing can
-    /// be restored. A call that names a placeholder is refused; any other
-    /// runs as always.
+    /// be restored. A call that names a placeholder, with a marker or
+    /// without one, is refused; any other runs as always.
     async fn call(
         &self,
         args: serde_json::Value,
         ctx: &mut ToolCtx<'_>,
     ) -> Result<ToolOutcome, AgentError> {
-        if args.to_string().contains("pv1-") {
+        let name = self.inner.def().name;
+        if self.review.boundary.names_placeholder(&name, &args).await {
             return Ok(ToolOutcome::err(FileRefusal::NotApproved.to_string()));
         }
         self.inner.call(args, ctx).await
@@ -695,51 +857,117 @@ impl Tool for RestoredFileTool {
         ctx: &mut ToolCtx<'_>,
         tracked: &TrackedDispatch,
     ) -> Result<ToolOutcome, AgentError> {
-        let Some(review) = &self.review else {
-            if args.to_string().contains("pv1-") {
-                return Ok(ToolOutcome::err(FileRefusal::Unsupported.to_string()));
+        let refused = |refusal: FileRefusal| Ok(ToolOutcome::err(refusal.to_string()));
+        let review = &self.review;
+        // The agent this call runs in, the invocation the agent issued for
+        // it, and the operation that was checked for that invocation.
+        // Without all three, nothing about the call is known, and a file
+        // tool does not run on that.
+        let Some(boundary) = review.boundary_for(tracked) else {
+            return refused(FileRefusal::NotApproved);
+        };
+        let running = tracked.invocation().and_then(|invocation| {
+            boundary
+                .operation_in_flight()
+                .filter(|running| running.is_for(invocation))
+        });
+        let Some(running) = running else {
+            return refused(FileRefusal::NotApproved);
+        };
+        let Ok(call) = running.call().cloned() else {
+            return refused(FileRefusal::NotApproved);
+        };
+        let waiting = review.take(&boundary, &call);
+        if running.edited_by_human() {
+            // What a person wrote in place of the arguments is that
+            // person's text. Nothing is restored into it, and it runs as it
+            // is. The conversation does not accept a person's text that
+            // holds one of its aliases; should one stand here all the same,
+            // it is not written to a file.
+            if let Some(derived) = waiting {
+                derived.refuse();
+            }
+            if boundary.names_placeholder(&call.name, &args).await {
+                return refused(FileRefusal::Excluded("arguments a person edited"));
             }
             return self.inner.call_with_view(args, ctx, tracked).await;
-        };
-        // The operation that was checked for the call running now.
-        let running = review.boundary.operation_in_flight();
-        let call = running.as_ref().and_then(|running| running.call().ok());
-        let derived = call.and_then(|call| review.take(&call.id));
-        let Some(derived) = derived else {
-            // Nothing was derived for this call. If it names a placeholder
-            // it was not reviewed as it would run, and does not run. What a
-            // person wrote in place of the arguments is that person's text.
-            let names_one = match &running {
-                Some(running) if running.edited_by_human() => false,
-                Some(running) => {
-                    !matches!(running.fields(), Ok(Some(fields)) if fields.is_empty())
-                        || args.to_string().contains("pv1-")
-                }
-                None => true,
-            };
-            if names_one {
-                return Ok(ToolOutcome::err(FileRefusal::NotApproved.to_string()));
-            }
-            return self.inner.call_with_view(args, ctx, tracked).await;
-        };
-        match derived.execute(running.as_ref()) {
-            Ok(_) => {
-                // The wrapped tool's own words for a finished write, with
-                // the path as the call wrote it.
-                let path = args
-                    .get("file_path")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                tracked.outcome_is(vec![
-                    OutcomePart::Fixed(Arc::from("Updated file ")),
-                    OutcomePart::Argument {
-                        pointer: "/file_path".into(),
-                        text: Arc::from(path),
-                    },
-                ]);
-                Ok(ToolOutcome::ok(format!("Updated file {path}")))
-            }
-            Err(refusal) => Ok(ToolOutcome::err(refusal.to_string())),
         }
+        // The conversation's own record of the reply says whether the call
+        // names a placeholder.
+        let names_one = !matches!(running.fields(), Ok(Some(fields)) if fields.is_empty())
+            || args.to_string().contains("pv1-");
+        let (derived, handed) = match waiting {
+            Some(derived) => (derived, args),
+            None if !names_one => return self.inner.call_with_view(args, ctx, tracked).await,
+            // The root agent's gate derives before the tool runs. A call
+            // that got here without that was not reviewed as it would run.
+            None if boundary.is_root() => return refused(FileRefusal::NotApproved),
+            // A delegated agent's gate is inside this tool: derive now,
+            // before it, and hand that gate what will really be written.
+            None => match review.propose_in(&boundary, &call).await {
+                Ok(Some(_)) => match review.take(&boundary, &call) {
+                    Some(derived) => match derived.shown_arguments() {
+                        Ok(shown) => (derived, shown),
+                        Err(stop) => return refused(FileRefusal::Stopped(stop)),
+                    },
+                    None => return refused(FileRefusal::NotApproved),
+                },
+                Ok(None) => return refused(FileRefusal::NotApproved),
+                Err(refusal) => return refused(refusal),
+            },
+        };
+        let write = DerivedWrite {
+            derived: derived.clone(),
+            running,
+        };
+        let outcome = DERIVED_WRITE
+            .scope(write, self.inner.call_with_view(handed, ctx, tracked))
+            .await;
+        if !derived.is_done() {
+            // A gate refused, the handler refused, or the write failed.
+            // Whatever it was, this operation is over.
+            derived.refuse();
+            return match outcome {
+                Ok(outcome) if !outcome.is_error => refused(FileRefusal::NotApproved),
+                other => other,
+            };
+        }
+        let outcome = outcome?;
+        state_outcome(tracked, &call, &outcome);
+        Ok(outcome)
+    }
+}
+
+/// A delegated agent's file tool as that agent's gate reaches it. It stands
+/// directly behind the gate. When the gate lets through a call for which an
+/// operation was derived, with exactly the arguments that operation shows,
+/// that is the gate's decision on what was shown, and it is recorded here.
+/// A gate that refuses never calls this. Every other call passes through.
+pub struct ReachedFileTool {
+    inner: Arc<dyn Tool>,
+}
+
+impl ReachedFileTool {
+    pub fn new(inner: Arc<dyn Tool>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for ReachedFileTool {
+    fn def(&self) -> ToolDef {
+        self.inner.def()
+    }
+
+    async fn call(
+        &self,
+        args: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        let reached = DERIVED_WRITE.try_with(|write| write.derived.approve_reached(&args));
+        if let Ok(Err(refusal)) = reached {
+            return Ok(ToolOutcome::err(refusal.to_string()));
+        }
+        self.inner.call(args, ctx).await
     }
 }

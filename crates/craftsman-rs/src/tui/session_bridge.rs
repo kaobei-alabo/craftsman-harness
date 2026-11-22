@@ -26,6 +26,9 @@ mod control_tests;
 #[path = "session_bridge/lifecycle_tests.rs"]
 mod lifecycle_tests;
 #[cfg(test)]
+#[path = "session_bridge/privacy_display_tests.rs"]
+pub(crate) mod privacy_display_tests;
+#[cfg(test)]
 #[path = "session_bridge/reliability_tests.rs"]
 mod reliability_tests;
 #[cfg(test)]
@@ -45,6 +48,9 @@ pub(super) enum ApprovalChoice {
 pub(super) enum UiEvent {
     ModelRoundStarted,
     Delta(String),
+    /// A committed reply of a privacy conversation, as a person may read
+    /// it. Such a conversation sends no deltas.
+    HumanReply(crate::privacy_session::HumanReply),
     Activity(String),
     ToolActivity(ToolActivityEvent),
     Approval {
@@ -190,6 +196,7 @@ impl UiBridge {
         let tool_activity_tx = self.tx.clone();
         let approval_tx = self.tx.clone();
         let ask_tx = self.tx.clone();
+        let reply_tx = self.tx.clone();
         SessionExtras {
             interrupt_model_on_cancel: true,
             terminal_round_limits: true,
@@ -205,6 +212,12 @@ impl UiBridge {
             })),
             token_sink: Some(Arc::new(move |text: &str| {
                 let _ = token_tx.send(UiEvent::Delta(text.to_string()));
+            })),
+            // Only a privacy conversation uses this: its replies arrive
+            // here once they are committed, and its stream never reaches
+            // the token sink above.
+            human_reply_sink: Some(Arc::new(move |reply| {
+                let _ = reply_tx.send(UiEvent::HumanReply(reply));
             })),
             activity_sink: Some(Arc::new(move |line: &str| {
                 let _ = activity_tx.send(UiEvent::Activity(line.to_string()));
@@ -633,6 +646,7 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             app.dirty = true;
         }
         UiEvent::Delta(delta) => app.append_delta(delta),
+        UiEvent::HumanReply(reply) => app.show_human_reply(reply),
         UiEvent::Activity(line) => app.activity(line),
         UiEvent::ToolActivity(event) => match event {
             ToolActivityEvent::Started {

@@ -24,8 +24,18 @@ impl CapturedUserPolicy for Rule {
     }
 }
 
-/// The ordinary file tool: it writes its arguments as they are.
-struct PlainFile(&'static str, std::path::PathBuf);
+/// What a file tool did around its write, in order, and whether it reports
+/// what a checker says about the file afterwards.
+#[derive(Default)]
+struct Around {
+    steps: Mutex<Vec<String>>,
+    diagnose: std::sync::atomic::AtomicBool,
+}
+
+/// A file tool shaped as the application's own: it notes the file for a
+/// checkpoint, writes, finishes the checkpoint and reports diagnostics. Its
+/// write is the derived one when there is one, and its arguments otherwise.
+struct PlainFile(&'static str, std::path::PathBuf, Arc<Around>);
 
 #[async_trait::async_trait]
 impl Tool for PlainFile {
@@ -39,12 +49,32 @@ impl Tool for PlainFile {
 
     async fn call(&self, args: Value, _: &mut ToolCtx<'_>) -> Result<ToolOutcome, AgentError> {
         let path = args["file_path"].as_str().unwrap_or_default();
-        let text = args["content"]
-            .as_str()
-            .or(args["new_string"].as_str())
-            .unwrap_or_default();
-        std::fs::write(self.1.join(path), text).unwrap();
-        Ok(ToolOutcome::ok(format!("Updated file {path}")))
+        let step = |what: &str| self.2.steps.lock().unwrap().push(format!("{what} {path}"));
+        step("began");
+        let written = match crate::privacy_session::authorized_write() {
+            Some(written) => written.map(|_| ()).map_err(|refusal| refusal.to_string()),
+            None => {
+                let text = args["content"]
+                    .as_str()
+                    .or(args["new_string"].as_str())
+                    .unwrap_or_default();
+                std::fs::write(self.1.join(path), text).map_err(|error| error.to_string())
+            }
+        };
+        step("finished");
+        if let Err(refusal) = written {
+            return Ok(ToolOutcome::err(refusal));
+        }
+        let mut message = format!("Updated file {path}");
+        if self.2.diagnose.load(std::sync::atomic::Ordering::SeqCst) {
+            // A checker quotes the file as it is on disk now.
+            let on_disk = std::fs::read_to_string(self.1.join(path)).unwrap();
+            step("checked");
+            message.push_str(&format!(
+                "\n\nDiagnostics:\nline 1: unknown word in '{on_disk}'"
+            ));
+        }
+        Ok(ToolOutcome::ok(message))
     }
 }
 
@@ -148,6 +178,7 @@ struct Files {
     agent: Arc<Agent>,
     reviewer: Arc<Reviewer>,
     review: Arc<FileReview>,
+    around: Arc<Around>,
     dir: tempfile::TempDir,
     placeholder: String,
     typed: String,
@@ -166,6 +197,23 @@ async fn files_with(
     server: &MockServer,
     rule: Option<FileDataFormat>,
     sink: crate::agent::TokenSink,
+) -> Files {
+    set_up(vault, server, rule, sink, None).await
+}
+
+/// A delegated agent's side of a conversation: the server its model is on,
+/// and what its gate can ask.
+struct Helper<'a> {
+    side: &'a MockServer,
+    prompt: Option<crate::agent::ApprovalPrompt>,
+}
+
+async fn set_up(
+    vault: &Vault,
+    server: &MockServer,
+    rule: Option<FileDataFormat>,
+    sink: crate::agent::TokenSink,
+    helper: Option<Helper<'_>>,
 ) -> Files {
     let source = LiteralSource::new(&[(EMAIL, "email"), (PHONE, "phone")]);
     let session = Arc::new(
@@ -210,11 +258,49 @@ async fn files_with(
     let mut builder = Agent::builder(Arc::new(provider))
         .model_view_boundary(Some(boundary.clone()))
         .middleware(reviewer.clone());
+    let around = Arc::new(Around::default());
+    let mut plain: Vec<Arc<dyn Tool>> = Vec::new();
     for name in ["write_file", "edit_file"] {
-        builder = builder.tool(Arc::new(RestoredFileTool::new(
-            Arc::new(PlainFile(name, dir.path().to_path_buf())),
-            Some(review.clone()),
+        plain.push(Arc::new(PlainFile(
+            name,
+            dir.path().to_path_buf(),
+            around.clone(),
         )));
+    }
+    if let Some(helper) = helper {
+        // A delegated agent with the two file tools as the application
+        // gives them to one: derived before the agent's own gate and
+        // recorded behind it.
+        let delegated = delegated_provider(
+            client(helper.side),
+            session.clone(),
+            Arc::new(Mutex::new((0, 0))),
+            Arc::new(|_: &str| {}),
+        )
+        .await
+        .unwrap();
+        let spec = SubAgentSpec {
+            name: "helper".into(),
+            description: "Writes notes.".into(),
+            system_prompt: "You write notes.".into(),
+            tools: crate::agent::gated_for_delegation(
+                plain.clone(),
+                &Arc::new(Mutex::new(crate::hitl::ApprovalState::default())),
+                (&helper.prompt, &None),
+                dir.path(),
+                Some(&review),
+            ),
+            model: Some(delegated),
+            harness_profile: None,
+            interrupt_on: vec![],
+            max_depth: 1,
+        };
+        builder = builder.name("main").middleware(Arc::new(
+            SubAgentMiddleware::new(vec![spec]).for_agent("main"),
+        ));
+    }
+    for tool in plain {
+        builder = builder.tool(Arc::new(RestoredFileTool::new(tool, review.clone())));
     }
     let agent = Arc::new(builder.build());
     let typed = format!("who handles {EMAIL}?");
@@ -226,6 +312,7 @@ async fn files_with(
         agent,
         reviewer,
         review,
+        around,
         dir,
         typed,
     }
@@ -690,7 +777,7 @@ async fn a_parked_write_runs_after_the_person_saw_the_real_content_and_only_as_s
         (FileRefusal::NotApproved.to_string(), true)
     );
     assert!(!f.dir.path().join("note.txt").exists());
-    assert_eq!(waiting.approve(digest), Ok(()));
+    assert_eq!(waiting.approve(digest), Err(FileRefusal::NotApproved));
     assert_eq!(waiting.execute(None), Err(FileRefusal::NotApproved));
 
     // The same again, with the decision bound: the resumed call writes the
@@ -733,4 +820,350 @@ async fn a_parked_write_runs_after_the_person_saw_the_real_content_and_only_as_s
     // It ran once.
     assert_eq!(waiting.execute(None), Err(FileRefusal::Spent));
     nothing_original_sent(&server).await;
+}
+
+#[tokio::test]
+async fn a_derived_write_runs_inside_the_file_tool_and_its_diagnostics_reach_the_model_as_a_view() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+    f.around
+        .diagnose
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    scripted(
+        &server,
+        vec![
+            file_call(
+                "c1",
+                "write_file",
+                json!({"file_path": "note.txt", "content": format!("to {}", f.placeholder)}),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    // The tool itself ran: it began its checkpoint, the derived write went
+    // to disk inside it, it finished the checkpoint and then checked the
+    // file as it is on disk.
+    assert_eq!(
+        *f.around.steps.lock().unwrap(),
+        ["began note.txt", "finished note.txt", "checked note.txt"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.dir.path().join("note.txt")).unwrap(),
+        format!("to {EMAIL}")
+    );
+    // The recorded result is what the tool returned, with what its checker
+    // quoted from the file.
+    assert_eq!(
+        result_at(&f.agent, 2),
+        (
+            format!("Updated file note.txt\n\nDiagnostics:\nline 1: unknown word in 'to {EMAIL}'"),
+            false
+        )
+    );
+    // The model is told the same with the placeholder, and no request holds
+    // the value.
+    let told = bodies(&server).await[1]["messages"][3]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        told,
+        format!(
+            "Updated file note.txt\n\nDiagnostics:\nline 1: unknown word in 'to {}'",
+            f.placeholder
+        )
+    );
+    nothing_original_sent(&server).await;
+}
+
+#[tokio::test]
+async fn arguments_a_person_edited_run_as_that_person_wrote_them() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    for with_alias in [false, true] {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+        // An alias this conversation issued for a telephone number. It has
+        // no marker.
+        let number = f
+            .session
+            .admit_raw(&draft(&format!("who handles {PHONE}?")))
+            .await
+            .unwrap();
+        let alias = issued(&number);
+        assert!(!alias.contains("pv1-"));
+        let edited = match with_alias {
+            true => format!("call {alias}"),
+            false => "to the person".to_owned(),
+        };
+        *f.reviewer.decide.lock().unwrap() = Decide::Park;
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "c1",
+                    "write_file",
+                    json!({"file_path": "note.txt", "content": format!("to {}", f.placeholder)}),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        let waiting = f.review.waiting("c1").unwrap();
+        let digest = waiting.preview(|preview| preview.digest).unwrap();
+        waiting.approve(digest).unwrap();
+        // The person writes other arguments instead.
+        let action = HitlAction::ApproveEdited {
+            args: json!({"file_path": "note.txt", "content": edited}),
+        };
+        let note = f.dir.path().join("note.txt");
+        if with_alias {
+            // A person's text that holds an alias of this conversation has
+            // no model view, with a marker or without one. The conversation
+            // stops when the call is resumed, before the file tool runs,
+            // and the alias is never written to a file as if it were a
+            // telephone number.
+            let decision = fixture_human_input(&f.session, &f.agent, &action);
+            let resumed = f.agent.resume_with_view(action, "Denied.", decision).await;
+            assert!(resumed.is_err());
+            assert!(f.session.check().is_err());
+            assert!(!note.exists());
+            assert!(f.around.steps.lock().unwrap().is_empty());
+            assert!(matches!(
+                waiting.execute(None),
+                Err(FileRefusal::Stopped(_))
+            ));
+            continue;
+        }
+        // What was derived from the model's call is over, nothing is
+        // restored into the person's text, and it is written as it is by
+        // the file tool's own write.
+        let decision = fixture_human_input(&f.session, &f.agent, &action);
+        f.agent
+            .resume_with_view(action, "Denied.", decision)
+            .await
+            .unwrap();
+        assert_eq!(waiting.execute(None), Err(FileRefusal::NotApproved));
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), edited);
+        assert_eq!(
+            result_at(&f.agent, 2),
+            ("Updated file note.txt".to_owned(), false)
+        );
+        assert_eq!(
+            *f.around.steps.lock().unwrap(),
+            ["began note.txt", "finished note.txt"]
+        );
+        nothing_original_sent(&server).await;
+    }
+}
+
+use craftsman_harness::SubAgentSpec;
+use craftsman_harness::builtin::SubAgentMiddleware;
+
+/// What a delegated agent's gate was shown, and what it answers.
+#[derive(Default)]
+struct GateSeat {
+    shown: Mutex<Vec<String>>,
+    deny: std::sync::atomic::AtomicBool,
+}
+
+struct DelegatedFiles {
+    f: Files,
+    seat: Arc<GateSeat>,
+    /// The alias the conversation issued for the telephone number.
+    number: String,
+}
+
+/// One conversation whose root agent delegates to `helper`, which has the
+/// two file tools behind its own gate. `channel` says whether that gate can
+/// ask a person.
+async fn delegated_files(
+    vault: &Vault,
+    root: &MockServer,
+    side: &MockServer,
+    rule: Option<FileDataFormat>,
+    channel: bool,
+) -> DelegatedFiles {
+    let seat = Arc::new(GateSeat::default());
+    let asked = seat.clone();
+    let prompt: crate::agent::ApprovalPrompt = Arc::new(move |_, _, details| {
+        asked.shown.lock().unwrap().push(details.to_owned());
+        match asked.deny.load(std::sync::atomic::Ordering::SeqCst) {
+            true => crate::agent::ApprovalPromptResult::Reject("not this one".into()),
+            false => crate::agent::ApprovalPromptResult::Approve,
+        }
+    });
+    let helper = Helper {
+        side,
+        prompt: channel.then_some(prompt),
+    };
+    let f = set_up(vault, root, rule, Arc::new(|_: &str| {}), Some(helper)).await;
+    let number = f
+        .session
+        .admit_raw(&draft(&format!("who handles {PHONE}?")))
+        .await
+        .unwrap();
+    DelegatedFiles {
+        number: issued(&number),
+        seat,
+        f,
+    }
+}
+
+/// The root agent asks `helper` for a note, and `helper` asks to write
+/// `content` to `note.txt`.
+async fn delegates_a_note(root: &MockServer, side: &MockServer, content: &str) {
+    scripted(
+        root,
+        vec![
+            file_call(
+                "t1",
+                "task",
+                json!({"description": "write the note", "subagent_type": "helper"}),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    scripted(
+        side,
+        vec![
+            file_call(
+                "w1",
+                "write_file",
+                json!({"file_path": "note.txt", "content": content}),
+            ),
+            answer("chat", &["saved"]),
+        ],
+    )
+    .await;
+}
+
+/// What the delegated agent's model was told about its write.
+async fn told_the_helper(side: &MockServer) -> String {
+    bodies(side).await[1]["messages"][3]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_delegated_agents_write_is_derived_in_its_own_lane_and_decided_by_its_own_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(&dir).await;
+
+    // Approved by the person at the delegated agent's gate.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, Some(FileDataFormat::PlainText), true).await;
+    let (p, n) = (d.f.placeholder.clone(), d.number.clone());
+    assert!(!n.contains("pv1-"));
+    delegates_a_note(&root, &side, &format!("Contact {p} or call {n}.")).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    let note = d.f.dir.path().join("note.txt");
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        format!("Contact {EMAIL} or call {PHONE}.")
+    );
+    // The gate asked once, about the content that was written. It was shown
+    // no placeholder, with a marker or without one.
+    let shown = d.seat.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].contains(&format!("Contact {EMAIL} or call {PHONE}.")));
+    assert!(!shown[0].contains(&p) && !shown[0].contains(&n));
+    // The agent's own file tool ran around the write.
+    assert_eq!(
+        *d.f.around.steps.lock().unwrap(),
+        ["began note.txt", "finished note.txt"]
+    );
+    // The delegated agent's call stays as its model wrote it, and its model
+    // is told the tool's own words.
+    assert_eq!(told_the_helper(&side).await, "Updated file note.txt");
+    let call = bodies(&side).await[1]["messages"][2]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(call.contains(&p) && call.contains(&n));
+    // The root agent's review holds nothing of it.
+    assert!(d.f.review.waiting("w1").is_none());
+    for server in [&root, &side] {
+        nothing_original_sent(server).await;
+    }
+
+    // Refused by the person: nothing is written, and the file tool never
+    // ran.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, Some(FileDataFormat::PlainText), true).await;
+    d.seat.deny.store(true, std::sync::atomic::Ordering::SeqCst);
+    delegates_a_note(&root, &side, &format!("Contact {}.", d.f.placeholder)).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert!(!d.f.dir.path().join("note.txt").exists());
+    assert_eq!(d.seat.shown.lock().unwrap().len(), 1);
+    assert!(d.f.around.steps.lock().unwrap().is_empty());
+    assert!(told_the_helper(&side).await.contains("not this one"));
+
+    // A gate that cannot ask anyone refuses, as for any delegated write.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, Some(FileDataFormat::PlainText), false).await;
+    delegates_a_note(&root, &side, &format!("Contact {}.", d.f.placeholder)).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert!(!d.f.dir.path().join("note.txt").exists());
+    assert!(d.f.around.steps.lock().unwrap().is_empty());
+    assert!(
+        told_the_helper(&side)
+            .await
+            .contains("requires user approval")
+    );
+
+    // No rule of the user's policy for the file: refused before the gate is
+    // asked. The call names only the telephone alias, which has no marker;
+    // it is not written to the file as it is.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, None, true).await;
+    delegates_a_note(&root, &side, &format!("Call {}.", d.number)).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert!(!d.f.dir.path().join("note.txt").exists());
+    assert!(d.seat.shown.lock().unwrap().is_empty());
+    assert!(d.f.around.steps.lock().unwrap().is_empty());
+    assert_eq!(
+        told_the_helper(&side).await,
+        FileRefusal::NoRule.to_string()
+    );
+
+    // A call that names no placeholder is the delegated agent's ordinary
+    // write: asked about and written as the model wrote it.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, None, true).await;
+    delegates_a_note(&root, &side, "Nothing private.").await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(d.f.dir.path().join("note.txt")).unwrap(),
+        "Nothing private."
+    );
+    assert_eq!(d.seat.shown.lock().unwrap().len(), 1);
 }

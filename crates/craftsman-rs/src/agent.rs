@@ -735,7 +735,12 @@ impl Tool for HostTool {
                     }
                     None => None,
                 };
-                let result = b.write(path, content).await;
+                // In a privacy conversation the write of a call that names a
+                // placeholder is the one derived and approved for it.
+                let result = match crate::privacy_session::authorized_write() {
+                    Some(written) => written.map(|_| ()).map_err(|refusal| refusal.to_string()),
+                    None => b.write(path, content).await.map_err(|e| e.to_string()),
+                };
                 if let Some(workspace) = &self.workspace_checkpoints {
                     workspace.finish_mutation(baseline).await;
                 }
@@ -745,7 +750,7 @@ impl Tool for HostTool {
                         self.append_diagnostics(path, &mut message).await;
                         ToolOutcome::ok(message)
                     }
-                    Err(e) => err_outcome(e),
+                    Err(e) => ToolOutcome::err(e),
                 }
             }
             HostKind::Edit => {
@@ -762,7 +767,13 @@ impl Tool for HostTool {
                     }
                     None => None,
                 };
-                let result = b.edit(path, old, new, replace_all).await;
+                let result = match crate::privacy_session::authorized_write() {
+                    Some(written) => written.map(|_| ()).map_err(|refusal| refusal.to_string()),
+                    None => b
+                        .edit(path, old, new, replace_all)
+                        .await
+                        .map_err(|e| e.to_string()),
+                };
                 if let Some(workspace) = &self.workspace_checkpoints {
                     workspace.finish_mutation(baseline).await;
                 }
@@ -772,7 +783,7 @@ impl Tool for HostTool {
                         self.append_diagnostics(path, &mut message).await;
                         ToolOutcome::ok(message)
                     }
-                    Err(e) => err_outcome(e),
+                    Err(e) => ToolOutcome::err(e),
                 }
             }
             HostKind::Ls => {
@@ -817,27 +828,61 @@ impl Tool for HostTool {
 
 /// The tools of an agent of a privacy conversation: the two file tools
 /// wrapped so that a call that names a placeholder runs only as it was
-/// derived and approved, or not at all where the agent has no review. Every
-/// other tool, and every tool of any other session, is as it was.
+/// derived and approved. Every other tool, and every tool of a session
+/// without a review, is as it was.
 fn with_restored_files(
     tools: Vec<Arc<dyn Tool>>,
     review: Option<&Arc<crate::privacy_session::FileReview>>,
-    private: bool,
 ) -> Vec<Arc<dyn Tool>> {
-    if !private {
+    let Some(review) = review else {
         return tools;
-    }
+    };
     let mut wrapped = Vec::with_capacity(tools.len());
     for tool in tools {
         wrapped.push(match tool.def().name.as_str() {
             "write_file" | "edit_file" => Arc::new(crate::privacy_session::RestoredFileTool::new(
                 tool,
-                review.cloned(),
+                review.clone(),
             )) as Arc<dyn Tool>,
             _ => tool,
         });
     }
     wrapped
+}
+
+/// A delegated agent's tools behind the legacy gate. In a privacy
+/// conversation its two file tools are derived before that gate and record
+/// behind it that the gate let the call through; the gate itself, its rules
+/// and its prompt are the same.
+pub(crate) fn gated_for_delegation(
+    tools: Vec<Arc<dyn Tool>>,
+    approval: &Arc<Mutex<ApprovalState>>,
+    prompt: (
+        &Option<ApprovalPrompt>,
+        &Option<(CallApprovalPrompt, ToolActivitySink)>,
+    ),
+    cwd: &std::path::Path,
+    review: Option<&Arc<crate::privacy_session::FileReview>>,
+) -> Vec<Arc<dyn Tool>> {
+    let mut reached = Vec::with_capacity(tools.len());
+    for tool in tools {
+        reached.push(match (review, tool.def().name.as_str()) {
+            (Some(_), "write_file" | "edit_file") => {
+                Arc::new(crate::privacy_session::ReachedFileTool::new(tool)) as Arc<dyn Tool>
+            }
+            _ => tool,
+        });
+    }
+    with_restored_files(
+        crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
+            reached,
+            approval,
+            prompt.0.clone(),
+            cwd,
+            prompt.1.clone(),
+        ),
+        review,
+    )
 }
 
 fn host_and_web_tools(
@@ -914,6 +959,12 @@ pub struct SessionExtras {
     /// permission to build with fewer parts. No frontend, configuration or
     /// CLI route sets this.
     pub(crate) privacy_view: Option<crate::privacy_session::PrivacyViewSelection>,
+    /// Where an interactive frontend takes the replies of a privacy
+    /// conversation's main agent, as a person may read them. With it the
+    /// main model's stream is held and never reaches `token_sink`. It has no
+    /// effect on any other session, and none on a privacy conversation
+    /// without it.
+    pub human_reply_sink: Option<crate::privacy_session::HumanReplySink>,
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
     /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
@@ -1841,7 +1892,32 @@ async fn build_session_with_capture_profile(
         Some(_) => Arc::new(|_: &str| {}),
         None => stdout_sink(),
     };
-    let main_sink = extras.token_sink.unwrap_or_else(stdout_sink);
+    // A frontend that shows the replies of a privacy conversation is given
+    // each one when the agent has retained it. Until then the main model's
+    // stream is held and shown nowhere.
+    let reply_display = match (&privacy_view, &extras.human_reply_sink) {
+        (Some(session), Some(show)) => Some(crate::privacy_session::ReplyDisplay::new(
+            session.clone(),
+            show.clone(),
+        )),
+        _ => None,
+    };
+    let main_sink = match &reply_display {
+        Some(display) => display.token_sink(),
+        None => extras.token_sink.unwrap_or_else(stdout_sink),
+    };
+    let main_round_sink: Option<RoundSink> = match &reply_display {
+        Some(display) => {
+            let (display, inner) = (display.clone(), extras.round_sink.clone());
+            Some(Arc::new(move || {
+                display.round_started();
+                if let Some(inner) = &inner {
+                    inner();
+                }
+            }))
+        }
+        None => extras.round_sink.clone(),
+    };
     // ORIGINAL declared identity snapshot, not display labels or caller aliases.
     let mut request_agents = Vec::new();
     if let Some(prepared) = construction.prepared() {
@@ -1939,8 +2015,7 @@ async fn build_session_with_capture_profile(
                 .await
                 .map(|provider| {
                     Arc::new(
-                        provider
-                            .with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
+                        provider.with_sinks(main_round_sink.clone(), extras.activity_sink.clone()),
                     ) as Arc<dyn ModelProvider>
                 })
                 .map_err(|_| unavailable.clone())
@@ -1958,7 +2033,7 @@ async fn build_session_with_capture_profile(
                 )
                 .await
                 .map(|provider| {
-                    Arc::new(provider.with_round_sink(extras.round_sink.clone()))
+                    Arc::new(provider.with_round_sink(main_round_sink.clone()))
                         as Arc<dyn ModelProvider>
                 })
                 .map_err(|_| unavailable.clone())
@@ -2117,6 +2192,24 @@ async fn build_session_with_capture_profile(
             };
             (String::new(), Some(boundary))
         }
+    };
+    if let (Some(display), Some(boundary)) = (reply_display, &privacy_boundary) {
+        boundary.show_replies(display);
+    }
+    // In a privacy conversation the file tools of the root agent and of
+    // every delegated agent run what was derived, shown and approved for a
+    // call that names a placeholder. One review serves them all and finds
+    // each agent by its own boundary.
+    let file_review = match (&privacy_view, &privacy_boundary, &extras.privacy_view) {
+        (Some(session), Some(boundary), Some(selection)) => {
+            Some(crate::privacy_session::FileReview::new(
+                session.clone(),
+                boundary.clone(),
+                selection.policy(),
+                cwd.clone(),
+            ))
+        }
+        _ => None,
     };
     let shell_settings = match construction.prepared() {
         Some(prepared) => prepared.shell().clone(), // Includes disabled-service credential sources.
@@ -2468,9 +2561,6 @@ async fn build_session_with_capture_profile(
         }
         #[cfg(feature = "gadgets")]
         subagent_prompt.push_str(&gadget_skill_block);
-        // A delegated agent's file tools have no review of their own yet.
-        let subagent_tools =
-            with_restored_files(shared_tools.clone(), None, privacy_view.is_some());
         Some(SubAgentSpec {
             name: "general-purpose".into(),
             description: gp_profile.description.unwrap_or_else(|| {
@@ -2481,14 +2571,14 @@ async fn build_session_with_capture_profile(
             // host/network tool uses the same gate: legacy SubagentGate shares
             // ApprovalState/UI callbacks; headless shares its immutable policy.
             tools: if construction.gate().is_some() {
-                subagent_tools // Already wrapped with the SAME immutable invocation gate.
+                shared_tools.clone() // Already wrapped with the SAME immutable invocation gate.
             } else {
-                crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
-                    subagent_tools,
+                gated_for_delegation(
+                    shared_tools.clone(),
                     &approval,
-                    extras.approval_prompt.clone(),
+                    (&extras.approval_prompt, &extras.delegated_tool_callbacks),
                     &cwd,
-                    extras.delegated_tool_callbacks.clone(),
+                    file_review.as_ref(),
                 )
             },
             model: Some(sub_provider.clone()),
@@ -2525,12 +2615,12 @@ async fn build_session_with_capture_profile(
         let tools = if construction.gate().is_some() {
             tools
         } else {
-            crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
+            gated_for_delegation(
                 tools,
                 &approval,
-                extras.approval_prompt.clone(),
+                (&extras.approval_prompt, &extras.delegated_tool_callbacks),
                 &cwd,
-                extras.delegated_tool_callbacks.clone(),
+                file_review.as_ref(),
             )
         };
         let subagent_prompt = match construction.prepared() {
@@ -2752,19 +2842,6 @@ async fn build_session_with_capture_profile(
     }
     // Legacy approval remains the last policy gate. Headless protects its immutable
     // gate before profile hooks AND wraps every contributed tool terminal.
-    // In a privacy conversation the root agent's file tools run what was
-    // derived, shown and approved for a call that names a placeholder.
-    let file_review = match (&privacy_view, &privacy_boundary, &extras.privacy_view) {
-        (Some(session), Some(boundary), Some(selection)) => {
-            Some(crate::privacy_session::FileReview::new(
-                session.clone(),
-                boundary.clone(),
-                selection.policy(),
-                cwd.clone(),
-            ))
-        }
-        _ => None,
-    };
     if let Some(gate) = construction.gate() {
         // Also gate tools contributed by todo/subagent/profile middleware at
         // their terminal handles, not only by the dispatch middleware onion.
@@ -2897,11 +2974,7 @@ async fn build_session_with_capture_profile(
             .checkpointer(cp.clone() as Arc<dyn craftsman_harness::Checkpointer>)
             .journal(Arc::new(JsonlJournal::new()));
     }
-    for tool in with_restored_files(
-        shared_tools.clone(),
-        file_review.as_ref(),
-        privacy_view.is_some(),
-    ) {
+    for tool in with_restored_files(shared_tools.clone(), file_review.as_ref()) {
         builder = builder.tool(tool);
     }
     if let Some(controller) = &verification {

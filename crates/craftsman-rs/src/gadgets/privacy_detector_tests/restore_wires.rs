@@ -5,7 +5,9 @@
 //! On Chat, Responses, Claude Messages and Gemini a person approves a file
 //! write after being shown its real content, the file gets that content, and
 //! the person reads the reply with the value. The model, the record and
-//! every request keep the placeholder.
+//! every request keep the placeholder. The same holds for a file a delegated
+//! agent writes behind its own gate, and a frontend that shows replies is
+//! given each committed reply once.
 //!
 //! Unmarked startup returns before any build, path or configuration access.
 
@@ -80,14 +82,37 @@ struct FromInput(Box<dyn Fn(&str) -> wiremock::ResponseTemplate + Send + Sync>);
 
 impl wiremock::Respond for FromInput {
     fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
-        let raw = String::from_utf8_lossy(&request.body);
-        let placeholder = raw
-            .split("Who handles ")
-            .nth(1)
-            .and_then(|rest| rest.split('?').next())
-            .expect("the request carries the input");
-        (self.0)(placeholder)
+        (self.0)(&between(request, "Who handles ", "?"))
     }
+}
+
+/// A delegated agent's reply, made from the placeholder its task carries.
+struct FromTask(Box<dyn Fn(&str) -> wiremock::ResponseTemplate + Send + Sync>);
+
+impl wiremock::Respond for FromTask {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        (self.0)(&between(request, "Jot-down: ", " ;end"))
+    }
+}
+
+/// What stands between `open` and `close` in a request.
+fn between(request: &wiremock::Request, open: &str, close: &str) -> String {
+    let raw = String::from_utf8_lossy(&request.body);
+    raw.split(open)
+        .nth(1)
+        .and_then(|rest| rest.split(close).next())
+        .expect("the request carries the input")
+        .to_owned()
+}
+
+/// Mounts the reply to the request at `index` of a server, from the first.
+async fn nth(server: &MockServer, index: u8, reply: impl wiremock::Respond + 'static) {
+    Mock::given(method("POST"))
+        .respond_with(reply)
+        .up_to_n_times(1)
+        .with_priority(index + 1)
+        .mount(server)
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -135,7 +160,7 @@ async fn restore_wires_native_fixture() {
     .await
     .unwrap();
 
-    let mut written = 0;
+    let (mut written, mut delegated, mut shown_replies) = (0, 0, 0);
     for wire in WIRES {
         let note = workspace.join(format!("restored-{wire}.txt"));
         let server = MockServer::start().await;
@@ -268,9 +293,138 @@ async fn restore_wires_native_fixture() {
         assert_eq!(human.restored(), 1, "{wire}");
         assert!(owner.check().is_ok(), "{wire}");
         session.lsp.shutdown().await;
+
+        // A second conversation on the same wire: the root agent delegates,
+        // and the delegated agent writes the file behind its own gate.
+        let note = workspace.join(format!("delegated-{wire}.txt"));
+        let server = MockServer::start().await;
+        nth(
+            &server,
+            0,
+            FromInput(Box::new(move |placeholder| {
+                let task = json!({"description": format!("Jot-down: {placeholder} ;end"),
+                    "subagent_type": "general-purpose"});
+                reply(wire, 0, Some(("wire-task", "task", &task)), "")
+            })),
+        )
+        .await;
+        let path = note.clone();
+        nth(
+            &server,
+            1,
+            FromTask(Box::new(move |placeholder| {
+                let write =
+                    json!({"file_path": path, "content": format!("Delegated: {placeholder}.")});
+                reply(wire, 1, Some(("wire-note", "write_file", &write)), "")
+            })),
+        )
+        .await;
+        nth(&server, 2, reply(wire, 1, None, "Noted.")).await;
+        nth(
+            &server,
+            3,
+            FromInput(Box::new(move |placeholder| {
+                reply(wire, 1, None, &format!("Done for {placeholder}."))
+            })),
+        )
+        .await;
+        let cfg = config(wire, &server);
+        let detector = Detector::pinned(
+            PinnedDetector::new(
+                &workspace,
+                &config_root,
+                DetectorPin::supplied_by_host(ID, "detect", &component, &hash(&manifest)).unwrap(),
+            )
+            .unwrap(),
+        );
+        let owner = Arc::new(
+            PrivacySession::open(
+                &vault,
+                FreshConversationBinding::reserve(&workspace).unwrap(),
+                detector,
+            )
+            .await
+            .unwrap(),
+        );
+        let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+        let prompt: ApprovalPrompt = {
+            let shown = shown.clone();
+            Arc::new(move |_, _, details| {
+                shown.lock().unwrap().push(details.to_owned());
+                ApprovalPromptResult::Approve
+            })
+        };
+        // What a frontend that shows replies is given, and what reached the
+        // token sink it would otherwise draw from.
+        let read: Arc<Mutex<Vec<String>>> = Arc::default();
+        let streamed: Arc<Mutex<String>> = Arc::default();
+        let (reader, stream) = (read.clone(), streamed.clone());
+        let session = build_session_ext(
+            &cfg,
+            Arc::new(Mutex::new(ApprovalState::default())),
+            "",
+            false,
+            false,
+            None,
+            SessionExtras {
+                privacy_view: Some(
+                    PrivacyViewSelection::from_user_policy(Arc::new(PlainTextFiles), owner.clone())
+                        .unwrap(),
+                ),
+                approval_prompt: Some(prompt),
+                workspace_root: Some(workspace.clone()),
+                token_sink: Some(Arc::new(move |text| stream.lock().unwrap().push_str(text))),
+                human_reply_sink: Some(Arc::new(move |reply| {
+                    if let crate::privacy_session::HumanReply::Text(text) = reply {
+                        reader
+                            .lock()
+                            .unwrap()
+                            .push(text.read(str::to_owned).unwrap());
+                    }
+                })),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|| panic!("{wire}: a session with delegated agents is built"));
+        let view = session.privacy_view.as_ref().unwrap();
+        view.turn(&session.agent, &format!("Who handles {EMAIL}?"))
+            .await
+            .unwrap_or_else(|error| panic!("{wire}: {error}"));
+        // The delegated agent's gate showed the real content once, and the
+        // file holds it.
+        let details = shown.lock().unwrap().clone();
+        assert_eq!(details.len(), 1, "{wire}");
+        assert!(
+            details[0].contains(&format!("Delegated: {EMAIL}.")) && !details[0].contains("pv1-"),
+            "{wire}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            format!("Delegated: {EMAIL}."),
+            "{wire}"
+        );
+        delegated += 1;
+        // The frontend was given the root agent's committed reply once, as a
+        // person may read it, and nothing reached its token sink.
+        assert_eq!(
+            *read.lock().unwrap(),
+            [format!("Done for {EMAIL}.")],
+            "{wire}"
+        );
+        assert!(streamed.lock().unwrap().is_empty(), "{wire}");
+        shown_replies += 1;
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 4, "{wire}");
+        for request in &requests {
+            let raw = String::from_utf8(request.body.clone()).unwrap();
+            assert!(!raw.contains(EMAIL), "{wire}");
+        }
+        assert!(owner.check().is_ok(), "{wire}");
+        session.lsp.shutdown().await;
     }
     println!(
-        "PRIVACY-RESTORE-WIRES:COMPLETE wires={} files={written}",
+        "PRIVACY-RESTORE-WIRES:COMPLETE wires={} files={written} delegated={delegated} shown={shown_replies}",
         WIRES.len()
     );
 }
@@ -325,6 +479,6 @@ async fn four_wires_restore_a_reply_for_a_person_and_real_content_into_a_file() 
         status.success(),
         "restore wires fixture failed: {stdout} {stderr}"
     );
-    assert!(stdout.contains("PRIVACY-RESTORE-WIRES:COMPLETE wires=4 files=4"));
+    assert!(stdout.contains("PRIVACY-RESTORE-WIRES:COMPLETE wires=4 files=4 delegated=4 shown=4"));
     assert!(!stdout.contains("NOT-SELECTED"));
 }

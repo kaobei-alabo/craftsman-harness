@@ -214,3 +214,68 @@ impl HeldStream {
         Ok((text, streamed))
     }
 }
+
+/// What a frontend is given for one committed reply of the conversation's
+/// root agent.
+pub enum HumanReply {
+    /// The reply as a person may read it.
+    Text(HumanText),
+    /// No human view could be made of the reply. The conversation says why;
+    /// nothing of the reply is given in its place.
+    Withheld(HumanRefusal),
+}
+
+/// Where a frontend takes the replies of a privacy conversation.
+pub type HumanReplySink = Arc<dyn Fn(HumanReply) + Send + Sync>;
+
+/// A frontend's side of the replies of a privacy conversation's root agent.
+///
+/// The provider streams into its hold, where nothing is shown. When the
+/// agent has retained a reply, the conversation's boundary tells this
+/// display, and the frontend is given the human view of that committed
+/// reply, once, as a typed text. A reply that is never committed gives the
+/// frontend nothing: a round that begins drops whatever the last one left
+/// in the hold.
+///
+/// The frontend draws the text through its own safe path. What it copies
+/// out of the view is its own; this display writes it nowhere, and nothing
+/// here is sent to a model.
+pub struct ReplyDisplay {
+    hold: Arc<HeldStream>,
+    session: Arc<PrivacySession>,
+    show: HumanReplySink,
+}
+
+impl ReplyDisplay {
+    pub fn new(session: Arc<PrivacySession>, show: HumanReplySink) -> Arc<Self> {
+        Arc::new(Self {
+            hold: HeldStream::new(),
+            session,
+            show,
+        })
+    }
+
+    /// The sink to give the root agent's provider in place of the
+    /// frontend's.
+    pub fn token_sink(&self) -> crate::agent::TokenSink {
+        self.hold.sink()
+    }
+
+    /// A model round begins. What an earlier round streamed and never
+    /// committed is dropped.
+    pub fn round_started(&self) {
+        self.hold.discard();
+    }
+
+    /// The agent retained the reply behind `source`. Called by the
+    /// conversation's boundary for the root agent, with the source it made
+    /// for that commit.
+    pub(super) fn committed(&self, source: &SourceRef) {
+        match self.hold.committed(&self.session, source) {
+            // A reply that is only calls has nothing to read.
+            Ok((text, _)) if text.text.is_empty() => {}
+            Ok((text, _)) => (self.show)(HumanReply::Text(text)),
+            Err(refusal) => (self.show)(HumanReply::Withheld(refusal)),
+        }
+    }
+}

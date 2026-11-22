@@ -418,6 +418,12 @@ impl ApprovedOperation {
         self.edited
     }
 
+    /// Whether this was checked for exactly `invocation`: the same
+    /// invocation the agent issued, not an equal call.
+    pub fn is_for(&self, invocation: &ActualToolInvocation) -> bool {
+        self.invocation.same_invocation(invocation)
+    }
+
     /// Every occurrence of an issued placeholder in a string value of the
     /// arguments the model wrote. `None` when occurrences overlap.
     pub fn fields(&self) -> Result<Option<&[SourceField]>, SessionStop> {
@@ -1078,7 +1084,7 @@ impl PrivacySession {
         if self.inner.bound.swap(true, Ordering::AcqRel) {
             return Err(SessionStop::Unbound);
         }
-        Ok(Arc::new(ConversationBoundary {
+        let boundary = Arc::new(ConversationBoundary {
             session: self.clone(),
             lane: Arc::new(Lane {
                 owner: self.inner.clone(),
@@ -1093,7 +1099,11 @@ impl PrivacySession {
             dispatch: std::sync::Mutex::new(Dispatch::default()),
             agent: std::sync::Mutex::new(None),
             lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }))
+            family: Arc::default(),
+            replies: std::sync::OnceLock::new(),
+        });
+        boundary.join_family();
+        Ok(boundary)
     }
 }
 
@@ -1137,6 +1147,10 @@ pub struct ConversationBoundary {
     agent: std::sync::Mutex<Option<ActualAgentOwner>>,
     /// How many lanes the conversation has made for delegated agents.
     lanes: Arc<std::sync::atomic::AtomicUsize>,
+    /// Every boundary of the conversation, shared by all of them.
+    family: Arc<std::sync::Mutex<Vec<std::sync::Weak<ConversationBoundary>>>>,
+    /// The frontend's display of this agent's replies, if it has one.
+    replies: std::sync::OnceLock<Arc<super::ReplyDisplay>>,
 }
 
 impl ConversationBoundary {
@@ -1200,6 +1214,50 @@ impl ConversationBoundary {
     /// component at the tool that needs to know exactly what was approved.
     pub fn operation_in_flight(&self) -> Option<Arc<ApprovedOperation>> {
         self.dispatch.lock().unwrap().in_flight.clone()
+    }
+
+    /// Adds this boundary to the boundaries of its conversation, so that a
+    /// part of the session that serves every agent can find the boundary of
+    /// the agent a call runs in. Boundaries that are gone are dropped here.
+    fn join_family(self: &Arc<Self>) {
+        let mut family = self.family.lock().unwrap();
+        family.retain(|member| member.strong_count() > 0);
+        if family.len() < MAX_LANES {
+            family.push(Arc::downgrade(self));
+        }
+    }
+
+    /// The boundary of this conversation that `conversation` is the evidence
+    /// of: this one, or one made for an agent the conversation delegated to.
+    /// `conversation` is what a boundary's own `conversation()` gives. It is
+    /// matched by being the same lane object, never by anything it says.
+    pub fn member(&self, conversation: &SourceRef) -> Option<Arc<ConversationBoundary>> {
+        let lane = conversation.downcast::<Lane>()?;
+        self.family
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .find(|member| Arc::ptr_eq(&member.lane, &lane))
+    }
+
+    /// Whether this is the boundary of the conversation's root agent.
+    pub fn is_root(&self) -> bool {
+        self.lane.parent.is_none()
+    }
+
+    /// Gives the replies this agent retains to a frontend's display, from
+    /// now on. Set once, by the host that builds the session.
+    pub(crate) fn show_replies(&self, display: Arc<super::ReplyDisplay>) {
+        let _ = self.replies.set(display);
+    }
+
+    /// Whether a string value of `args` holds a placeholder this
+    /// conversation issued, with a marker or without one. What cannot be
+    /// decided counts as holding one.
+    pub(crate) async fn names_placeholder(&self, tool: &str, args: &serde_json::Value) -> bool {
+        let fields = self.session.inner.argument_fields(tool, args).await;
+        !matches!(fields, Some(fields) if fields.is_empty())
     }
 
     /// What the last committed reply proposes with `call`, for a review that
@@ -1591,7 +1649,7 @@ impl ModelViewBoundary for ConversationBoundary {
             )))],
         };
         // The same session, vault and placeholders, and a lane of its own.
-        Ok(Arc::new(ConversationBoundary {
+        let boundary = Arc::new(ConversationBoundary {
             session: self.session.clone(),
             lane: Arc::new(Lane {
                 owner: inner.clone(),
@@ -1606,7 +1664,11 @@ impl ModelViewBoundary for ConversationBoundary {
             dispatch: std::sync::Mutex::new(Dispatch::default()),
             lanes: self.lanes.clone(),
             agent: std::sync::Mutex::new(None),
-        }))
+            family: self.family.clone(),
+            replies: std::sync::OnceLock::new(),
+        });
+        boundary.join_family();
+        Ok(boundary)
     }
 
     async fn observe_envelope(
@@ -1744,11 +1806,19 @@ impl ModelViewBoundary for ConversationBoundary {
                 fields,
             }),
         };
-        let mut dispatch = self.dispatch.lock().unwrap();
-        dispatch.model = Some(node.clone());
-        dispatch.decided = None;
-        dispatch.in_flight = None;
-        Ok(SourceRef::new(Arc::new(ViewSource::Model(node))))
+        {
+            let mut dispatch = self.dispatch.lock().unwrap();
+            dispatch.model = Some(node.clone());
+            dispatch.decided = None;
+            dispatch.in_flight = None;
+        }
+        let source = SourceRef::new(Arc::new(ViewSource::Model(node)));
+        // The reply is retained. A frontend that shows this agent's replies
+        // is given this one now, as a person may read it.
+        if let Some(display) = self.replies.get() {
+            display.committed(&source);
+        }
+        Ok(source)
     }
 
     async fn observe_tool_result(

@@ -38,10 +38,14 @@ mod view_tests;
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
+pub(crate) use file_view::authorized_write;
 pub use file_view::{
-    DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, RestoredFileTool,
+    DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, ReachedFileTool,
+    RestoredFileTool,
 };
-pub use human::{HeldStream, HumanRefusal, HumanText, Streamed};
+pub use human::{
+    HeldStream, HumanRefusal, HumanReply, HumanReplySink, HumanText, ReplyDisplay, Streamed,
+};
 pub use transport::{ViewChatProvider, ViewNativeProvider, delegated_provider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
