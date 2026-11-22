@@ -960,12 +960,39 @@ impl PrivacySession {
         self: &Arc<Self>,
         system: &[AdmittedNode],
     ) -> Result<Arc<ConversationBoundary>, SessionStop> {
-        let mut sources = Vec::with_capacity(system.len());
+        let mut sections = Vec::with_capacity(system.len());
         for node in system {
-            if !node.is_accepted_fact() {
-                return Err(SessionStop::Unbound);
+            sections.push(vec![node.clone()]);
+        }
+        self.boundary_of_sections(&sections)
+    }
+
+    /// As [`boundary`](Self::boundary), for a system channel whose sections
+    /// can each be made of several pieces: text of different files or
+    /// extensions and the application's own headings between them, each
+    /// captured and admitted on its own. A section's pieces go out joined;
+    /// the sections go out separated as always.
+    pub fn boundary_of_sections(
+        self: &Arc<Self>,
+        system: &[Vec<AdmittedNode>],
+    ) -> Result<Arc<ConversationBoundary>, SessionStop> {
+        let mut sources = Vec::with_capacity(system.len());
+        for section in system {
+            let mut parts = Vec::with_capacity(section.len());
+            for node in section {
+                if !node.is_accepted_fact() || !node.admitted_by(self) {
+                    return Err(SessionStop::Unbound);
+                }
+                parts.push(AdditionPart::Admitted(node.clone()));
             }
-            sources.push(self.source(node)?);
+            sources.push(match section.as_slice() {
+                [] => return Err(SessionStop::Unbound),
+                [node] => self.source(node)?,
+                _ => {
+                    self.inner.live()?;
+                    SourceRef::new(Arc::new(ViewSource::Addition(parts)))
+                }
+            });
         }
         if self.inner.bound.swap(true, Ordering::AcqRel) {
             return Err(SessionStop::Unbound);
@@ -1325,10 +1352,17 @@ impl ModelViewBoundary for ConversationBoundary {
         // What another agent of the conversation sent, inside this agent's
         // own framing. The parts are exactly the recorded message.
         let joined = craftsman_harness::provenance::joined(parts);
-        let fits = matches!(
-            event,
-            FrameworkCommit::Notification | FrameworkCommit::InboxMessage
-        ) && matches!(committed, Msg::User { content } if *content == joined);
+        // A note of the host's own is host text only: fixed framing and data
+        // the host read. Nothing in it can be model text.
+        let host = parts
+            .iter()
+            .all(|part| matches!(part.from, PartFrom::Fixed | PartFrom::Read { .. }));
+        let known = match event {
+            FrameworkCommit::Notification | FrameworkCommit::InboxMessage => true,
+            FrameworkCommit::HostNote => host,
+            _ => false,
+        };
+        let fits = known && matches!(committed, Msg::User { content } if *content == joined);
         if !fits {
             return Err(fault(unbound(inner)));
         }

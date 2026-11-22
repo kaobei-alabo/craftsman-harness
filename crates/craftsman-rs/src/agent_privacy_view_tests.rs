@@ -48,16 +48,40 @@ fn selected_by_policy(session: &Arc<PrivacySession>) -> PrivacyViewSelection {
         .expect("a live fixture conversation")
 }
 
-async fn build(
-    cfg: &Config,
+/// The session a fixture run asks for. The run's own changes to the extras
+/// are applied here, so that the build itself is one function for all runs.
+fn build<'a>(
+    cfg: &'a Config,
     directory: &std::path::Path,
     selected: Option<&Arc<PrivacySession>>,
     thread_id: Option<String>,
     activity: &Arc<Mutex<Vec<String>>>,
     alter: impl FnOnce(&mut SessionExtras),
-) -> Option<Session> {
+) -> impl std::future::Future<Output = Option<Session>> + 'a {
+    let mut extras = extras_for(directory, selected, activity);
+    alter(&mut extras);
+    build_session(cfg, thread_id, ApprovalState::default(), extras)
+}
+
+/// As [`build`], with the approval state the session starts from.
+fn build_with<'a>(
+    cfg: &'a Config,
+    directory: &std::path::Path,
+    selected: Option<&Arc<PrivacySession>>,
+    activity: &Arc<Mutex<Vec<String>>>,
+    approval: ApprovalState,
+) -> impl std::future::Future<Output = Option<Session>> + 'a {
+    let extras = extras_for(directory, selected, activity);
+    build_session(cfg, None, approval, extras)
+}
+
+fn extras_for(
+    directory: &std::path::Path,
+    selected: Option<&Arc<PrivacySession>>,
+    activity: &Arc<Mutex<Vec<String>>>,
+) -> SessionExtras {
     let activity = activity.clone();
-    let mut extras = SessionExtras {
+    SessionExtras {
         privacy_view: selected.map(selected_by_policy),
         workspace_root: Some(directory.to_path_buf()),
         token_sink: Some(Arc::new(|_| {})),
@@ -65,11 +89,18 @@ async fn build(
             activity.lock().unwrap().push(line.to_owned())
         })),
         ..Default::default()
-    };
-    alter(&mut extras);
+    }
+}
+
+async fn build_session(
+    cfg: &Config,
+    thread_id: Option<String>,
+    approval: ApprovalState,
+    extras: SessionExtras,
+) -> Option<Session> {
     build_session_ext(
         cfg,
-        Arc::new(Mutex::new(ApprovalState::default())),
+        Arc::new(Mutex::new(approval)),
         "",
         false,
         false,
@@ -119,6 +150,8 @@ async fn privacy_view_builder_fixture() {
     conversation(&directory, &vault, &activity).await;
     repair(&directory, &vault, &activity).await;
     normal_parts(&directory, &vault, &activity).await;
+    instruction_files(&directory, &vault, &activity).await;
+    repeated_arguments(&directory, &vault, &activity).await;
     compaction_lane(&directory, &vault, &activity).await;
     delegation(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
@@ -460,6 +493,216 @@ async fn normal_parts(
     }
     plain.lsp.shutdown().await;
     session.lsp.shutdown().await;
+}
+
+/// The global and the project instruction file in a built session. Each is
+/// captured on its own where it is read, so each has its own placeholder, and
+/// the section is still the text an ordinary session sends.
+async fn instruction_files(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    const GLOBAL: &str = "carol@example.invalid";
+    const PROJECT: &str = "dave@example.invalid";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(answer("chat", &["fixture answer"]))
+        .mount(&server)
+        .await;
+    let cfg = config("chat", &server);
+    let global = cfg.agent_dir().join("AGENTS.md");
+    let project = directory.join(".craftsman").join("AGENTS.md");
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+    // Space around both files, which the section trims.
+    std::fs::write(&global, format!("  Global rule: ask {GLOBAL}.\n\n")).unwrap();
+    std::fs::write(&project, format!("Project rule: copy {PROJECT}.\n  ")).unwrap();
+    let system_of = |body: &str| -> String {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["messages"][0]["content"].as_str().unwrap().to_owned()
+    };
+
+    let owner = privacy(vault, directory).await;
+    let session = build(&cfg, directory, Some(&owner), None, activity, |_| {})
+        .await
+        .expect("a session with instruction files is built");
+    let view = session.privacy_view.as_ref().unwrap();
+    view.turn(&session.agent, "hello").await.unwrap();
+    let selected = system_of(&sent(&server).await[0]);
+    assert!(!selected.contains(GLOBAL) && !selected.contains(PROJECT));
+    // Each file's value has its own placeholder, inside the section's own
+    // headings.
+    let between = |text: &str, before: &str, after: &str| -> String {
+        text.split(before)
+            .nth(1)
+            .and_then(|rest| rest.split(after).next())
+            .unwrap_or_else(|| panic!("{before} is in the system text"))
+            .to_owned()
+    };
+    let for_global = between(&selected, "\n# AGENTS.md\n\nGlobal rule: ask ", ".\n");
+    let for_project = between(
+        &selected,
+        "\n# Project AGENTS.md (./.craftsman/AGENTS.md)\n\nProject rule: copy ",
+        ".\n",
+    );
+    // The memory file an earlier run of the fixture stored has a value too.
+    let for_memory = between(&selected, "Office contact: ", "\n");
+    assert_ne!(for_global, for_project);
+    assert!(for_global != GLOBAL && for_project != PROJECT);
+    session.lsp.shutdown().await;
+
+    // An ordinary session sends the same system text, byte for byte, with
+    // the two values where the placeholders are.
+    let plain_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(answer("chat", &["fixture answer"]))
+        .mount(&plain_server)
+        .await;
+    let plain_cfg = config("chat", &plain_server);
+    let plain = build(&plain_cfg, directory, None, None, activity, |_| {})
+        .await
+        .unwrap();
+    plain.agent.run_turn("hello").await.unwrap();
+    let ordinary = system_of(&sent(&plain_server).await[0]);
+    assert!(ordinary.contains(GLOBAL) && ordinary.contains(PROJECT));
+    assert_eq!(
+        selected
+            .replace(&for_global, GLOBAL)
+            .replace(&for_project, PROJECT)
+            .replace(&for_memory, "bob@example.invalid"),
+        ordinary
+    );
+    plain.lsp.shutdown().await;
+    assert!(owner.check().is_ok());
+    // The later runs of the fixture have no instruction files.
+    std::fs::remove_file(&global).unwrap();
+    std::fs::remove_file(&project).unwrap();
+}
+
+/// A reply made from the placeholder a request carries for the address in
+/// its input.
+struct WithPlaceholder(Box<dyn Fn(&str) -> ResponseTemplate + Send + Sync>);
+
+impl wiremock::Respond for WithPlaceholder {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let input = content_at(request, 1);
+        let placeholder = input
+            .strip_prefix("Who handles ")
+            .and_then(|rest| rest.strip_suffix('?'))
+            .expect("the input carries the placeholder");
+        (self.0)(placeholder)
+    }
+}
+
+/// Host tools whose outcome repeats a string of the call's arguments. The
+/// outcome goes out with that string as text of the call, so a placeholder
+/// the model wrote there does not end the conversation, and the rest of the
+/// outcome is the tool's own text.
+async fn repeated_arguments(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let note = directory.join("written-note.txt");
+    let server = MockServer::start().await;
+    mount_once(
+        &server,
+        1,
+        Mock::given(method("POST")).respond_with(WithPlaceholder(Box::new(|placeholder| {
+            reply(
+                "chat",
+                0,
+                Some((
+                    "call-glob",
+                    "glob",
+                    &json!({"pattern": format!("*{placeholder}*")}),
+                )),
+                "",
+            )
+        }))),
+    )
+    .await;
+    mount_once(
+        &server,
+        2,
+        Mock::given(method("POST")).respond_with(reply(
+            "chat",
+            1,
+            Some((
+                "call-write",
+                "write_file",
+                &json!({"file_path": note, "content": "kept"}),
+            )),
+            "",
+        )),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .respond_with(answer("chat", &["fixture answer"]))
+        .mount(&server)
+        .await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    // File changes are approved for the whole session, as a user can choose.
+    let approval = ApprovalState {
+        auto_approve: true,
+        ..Default::default()
+    };
+    let session = build_with(&cfg, directory, Some(&owner), activity, approval)
+        .await
+        .unwrap();
+    let view = session.privacy_view.as_ref().unwrap();
+    let typed = format!("Who handles {EMAIL}?");
+    let TurnResult::Done(output) = view.turn(&session.agent, &typed).await.unwrap() else {
+        panic!("the turn finishes");
+    };
+    assert_eq!(output.final_text(), "fixture answer");
+
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|body| !body.contains(EMAIL)));
+    let message = |body: &str, index: usize| -> String {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["messages"][index]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let placeholder = message(&requests[0], 1)
+        .strip_prefix("Who handles ")
+        .and_then(|rest| rest.strip_suffix('?'))
+        .unwrap()
+        .to_owned();
+    // The pattern came back as the model wrote it, inside the tool's own
+    // words. As one raw result it would have been refused: raw text may not
+    // hold a placeholder this conversation issued.
+    assert_eq!(
+        message(&requests[1], 3),
+        format!("No files match pattern '*{placeholder}*'")
+    );
+    // The written path came back the same way, and the file is written.
+    assert_eq!(
+        message(&requests[2], 5),
+        format!("Updated file {}", note.display())
+    );
+    assert_eq!(std::fs::read_to_string(&note).unwrap(), "kept");
+    // Both results are held piece by piece, not as one admitted text, and
+    // the record holds what the tools returned.
+    let sources = session.agent.recorded_sources().unwrap();
+    for at in [2, 4] {
+        let source = sources[at].as_ref().unwrap();
+        assert!(owner.admitted(source).is_none());
+        assert_eq!(owner.actual_result(source).unwrap().reached().len(), 1);
+    }
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    assert!(
+        matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
+        if *content == format!("No files match pattern '*{placeholder}*'"))
+    );
+    assert!(owner.check().is_ok());
+    session.lsp.shutdown().await;
+    std::fs::remove_file(&note).unwrap();
 }
 
 /// Manual compaction in a built session: the builder's own summarizer lane
@@ -1000,26 +1243,6 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
     built.lsp.shutdown().await;
     assert!(owner.check().is_ok());
     assert!(server.received_requests().await.unwrap().is_empty());
-
-    // The model-visible gadget runtime has no source path. It is a part a
-    // frontend asks for, and a selection that asks for it is refused before
-    // anything is built.
-    #[cfg(feature = "gadgets")]
-    {
-        let selected = selected_by_policy(&owner);
-        let report = selected.report();
-        assert!(
-            build(&cfg, directory, None, None, activity, |extras| {
-                extras.privacy_view = Some(selected);
-                extras.local_gadgets = true
-            })
-            .await
-            .is_none()
-        );
-        assert_eq!(report.refusal(), Some(BuildRefusal::RequestedPart));
-        assert!(owner.check().is_ok());
-        assert!(server.received_requests().await.unwrap().is_empty());
-    }
 }
 
 async fn run_fixture(

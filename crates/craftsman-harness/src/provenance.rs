@@ -121,6 +121,10 @@ pub enum FrameworkCommit {
     /// A message another agent of the conversation sent to this one's inbox,
     /// recorded as it arrived.
     InboxMessage,
+    /// A message a middleware of the host added before a round's request:
+    /// data the host found at run time, inside the host's own framing. It
+    /// is appended with the parts it is made of.
+    HostNote,
 }
 
 /// What a middleware's author states about it for an agent that selected a

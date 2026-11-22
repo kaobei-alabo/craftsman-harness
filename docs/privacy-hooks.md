@@ -24,8 +24,13 @@ summary as model text. Delegated agents run on it too: each has its own lane
 in the same conversation, a task description and a message reach a delegated
 agent as the text the model wrote, and what the agent ends with comes back
 with its source, in the foreground and through background notifications.
+The model-visible gadget runtime runs on it as well: its catalog update is a
+host note made of parts, for the root agent and for delegated agents. Each
+instruction file, skill and extension is its own piece of the system prompt,
+and a host tool that repeats a path or a pattern of its call says so.
 With the ordinary configuration the builder now builds such a session with
-every part an ordinary session has. Nothing selects it: the user policy that
+every part an ordinary session has. Verification, context and failure
+controls are still refused. Nothing selects it: the user policy that
 would is not part of this branch.
 Approval receipts inside the gate, terminal input and display, restoration,
 key handling and activation are not built. The target diagram

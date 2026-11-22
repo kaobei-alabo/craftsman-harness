@@ -1037,6 +1037,40 @@ impl Agent {
 }
 
 impl TrackedPrepare<'_> {
+    /// Appends one message of the host's own before this round's request, as
+    /// the parts it is made of. It is recorded with the user role, where the
+    /// ordinary hook of the middleware records it, and is committed with the
+    /// round. The boundary gives its source from the parts, so nothing here
+    /// can pass for text of the model or of a person.
+    pub async fn append_host_message(&mut self, parts: Vec<SourcePart>) -> Result<(), AgentError> {
+        let text = crate::provenance::joined(&parts);
+        if parts.len() > crate::provenance::MAX_ENVELOPE_PARTS
+            || text.len() > crate::provenance::MAX_ENVELOPE_BYTES
+        {
+            return Err(AgentError::State(
+                "A host message of this conversation exceeds its bound.".into(),
+            ));
+        }
+        if self.slots.len() != self.state.messages.len() {
+            return Err(unsourced());
+        }
+        let message = Msg::user(text);
+        let source = self
+            .boundary
+            .observe_envelope(FrameworkCommit::HostNote, &parts, &message)
+            .await?;
+        self.state.messages.push(message);
+        self.slots.push(Slot::Bound(source));
+        *self.replaced = true;
+        Ok(())
+    }
+
+    /// Sets a key of the custom state that the middleware keeps as its own
+    /// bookkeeping. Nothing the model sees is read from it.
+    pub fn set_own_custom(&mut self, key: &str, value: serde_json::Value) {
+        self.state.custom.insert(key.to_owned(), value);
+    }
+
     /// Replaces recorded messages with a summary of them, made by
     /// `summarizer` through its view path.
     ///

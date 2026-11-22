@@ -47,11 +47,13 @@ not detection of everything a model writes or of opaque provider content.
 | Conversation boundary: sources, composition, result records, checked operations and fields | implemented, private; see below |
 | Providers for all four wires (Chat, Responses, Claude Messages, Gemini) through the existing clients and guard, with receipts | implemented, private; see below |
 | Protected repair of tool calls (`patch_tool_calls`) as a recorded change of the received reply | implemented, private; see below |
-| Todo list, memory section, todo reminders, task workflow notes, workspace checkpoints, and the system prompt as sections | implemented, private; see "Normal parts" below |
+| Todo list, memory section, todo reminders, task workflow notes, workspace checkpoints, and the system prompt as sections, with each instruction file, skill and extension as its own piece | implemented, private; see "Normal parts" below |
 | Compaction: automatic, and manual or idle through a typed entry | implemented, private; see "Compaction" below |
 | Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path. With the ordinary configuration every installed part has one; see below |
 | Delegated agents with `task`, `send_message`, notifications and inbox | implemented, private; see "Delegated agents" below |
-| Verification, context and failure controls, the model-visible gadget runtime with its catalog | not implemented; a selection that asks for one is refused |
+| Model-visible gadget runtime, its catalog and its tools | implemented, private; see "Gadget runtime" below |
+| Host tools that repeat a string of the call's arguments in their outcome | implemented, private, for the written or edited path and the unmatched glob pattern; see "Normal parts" below |
+| Verification, context and failure controls, script capture | not implemented; a selection that asks for one is refused |
 | Receipts for approval decisions taken inside the approval gate; `ask_user` answers as drafts | not implemented |
 | Terminal ingress, `/clear`, display of replies | not implemented |
 | Reopening, transferring or rebinding a privacy conversation | refused |
@@ -118,7 +120,13 @@ delegated agent's inbox takes parts. The receiving agent records the same text
 as always and keeps the parts beside it: for a notification, its own fixed
 framing and the sender's name around what the sender said. The boundary is
 asked through `observe_envelope(event, parts, committed)`. A notification that
-was posted without parts still has no source. Every other receiver of the
+was posted without parts still has no source. A tracked middleware can also
+add a message of the host's own before a round
+(`TrackedPrepare::append_host_message`, with `set_own_custom` for its own
+bookkeeping key): the message is recorded with the user role where the
+ordinary hook records it, its source comes from its parts through
+`observe_envelope` with the event `HostNote`, and it is committed with the
+round. Every other receiver of the
 queue sees the notification exactly as before.
 
 **Middleware.** A middleware runs on a selected agent only if its author made a
@@ -438,8 +446,15 @@ Then it:
   the policy requires inspectable provider items;
 - takes the sections of the system prompt from their producer while they are
   still apart, admits each as its own capture, and gives the agent no system
-  text of its own. Joined, the sections must be exactly the text an ordinary
-  session is given, or the build is refused;
+  text of its own. A section that holds text of several origins is taken
+  piece by piece: the global instruction file, the project instruction
+  file, each discovered skill, each extension's instructions and the gadget
+  authoring skill are each their own capture, made where the text is read
+  and before the section is joined, with the application's own headings
+  between them as fixed text. What a section's trimming removes from the
+  edge of a file is not part of the prompt and is not captured. Joined, the
+  sections must be exactly the text an ordinary session is given, or the
+  build is refused;
 - requires a statement from every middleware it would install. If one has
   none, the build is refused and the frontend is told which.
 
@@ -452,12 +467,12 @@ system text and the same delegated agents as an ordinary session. The builder
 has no way to leave a part out. The earlier test-only selection that left
 parts out and named them is gone.
 
-The model-visible gadget runtime and its catalog still have no source path.
-A frontend asks for them explicitly, and a selection that does is refused
-before anything is built, like one that asks for verification, context or
-failure controls. If a middleware without a statement were installed some
-other way, for the root agent or for a delegated agent, the build would be
-refused and would name it.
+The model-visible gadget runtime has a source path too; see "Gadget runtime".
+Verification, context and failure controls and a script capture have none. A
+frontend asks for those explicitly, and a selection that does is refused
+before anything is built. If a middleware without a statement were installed
+some other way, for the root agent or for a delegated agent, the build would
+be refused and would name it.
 
 The policy itself is still a trait with no implementation outside tests in
 this branch, so nothing can make a selection here.
@@ -594,13 +609,43 @@ What a delegated agent's tools ask a person inline, through the existing
 gate around each delegated tool, is decided as before and recorded as that
 tool's result. There is no decision witness for it yet.
 
+## Gadget runtime
+
+The model-visible gadget runtime is selected as it always is: the user's
+`gadgets.enabled`, the terminal's own opt-in, source and capability approval,
+build approval and first-load approval are unchanged, and nothing is
+described, compiled or run before approval. A privacy conversation changes
+none of that. What it adds is where the text comes from.
+
+- **The catalog update** is still a message the catalog middleware appends
+  before a round, only when the catalog changed or a compaction removed the
+  last update, for the root agent and for every delegated agent. On a
+  selected agent it is appended as parts: the application's framing and
+  guidance as fixed text, and the fingerprint and the catalog JSON as data
+  the host read from its gadget runtime. Those two are captured and admitted
+  as raw host text. Nothing in the update is model text, and the boundary
+  refuses a host note that says otherwise. The fingerprint is kept under the
+  middleware's own key as before.
+- **The gadget tools** are ordinary tools. A `gadget_list` or `gadget_call`
+  result is recorded as the tool returned it and admitted as a tool result,
+  with what actually ran. What a guest prints is raw text whatever it says:
+  it is neither an approval nor a source.
+- **Declared prompts, commands and agents** of a gadget manifest come in
+  through the same producers as before: instructions as their own piece of
+  the system prompt, agents as delegated agents with lanes of their own.
+- **The gadget authoring skill** follows the last section of the system
+  prompt directly, as the ordinary text has it, and is a piece of its own.
+
+The private headless guest host, callable headless gadgets, public exec and
+script capture are untouched and stay off.
+
 ## Normal parts
 
 How each normal component runs on a selected agent today.
 
 | Component | Path |
 | --- | --- |
-| System prompt | sections from the producer: fixed text, the profile's text, instruction files, discovered skills, extensions and the frontend's addition, each admitted on its own. The global and project instruction files are one section, as the producer joins them |
+| System prompt | sections from the producer: fixed text, the profile's text, instruction files, discovered skills, extensions and the frontend's addition. A section of one origin is admitted on its own. The instruction section is the global file, the project file and the application's headings as separate pieces; the skill and extension sections are one piece per skill or extension |
 | `patch_tool_calls` | tracked review; each repair recorded |
 | Todo list | the section is fixed prompt, heading, status labels and line ends from the application, and each todo's text from the call that stored it. The tool states which arguments it stored and what its outcome repeats |
 | Memory | the turn-start load is unchanged. The section is the application's tags, paths and guidance, with each file's content as one read part per load |
@@ -608,10 +653,11 @@ How each normal component runs on a selected agent today.
 | Task workflow notes | the two fixed notes as parts; its observation of outcomes stays in its own memory |
 | Workspace checkpoints | reads recorded messages and writes its own store; changes nothing the agent records, which is checked |
 | Approval gate, result size limit | leave the record alone, which is checked |
+| Host tools | a result is the tool's own raw text. Three outcomes repeat a string of the call's arguments and say so piece by piece: `write_file` and `edit_file` the path, with any language diagnostics as host text after it, and `glob` the pattern it found nothing for. The piece is bound to the reply that asked for the call only if the call ran as that reply wrote it. The gate around a delegated agent's tools passes the statement through |
 | Compaction | tracked: same trigger, split and record as the ordinary compaction; see "Compaction" |
 | Delegated agents, notifications, inbox | tracked: a lane per agent, the description and messages as text of the call, results and notifications with the source of what the agent ended with; see "Delegated agents" |
 | Verification, context and failure controls | **no path**; a selection that asks for one is refused |
-| Gadget runtime and catalog | **no path**; a selection that asks for it is refused. The catalog records its updates as messages of its own and keeps a key in the custom state; it needs a tracked way to append a host message |
+| Gadget runtime and catalog | tracked: the update as a host note of parts; see "Gadget runtime" |
 | Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |
 
 ## Limits that will remain
@@ -640,5 +686,17 @@ How each normal component runs on a selected agent today.
   of the replies it summarizes, by design of that request. Whether a
   provider would accept those replies' items in a request of that shape was
   not tried here.
+- A tool result is raw text unless the tool itself says which piece repeats
+  the call's arguments. Only the three host outcomes above do. A command's
+  output, a file's content, a web page, an MCP result or a gadget's output
+  that holds a placeholder this conversation issued is refused, and the
+  conversation ends, even when the tool only echoed what the model wrote.
+- The verification, context and failure controls are not adapted. The
+  completion check makes the agent write a call of its own and dispatch it,
+  which needs the framework's witness of a host-scheduled call; the context
+  compiler builds its text from recorded inputs and file observations, which
+  need the sources of those inputs and not their recorded text; the failure
+  governor stops a turn through the boundary policy, which a selected agent
+  still refuses.
 - Vault capacity is fixed at 128 conversations that hold a value, 512 values
   each and 4096 in total, with no retention.

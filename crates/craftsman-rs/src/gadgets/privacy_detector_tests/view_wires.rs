@@ -14,7 +14,7 @@ use crate::agent::{Session, SessionExtras, build_session_ext};
 use crate::config::Config;
 use crate::hitl::ApprovalState;
 use crate::privacy_hook::{Detector, DetectorPin, PinnedDetector};
-use crate::privacy_session::wire_fixtures::{config, reply};
+use crate::privacy_session::wire_fixtures::{config, config_with, reply};
 use crate::privacy_session::{
     FixturePolicy, FreshConversationBinding, PrivacySession, PrivacyViewSelection, RawOrigin,
 };
@@ -149,6 +149,17 @@ async fn build(
     owner: &Arc<PrivacySession>,
     activity: &Arc<Mutex<Vec<String>>>,
 ) -> Option<Session> {
+    build_with(cfg, workspace, owner, activity, false).await
+}
+
+/// As [`build`], with the terminal's opt-in to model-visible gadgets.
+async fn build_with(
+    cfg: &Config,
+    workspace: &Path,
+    owner: &Arc<PrivacySession>,
+    activity: &Arc<Mutex<Vec<String>>>,
+    local_gadgets: bool,
+) -> Option<Session> {
     let activity = activity.clone();
     build_session_ext(
         cfg,
@@ -170,6 +181,7 @@ async fn build(
             // needs.
             cancellation_session: Some(craftsman_harness::SessionCancellation::default()),
             workspace_root: Some(workspace.to_path_buf()),
+            local_gadgets,
             token_sink: Some(Arc::new(|_| {})),
             activity_sink: Some(Arc::new(move |line: &str| {
                 activity.lock().unwrap().push(line.to_owned())
@@ -636,6 +648,141 @@ async fn view_wires_native_fixture() {
                 Some(craftsman_harness::AgentStatus::Done),
                 "{wire}"
             );
+            assert!(owner.check().is_ok(), "{wire}");
+            session.lsp.shutdown().await;
+        }
+
+        // The model-visible gadget runtime on this wire: the user's opt-in
+        // in the configuration and the terminal's own. The detector bundle
+        // is the one gadget installed and approved at the user level.
+        {
+            let server = MockServer::start().await;
+            // The root agent lists the gadgets and then delegates a task;
+            // the delegated agent answers at once.
+            let scripted = [
+                Mock::given(method("POST")).respond_with(reply(
+                    wire,
+                    0,
+                    Some(("wire-list", "gadget_list", &json!({}))),
+                    "",
+                )),
+                Mock::given(method("POST")).respond_with(AsksForATask(wire)),
+                Mock::given(method("POST")).respond_with(Reports(wire)),
+                Mock::given(method("POST")).respond_with(reply(wire, 3, None, "fixture answer")),
+            ];
+            for (priority, mock) in scripted.into_iter().enumerate() {
+                mock.up_to_n_times(1)
+                    .with_priority(priority as u8 + 1)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .respond_with(reply(wire, 2, None, "second answer"))
+                .mount(&server)
+                .await;
+            let cfg = config_with(wire, &server, true);
+            let owner = Arc::new(
+                PrivacySession::open(
+                    &vault,
+                    FreshConversationBinding::reserve(&workspace).unwrap(),
+                    detector(),
+                )
+                .await
+                .unwrap(),
+            );
+            let session = build_with(&cfg, &workspace, &owner, &activity, true)
+                .await
+                .unwrap_or_else(|| panic!("{wire}: {:?}", activity.lock().unwrap()));
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(output) = view
+                .turn(&session.agent, &typed)
+                .await
+                .unwrap_or_else(|error| panic!("{wire}: {error}"))
+            else {
+                panic!("{wire}: the turn finishes");
+            };
+            assert_eq!(output.final_text(), "fixture answer", "{wire}");
+
+            // The record is what an ordinary session with gadgets records:
+            // the input, the catalog update the host added before the first
+            // request, the listing call and its result, the task and its
+            // result, and the answer.
+            let messages = session.agent.state.lock().unwrap().messages.clone();
+            assert_eq!(messages.len(), 7, "{wire}");
+            let Msg::User { content: update } = &messages[1] else {
+                panic!("{wire}: the catalog update is recorded");
+            };
+            assert!(
+                update.starts_with("<gadget_catalog_update sha256=\""),
+                "{wire}"
+            );
+            assert!(update.contains(ID), "{wire}: {update}");
+            let Msg::Tool {
+                content: listing,
+                is_error: false,
+                ..
+            } = &messages[3]
+            else {
+                panic!("{wire}: the listing is recorded");
+            };
+            assert!(listing.contains(ID), "{wire}: {listing}");
+            assert!(
+                session
+                    .agent
+                    .state
+                    .lock()
+                    .unwrap()
+                    .custom
+                    .contains_key("craftsman.gadgets.catalog.sha256"),
+                "{wire}"
+            );
+            // Every recorded message has its source. The update is held as
+            // the host's own parts, not as one admitted text, and the
+            // listing is the tool's result with what actually ran.
+            let sources = session.agent.recorded_sources().unwrap();
+            assert!(sources.iter().all(Option::is_some), "{wire}");
+            assert!(
+                owner.admitted(sources[1].as_ref().unwrap()).is_none(),
+                "{wire}"
+            );
+            let listed = owner.actual_result(sources[3].as_ref().unwrap()).unwrap();
+            assert_eq!(listed.tool(), "gadget_list", "{wire}");
+            assert_eq!(listed.reached().len(), 1, "{wire}");
+
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 4, "{wire}");
+            for request in &requests {
+                let raw = String::from_utf8(request.body.clone()).unwrap();
+                assert!(!raw.contains(EMAIL) && !raw.contains(PHONE), "{wire}");
+                // Every agent's requests carry a catalog update of its own
+                // lane, and its system text the gadget authoring skill. The
+                // third request is the delegated agent's.
+                assert!(raw.contains("gadget_catalog_update sha256="), "{wire}");
+                assert!(raw.contains("gadget_call"), "{wire}");
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert!(system_text(wire, &body).contains("build-gadget"), "{wire}");
+            }
+            let second = String::from_utf8(requests[1].body.clone()).unwrap();
+            assert!(second.contains("wire-list"), "{wire}");
+            let delegated = String::from_utf8(requests[2].body.clone()).unwrap();
+            assert!(delegated.contains("Find out about "), "{wire}");
+            assert!(!delegated.contains("wire-list"), "{wire}");
+
+            // The catalog did not change, so the next turn adds no update.
+            view.turn(&session.agent, "thanks").await.unwrap();
+            let updates = session
+                .agent
+                .state
+                .lock()
+                .unwrap()
+                .messages
+                .iter()
+                .filter(|message| {
+                    matches!(message, Msg::User { content }
+                    if content.starts_with("<gadget_catalog_update"))
+                })
+                .count();
+            assert_eq!(updates, 1, "{wire}");
             assert!(owner.check().is_ok(), "{wire}");
             session.lsp.shutdown().await;
         }
