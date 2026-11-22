@@ -139,7 +139,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Reviewed private foundations/candidates; normal sessions inactive | ac17/run44937824282: fmt/Ubuntu/macOS pass; Windows two original source-Cargo-WASM parents refuse `pe.align.section` after LINK0. Exact alignment operands await the diagnostic; NOCOFFGRPINFO lacks full native acceptance. Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
+| Privacy hooks | Reviewed private foundations/candidates; normal sessions inactive | 61ac/run44957234452 failed required gates: fmt/Ubuntu pass; Windows core has two `Vault::open` Deadline unwraps; both Windows gadget source/guest parents fail, the installed-linker helper refusing the section's VirtualSize 40 against the unchanged 16 after LINK0; macOS core's closed-stdout observer returns an unsuccessful helper status; required post steps are skipped. The inner vault and observer causes and the producer of the extra 24-byte header are unknown. `/EMITVOLATILEMETADATA:NO` is source-supported only and awaits a fresh native run; no full PE, Prepared, Cargo or WASM pass exists yet. Earlier: ac17/run44937824282 refused `pe.align.section` with `/NOCOFFGRPINFO`, and 56aa/run44949456781 identified VirtualSize 40. Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -449,6 +449,16 @@ it ([msvc-undoc](https://github.com/assarbad/msvc-undoc/blob/5423c9f0390e770b8b6
 Microsoft does not document its effect, and the fixture does not ask LINK for
 its help text. This is a conditional candidate: which tool wrote the block,
 what its second value means and whether the switch removes it are not
-established, and the full audit of that run is still in progress. The unchanged
-16-byte check and the original Prepared, source-Cargo and WASM gates decide on a
-fresh Windows run; a refusal stays a refusal. Normal privacy remains off.
+established. The unchanged 16-byte check and the original Prepared, source-Cargo
+and WASM gates decide on a fresh Windows run; a refusal stays a refusal. Normal
+privacy remains off.
+
+The completed audit of that run records failed required gates. Fmt and Ubuntu
+passed. Windows core failed two restoration cases whose `Vault::open` returned
+Deadline. Both Windows gadget source/guest parents failed: the installed-linker
+helper's record is the strict check refusing the section's 40 declared bytes
+against the unchanged 16, and the same operands are not inferred for the
+source-built parent. macOS core failed one closed-stdout observer case with an
+unsuccessful helper status. The required post steps were skipped. Which vault
+phase ran out of time and why, and how and why the observer's helper failed,
+remain unknown. No full PE, Prepared, Cargo or WASM pass exists yet.

@@ -406,6 +406,16 @@ it ([msvc-undoc](https://github.com/assarbad/msvc-undoc/blob/5423c9f0390e770b8b6
 Microsoft does not document its effect, and the fixture does not ask LINK for
 its help text. This is a conditional candidate: which tool wrote the block,
 what its second value means and whether the switch removes it are not
-established, and the full audit of that run is still in progress. The unchanged
-16-byte check and the original Prepared, source-Cargo and WASM gates decide on a
-fresh Windows run; a refusal stays a refusal. Normal privacy remains off.
+established. The unchanged 16-byte check and the original Prepared, source-Cargo
+and WASM gates decide on a fresh Windows run; a refusal stays a refusal. Normal
+privacy remains off.
+
+The completed audit of that run records failed required gates. Fmt and Ubuntu
+passed. Windows core failed two restoration cases whose `Vault::open` returned
+Deadline. Both Windows gadget source/guest parents failed: the installed-linker
+helper's record is the strict check refusing the section's 40 declared bytes
+against the unchanged 16, and the same operands are not inferred for the
+source-built parent. macOS core failed one closed-stdout observer case with an
+unsuccessful helper status. The required post steps were skipped. Which vault
+phase ran out of time and why, and how and why the observer's helper failed,
+remain unknown. No full PE, Prepared, Cargo or WASM pass exists yet.
