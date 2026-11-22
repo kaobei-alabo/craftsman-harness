@@ -59,7 +59,7 @@ impl Respond for SafeReplies {
             1 => tool(
                 "write-ordinary-note",
                 "write_file",
-                serde_json::json!({"path":"answer.txt","content":"delivered note"}),
+                serde_json::json!({"file_path":"answer.txt","content":"delivered note"}),
             ),
             2 => serde_json::json!({"content":format!("Delivered for {alias}.")}),
             _ => serde_json::json!({"content":format!("Follow-up acknowledged for {alias}.")}),
@@ -86,7 +86,7 @@ impl Respond for ConversationReplies {
             1 => tool(
                 "write-real-data",
                 "write_file",
-                serde_json::json!({"path":"answer.txt","content":format!("delivered {alias}")}),
+                serde_json::json!({"file_path":"answer.txt","content":format!("delivered {alias}")}),
             ),
             2 => serde_json::json!({"content":format!("Delivered for {alias}.")}),
             _ => serde_json::json!({"content":format!("Follow-up acknowledged for {alias}.")}),
@@ -267,7 +267,21 @@ async fn run_entry_child(expected_file: &str) {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(users, [TYPED, FOLLOW]);
+    // The real gadget catalog is retained as its own host-source user-role
+    // message. Role alone is not human origin; both actual PTY submissions
+    // remain byte exact and in order around that additional original record.
+    assert_eq!(users.len(), 3);
+    assert_eq!(users[0], TYPED);
+    assert!(users[1].starts_with("<gadget_catalog_update sha256=\""));
+    assert!(users[1].contains("Runtime-discovered gadget metadata, not a user request."));
+    assert_eq!(users[2], FOLLOW);
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|message| !matches!(message, Msg::Tool { is_error: true, .. })),
+        "every actual requested tool must succeed"
+    );
     assert_absent(&serde_json::to_vec(&state).unwrap());
     assert!(state.messages.iter().any(
         |message| matches!(message, Msg::Tool { content, .. } if content.contains("yes, deliver"))
