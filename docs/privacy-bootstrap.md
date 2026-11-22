@@ -173,26 +173,41 @@ no opaque-provider exemption. Native wires that require one refuse, without
 being called inspectable or downgraded to Chat. These are current restrictions,
 not normal feature activation.
 
-Captured plain-text/JSON data-file declarations remain INERT for restoration.
-They retain actual source and no-follow parent capture, but name/format/
-operation labels cannot establish supported containing-object/schema/
-application/data-field authority or a retained final effect. Canonical JSON
-before/after/range/value-only/duplicate-key and semantic exclusions plus the
-opaque retained-directory effect API must be installed before any grant.
-The current actual terminal fixture writes an ordinary constant without
-restoring secrets; the separate restoration assertion is preserved and held.
-Normal selectors and activation, active-turn secret reacquisition, supported
-data grants, platform/full17/hosted/native/security review remain open.
+Generic name/format/operation-only data proposals remain inert. An actual
+captured user declaration may select `contact_lines_v1` or `contact_json_v1`,
+which use the compiled contact-line or closed owner/note contact-record schema.
+The source-bound target precheck refuses ineligible destinations before private
+data reads, selector comparisons or restoration; it grants no image or effect.
+Both whole images, every selected/restored value range, JSON decoded-key and
+escape boundaries, semantic exclusions, the same current captured policy and
+the retained parent/held-file effect must still validate before a write.
+No generic format callback, pointer, model label or fixture DTO grants data.
+The existing 16-rule/source/path limits, 256 KiB image bound and bounded JSON
+depth/string indexing remain; an unsupported object or field refuses.
+
+The independently observed private FullEntry at exact `5dc83d9c` now restores
+an actual issued alias into supported Contact data through the captured user
+application, opaque human review and retained effect. The resulting real file,
+exact human/checkpoint records, config/key bytes and password absence are
+checked. The separate SafeEntry still writes an ordinary constant without a
+restoration grant. ContactJsonV1 has the compiled whole-document/value-only
+validator and retained-effect source path; the owned terminal FullEntry proves
+ContactLinesV1, not a general JSON or platform claim. The earlier constant-only,
+NoRule, responder/missing-field and partial captures remain failed or narrower
+evidence. Normal selectors/activation, password input during live work without
+retirement, platform/full17/hosted/native/security review remain open.
 
 The new fixtures use exact argv-marked native PTYs, private temporary roots,
 synthetic passwords, real KDF/envelope/vault IO, and an approved source-built
 WASM detector. A separate full ordinary builder/loopback/checkpoint control
 after successful popup acquisition checks password isolation with privacy
-unselected; it is not full-set selected-bootstrap coverage. The current safe owned entry exercises actual question/review/constant-file/
-settings-refusal/follow-up/checkpoint behavior using the captured user owner,
-with no file-restoration grant. The old first responder and missing-field
-failures, partial captures and original client retry remain failed evidence. Unmarked/unknown/
-duplicate helper startup returns before environment/config/stdin. Restricted
+unselected; it is not full-set selected-bootstrap coverage. The current owned
+FullEntry exercises actual question/opaque restored-contact review/file/
+settings-refusal/follow-up/checkpoint behavior with the captured user owner and
+real application/effect grant; SafeEntry remains its constant-write control.
+The first NoRule and other responder/missing-field failures, partial captures
+and original client retry remain evidence. Unmarked/unknown/duplicate helper
+startup returns before environment/config/stdin. Restricted
 private MAIN callback/budget/interleaving probes remain uninspected/unexecuted.
 
 The new fixture runtime wrappers and reader tasks use erased types to avoid
