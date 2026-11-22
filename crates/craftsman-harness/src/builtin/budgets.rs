@@ -50,6 +50,12 @@ impl AgentMiddleware for ResultBudgetsMiddleware {
         "result_budgets"
     }
 
+    /// It only cuts a tool outcome on its way back. The agent with a source
+    /// view sees both the tool's own outcome and the cut one.
+    fn view_support(&self) -> crate::provenance::ViewSupport {
+        crate::provenance::ViewSupport::Preserving
+    }
+
     async fn around_tool(
         &self,
         call: ToolCall,

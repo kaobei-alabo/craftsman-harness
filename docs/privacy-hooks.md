@@ -12,9 +12,13 @@ A private [detector contract and admission core](privacy-admission.md) now
 exists as a local, unmerged slice: a source-pinned detector call on the gadget
 engine and an owner that turns one actual raw capture into an admitted node
 only after the vault's commit and the send guard's admission. It is not
-connected to any provider, tool, display, file, key source or policy.
+connected to any display, file, key source or policy.
 [Privacy provenance](privacy-provenance.md) records how sources and model views
-are meant to reach a request; most of that is not built. The target diagram
+reach a request. A private path now exists for the Chat wire, from typed input
+and tool results through the framework agent and the shared session builder to
+the existing client and guard, with a limited set of parts. Nothing selects it,
+native wires are refused, and restoration, key handling and activation are not
+built. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 

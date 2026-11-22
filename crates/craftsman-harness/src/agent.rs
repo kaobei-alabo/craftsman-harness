@@ -104,7 +104,7 @@ struct PendingResume {
 struct TurnInputState {
     active: bool,
     idle_operation: bool,
-    pending: VecDeque<String>,
+    pending: VecDeque<QueuedInput>,
     cancel_requested: bool,
     cancellation: Option<crate::TurnCancellation>,
     finishing: bool,
@@ -314,12 +314,17 @@ impl Agent {
         let input_error = {
             let mut committed = self.state.lock().unwrap();
             if self.durable_turn_checkpoints {
-                reconcile_recovered_calls(&mut committed, None);
+                match &self.model_view {
+                    Some(view) => view.reconcile(&mut committed),
+                    None => {
+                        reconcile_recovered_calls(&mut committed, None);
+                    }
+                }
             }
             let message_index = committed.messages.len();
             committed.messages.push(user_msg);
             if let (Some(view), Some(source)) = (&self.model_view, source) {
-                view.sources.lock().unwrap().push(source);
+                view.note_inputs(vec![Some(source)]);
             }
             self.boundary_policy.as_ref().and_then(|policy| {
                 policy
@@ -339,7 +344,9 @@ impl Agent {
         // 2. turn_start on a working clone, committed back.
         {
             let mut working = self.snapshot();
+            let kept = self.view_phase_start(&working);
             self.chain.turn_start(&mut working).await?;
+            self.view_phase_end(kept, &working)?;
             self.commit(working);
         }
 
@@ -427,7 +434,9 @@ impl Agent {
 
             // Rebuild the per-turn system additions from scratch each round.
             working.system_extras.clear();
+            let kept = self.view_phase_start(&working);
             self.chain.prepare_model(&mut working).await?;
+            self.view_phase_end(kept, &working)?;
 
             let mut system = self.system_prompt.clone();
             for extra in &working.system_extras {
@@ -481,7 +490,9 @@ impl Agent {
             working.last_usage = Some(response.usage.clone());
             working.last_usage_msg_count = working.messages.len();
 
+            let kept = self.view_phase_start(&working);
             let decision = self.chain.review_model_flow(&mut working).await?;
+            self.view_phase_end(kept, &working)?;
 
             // End and Remodel both leave this round's tool_calls unanswered
             // (no tool results will follow). OpenAI-compatible providers
@@ -680,6 +691,7 @@ impl Agent {
                     content,
                     is_error: true,
                 });
+                self.note_framework_commits(FrameworkCommit::Denial, 1);
                 self.save_progress_checkpoint(None).await?;
             }
             HitlAction::Approve => {
@@ -751,6 +763,7 @@ impl Agent {
                     content: "Tool call was not executed (the session was interrupted while awaiting approval).".into(),
                     is_error: true,
                 });
+                self.note_framework_commits(FrameworkCommit::UnansweredCall, 1);
             }
         }
 
@@ -936,7 +949,9 @@ impl Agent {
     async fn finish_state(&self) -> Result<(), AgentError> {
         self.turn_input.lock().unwrap().finishing = true;
         let mut working = self.snapshot();
+        let kept = self.view_phase_start(&working);
         self.chain.turn_end(&mut working).await?;
+        self.view_phase_end(kept, &working)?;
         self.commit(working);
         self.save_checkpoint(None).await?;
         Ok(())
@@ -964,6 +979,7 @@ impl Agent {
             serde_json::to_value(&message).unwrap_or_default(),
         );
         self.state.lock().unwrap().messages.push(message.clone());
+        self.note_framework_commits(FrameworkCommit::CancelNote, 1);
         let result = self.finish(message).await?;
         if self.boundary_policy.is_some() && self.checkpoint_failed() {
             return Err(checkpoint_save_error());
@@ -994,6 +1010,7 @@ impl Agent {
         for message in &messages {
             self.journal("tool", serde_json::to_value(message).unwrap_or_default());
         }
+        self.note_framework_commits(FrameworkCommit::CancelledCall, messages.len());
         self.state.lock().unwrap().messages.extend(messages);
     }
 
@@ -1015,6 +1032,14 @@ impl Agent {
         call: ToolCall,
         bypass_chain: bool,
     ) -> Result<(), AgentError> {
+        if let Some(view) = &self.model_view {
+            // Nothing has run yet. A refusal leaves the call without a result.
+            view.boundary.before_dispatch(&call, bypass_chain).await?;
+        }
+        let reached = self
+            .model_view
+            .as_ref()
+            .map(|_| Arc::new(Mutex::new(Vec::new())));
         let id = call.id.clone();
         let tool_name = call.name.clone();
         // t0 = the committed state snapshot the tool starts from. Keep it so the
@@ -1037,12 +1062,27 @@ impl Agent {
             // Terminal handler: look the tool up by name and invoke it, or
             // return an `is_error` outcome for an unknown tool. Bound through
             // `as_tool_handler` so the higher-ranked return-lifetime resolves.
+            let record = reached.clone();
             let terminal = as_tool_handler(move |call: ToolCall, ctx: &mut ToolCtx<'_>| {
                 let found = tools.get(&call.name).cloned();
                 let names = names.clone();
+                let record = record.clone();
                 Box::pin(async move {
                     match found {
-                        Some(tool) => tool.call(call.args, ctx).await,
+                        Some(tool) => match record {
+                            // The exact call and outcome of the tool itself,
+                            // before any middleware sees the outcome.
+                            Some(record) => {
+                                let given = call.clone();
+                                let result = tool.call(call.args, ctx).await;
+                                record
+                                    .lock()
+                                    .unwrap()
+                                    .push(ReachedTool::new(given, &result));
+                                result
+                            }
+                            None => tool.call(call.args, ctx).await,
+                        },
                         None => Ok(ToolOutcome::err(format!(
                             "Tool '{}' not found. Available: {}",
                             call.name, names
@@ -1065,6 +1105,10 @@ impl Agent {
             merge_dispatch_result(&mut committed, &t0, working);
         }
 
+        let returned = self
+            .model_view
+            .as_ref()
+            .and_then(|_| result.as_ref().ok().cloned());
         let msg = match result {
             Ok(outcome) => Msg::Tool {
                 tool_call_id: id,
@@ -1087,7 +1131,11 @@ impl Agent {
         if let (Some(view), Some(observed)) = (&self.model_view, observed) {
             // The actual result is journaled and committed above, and saved
             // there when durable turn checkpoints are selected.
-            self.record_tool_source(view, &tool_name, &observed).await?;
+            let reached = reached
+                .map(|record| std::mem::take(&mut *record.lock().unwrap()))
+                .unwrap_or_default();
+            self.record_tool_source(view, &tool_name, &observed, &reached, returned.as_ref())
+                .await?;
         }
         Ok(())
     }
@@ -1105,7 +1153,7 @@ impl Agent {
         if !input.active || input.idle_operation {
             return false;
         }
-        input.pending.push_back(message);
+        input.pending.push_back(QueuedInput::plain(message));
         true
     }
 
@@ -1313,7 +1361,7 @@ impl Agent {
         }
     }
 
-    fn append_human_steering_messages(&self, messages: Vec<String>) -> Result<(), AgentError> {
+    fn append_human_steering_messages(&self, messages: Vec<QueuedInput>) -> Result<(), AgentError> {
         if self.boundary_policy.is_none() {
             self.append_steering_messages(messages);
             return Ok(());
@@ -1374,11 +1422,14 @@ impl Agent {
         Err(error)
     }
 
-    fn append_steering_messages(&self, messages: Vec<String>) -> (usize, usize) {
+    fn append_steering_messages(&self, messages: Vec<QueuedInput>) -> (usize, usize) {
         if messages.is_empty() {
             return (0, 0);
         }
-        let user_messages = messages.into_iter().map(Msg::user).collect::<Vec<_>>();
+        let (user_messages, sources): (Vec<_>, Vec<_>) = messages
+            .into_iter()
+            .map(|input| (Msg::user(input.text), input.source))
+            .unzip();
         for message in &user_messages {
             self.journal("user", serde_json::to_value(message).unwrap_or_default());
         }
@@ -1386,6 +1437,9 @@ impl Agent {
         let start = state.messages.len();
         let count = user_messages.len();
         state.messages.extend(user_messages);
+        if let Some(view) = &self.model_view {
+            view.note_inputs(sources);
+        }
         (start, count)
     }
 
@@ -1420,7 +1474,7 @@ impl Agent {
         if messages.is_empty() {
             return false;
         }
-        self.append_steering_messages(messages);
+        self.append_steering_messages(messages.into_iter().map(QueuedInput::plain).collect());
         if let Some(policy) = &self.boundary_policy {
             policy.runtime_input();
         }
@@ -1463,7 +1517,7 @@ impl Agent {
         }
         // Append only. A stale round snapshot must not replace concurrent
         // files, todos or custom state while accepting runtime input.
-        self.append_steering_messages(messages);
+        self.append_steering_messages(messages.into_iter().map(QueuedInput::plain).collect());
         if let Some(policy) = &self.boundary_policy {
             policy.runtime_input();
         }
@@ -2080,12 +2134,9 @@ impl AgentBuilder {
             finish_on_round_limit: self.finish_on_round_limit,
             completion_check: self.completion_check,
             boundary_policy: self.boundary_policy,
-            model_view: self.model_view_boundary.map(|boundary| {
-                Arc::new(ModelView {
-                    boundary,
-                    sources: Mutex::new(Vec::new()),
-                })
-            }),
+            model_view: self
+                .model_view_boundary
+                .map(|boundary| Arc::new(ModelView::new(boundary))),
             completion_sequence: Arc::new(AtomicU64::new(0)),
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,
@@ -2113,7 +2164,8 @@ mod idle_compaction;
 
 #[path = "agent_model_view.rs"]
 mod model_view;
-use model_view::ModelView;
+use crate::provenance::{FrameworkCommit, ReachedTool};
+use model_view::{ModelView, QueuedInput};
 
 #[cfg(test)]
 #[path = "agent_model_view_tests.rs"]

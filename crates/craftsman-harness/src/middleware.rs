@@ -1,5 +1,6 @@
 use crate::error::AgentError;
 use crate::model::{ModelRequest, ModelResponse, ToolDef};
+use crate::provenance::{ModelDelivery, TrackedModelRequest, ViewSupport};
 use crate::state::{AgentState, ToolCall};
 use crate::tool::{Tool, ToolCtx, ToolOutcome};
 use async_trait::async_trait;
@@ -37,6 +38,37 @@ impl<'a> Next<'a> {
                 mw.around_model(
                     req,
                     Next {
+                        chain: rest,
+                        terminal: self.terminal,
+                    },
+                )
+                .await
+            }
+        }
+    }
+}
+
+// ---- model-call wrap plumbing for an agent with a source view ---------------
+
+pub type BoxedViewFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ModelDelivery, AgentError>> + Send + 'a>>;
+pub type ViewHandler<'a> = &'a (dyn Fn(TrackedModelRequest) -> BoxedViewFuture<'a> + Send + Sync);
+
+/// Onion continuation for `around_model_with_view`. The request can be read
+/// and passed on; it cannot be changed.
+pub struct ViewNext<'a> {
+    chain: &'a [Arc<dyn AgentMiddleware>],
+    terminal: ViewHandler<'a>,
+}
+
+impl<'a> ViewNext<'a> {
+    pub async fn run(self, req: TrackedModelRequest) -> Result<ModelDelivery, AgentError> {
+        match self.chain.split_first() {
+            None => (self.terminal)(req).await,
+            Some((mw, rest)) => {
+                mw.around_model_with_view(
+                    req,
+                    ViewNext {
                         chain: rest,
                         terminal: self.terminal,
                     },
@@ -122,6 +154,20 @@ pub trait AgentMiddleware: Send + Sync {
     async fn turn_end(&self, _st: &mut AgentState) -> Result<(), AgentError> {
         Ok(())
     }
+    /// The author's statement for an agent that selected a source view
+    /// boundary. Without one, such an agent refuses to run.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Unadapted
+    }
+    /// The model-call wrap on an agent that selected a source view boundary,
+    /// where `around_model` is never called.
+    async fn around_model_with_view(
+        &self,
+        req: TrackedModelRequest,
+        next: ViewNext<'_>,
+    ) -> Result<ModelDelivery, AgentError> {
+        next.run(req).await
+    }
 }
 
 // ---- the chain ---------------------------------------------------------------
@@ -162,6 +208,19 @@ impl MiddlewareChain {
         terminal: ModelHandler<'a>,
     ) -> Result<ModelResponse, AgentError> {
         Next {
+            chain: &self.list,
+            terminal,
+        }
+        .run(req)
+        .await
+    }
+
+    pub async fn around_model_with_view<'a>(
+        &'a self,
+        req: TrackedModelRequest,
+        terminal: ViewHandler<'a>,
+    ) -> Result<ModelDelivery, AgentError> {
+        ViewNext {
             chain: &self.list,
             terminal,
         }

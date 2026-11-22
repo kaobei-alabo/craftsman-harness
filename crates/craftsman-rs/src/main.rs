@@ -46,7 +46,11 @@ mod plugins;
 // Private detector contract and pinned source call; nothing selects them.
 #[doc(hidden)]
 pub mod privacy_hook;
-// Private source-view Chat provider; no builder or frontend constructs it.
+// Typed entries of a session built for a privacy conversation; nothing calls them.
+#[doc(hidden)]
+pub mod privacy_entry;
+// Private source-view Chat provider, constructed only for a private selection
+// that no frontend, configuration or CLI route can make.
 #[doc(hidden)]
 pub mod privacy_provider;
 // App-binary host views only; no tool, transport, renderer or hook selects them.

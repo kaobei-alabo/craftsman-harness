@@ -31,7 +31,10 @@ mod view;
 #[cfg(test)]
 mod view_tests;
 
-pub use view::{CommittedModelNode, ConversationBoundary, ReceivedModel};
+pub use view::{
+    ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
+    ReceivedModel, SourceField,
+};
 
 use crate::checkpoints::LibsqlCheckpointer;
 use crate::privacy_hook::{Detector, HookError, MAX_TEXT_BYTES, TextSpan};
@@ -161,6 +164,45 @@ impl FreshConversationBinding {
     }
 }
 
+/// The selection a host's trusted policy hands to the session builder for
+/// one live privacy conversation. It states that the policy permits that
+/// conversation to run with the limited set of parts that have a
+/// source-preserving path. It cannot be built from configuration.
+pub struct PrivacyViewSelection {
+    session: Arc<PrivacySession>,
+}
+
+impl PrivacyViewSelection {
+    pub fn limited_set_permitted_by_host_policy(session: Arc<PrivacySession>) -> Self {
+        Self { session }
+    }
+
+    pub(crate) fn session(&self) -> &Arc<PrivacySession> {
+        &self.session
+    }
+}
+
+/// The privacy conversation a session was built for, with the boundary its
+/// agent selected.
+pub struct PrivacyView {
+    session: Arc<PrivacySession>,
+    boundary: Arc<ConversationBoundary>,
+}
+
+impl PrivacyView {
+    pub(crate) fn new(session: Arc<PrivacySession>, boundary: Arc<ConversationBoundary>) -> Self {
+        Self { session, boundary }
+    }
+
+    pub fn session(&self) -> &Arc<PrivacySession> {
+        &self.session
+    }
+
+    pub fn boundary(&self) -> &Arc<ConversationBoundary> {
+        &self.boundary
+    }
+}
+
 /// What kind of producer a raw capture came from. It describes the source; it
 /// is not a trust level and grants nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +213,10 @@ pub enum RawOrigin {
     HumanReply,
     /// The content a tool actually returned.
     ToolResult,
+    /// A result the dispatch chain recorded for a call that is not the tool's
+    /// own returned content: a refusal or denial on the way to the tool, a
+    /// cut or reformatted outcome, or the text of a failure.
+    ChainResult,
     /// A file or stored document the host read.
     HostFile,
     /// Configuration or policy text the host loaded.

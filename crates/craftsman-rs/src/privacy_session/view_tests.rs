@@ -387,3 +387,509 @@ async fn a_source_that_is_not_this_conversations_or_does_not_fit_is_refused() {
     assert_eq!(d.session.check(), Err(SessionStop::Closed));
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+// ---- cancellation, human decisions and checked operations --------------------
+
+use craftsman_harness::provenance::ViewSupport;
+use craftsman_harness::{
+    AgentMiddleware, AgentState, Flow, HitlAction, HitlRequest, Suspension, ToolNext,
+};
+
+/// A middleware whose author stated that it leaves the record alone. It can
+/// cancel the turn after the first reply and park every call.
+#[derive(Default)]
+struct Gate {
+    agent: Mutex<Option<Arc<Agent>>>,
+    cancel_once: std::sync::atomic::AtomicBool,
+    park: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl AgentMiddleware for Gate {
+    fn name(&self) -> &str {
+        "gate"
+    }
+
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
+    }
+
+    async fn review_model(&self, _: &mut AgentState) -> Result<Flow, AgentError> {
+        if self.cancel_once.swap(false, Ordering::SeqCst)
+            && let Some(agent) = self.agent.lock().unwrap().as_ref()
+        {
+            agent.request_cancel();
+        }
+        Ok(Flow::Proceed)
+    }
+
+    async fn around_tool(
+        &self,
+        call: ToolCall,
+        ctx: &mut ToolCtx<'_>,
+        next: ToolNext<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        if self.park.load(Ordering::SeqCst) {
+            return Err(AgentError::Suspended(Box::new(Suspension {
+                frames: vec![],
+                request: HitlRequest {
+                    tool_call: call,
+                    summary: "run lookup?".into(),
+                },
+            })));
+        }
+        next.run(call, ctx).await
+    }
+}
+
+/// What the tool saw of the operation that was checked for its own call.
+#[derive(Default)]
+struct Seen {
+    args: Vec<Value>,
+    edited: Vec<bool>,
+    /// Place, range and the original behind each field.
+    fields: Vec<Vec<(FieldPlace, std::ops::Range<usize>, String)>>,
+}
+
+/// A tool named `lookup` that reads the operation in flight.
+struct Inspect {
+    boundary: Mutex<Option<Arc<ConversationBoundary>>>,
+    seen: Mutex<Seen>,
+    result: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Inspect {
+    fn def(&self) -> ToolDef {
+        Lookup(String::new()).def()
+    }
+
+    async fn call(&self, args: Value, _: &mut ToolCtx<'_>) -> Result<ToolOutcome, AgentError> {
+        let boundary = self.boundary.lock().unwrap().clone().unwrap();
+        let operation = boundary
+            .operation_in_flight()
+            .expect("an operation was checked");
+        assert_eq!(operation.call().unwrap().args, args);
+        let fields = operation
+            .fields()
+            .unwrap()
+            .expect("no overlap")
+            .iter()
+            .map(|field| {
+                let original = field
+                    .with_record(|_, records, index| {
+                        records
+                            .with_host_field(index, |host| {
+                                host.original_for_validated_host_field().to_owned()
+                            })
+                            .unwrap()
+                    })
+                    .unwrap();
+                (field.place().clone(), field.range(), original)
+            })
+            .collect();
+        let mut seen = self.seen.lock().unwrap();
+        seen.args.push(args);
+        seen.edited.push(operation.edited_by_human());
+        seen.fields.push(fields);
+        Ok(ToolOutcome::ok(self.result.clone()))
+    }
+}
+
+fn sse(body: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(
+        format!("data: {body}\n\ndata: [DONE]\n\n"),
+        "text/event-stream",
+    )
+}
+
+fn asks(arguments: Value) -> ResponseTemplate {
+    sse(
+        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+        "function": {"name": "lookup", "arguments": arguments.to_string()}}]}, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1}}),
+    )
+}
+
+/// Mounts `replies` to be given in order, one request each.
+async fn scripted(server: &MockServer, replies: Vec<ResponseTemplate>) {
+    for (index, reply) in replies.into_iter().enumerate() {
+        Mock::given(method("POST"))
+            .respond_with(reply)
+            .up_to_n_times(1)
+            .with_priority(index as u8 + 1)
+            .mount(server)
+            .await;
+    }
+}
+
+struct Gated {
+    c: Conversation,
+    gate: Arc<Gate>,
+    tool: Arc<Inspect>,
+    agent: Arc<Agent>,
+}
+
+/// One conversation whose agent has the gate and the inspecting tool.
+async fn gated(vault: &Vault, server: &MockServer, result: &str) -> Gated {
+    let c = conversation(vault, server, "unused").await;
+    let gate = Arc::new(Gate::default());
+    let tool = Arc::new(Inspect {
+        boundary: Mutex::new(Some(c.boundary.clone())),
+        seen: Mutex::new(Seen::default()),
+        result: result.to_owned(),
+    });
+    let provider = ViewChatProvider::new(
+        client(server),
+        c.session.clone(),
+        c.usage.clone(),
+        Arc::new(|_: &str| {}),
+    )
+    .unwrap();
+    let agent = Arc::new(
+        Agent::builder(Arc::new(provider))
+            .tool(tool.clone())
+            .middleware(gate.clone())
+            .model_view_boundary(Some(c.boundary.clone()))
+            .build(),
+    );
+    *gate.agent.lock().unwrap() = Some(agent.clone());
+    Gated {
+        c,
+        gate,
+        tool,
+        agent,
+    }
+}
+
+/// The placeholder the conversation issued for the address in `node`.
+fn issued(node: &AdmittedNode) -> String {
+    node.model_view()
+        .unwrap()
+        .strip_prefix("who handles ")
+        .unwrap()
+        .trim_end_matches('?')
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_continues_and_the_agents_own_messages_are_sent_as_views() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    scripted(
+        &server,
+        vec![
+            asks(json!({"who": "them"})),
+            answer("chat", &["fixture answer"]),
+        ],
+    )
+    .await;
+    let g = gated(&vault, &server, "unused").await;
+    g.gate.cancel_once.store(true, Ordering::SeqCst);
+
+    let text = format!("who handles {EMAIL}?");
+    let node = g.c.session.admit_raw(&draft(&text)).await.unwrap();
+    let TurnResult::Done(output) = g
+        .agent
+        .run_turn_with_view(text.clone(), g.c.session.source(&node).unwrap())
+        .await
+        .unwrap()
+    else {
+        panic!("a cancelled turn ends");
+    };
+    assert_eq!(output.final_text(), "Stopped by the user.");
+    assert!(g.tool.seen.lock().unwrap().args.is_empty());
+    // An ordinary cancellation does not end the conversation.
+    assert!(g.c.session.check().is_ok());
+    assert!(
+        g.agent
+            .recorded_sources()
+            .unwrap()
+            .iter()
+            .all(Option::is_some)
+    );
+
+    let next = format!("then call {PHONE}");
+    let node = g.c.session.admit_raw(&draft(&next)).await.unwrap();
+    g.agent
+        .run_turn_with_view(next.clone(), g.c.session.source(&node).unwrap())
+        .await
+        .unwrap();
+    // The record holds the agent's own messages as it always writes them.
+    let messages = recorded(&g.agent);
+    assert_eq!(messages.len(), 6);
+    assert_eq!(messages[3], Msg::assistant("Stopped by the user."));
+    assert_eq!(messages[4], Msg::user(next));
+    let sent = bodies(&server).await;
+    assert_eq!(sent.len(), 2);
+    let later = sent[1]["messages"].as_array().unwrap();
+    assert_eq!(later.len(), 6);
+    assert_eq!(later[3]["content"], "Tool call cancelled by the user.");
+    assert_eq!(later[3]["tool_call_id"], "c1");
+    assert_eq!(
+        later[4],
+        json!({"role": "assistant", "content": "Stopped by the user."})
+    );
+    assert_eq!(later[5]["content"], node.model_view().unwrap());
+    let raw = String::from_utf8(server.received_requests().await.unwrap()[1].body.clone()).unwrap();
+    for original in [EMAIL, PHONE, OPERATOR] {
+        assert!(!raw.contains(original), "{original}");
+    }
+}
+
+#[tokio::test]
+async fn a_parked_call_runs_only_as_decided_and_the_tool_sees_the_checked_operation() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let text = format!("who handles {EMAIL}?");
+
+    // Approved as the model wrote it.
+    let server = MockServer::start().await;
+    let g = gated(&vault, &server, &format!("their number is {PHONE}")).await;
+    let other = conversation(&vault, &server, "unused").await;
+    let node = g.c.session.admit_raw(&draft(&text)).await.unwrap();
+    let placeholder = issued(&node);
+    scripted(
+        &server,
+        vec![
+            asks(json!({"who": placeholder, "notes": ["plain", format!("cc {placeholder}")]})),
+            answer("chat", &[&format!("ask {placeholder} today")]),
+        ],
+    )
+    .await;
+    g.gate.park.store(true, Ordering::SeqCst);
+    let TurnResult::Suspended(parked) = g
+        .agent
+        .run_turn_with_view(text.clone(), g.c.session.source(&node).unwrap())
+        .await
+        .unwrap()
+    else {
+        panic!("the call is parked");
+    };
+    let call = parked.request.tool_call.clone();
+    g.gate.park.store(false, Ordering::SeqCst);
+    // Evidence from another conversation, for another call or for another
+    // action is turned away. Nothing runs and this conversation continues.
+    let mut altered = call.clone();
+    altered.args = json!({"who": "someone"});
+    for wrong in [
+        other
+            .session
+            .human_decision(&call, &HitlAction::Approve)
+            .unwrap(),
+        g.c.session
+            .human_decision(&altered, &HitlAction::Approve)
+            .unwrap(),
+        g.c.session
+            .human_decision(
+                &call,
+                &HitlAction::Deny {
+                    feedback: String::new(),
+                },
+            )
+            .unwrap(),
+    ] {
+        assert!(
+            g.agent
+                .resume_with_view(HitlAction::Approve, "Denied.", wrong)
+                .await
+                .is_err()
+        );
+    }
+    assert!(g.tool.seen.lock().unwrap().args.is_empty());
+    assert!(g.c.session.check().is_ok());
+    let decision =
+        g.c.session
+            .human_decision(&call, &HitlAction::Approve)
+            .unwrap();
+    g.agent
+        .resume_with_view(HitlAction::Approve, "Denied.", decision)
+        .await
+        .unwrap();
+    {
+        // The tool ran once, with the model's own arguments, and saw where
+        // those arguments name what this conversation issued.
+        let seen = g.tool.seen.lock().unwrap();
+        assert_eq!(seen.args, [call.args.clone()]);
+        assert_eq!(seen.edited, [false]);
+        let argument = |pointer: &str| FieldPlace::Argument {
+            tool: "lookup".into(),
+            pointer: pointer.into(),
+        };
+        assert_eq!(
+            seen.fields[0],
+            [
+                (
+                    argument("/notes/1"),
+                    3..3 + placeholder.len(),
+                    EMAIL.to_owned()
+                ),
+                (argument("/who"), 0..placeholder.len(), EMAIL.to_owned()),
+            ]
+        );
+    }
+    // The host can reach what was committed and what ran through the sources
+    // the agent kept.
+    let sources = g.agent.recorded_sources().unwrap();
+    let sources: Vec<_> = sources.into_iter().map(Option::unwrap).collect();
+    assert_eq!(sources.len(), 4);
+    let result = g.c.session.actual_result(&sources[2]).unwrap();
+    assert_eq!((result.call_id(), result.tool()), ("c1", "lookup"));
+    assert_eq!(result.reached().len(), 1);
+    assert_eq!(result.reached()[0].call, call);
+    assert_eq!(
+        result.returned().unwrap().content,
+        format!("their number is {PHONE}")
+    );
+    assert!(result.operation().is_some());
+    assert_eq!(
+        g.c.session.admitted(&sources[2]).unwrap().origin(),
+        RawOrigin::ToolResult
+    );
+    let reply = g.c.session.committed_model(&sources[3]).unwrap();
+    let fields = reply.fields().unwrap().unwrap();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(*fields[0].place(), FieldPlace::ReplyText);
+    assert_eq!(fields[0].range(), 4..4 + placeholder.len());
+    // A reply is not an admitted node, and an input is not a reply.
+    assert!(g.c.session.admitted(&sources[3]).is_none());
+    assert!(g.c.session.committed_model(&sources[0]).is_none());
+    assert!(other.session.committed_model(&sources[3]).is_none());
+    let sent =
+        String::from_utf8(server.received_requests().await.unwrap()[1].body.clone()).unwrap();
+    assert!(!sent.contains(EMAIL) && !sent.contains(PHONE));
+
+    // Approved with arguments a person wrote: the tool gets those, they are
+    // not treated as the model's, and the reply stays as received.
+    let server = MockServer::start().await;
+    let g = gated(&vault, &server, "done").await;
+    let node = g.c.session.admit_raw(&draft(&text)).await.unwrap();
+    let placeholder = issued(&node);
+    scripted(
+        &server,
+        vec![
+            asks(json!({"who": placeholder})),
+            answer("chat", &["fixture answer"]),
+        ],
+    )
+    .await;
+    g.gate.park.store(true, Ordering::SeqCst);
+    let TurnResult::Suspended(parked) = g
+        .agent
+        .run_turn_with_view(text.clone(), g.c.session.source(&node).unwrap())
+        .await
+        .unwrap()
+    else {
+        panic!("the call is parked");
+    };
+    g.gate.park.store(false, Ordering::SeqCst);
+    let call = parked.request.tool_call.clone();
+    let edit = HitlAction::ApproveEdited {
+        args: json!({"who": placeholder, "typed": EMAIL}),
+    };
+    let decision = g.c.session.human_decision(&call, &edit).unwrap();
+    g.agent
+        .resume_with_view(edit, "Denied.", decision)
+        .await
+        .unwrap();
+    {
+        let seen = g.tool.seen.lock().unwrap();
+        assert_eq!(seen.args, [json!({"who": placeholder, "typed": EMAIL})]);
+        assert_eq!(seen.edited, [true]);
+        assert!(seen.fields[0].is_empty());
+    }
+    assert!(
+        matches!(&recorded(&g.agent)[1], Msg::Assistant { tool_calls, .. }
+        if tool_calls[0] == call)
+    );
+
+    // Denied with a reason: nothing runs, the reason is recorded as written
+    // and the model sees its view.
+    let server = MockServer::start().await;
+    let g = gated(&vault, &server, "unused").await;
+    let node = g.c.session.admit_raw(&draft(&text)).await.unwrap();
+    scripted(
+        &server,
+        vec![
+            asks(json!({"who": "them"})),
+            answer("chat", &["fixture answer"]),
+        ],
+    )
+    .await;
+    g.gate.park.store(true, Ordering::SeqCst);
+    let TurnResult::Suspended(parked) = g
+        .agent
+        .run_turn_with_view(text.clone(), g.c.session.source(&node).unwrap())
+        .await
+        .unwrap()
+    else {
+        panic!("the call is parked");
+    };
+    let deny = HitlAction::Deny {
+        feedback: format!("call {PHONE} first"),
+    };
+    let decision =
+        g.c.session
+            .human_decision(&parked.request.tool_call, &deny)
+            .unwrap();
+    g.agent
+        .resume_with_view(deny, "The call was denied.", decision)
+        .await
+        .unwrap();
+    assert!(g.tool.seen.lock().unwrap().args.is_empty());
+    assert_eq!(
+        recorded(&g.agent)[2],
+        Msg::Tool {
+            tool_call_id: "c1".into(),
+            content: format!("The call was denied. Feedback: call {PHONE} first"),
+            is_error: true,
+        }
+    );
+    let sent = bodies(&server).await;
+    let denial = sent[1]["messages"][3]["content"].as_str().unwrap();
+    assert!(denial.starts_with("The call was denied. Feedback: call ") && !denial.contains(PHONE));
+    let sources = g.agent.recorded_sources().unwrap();
+    assert_eq!(
+        g.c.session
+            .admitted(sources[2].as_ref().unwrap())
+            .unwrap()
+            .origin(),
+        RawOrigin::HumanReply
+    );
+}
+
+#[tokio::test]
+async fn a_call_the_committed_reply_did_not_ask_for_is_refused_before_it_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = server().await;
+    let c = conversation(&vault, &server, "unused").await;
+    let call = ToolCall {
+        id: "c9".into(),
+        name: "lookup".into(),
+        args: json!({"who": "anyone"}),
+    };
+    // No reply has been committed, so no call was asked for: neither an
+    // ordinary dispatch nor an approved one is let through.
+    assert!(c.boundary.before_dispatch(&call, false).await.is_err());
+    assert_eq!(c.session.check(), Err(SessionStop::Closed));
+    assert!(c.boundary.operation_in_flight().is_none());
+
+    let d = conversation(&vault, &server, "unused").await;
+    assert!(d.boundary.before_dispatch(&call, true).await.is_err());
+    assert_eq!(d.session.check(), Err(SessionStop::Closed));
+
+    // Text from another agent has no source here.
+    let e = conversation(&vault, &server, "unused").await;
+    assert!(
+        e.boundary
+            .observe_framework_commit(
+                craftsman_harness::provenance::FrameworkCommit::Notification,
+                &Msg::user("[message from agent 'child']\nhello"),
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(e.session.check(), Err(SessionStop::Closed));
+}

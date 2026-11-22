@@ -1,6 +1,7 @@
 //! Ordinary turns through the optional source view boundary, with a scripted
 //! provider and a recording boundary. Nothing here contacts a model service.
 
+use super::model_view::Slot;
 use super::*;
 use crate::provenance::{
     ModelDelivery, ModelViewBoundary, ObservedToolResult, SourceRef, TrackedModelRequest,
@@ -468,4 +469,649 @@ fn a_source_is_opaque_and_compared_by_identity() {
     assert_eq!(tag(&first), tag(&second));
     assert!(first.downcast::<String>().is_none());
     assert_eq!(format!("{first:?}"), "SourceRef([opaque])");
+}
+
+// ---- frontiers beyond the first slice ----------------------------------------
+
+use crate::interrupt::{HitlAction, HitlRequest, Suspension};
+use crate::middleware::{ToolNext, ViewNext};
+use crate::provenance::{FrameworkCommit, ReachedTool, ViewSupport};
+use crate::{AgentMiddleware, ToolCtx, ToolOutcome};
+
+/// A boundary that knows the agent's own messages, checks calls and
+/// decisions, and records what it was shown.
+#[derive(Default)]
+struct Frontiers {
+    events: Mutex<Vec<String>>,
+    refuse_dispatch: AtomicBool,
+}
+
+impl Frontiers {
+    fn events(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+
+    fn note(&self, event: String) {
+        self.events.lock().unwrap().push(event);
+    }
+}
+
+fn reached(records: &[ReachedTool]) -> String {
+    records
+        .iter()
+        .map(|record| match &record.result {
+            Ok(outcome) => format!(
+                "{}{}=>{:?}",
+                record.call.name, record.call.args, outcome.content
+            ),
+            Err(error) => format!("{}{}=>error {error}", record.call.name, record.call.args),
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+#[async_trait::async_trait]
+impl ModelViewBoundary for Frontiers {
+    async fn system_sources(&self) -> Result<Vec<SourceRef>, AgentError> {
+        Ok(vec![])
+    }
+
+    async fn tool_source(&self, definition: &ToolDef) -> Result<SourceRef, AgentError> {
+        Ok(source(&format!("definition:{}", definition.name)))
+    }
+
+    async fn commit_model(&self, receipt: SourceRef, _: &Msg) -> Result<SourceRef, AgentError> {
+        Ok(source(&format!("model:{}", tag(&receipt))))
+    }
+
+    async fn observe_tool_result(
+        &self,
+        result: ObservedToolResult<'_>,
+    ) -> Result<SourceRef, AgentError> {
+        self.note(format!(
+            "result {} {:?} reached=[{}] returned={:?}",
+            result.call_id,
+            result.content,
+            reached(result.reached),
+            result.returned.map(|outcome| outcome.content.as_str()),
+        ));
+        Ok(source(&format!("result:{}", result.call_id)))
+    }
+
+    async fn observe_framework_commit(
+        &self,
+        event: FrameworkCommit,
+        committed: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let text = match committed {
+            Msg::Tool { content, .. } | Msg::Assistant { content, .. } | Msg::User { content } => {
+                content.clone()
+            }
+            _ => String::new(),
+        };
+        self.note(format!("own {event:?} {text:?}"));
+        if event == FrameworkCommit::Notification {
+            return Err(AgentError::State(
+                "no source for another agent's text".into(),
+            ));
+        }
+        Ok(source(&format!("own:{event:?}")))
+    }
+
+    async fn before_dispatch(&self, call: &ToolCall, approved: bool) -> Result<(), AgentError> {
+        self.note(format!(
+            "dispatch {}{} approved={approved}",
+            call.name, call.args
+        ));
+        if self.refuse_dispatch.load(Ordering::SeqCst) {
+            return Err(AgentError::State("this call may not run".into()));
+        }
+        Ok(())
+    }
+
+    async fn accept_decision(
+        &self,
+        call: &ToolCall,
+        action: &HitlAction,
+        decision: &SourceRef,
+    ) -> Result<(), AgentError> {
+        self.note(format!("decision {} {action:?} {}", call.id, tag(decision)));
+        match tag(decision).as_str() {
+            "decision:shown" => Ok(()),
+            _ => Err(AgentError::State("not a decision for this call".into())),
+        }
+    }
+}
+
+/// Returns its `text` argument, and counts its runs.
+struct Echo(AtomicUsize);
+
+#[async_trait::async_trait]
+impl Tool for Echo {
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: "echo".into(),
+            description: "echo".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    async fn call(
+        &self,
+        args: serde_json::Value,
+        _: &mut ToolCtx<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolOutcome::ok(args["text"].as_str().unwrap_or("none")))
+    }
+}
+
+fn echo_call(id: &str, text: &str) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        name: "echo".into(),
+        args: serde_json::json!({"text": text}),
+    }
+}
+
+fn calls(calls: Vec<ToolCall>) -> Msg {
+    Msg::Assistant {
+        content: String::new(),
+        tool_calls: calls,
+    }
+}
+
+/// A middleware whose author stated that it leaves the record alone. It can
+/// park a call, cut an outcome, watch the model call, or break its statement.
+#[derive(Default)]
+struct Stated {
+    park: AtomicBool,
+    cut: AtomicBool,
+    break_statement: AtomicBool,
+    seen: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl AgentMiddleware for Stated {
+    fn name(&self) -> &str {
+        "stated"
+    }
+
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
+    }
+
+    async fn prepare_model(&self, state: &mut AgentState) -> Result<(), AgentError> {
+        self.seen.lock().unwrap().push("prepare".into());
+        if self.break_statement.load(Ordering::SeqCst) {
+            state.messages.push(Msg::user("slipped in"));
+        }
+        Ok(())
+    }
+
+    async fn around_model(
+        &self,
+        _: ModelRequest,
+        _: crate::Next<'_>,
+    ) -> Result<ModelResponse, AgentError> {
+        panic!("the recorded-text wrap is never called on a selected agent");
+    }
+
+    async fn around_model_with_view(
+        &self,
+        req: TrackedModelRequest,
+        next: ViewNext<'_>,
+    ) -> Result<ModelDelivery, AgentError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(format!("model sources={}", req.message_sources().len()));
+        next.run(req).await
+    }
+
+    async fn around_tool(
+        &self,
+        call: ToolCall,
+        ctx: &mut ToolCtx<'_>,
+        next: ToolNext<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        if self.park.load(Ordering::SeqCst) {
+            return Err(AgentError::Suspended(Box::new(Suspension {
+                frames: vec![],
+                request: HitlRequest {
+                    tool_call: call,
+                    summary: "run echo?".into(),
+                },
+            })));
+        }
+        let mut outcome = next.run(call, ctx).await?;
+        if self.cut.load(Ordering::SeqCst) {
+            outcome.content.truncate(3);
+        }
+        Ok(outcome)
+    }
+}
+
+struct Frontier {
+    model: Arc<ViewModel>,
+    boundary: Arc<Frontiers>,
+    echo: Arc<Echo>,
+    middleware: Arc<Stated>,
+    agent: Arc<Agent>,
+}
+
+fn frontier(script: Vec<Msg>) -> Frontier {
+    let model = ViewModel::new(script);
+    let boundary = Arc::new(Frontiers::default());
+    let echo = Arc::new(Echo(AtomicUsize::new(0)));
+    let middleware = Arc::new(Stated::default());
+    let agent = Arc::new(
+        Agent::builder(model.clone())
+            .tool(echo.clone())
+            .middleware(middleware.clone())
+            .model_view_boundary(Some(boundary.clone()))
+            .checkpointer(Arc::new(MemCheckpointer::default()))
+            .durable_turn_checkpoints(true)
+            .build(),
+    );
+    Frontier {
+        model,
+        boundary,
+        echo,
+        middleware,
+        agent,
+    }
+}
+
+fn last_sources(model: &ViewModel) -> Vec<String> {
+    model.seen.lock().unwrap().last().unwrap().messages.clone()
+}
+
+#[tokio::test]
+async fn a_stated_middleware_runs_and_the_boundary_sees_the_tool_and_the_chain_result() {
+    let f = frontier(vec![
+        calls(vec![echo_call("c1", "full text")]),
+        Msg::assistant("done"),
+    ]);
+    f.middleware.cut.store(true, Ordering::SeqCst);
+    f.agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+    // The hooks ran, and the model call went through the view wrap.
+    assert_eq!(
+        *f.middleware.seen.lock().unwrap(),
+        ["prepare", "model sources=1", "prepare", "model sources=3"]
+    );
+    // The boundary was asked before the call ran, and was shown the tool's
+    // own outcome, the chain's outcome and the content that was recorded.
+    assert_eq!(
+        f.boundary.events(),
+        [
+            r#"dispatch echo{"text":"full text"} approved=false"#,
+            r#"result c1 "ful" reached=[echo{"text":"full text"}=>"full text"] returned=Some("ful")"#,
+        ]
+    );
+    assert_eq!(
+        recorded(&f.agent)[2],
+        Msg::Tool {
+            tool_call_id: "c1".into(),
+            content: "ful".into(),
+            is_error: false,
+        }
+    );
+    assert_eq!(
+        last_sources(&f.model),
+        ["input", "model:receipt:0", "result:c1"]
+    );
+}
+
+#[tokio::test]
+async fn a_middleware_that_breaks_its_statement_stops_the_turn_before_any_request() {
+    let f = frontier(vec![Msg::assistant("never sent")]);
+    f.middleware.break_statement.store(true, Ordering::SeqCst);
+    let error = f
+        .agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::State(_)));
+    assert!(f.model.seen.lock().unwrap().is_empty());
+    // The accepted input stays recorded; the slipped-in message does not.
+    assert_eq!(recorded(&f.agent), vec![Msg::user("go")]);
+}
+
+#[tokio::test]
+async fn a_refused_call_does_not_run_and_keeps_the_reply_that_asked_for_it() {
+    let f = frontier(vec![calls(vec![echo_call("c1", "text")])]);
+    f.boundary.refuse_dispatch.store(true, Ordering::SeqCst);
+    let error = f
+        .agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::State(_)));
+    assert_eq!(f.echo.0.load(Ordering::SeqCst), 0);
+    // No result was made up for the call.
+    assert_eq!(
+        recorded(&f.agent),
+        vec![Msg::user("go"), calls(vec![echo_call("c1", "text")])]
+    );
+}
+
+#[tokio::test]
+async fn typed_steering_is_recorded_in_order_with_its_own_source() {
+    /// Steers the running turn while its first tool call is in flight.
+    struct SteerDuringTool(Mutex<Option<Arc<Agent>>>, Mutex<Vec<bool>>);
+    #[async_trait::async_trait]
+    impl AgentMiddleware for SteerDuringTool {
+        fn name(&self) -> &str {
+            "steer"
+        }
+        fn view_support(&self) -> ViewSupport {
+            ViewSupport::Preserving
+        }
+        async fn around_tool(
+            &self,
+            call: ToolCall,
+            ctx: &mut ToolCtx<'_>,
+            next: ToolNext<'_>,
+        ) -> Result<ToolOutcome, AgentError> {
+            if let Some(agent) = self.0.lock().unwrap().take() {
+                let mut accepted = self.1.lock().unwrap();
+                // The untyped entry stays refused during a selected turn.
+                accepted.push(agent.steer("untyped"));
+                accepted.push(agent.steer_with_view("also this", source("steer")));
+            }
+            next.run(call, ctx).await
+        }
+    }
+    let model = ViewModel::new(vec![
+        calls(vec![echo_call("c1", "one")]),
+        Msg::assistant("done"),
+    ]);
+    let steer = Arc::new(SteerDuringTool(Mutex::new(None), Mutex::new(Vec::new())));
+    let agent = Arc::new(
+        Agent::builder(model.clone())
+            .tool(Arc::new(Echo(AtomicUsize::new(0))))
+            .middleware(steer.clone())
+            .model_view_boundary(Some(Arc::new(Frontiers::default())))
+            .build(),
+    );
+    // No turn is active yet.
+    assert!(!agent.steer_with_view("early", source("early")));
+    *steer.0.lock().unwrap() = Some(agent.clone());
+    agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+    assert_eq!(*steer.1.lock().unwrap(), [false, true]);
+    // Recorded exactly at the next round boundary, and sent with the source
+    // it arrived with.
+    assert_eq!(recorded(&agent)[3], Msg::user("also this"));
+    assert_eq!(
+        last_sources(&model),
+        ["input", "model:receipt:0", "result:c1", "steer"]
+    );
+    assert_eq!(recorded(&agent).len(), 5);
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_gets_sources_for_what_the_agent_appended_itself() {
+    let f = frontier(vec![Msg::assistant("after the stop")]);
+    f.middleware.park.store(false, Ordering::SeqCst);
+    // A reply with two calls is committed, then the turn is cancelled before
+    // the first call runs.
+    let model = ViewModel::new(vec![calls(vec![
+        echo_call("c1", "a"),
+        echo_call("c2", "b"),
+    ])]);
+    let boundary = Arc::new(Frontiers::default());
+    let echo = Arc::new(Echo(AtomicUsize::new(0)));
+    struct CancelAfterReply(Mutex<Option<Arc<Agent>>>);
+    #[async_trait::async_trait]
+    impl AgentMiddleware for CancelAfterReply {
+        fn name(&self) -> &str {
+            "cancel"
+        }
+        fn view_support(&self) -> ViewSupport {
+            ViewSupport::Preserving
+        }
+        async fn review_model(&self, _: &mut AgentState) -> Result<crate::Flow, AgentError> {
+            if let Some(agent) = self.0.lock().unwrap().as_ref() {
+                agent.request_cancel();
+            }
+            Ok(crate::Flow::Proceed)
+        }
+    }
+    let cancel = Arc::new(CancelAfterReply(Mutex::new(None)));
+    let agent = Arc::new(
+        Agent::builder(model.clone())
+            .tool(echo.clone())
+            .middleware(cancel.clone())
+            .model_view_boundary(Some(boundary.clone()))
+            .build(),
+    );
+    *cancel.0.lock().unwrap() = Some(agent.clone());
+    let TurnResult::Done(output) = agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap()
+    else {
+        panic!("a cancelled turn ends");
+    };
+    *cancel.0.lock().unwrap() = None;
+    assert_eq!(output.final_text(), "Stopped by the user.");
+    assert_eq!(echo.0.load(Ordering::SeqCst), 0);
+    // The record is what an unselected agent records.
+    let messages = recorded(&agent);
+    assert_eq!(messages.len(), 5);
+    assert!(
+        matches!(&messages[2], Msg::Tool { content, is_error: true, .. }
+        if content == "Tool call cancelled by the user.")
+    );
+    // Each message the agent appended itself was reported with its event.
+    assert_eq!(
+        boundary.events(),
+        [
+            r#"own CancelledCall "Tool call cancelled by the user.""#,
+            r#"own CancelledCall "Tool call cancelled by the user.""#,
+            r#"own CancelNote "Stopped by the user.""#,
+        ]
+    );
+    // The conversation continues: the next request carries every source.
+    *model.script.lock().unwrap() = vec![Msg::assistant("continued")].into_iter();
+    agent
+        .run_turn_with_view("again", source("second"))
+        .await
+        .unwrap();
+    assert_eq!(
+        last_sources(&model),
+        [
+            "input",
+            "model:receipt:0",
+            "own:CancelledCall",
+            "own:CancelledCall",
+            "own:CancelNote",
+            "second"
+        ]
+    );
+    drop(f);
+}
+
+#[tokio::test]
+async fn a_parked_call_resumes_only_through_a_checked_decision() {
+    let script = || {
+        vec![
+            calls(vec![echo_call("c1", "model text")]),
+            Msg::assistant("done"),
+        ]
+    };
+    // Approved as shown.
+    let f = frontier(script());
+    f.middleware.park.store(true, Ordering::SeqCst);
+    let parked = f.agent.run_turn_with_view("go", source("input")).await;
+    assert!(matches!(parked, Ok(TurnResult::Suspended(_))));
+    assert_eq!(f.echo.0.load(Ordering::SeqCst), 0);
+    // The untyped entry is refused, and so is a decision the boundary does
+    // not accept. Both leave the call parked and unrun.
+    assert!(f.agent.resume(HitlAction::Approve, "denied").await.is_err());
+    assert!(
+        f.agent
+            .resume_with_view(HitlAction::Approve, "denied", source("decision:other"))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.echo.0.load(Ordering::SeqCst), 0);
+    assert!(f.agent.pending_suspension().is_some());
+    f.middleware.park.store(false, Ordering::SeqCst);
+    f.agent
+        .resume_with_view(HitlAction::Approve, "denied", source("decision:shown"))
+        .await
+        .unwrap();
+    assert_eq!(f.echo.0.load(Ordering::SeqCst), 1);
+    let events = f.boundary.events();
+    assert_eq!(
+        events[events.len() - 3..],
+        [
+            "decision c1 Approve decision:shown".to_owned(),
+            r#"dispatch echo{"text":"model text"} approved=true"#.to_owned(),
+            r#"result c1 "model text" reached=[echo{"text":"model text"}=>"model text"] returned=Some("model text")"#.to_owned(),
+        ]
+    );
+    assert_eq!(
+        last_sources(&f.model),
+        ["input", "model:receipt:0", "result:c1"]
+    );
+
+    // Approved with edited arguments: the tool gets the edited call, and the
+    // reply that asked for the original stays recorded as received.
+    let f = frontier(script());
+    f.middleware.park.store(true, Ordering::SeqCst);
+    f.agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+    f.middleware.park.store(false, Ordering::SeqCst);
+    let edited = HitlAction::ApproveEdited {
+        args: serde_json::json!({"text": "human text"}),
+    };
+    f.agent
+        .resume_with_view(edited, "denied", source("decision:shown"))
+        .await
+        .unwrap();
+    assert!(
+        f.boundary
+            .events()
+            .contains(&r#"dispatch echo{"text":"human text"} approved=true"#.to_owned())
+    );
+    assert_eq!(
+        recorded(&f.agent)[1],
+        calls(vec![echo_call("c1", "model text")])
+    );
+    assert!(matches!(&recorded(&f.agent)[2], Msg::Tool { content, .. } if content == "human text"));
+
+    // Denied: nothing runs, the denial is recorded and reported as the
+    // agent's own message with the human's words.
+    let f = frontier(script());
+    f.middleware.park.store(true, Ordering::SeqCst);
+    f.agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+    let denied = HitlAction::Deny {
+        feedback: "not that one".into(),
+    };
+    f.agent
+        .resume_with_view(denied, "The call was denied.", source("decision:shown"))
+        .await
+        .unwrap();
+    assert_eq!(f.echo.0.load(Ordering::SeqCst), 0);
+    assert!(
+        f.boundary
+            .events()
+            .contains(&r#"own Denial "The call was denied. Feedback: not that one""#.to_owned())
+    );
+    assert_eq!(
+        last_sources(&f.model),
+        ["input", "model:receipt:0", "own:Denial"]
+    );
+}
+
+#[tokio::test]
+async fn text_from_another_agent_has_no_source_and_stops_the_next_request() {
+    let f = frontier(vec![Msg::assistant("never sent")]);
+    f.agent.model_view.as_ref().unwrap().note_inputs(vec![None]);
+    f.agent
+        .state
+        .lock()
+        .unwrap()
+        .messages
+        .push(Msg::user("[message from agent 'child']\nhello"));
+    let error = f
+        .agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::State(_)));
+    assert!(f.model.seen.lock().unwrap().is_empty());
+    assert_eq!(recorded(&f.agent).len(), 2);
+}
+
+#[tokio::test]
+async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
+    // A reply asked for two calls and one result was recorded before an
+    // interruption; a later input follows.
+    let messages = vec![
+        Msg::user("go"),
+        calls(vec![echo_call("c1", "a"), echo_call("c2", "b")]),
+        Msg::Tool {
+            tool_call_id: "c1".into(),
+            content: "a".into(),
+            is_error: false,
+        },
+        Msg::user("later"),
+        calls(vec![echo_call("c3", "c")]),
+    ];
+    let mut plain = AgentState {
+        messages: messages.clone(),
+        ..Default::default()
+    };
+    reconcile_recovered_calls(&mut plain, None);
+
+    let view = ModelView::new(Arc::new(Frontiers::default()));
+    view.note_inputs(
+        ["input", "model:0", "result:c1", "later", "model:1"]
+            .iter()
+            .map(|name| Some(source(name)))
+            .collect(),
+    );
+    let mut tracked = AgentState {
+        messages,
+        ..Default::default()
+    };
+    view.reconcile(&mut tracked);
+    // The record is reconciled exactly as without a boundary.
+    assert_eq!(tracked.messages, plain.messages);
+    let slots = view.sources.lock().unwrap();
+    let shape: Vec<String> = slots
+        .iter()
+        .map(|slot| match slot {
+            Slot::Bound(kept) => tag(kept),
+            Slot::Pending(event) => format!("{event:?}"),
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            "input",
+            "model:0",
+            "result:c1",
+            "UnrecordedCall",
+            "later",
+            "model:1",
+            "UnrecordedCall"
+        ]
+    );
+    assert!(matches!(&tracked.messages[3], Msg::Tool { tool_call_id, .. } if tool_call_id == "c2"));
 }

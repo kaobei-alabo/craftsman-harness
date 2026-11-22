@@ -42,7 +42,9 @@ normal-session integration is still pending. See [development status](docs/priva
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
 A private [detector contract and admission core](docs/privacy-admission.md)
-is in development on top of them; it is not wired to any session.
+and a private way to compose model requests from
+[views of sources](docs/privacy-provenance.md) are in development on top of
+them; no frontend, configuration or command selects either.
 
 ## Planned WASM enhancement
 

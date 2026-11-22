@@ -14,7 +14,9 @@
 //! committed, and a failure to obtain one is reported after the real fact has
 //! been kept.
 
-use crate::{AgentError, ModelRequest, ModelResponse, Msg, ToolDef};
+use crate::{
+    AgentError, HitlAction, ModelRequest, ModelResponse, Msg, ToolCall, ToolDef, ToolOutcome,
+};
 use async_trait::async_trait;
 use std::any::Any;
 use std::fmt;
@@ -51,13 +53,79 @@ impl fmt::Debug for SourceRef {
     }
 }
 
-/// One tool result exactly as it was committed to the conversation.
+/// One time a registered tool was actually run for a call: the exact call it
+/// was given and what it returned, before any middleware saw the outcome.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ReachedTool {
+    pub call: ToolCall,
+    /// The tool's own outcome, or the text of the error it failed with.
+    pub result: Result<ToolOutcome, String>,
+}
+
+impl ReachedTool {
+    pub(crate) fn new(call: ToolCall, result: &Result<ToolOutcome, AgentError>) -> Self {
+        Self {
+            call,
+            result: result.as_ref().map(Clone::clone).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// One tool result exactly as it was committed to the conversation, with
+/// what actually produced it.
 #[non_exhaustive]
 pub struct ObservedToolResult<'a> {
     pub call_id: &'a str,
     pub tool: &'a str,
     pub content: &'a str,
     pub is_error: bool,
+    /// Every run of the tool itself for this call, in order. Empty when no
+    /// registered tool ran: the call was refused on the way, or named no
+    /// tool.
+    pub reached: &'a [ReachedTool],
+    /// What the dispatch chain returned, with its metadata. `None` when the
+    /// chain failed and the recorded content is the text of that failure.
+    pub returned: Option<&'a ToolOutcome>,
+}
+
+/// A message the agent itself appended to the conversation, by the event
+/// that produced it. The text is the agent's own, except where noted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FrameworkCommit {
+    /// The fixed result of a call that was not run because the turn was
+    /// cancelled.
+    CancelledCall,
+    /// The fixed closing note of a cancelled turn.
+    CancelNote,
+    /// The result recorded for a parked call that a human denied: the host's
+    /// denial text, followed by the human's feedback when there is some.
+    Denial,
+    /// The fixed result of a call that an interrupted approval left
+    /// unanswered.
+    UnansweredCall,
+    /// The fixed result of a call whose completion was not recorded before
+    /// an interruption.
+    UnrecordedCall,
+    /// Text from another agent, framed by this one. It has no source of its
+    /// own here.
+    Notification,
+}
+
+/// What a middleware's author states about it for an agent that selected a
+/// source view boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ViewSupport {
+    /// No statement. A selected agent refuses to run with this middleware.
+    Unadapted,
+    /// None of its hooks adds, removes or rewrites a recorded message or
+    /// adds system text, and it does not need the text of a model request.
+    /// The agent checks the recorded messages after every hook phase and
+    /// refuses the turn when one changed. Its `around_model` is not called on
+    /// a selected agent; `around_model_with_view` is.
+    Preserving,
 }
 
 /// Implemented by the host for one conversation. Every method is called by
@@ -85,6 +153,44 @@ pub trait ModelViewBoundary: Send + Sync {
         &self,
         result: ObservedToolResult<'_>,
     ) -> Result<SourceRef, AgentError>;
+
+    /// The agent itself appended `committed` at `event`, and it is recorded.
+    /// Returns the source to keep beside it. The default refuses: a boundary
+    /// that does not know such a message has no view of it.
+    async fn observe_framework_commit(
+        &self,
+        event: FrameworkCommit,
+        committed: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let _ = (event, committed);
+        Err(AgentError::State(
+            "This conversation has no source for a message its agent appended.".into(),
+        ))
+    }
+
+    /// Called immediately before a call runs: before the dispatch chain for
+    /// an ordinary call, and before the tool itself for a call that a human
+    /// approved (`approved`). `call` is exactly what will run. An error means
+    /// nothing ran, and the call is left without a result.
+    async fn before_dispatch(&self, call: &ToolCall, approved: bool) -> Result<(), AgentError> {
+        let _ = (call, approved);
+        Ok(())
+    }
+
+    /// A human decided the parked `call`. `action` is what is about to be
+    /// applied and `decision` is the host's own evidence of that decision.
+    /// Called before any effect of the decision. The default refuses.
+    async fn accept_decision(
+        &self,
+        call: &ToolCall,
+        action: &HitlAction,
+        decision: &SourceRef,
+    ) -> Result<(), AgentError> {
+        let _ = (call, action, decision);
+        Err(AgentError::State(
+            "This conversation cannot check a human decision.".into(),
+        ))
+    }
 }
 
 /// The recorded request together with the source of every part. It is

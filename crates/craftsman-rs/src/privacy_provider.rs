@@ -1,6 +1,6 @@
 //! Private provider for a conversation whose requests are composed from
-//! views of sources. Nothing selects it: no session builder, frontend or
-//! configuration constructs one.
+//! views of sources. The session builder constructs one only for a private
+//! selection, which no frontend, configuration or CLI route can make.
 //!
 //! It is the existing Chat client and the existing request encoding. What
 //! differs is the input: the request it encodes is the conversation's model
@@ -12,7 +12,9 @@
 //! refused: replayed native items need receipts of their own, which do not
 //! exist yet.
 
-use crate::agent::{TokenSink, to_fw_message, to_llm_messages, to_openai_tools};
+use crate::agent::{
+    ActivitySink, RoundSink, TokenSink, to_fw_message, to_llm_messages, to_openai_tools,
+};
 use crate::llm::LlmClient;
 use crate::privacy_session::{PrivacySession, SessionStop};
 use craftsman_harness::provenance::{ModelDelivery, SourceRef, TrackedModelRequest};
@@ -24,6 +26,8 @@ pub struct ViewChatProvider {
     session: Arc<PrivacySession>,
     usage: Arc<Mutex<(u64, u64)>>,
     sink: TokenSink,
+    round_sink: Option<RoundSink>,
+    status_sink: Option<ActivitySink>,
 }
 
 impl ViewChatProvider {
@@ -47,7 +51,21 @@ impl ViewChatProvider {
             session,
             usage,
             sink,
+            round_sink: None,
+            status_sink: None,
         })
+    }
+
+    /// The frontend's notifications, as the ordinary provider has them: one
+    /// before each request, and the transport's retry and warning lines.
+    pub fn with_sinks(
+        mut self,
+        round_sink: Option<RoundSink>,
+        status_sink: Option<ActivitySink>,
+    ) -> Self {
+        self.round_sink = round_sink;
+        self.status_sink = status_sink;
+        self
     }
 }
 
@@ -68,12 +86,24 @@ impl ModelProvider for ViewChatProvider {
         &self,
         req: TrackedModelRequest,
     ) -> Result<ModelDelivery, AgentError> {
+        if let Some(round_sink) = &self.round_sink {
+            round_sink();
+        }
         let view = self.session.model_view(&req).map_err(fault)?;
         let messages = to_llm_messages(&view.system, &view.messages);
         let tools = to_openai_tools(&view.tools);
         let turn = self
             .client
-            .stream_turn(&messages, &tools, |text| (self.sink)(text), |_| {})
+            .stream_turn(
+                &messages,
+                &tools,
+                |text| (self.sink)(text),
+                |status| {
+                    if let Some(sink) = &self.status_sink {
+                        sink(status);
+                    }
+                },
+            )
             .await
             .map_err(|error| AgentError::Model(error.to_string()))?;
         {

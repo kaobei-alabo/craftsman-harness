@@ -21,8 +21,8 @@ It is local, unmerged and not installed.
 | Detector request and reply checks, with a host floor (`privacy_hook`) | implemented, private |
 | Source-pinned detector call on the gadget engine | implemented, private |
 | Admission owner for one conversation (`privacy_session`) | implemented, private |
-| Session builder use of the reserved thread id | not implemented |
-| Producers that create raw captures at real ingress points | not implemented |
+| Session builder use of the reserved thread id | implemented, private; selected by nothing |
+| Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
 | Conversation boundary, model-origin nodes and request composition for the Chat wire | implemented, private; see provenance |
 | Mixed text from memory, todos, context, tasks and compaction | not implemented |
 | Display and file restoration | not implemented |
@@ -144,8 +144,10 @@ built from a caller's string and cannot be cloned. The privacy session opens
 its vault scope from it and exposes the same thread id for the session builder
 of that conversation. Main, delegated and compaction lanes share the one scope.
 
-The session builder does not consume it yet. That, and closing a selected
-session when its thread would be rebound, belong to the integration slice.
+The shared session builder uses that id for the agent and the checkpoint store
+when it is given the private selection for the conversation, and a session
+built that way closes the privacy owner instead of rebinding its thread. See
+[privacy provenance](privacy-provenance.md). Nothing makes that selection.
 
 A new conversation is a new scope and counts against the vault's fixed capacity
 of 128 scopes that hold a value, 512 values per scope and 4096 values in total.
@@ -214,7 +216,14 @@ session.thread_id() / session.send_guard() / session.check() / session.stop()
 session.source(&node)                             -> Result<SourceRef, SessionStop>
 session.boundary(&system_nodes)                   -> Arc<ConversationBoundary>
 session.model_view(&tracked_request)              -> Result<ModelRequest, SessionStop>
-session.admitted(&source) / session.committed_model(&source)
+session.admitted(&source) / session.committed_model(&source) / session.actual_result(&source)
+session.human_decision(&call, &action)            -> Result<SourceRef, SessionStop>
+boundary.operation_in_flight()                    -> Option<Arc<ApprovedOperation>>
+operation.call() / .model() / .edited_by_human() / .fields()
+committed_model.message() / .fields()
+field.place() / .range() / .with_record(|scope, records, index| ...)
+PrivacyViewSelection::limited_set_permitted_by_host_policy(session)   // SessionExtras.privacy_view
+view.turn(&agent, typed) / view.steer(&agent, typed) / view.decide(&agent, &shown, action, deny_default)
 
 // crate::privacy_provider
 ViewChatProvider::new(chat_client, session, usage, sink)
@@ -244,9 +253,12 @@ call was made. Runs are recorded with their own head under
 ## Known gaps
 
 - Only tests drive a conversation through this core to a model request. No
-  session is built with it, and nothing reaches a display or a file through it.
-- Besides the conversation boundary, which captures tool results and tool
-  text, no producer creates captures yet.
+  frontend builds a session with it, and nothing reaches a display or a file
+  through it.
+- The system text is admitted as one capture. Files, memory and configuration
+  are not captured as parts of their own.
+- `CapturedRaw::from_producer` can be called by any code in the binary. The
+  origin it records describes the producer; it is not authority.
 - Detection is the detector's plus the narrow floor. Everything else is not
   detected.
 - Declared identifiers are not wired; admission passes none.

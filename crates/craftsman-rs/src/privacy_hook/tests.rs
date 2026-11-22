@@ -17,6 +17,7 @@ pub(crate) struct LiteralSource {
     during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     first_only: AtomicBool,
+    floor: AtomicBool,
     pub(crate) calls: AtomicUsize,
 }
 
@@ -28,6 +29,7 @@ impl LiteralSource {
             during: Mutex::new(None),
             gate: Mutex::new(None),
             first_only: AtomicBool::new(false),
+            floor: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
         });
         source.set_rules(rules);
@@ -57,6 +59,12 @@ impl LiteralSource {
     /// Report only the first occurrence of each rule in a node.
     pub(crate) fn first_only(&self, first_only: bool) {
         self.first_only.store(first_only, Ordering::SeqCst);
+    }
+
+    /// Also report every match of the host floor, for text the test does not
+    /// write itself, such as a real system prompt.
+    pub(crate) fn with_floor(&self, floor: bool) {
+        self.floor.store(floor, Ordering::SeqCst);
     }
 
     pub(crate) fn calls(&self) -> usize {
@@ -89,6 +97,15 @@ impl ReplySource for LiteralSource {
                     if self.first_only.load(Ordering::SeqCst) {
                         break;
                     }
+                }
+            }
+            if self.floor.load(Ordering::SeqCst) {
+                for (start, stop, category) in floor::matches(text) {
+                    let category = match category {
+                        Category::Email => "email",
+                        _ => "phone",
+                    };
+                    found.push((start, stop, category));
                 }
             }
             found.sort();
