@@ -1,11 +1,32 @@
 # Craftsman runtime — current implementation and remaining work
 
-Updated November 19, 2026 (Asia/Taipei). This page describes maintained runtime
+Updated November 21, 2026 (Asia/Taipei). This page describes maintained runtime
 behavior and its remaining boundaries. The 匠 splash/OSC 7501 runtime is recorded
 at `9c5774d`; the subsequent documentation checkpoint `b6b34a2` passed independent
 main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/43821887233).
-The context/failure continuation is recorded below. Source validation, live
+The private script-capture/bundle foundations are merged as PR #31 at `29349c5`;
+independent main run [44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
+passed all four jobs, every mandatory step and both native modes. That main
+source is locally installed; public script execution and privacy hooks remain
+unselected. The context/failure continuation is recorded below. Source validation, live
 coding results and published releases are separate evidence.
+
+PR #32's private privacy foundations remain unmerged. Native run
+[44891734880](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44891734880)
+at cea9 returned actual selected LINK exit0 and passed the unchanged banner
+gate, then refused PE validation on1024 bytes with machine8664. The full image
+and rejected predicate were unavailable. Both original detector source/Cargo/WASM
+parents failed; Windows core, the seven-case CMD supervisor and77 vault cases
+per mode passed, with no vault Deadline phase recorded. Successful raw control
+packets remain unavailable. Earlier run44856159033's Deadline, batch-return and
+linker-help failures remain retained. Independent source reviews accepted the
+multiline batch correction, bounded opening observer and stricter data operation.
+The PE checker now adds fixed first-refusal labels through the existing field,
+without changing acceptance. Its new CreateFileW security pointer/NULL match
+the existing declaration; that warning is separate from the unknown PE refusal.
+These source changes await review and fresh native validation. Original
+source-Cargo-WASM and all-four/main gates remain pending; normal privacy and
+OS containment are not claimed.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -107,7 +128,7 @@ are not proof of OS containment or blocking-worker quiescence.
 |---|---|---|
 | Terminal usability and reporting | Merged and locally installed | Gray/turquoise 匠 splash, grouped model → effort menus, OSC 7501; [splash](terminal-splash.md), [status](terminal-status.md) |
 | Terminal lifecycle and recovery | Merged | Actual turn/session ownership, cancellation, final saves and unknown-effect recovery; [lifecycle](terminal-lifecycle.md), [recovery](terminal-recovery.md) |
-| File checkpoints and long turns | Merged and locally installed | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
+| File checkpoints and long turns | Existing features merged; creation-time correction awaits native validation | Mutation-driven bounded snapshots, notices in chat, 200-round default and saved pauses; the locally tested same-checkpoint creation-time fix is pending merge/install. See [checkpoints](workspace-checkpoints.md), [turn limits](terminal-turn-limits.md) |
 | Task-focused memory and workflow | Merged and locally installed | TUI/ACP advisory guidance and bounded repeated-error hints; [memory](terminal-memory.md), [workflow](task-workflow.md) |
 | Declared verification | Merged and locally installed | Reviewed user/project checks, actual results, bounded repairs and protected-content review; [verification](verification.md) |
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
@@ -117,7 +138,8 @@ are not proof of OS containment or blocking-worker quiescence.
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
-| Reusable script runner | Private capture and test-only bundle foundations reviewed; native delivery pending | Python/JavaScript/TypeScript compatibility proof has scoped functional reviews; source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
+| Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
+| Privacy hooks | Reviewed private foundations/candidates; normal sessions inactive | 61ac/run44957234452 failed required gates: fmt/Ubuntu pass; Windows core has two `Vault::open` Deadline unwraps; both Windows gadget source/guest parents fail, the installed-linker helper refusing the section's VirtualSize 40 against the unchanged 16 after LINK0; macOS core's closed-stdout observer returns an unsuccessful helper status; required post steps are skipped. The inner vault and observer causes and the producer of the extra 24-byte header are unknown. `/EMITVOLATILEMETADATA:NO` is source-supported only and awaits a fresh native run; no full PE, Prepared, Cargo or WASM pass exists yet. Earlier: ac17/run44937824282 refused `pe.align.section` with `/NOCOFFGRPINFO`, and 56aa/run44949456781 identified VirtualSize 40. Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -374,3 +396,69 @@ restore/save has been exercised. Binary/container publication remains disabled
 by owner request. Remaining attribution/provenance/distribution review is
 separate from the resolved MIT choice; see [NOTICE](../NOTICE) and
 [OSS review](oss-review.md).
+
+Run44912859439 at ac798 retained both original source/Cargo/WASM failures after
+actual LINK0 and banner acceptance. The first PE group is `pe.directories` on
+1024 observed bytes with machine8664; the directory ordinal, RVA/size values
+and full image remain unavailable. The declaration clash is absent and the
+17 existing Windows warnings remain. This does not identify a loader/tool cause.
+
+Run44925496617 at dd79 observed `pe.d06.rva` after LINK0/banner: directory6's
+RVA check refused, while its size, contents and cause remain unavailable. The
+private data-only fixture now appends `/NOCOFFGRPINFO` after the unchanged object
+input. [LLVM's compatibility table](https://github.com/llvm/llvm-project/blob/a037d2ad7312adc58664358893c20927efae22cf/lld/COFF/Options.td#L402)
+corroborates the option name; Microsoft does not document it. Its effect remains
+a conditional candidate pending fresh Windows acceptance of the unchanged PE
+validator and original Prepared/source-Cargo-WASM gates. The closed refusal
+labels, strict all-directory-zero rule, native bounds and source approval stay
+unchanged. Normal privacy remains off; this adds no public command or capability.
+
+The private alignment diagnostic preserves `pe.align.section` and every original
+predicate/read/short-circuit. On its first failed predicate it attempts one fixed
+`PEA:<id>:<16hex>[:<16hex>]` stderr line (at most41 bytes including newline)
+using only that predicate's owned header operands. Success stays silent; missing
+reads retain the coarse fallback. The line can block or be partial and is not a
+new time or quiescence guarantee. Actual first operands remain pending a fresh
+Windows run; PE acceptance, native/source-Cargo-WASM gates and normal privacy
+activation remain unchanged and unmet.
+
+Run [44949456781](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44949456781)
+at 56aa observed `PEA:09:0000000000000028` after LINK0 and the banner: every
+directory was zero, and the one section declares 40 bytes where the unchanged
+check requires 16. What the other 24 bytes are, the section's flags and raw
+layout, and the cause remain unknown; no linker switch is chosen from the size.
+The diagnostic now also attempts one `PES:<hex>` line (at most 133 bytes) with
+exactly the declared 17 to 64 bytes, only when that predicate fails first and
+the bytes lie in the already captured image and begin with the public fixture
+marker. Otherwise it writes `PES:unavailable`. It reads no file again and
+changes no predicate, label or limit. Its data awaits a fresh Windows run; PE
+acceptance, the source-Cargo-WASM gates and normal privacy remain unmet and
+inactive.
+
+Run [44957234452](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44957234452)
+at 61ac returned that record. The section's 40 declared bytes are the 16-byte
+marker followed by six little-endian 32-bit values: 24, 0x80008000, 0, 0, 0, 0.
+That is the size and field order of `IMAGE_VOLATILE_METADATA` as a pinned
+third-party header defines it
+([FEX-Emu `winnt.h`](https://github.com/FEX-Emu/FEX/blob/53e148474caff8a8eae50e66a9da643da232b3d9/Source/Windows/include/winnt.h#L220-L227)).
+The fixture now appends `/EMITVOLATILEMETADATA:NO` as its eleventh argument.
+[FlexDLL](https://github.com/ocaml/flexdll/blob/ab8161fc7161a598c5aaf66f02298035639d5ef3/reloc.ml#L1154-L1161)
+passes that switch when LINK advertises it, and two other projects list or use
+it ([msvc-undoc](https://github.com/assarbad/msvc-undoc/blob/5423c9f0390e770b8b6c667209aacaa33970643f/LINK.exe.md),
+[TinyPE](https://github.com/Masfo/TinyPE/blob/6560d797ea40678d3b951c9f8d3cfb6ab63c18e1/CMake/SetupMSVC.cmake#L122)).
+Microsoft does not document its effect, and the fixture does not ask LINK for
+its help text. This is a conditional candidate: which tool wrote the block,
+what its second value means and whether the switch removes it are not
+established. The unchanged 16-byte check and the original Prepared, source-Cargo
+and WASM gates decide on a fresh Windows run; a refusal stays a refusal. Normal
+privacy remains off.
+
+The completed audit of that run records failed required gates. Fmt and Ubuntu
+passed. Windows core failed two restoration cases whose `Vault::open` returned
+Deadline. Both Windows gadget source/guest parents failed: the installed-linker
+helper's record is the strict check refusing the section's 40 declared bytes
+against the unchanged 16, and the same operands are not inferred for the
+source-built parent. macOS core failed one closed-stdout observer case with an
+unsuccessful helper status. The required post steps were skipped. Which vault
+phase ran out of time and why, and how and why the observer's helper failed,
+remain unknown. No full PE, Prepared, Cargo or WASM pass exists yet.

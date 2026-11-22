@@ -114,6 +114,10 @@ digests and provenance labels create none of those authorities. The declined
 JS source/compiler/transformer mutation and incremental-build experiment remains
 excluded and unproven. This slice changes no framework/SDK/WIT/dependency/lock/
 pin/native/SQL/frame/golden/default frontend behavior and makes no paid calls or
-publication. Full local17, all four CI contexts, every mandatory step, both native
-modes, inventory/warnings/source-tree and independent-main proof still gate
-production delivery, merge and installation.
+publication. This test-only foundation is merged as PR #31 at `29349c5`/tree
+`93748936`. Final local17 and independent merged-main
+[44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
+passed all four CI contexts/every mandatory step/both modes with complete old/new
+inventories, source boundaries and unchanged warnings. Source is installed
+locally; no public script/VM/apply route was enabled. Each later runtime slice
+still requires fresh full local/native/source and independent-main proof.

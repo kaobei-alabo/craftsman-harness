@@ -19,10 +19,105 @@ language scope and compatibility gates. These interpreters and the virtual
 file-change review layer are not part of the shipped gadget runtime yet.
 
 The private [session-capture foundation](session-script-capture.md) and
-[test-only bundle validation](script-bundle-admission.md) have scoped source reviews;
-full native delivery checks remain pending.
+[test-only bundle validation](script-bundle-admission.md) are merged as PR #31.
+Their complete local17 and independent main44567715919 proof cover all four CI
+jobs, every mandatory step and both native modes, with old tests/warnings intact.
 Current public routes select neither; they do not execute scripts or approve
 code, input scopes or native file changes.
+
+The selected [privacy-hook extension](privacy-hooks.md) will use the same gadget
+engine for automatic lifecycle functions. Trusted user policy, rather than a
+gadget declaration, decides which hooks are required. The source-built detector
+has passed its isolated WASM tests; encrypted storage and restoration views
+are implemented as private foundations.
+The failed guard-scope run44856159033 also retains four core Windows vault-open
+Deadline refusals, with separate gadget-mode passes. Their phase remains
+unobserved. Independent source review accepts the new cfg(test)-only fixed
+opening records under their bounded observation contract. They retain the
+original clock and limits; native phase evidence and opening recovery remain
+separate from source acceptance and normal privacy selection.
+
+Normal sessions do not yet mask model traffic or restore reply/file fields
+through this hook.
+First PR #32 CI44602915778 failed the new detector's offline lock dependency
+and Windows vault opening. Its failed proof is retained; the detector fixture
+now uses root-locked dependencies and the private vault has complete-ancestor
+and native-probe candidates. Fresh native delivery proof remains required.
+Corrected-first run44629784168 passed the opening cases in both Windows modes,
+but its detector source build selected an incompatible `link.exe`. The isolated
+compiler-discovery correction is locally tested and awaits fresh complete native
+proof; neither test preparation nor source review activates normal privacy.
+Run44645950249 again passes the native opening and compiler input controls,
+but its Windows detector still selects the incompatible linker. The fixture now
+prepares explicit installed MSVC host linker/library inputs for a new validation
+run; existing WASIp2 settings, guest capabilities and normal defaults stay fixed.
+Run44668461580 fails both Windows detector preparation terminals before Cargo,
+while the old storage and compiler-input controls pass. Test-only stage facts
+now preserve the bounded native error observations; the actual setup cause and
+successful Windows detector execution remain unproved.
+Run44682051545 identifies a successful empty filtered `vswhere` response. Added
+comparison diagnostics collect installed/prerelease/component facts while retaining
+the original refusal. They do not choose another compiler or change guest grants.
+Run44701486328 passes fmt, Linux and macOS, but both Windows detector/compiler
+terminals still fail before Cargo. All five comparison families find no instances.
+Microsoft identifies ProgramData as an enumeration prerequisite; one bounded
+comparison now adds only that captured field to the original query environment.
+It retains the original refusal and grants no compiler execution. Actual Windows
+differential evidence and complete native delivery proof remain pending.
+Run44739865841 measures the same strict query admitting one installation-path
+record with only ProgramData added, after the original query admits none in both
+helpers. The narrow fixture correction now validates the existing private native
+transfer and applies that field to the original query. All later physical
+installation, host-linker, library, source-approval and guest checks remain.
+Fresh corrected Windows compilation/runtime and full native proof are pending;
+the measured discovery result does not establish successful guest execution.
+Run44752767140 reaches the Windows UTF-16 setup-field parser, where the original
+CMD/VsDevCmd invocation returns exit0 with empty streams. Bounded test-only
+comparisons now record fixed builtin and owned synthetic CALL/redirection/batch
+controls while retaining that original refusal. Separate original capture and
+one-shot observation tests preserve actual stage/bytes, child exit and stream
+completion without replacing their old assertions. Local controls do not
+establish Windows causes or usable compiler/guest execution; fresh combined
+native validation and independent main proof still gate delivery.
+Run44809143594 passes the five original Windows cases, but both setup terminals
+still refuse empty fields. The new builtin control exits7 with a trailing space
+from its fixed echo input. Only that input byte is removed; the strict output
+assertion remains. Four compact no-IF and separate-line guarded tail controls
+share the existing command budget and cannot supply real compiler fields.
+Fresh reviewed Windows execution must verify these inputs and any supported
+setup differential; local controls do not establish an installed setup repair.
+Run44837420491 confirms the corrected builtin token and a controlled tail
+differential: the original inline guard suppresses fields, while a separate-line
+guard emits all five fields for input0 and returns91 with no fields for input7.
+The narrow candidate groups only the existing inline IF refusal. CALL, threshold,
+error exit, selected field commands and later host/library/source/guest checks
+remain. Fresh Windows execution must validate that new grouping and actual
+installed compiler/WASM work; the earlier controlled result is not guest proof.
+
+Run44856159033 retains selected-linker help exit1100. The new cfg-test candidate
+links fixed98-byte data-only COFF through that same selected native tool into an
+initially absent owned destination. Real exit0, the unchanged banner check,
+complete stable PE/marker data and cleanup are all required. The DLL is never
+loaded or executed; its data/hashes cannot become a gadget SourceGrant. The
+tables, ownership and corrected PE code have passed independent source reviews.
+Run44891734880 at cea9 returned selected LINK exit0 and passed the unchanged
+banner check, then refused PE validation on1024 bytes with machine8664. Full
+image bytes and the rejected predicate were unavailable. Both original
+source/Cargo/WASM parents failed; the seven-case CMD supervisor, Windows core
+and77 vault cases per mode passed without a vault Deadline phase. Unprinted
+successful control fields remain unavailable. Original pinned Cargo/approved
+WASM and all-four/main gates remain pending; earlier failures stay retained.
+
+The probe's source-format correction refuses unsupported section alignment
+below4096 and nonzero reserved Win32VersionValue/LoaderFlags. Its existing
+4096-aligned headers, data marker, timestamps and padding remain accepted.
+This private format constraint adds no native flag, timer or source authority;
+independent re-review accepts the corrected source.
+The cfg-test checker now reports its first failed PE check group with a fixed
+ASCII `expected` label of at most19 bytes while retaining exact acceptance and
+read/process facts. Its new CreateFileW security pointer and NULL now match the
+existing mutable-pointer declaration. These source changes await review and
+fresh Windows execution; the prior warning does not explain the PE refusal.
 
 ## Enable the agent surface
 
@@ -832,3 +927,69 @@ public exec/usage/settlement/callables/P2g/live/default-on/release remain off.
 Config, MCP, route and HTTP/WS auth tests preserve their original assertions
 using immutable child environments and per-router state. See
 [environment-test isolation](test-environment-isolation.md) for the maintained contract.
+
+Run44912859439 at ac798 retained both original source/Cargo/WASM failures after
+actual LINK0 and banner acceptance. The first PE group is `pe.directories` on
+1024 observed bytes with machine8664; the directory ordinal, RVA/size values
+and full image remain unavailable. The declaration clash is absent and the
+17 existing Windows warnings remain. This does not identify a loader/tool cause.
+
+Run44925496617 at dd79 observed `pe.d06.rva` after LINK0/banner: directory6's
+RVA check refused, while its size, contents and cause remain unavailable. The
+private data-only fixture now appends `/NOCOFFGRPINFO` after the unchanged object
+input. [LLVM's compatibility table](https://github.com/llvm/llvm-project/blob/a037d2ad7312adc58664358893c20927efae22cf/lld/COFF/Options.td#L402)
+corroborates the option name; Microsoft does not document it. Its effect remains
+a conditional candidate pending fresh Windows acceptance of the unchanged PE
+validator and original Prepared/source-Cargo-WASM gates. The closed refusal
+labels, strict all-directory-zero rule, native bounds and source approval stay
+unchanged. Normal privacy remains off; this adds no public command or capability.
+
+The private alignment diagnostic preserves `pe.align.section` and every original
+predicate/read/short-circuit. On its first failed predicate it attempts one fixed
+`PEA:<id>:<16hex>[:<16hex>]` stderr line (at most41 bytes including newline)
+using only that predicate's owned header operands. Success stays silent; missing
+reads retain the coarse fallback. The line can block or be partial and is not a
+new time or quiescence guarantee. Actual first operands remain pending a fresh
+Windows run; PE acceptance, native/source-Cargo-WASM gates and normal privacy
+activation remain unchanged and unmet.
+
+Run [44949456781](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44949456781)
+at 56aa observed `PEA:09:0000000000000028` after LINK0 and the banner: every
+directory was zero, and the one section declares 40 bytes where the unchanged
+check requires 16. What the other 24 bytes are, the section's flags and raw
+layout, and the cause remain unknown; no linker switch is chosen from the size.
+The diagnostic now also attempts one `PES:<hex>` line (at most 133 bytes) with
+exactly the declared 17 to 64 bytes, only when that predicate fails first and
+the bytes lie in the already captured image and begin with the public fixture
+marker. Otherwise it writes `PES:unavailable`. It reads no file again and
+changes no predicate, label or limit. Its data awaits a fresh Windows run; PE
+acceptance, the source-Cargo-WASM gates and normal privacy remain unmet and
+inactive.
+
+Run [44957234452](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44957234452)
+at 61ac returned that record. The section's 40 declared bytes are the 16-byte
+marker followed by six little-endian 32-bit values: 24, 0x80008000, 0, 0, 0, 0.
+That is the size and field order of `IMAGE_VOLATILE_METADATA` as a pinned
+third-party header defines it
+([FEX-Emu `winnt.h`](https://github.com/FEX-Emu/FEX/blob/53e148474caff8a8eae50e66a9da643da232b3d9/Source/Windows/include/winnt.h#L220-L227)).
+The fixture now appends `/EMITVOLATILEMETADATA:NO` as its eleventh argument.
+[FlexDLL](https://github.com/ocaml/flexdll/blob/ab8161fc7161a598c5aaf66f02298035639d5ef3/reloc.ml#L1154-L1161)
+passes that switch when LINK advertises it, and two other projects list or use
+it ([msvc-undoc](https://github.com/assarbad/msvc-undoc/blob/5423c9f0390e770b8b6c667209aacaa33970643f/LINK.exe.md),
+[TinyPE](https://github.com/Masfo/TinyPE/blob/6560d797ea40678d3b951c9f8d3cfb6ab63c18e1/CMake/SetupMSVC.cmake#L122)).
+Microsoft does not document its effect, and the fixture does not ask LINK for
+its help text. This is a conditional candidate: which tool wrote the block,
+what its second value means and whether the switch removes it are not
+established. The unchanged 16-byte check and the original Prepared, source-Cargo
+and WASM gates decide on a fresh Windows run; a refusal stays a refusal. Normal
+privacy remains off.
+
+The completed audit of that run records failed required gates. Fmt and Ubuntu
+passed. Windows core failed two restoration cases whose `Vault::open` returned
+Deadline. Both Windows gadget source/guest parents failed: the installed-linker
+helper's record is the strict check refusing the section's 40 declared bytes
+against the unchanged 16, and the same operands are not inferred for the
+source-built parent. macOS core failed one closed-stdout observer case with an
+unsuccessful helper status. The required post steps were skipped. Which vault
+phase ran out of time and why, and how and why the observer's helper failed,
+remain unknown. No full PE, Prepared, Cargo or WASM pass exists yet.

@@ -1206,3 +1206,6 @@ async fn unmarked_unknown_duplicate_helpers_return_before_config_environment_art
     run_case("unknown", &[]).await;
     run_case("capture", &["__craftsman_session_capture__:capture"]).await;
 }
+
+#[path = "original_windows_probe.rs"]
+pub(crate) mod original_windows_probe;

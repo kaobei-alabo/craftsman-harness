@@ -64,6 +64,10 @@ tar = "0.4"
 # also build the Turso remote/replication client (hyper, tonic, rustls 0.22, an SQL
 # parser), which Craftsman does not use. tests/libsql_local_only.rs fails if they come back.
 libsql = { version = "0.10", default-features = false, features = ["core"] }
+# Private app-only privacy vault: authenticated encryption/keyed lookup and
+# owned secret buffers. These exact versions are already in the workspace lock.
+ring = "=0.17.14"
+zeroize = "=1.9.0"
 # Local token-count estimator for CompactionMiddleware's token-based trigger
 # (craftsman_harness::TokenCounter impl in token_counter.rs). App-layer only —
 # the dep_guard test forbids adding a tokenizer to craftsman-harness itself.
