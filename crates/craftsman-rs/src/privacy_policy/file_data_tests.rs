@@ -298,3 +298,9 @@ fn captured_file_rule_refuses_symlinks_absent_parents_and_replaced_user_config()
     create_config(&root, &value);
     assert_eq!(disabled.recheck(), Err(PolicyError::Source));
 }
+
+// The configured root judged by the directory it holds. A child module, so
+// the fixtures above are used as they are.
+#[cfg(unix)]
+#[path = "root_identity_tests.rs"]
+mod root_identity;

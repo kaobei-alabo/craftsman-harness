@@ -1,6 +1,7 @@
 //! Explicit captured user data-file declarations. A filename, extension,
 //! model label or merged project setting grants no restoration permission.
 use super::{PolicyError, Result};
+use crate::privacy_key::ConfigRoot;
 use crate::privacy_restore::FileDataFormat;
 use crate::privacy_session::{
     FileChange, FileDataRequest, FileEffectRequest, RetainedFileEffect, SupportedDataApplication,
@@ -436,6 +437,33 @@ impl CapturedFileRule {
             Err(PolicyError::Source)
         }
     }
+    /// Whether this is the rule that names `destination`.
+    pub(super) fn names(&self, destination: &Path) -> bool {
+        destination == self.destination
+    }
+    /// Whether one of the directories this rule retains on the way to its
+    /// destination is the user's configured root itself. The device and inode
+    /// of the held descriptors decide, so another spelling of that directory
+    /// does not pass. A rule that retains nothing yet, or an identity that
+    /// cannot be read, counts as inside: this answer only ever refuses.
+    pub(super) fn reaches_root(&self, root: &ConfigRoot) -> bool {
+        #[cfg(unix)]
+        {
+            !self.captured
+                || self
+                    .ancestors
+                    .iter()
+                    .any(|(_, held)| root.is_final_directory(held) != Ok(false))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = root;
+            true
+        }
+    }
+    /// Test-only. A format read from two paths grants nothing: production
+    /// asks `supported` and `retained` for an actual request and nothing else.
+    #[cfg(test)]
     pub(super) fn format_for(
         &self,
         workspace: &Path,

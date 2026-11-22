@@ -56,6 +56,9 @@ impl DetectorPolicy {
     pub fn literals(&self) -> impl Iterator<Item = &str> {
         self.literals.iter().map(|s| s.as_str())
     }
+    /// Test-only. A format read from two paths grants nothing: production
+    /// asks `supported_data` and `retained_data_effect` for an actual request.
+    #[cfg(test)]
     pub(crate) fn file_data_format(
         &self,
         workspace: &std::path::Path,
@@ -143,6 +146,11 @@ impl CapturedPolicy {
         if let Policy::Proposed(policy) = &self.policy {
             for rule in &policy.file_rules {
                 rule.recheck()?;
+                // The directories the rule holds, not the way it spells
+                // them: a rule that leads into the held root is no data rule.
+                if rule.reaches_root(&self.root) {
+                    return Err(PolicyError::Invalid);
+                }
             }
         }
         Ok(())
@@ -166,11 +174,27 @@ impl CapturedPolicy {
     /// The ACTUAL configured user root is a protected role, regardless of its
     /// pathname or a model's declared purpose. User config/key/vault/detector/
     /// grants/agent instructions and other sources under it cannot become data.
+    /// The rule that names a destination is judged by the directories it
+    /// retains: if one of them is the root's own held directory, by device and
+    /// inode, the destination is refused under any spelling. The pathname and
+    /// protected-role refusals remain as further checks. For a destination that
+    /// no rule names there is no retained directory to compare: only the name
+    /// checks apply to it here, and it is no data for want of a rule.
     fn permits_data_destination(&self, destination: &std::path::Path) -> bool {
         self.root
             .with_captured_path(|root| Ok(!destination.starts_with(root)))
             == Ok(true)
             && !file_data::protected_role(destination)
+            && !self.rule_reaches_root(destination)
+    }
+    fn rule_reaches_root(&self, destination: &std::path::Path) -> bool {
+        match &self.policy {
+            Policy::Proposed(policy) => policy
+                .file_rules
+                .iter()
+                .any(|rule| rule.names(destination) && rule.reaches_root(&self.root)),
+            _ => false,
+        }
     }
     pub(crate) fn supported_data(
         &self,
