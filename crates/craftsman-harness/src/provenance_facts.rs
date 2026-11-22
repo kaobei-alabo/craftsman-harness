@@ -615,6 +615,68 @@ impl Drop for BoundaryInputOwnership {
     }
 }
 
+/// Issued only after the actual exclusive idle replacement, before its
+/// original controller callback/final save. Source data does not claim save
+/// or application authority; a staged summary source remains distinguishable.
+#[derive(Clone)]
+pub struct ActualIdleCompaction(Arc<IdleCompaction>);
+struct IdleCompaction {
+    owner: ActualAgentOwner,
+    controller: Arc<dyn crate::AgentBoundaryPolicy>,
+    source: SourceRef,
+    before: Vec<ActualSourcedMessage>,
+    after: Vec<ActualSourcedMessage>,
+    live: Mutex<bool>,
+}
+impl ActualIdleCompaction {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        controller: Arc<dyn crate::AgentBoundaryPolicy>,
+        source: SourceRef,
+        before: Vec<ActualSourcedMessage>,
+        after: Vec<ActualSourcedMessage>,
+    ) -> Self {
+        Self(Arc::new(IdleCompaction {
+            owner: owner.clone(),
+            controller,
+            source,
+            before,
+            after,
+            live: Mutex::new(true),
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn source(&self) -> &SourceRef {
+        &self.0.source
+    }
+    pub fn before(&self) -> &[ActualSourcedMessage] {
+        &self.0.before
+    }
+    pub fn after(&self) -> &[ActualSourcedMessage] {
+        &self.0.after
+    }
+    pub fn same_controller(&self, controller: &Arc<dyn crate::AgentBoundaryPolicy>) -> bool {
+        Arc::ptr_eq(&self.0.controller, controller)
+    }
+    pub fn in_callback(&self) -> bool {
+        *self.0.live.lock().unwrap()
+    }
+    pub fn same_compaction(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    pub(crate) fn own_callback(&self) -> IdleCompactionOwnership {
+        IdleCompactionOwnership(self.clone())
+    }
+}
+pub(crate) struct IdleCompactionOwnership(ActualIdleCompaction);
+impl Drop for IdleCompactionOwnership {
+    fn drop(&mut self) {
+        *self.0.0.live.lock().unwrap() = false;
+    }
+}
+
 /// The actual event behind an item in a model request. The host validates
 /// its own source against this immutable event; none of the variants grants
 /// transport, human, restoration or tool permission authority.
@@ -659,6 +721,7 @@ pub(crate) struct ActualFacts {
     pub(crate) tasks: Vec<ActualTaskReturn>,
     pub(crate) entry_failures: Vec<String>,
     pub(crate) control_inputs: Vec<ActualBoundaryInput>,
+    pub(crate) idle_compactions: Vec<ActualIdleCompaction>,
 }
 
 /// The real return of an owned selected child task, including failures and
@@ -1075,6 +1138,7 @@ opaque_debug!(
     ActualHostScheduledCall,
     ActualBoundaryController,
     ActualBoundaryInput,
+    ActualIdleCompaction,
     ActualModelInput,
     ActualProviderReturn,
     ActualTaskReturn,

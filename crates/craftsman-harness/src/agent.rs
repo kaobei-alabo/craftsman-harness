@@ -1012,8 +1012,23 @@ impl Agent {
             "assistant",
             serde_json::to_value(&message).unwrap_or_default(),
         );
-        self.state.lock().unwrap().messages.push(message);
+        self.state.lock().unwrap().messages.push(message.clone());
+        self.note_framework_commits(FrameworkCommit::CompletionStop, &[message]);
         self.finish_state().await?;
+        if let Some(view) = &self.model_view {
+            // The actual end/save already returned. Bind the fixed note even
+            // though this configured refusal returns an error, not a Done.
+            // A source failure is retained and seals future required work;
+            // the original completion refusal keeps its error precedence.
+            if let Err(source_error) = self.settle_sources(view).await {
+                view.facts
+                    .lock()
+                    .unwrap()
+                    .entry_failures
+                    .push(source_error.to_string());
+                view.close();
+            }
+        }
         Err(error)
     }
 
@@ -1668,7 +1683,9 @@ impl Agent {
             if input.pending.is_empty() && !received_notification {
                 if self.completion_check.is_none() && self.model_view.is_none() {
                     input.active = false;
-                } else if self.model_view.is_some() {
+                } else if self.model_view.is_some()
+                    && (self.completion_check.is_none() || close_completion_window)
+                {
                     input.idle_operation = true;
                 } else if close_completion_window {
                     input.idle_operation = true;
@@ -2579,6 +2596,10 @@ mod model_view_tests;
 #[cfg(test)]
 #[path = "agent_frontier_tests.rs"]
 mod frontier_tests;
+
+#[cfg(test)]
+#[path = "agent_controller_event_tests.rs"]
+mod controller_event_tests;
 #[cfg(test)]
 #[path = "agent_model_view_delegation_tests.rs"]
 mod model_view_delegation_tests;

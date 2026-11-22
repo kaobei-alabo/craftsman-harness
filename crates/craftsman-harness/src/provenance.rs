@@ -26,10 +26,10 @@ use std::sync::Arc;
 mod facts;
 pub use facts::{
     ActualAgentOwner, ActualBoundaryController, ActualBoundaryInput, ActualControllerBindings,
-    ActualHostScheduledCall, ActualModelInput, ActualParkedCall, ActualPlannedInvocation,
-    ActualProviderReturn, ActualReceivedReply, ActualRequestInput, ActualRetainedCommit,
-    ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary, ActualTaskReturn,
-    ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
+    ActualHostScheduledCall, ActualIdleCompaction, ActualModelInput, ActualParkedCall,
+    ActualPlannedInvocation, ActualProviderReturn, ActualReceivedReply, ActualRequestInput,
+    ActualRetainedCommit, ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary,
+    ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
@@ -139,6 +139,9 @@ pub enum FrameworkCommit {
     /// The real completion controller scheduled the exact retained carrier
     /// and call. This source-only event is not a protocol or result variant.
     CompletionCheck,
+    /// Existing fixed completion-refusal note, issued at its actual append.
+    /// Source-only; not a protocol/error/result/schema/frame variant.
+    CompletionStop,
 }
 
 /// What a middleware's author states about it for an agent that selected a

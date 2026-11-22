@@ -882,6 +882,20 @@ impl Agent {
         )
     }
 
+    /// Actual exclusive replacements observed before their controller callback.
+    /// These memory-only facts do not certify save or application authority.
+    pub fn actual_idle_compactions(&self) -> Option<Vec<crate::provenance::ActualIdleCompaction>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .idle_compactions
+                .clone(),
+        )
+    }
+
     pub(super) fn retained_boundary_input(
         &self,
         view: &ModelView,
@@ -998,7 +1012,7 @@ impl Agent {
 
     /// Asks the boundary for the source of every message the agent appended
     /// itself and has not asked about yet, in order.
-    async fn settle_sources(&self, view: &ModelView) -> Result<(), AgentError> {
+    pub(super) async fn settle_sources(&self, view: &ModelView) -> Result<(), AgentError> {
         loop {
             let next =
                 view.sources.lock().unwrap().iter().enumerate().find_map(
@@ -1951,6 +1965,8 @@ impl Agent {
         self.settle_sources(view).await?;
         let mut working = self.snapshot();
         let messages = working.messages.clone();
+        let before_sources = self.actual_sourced_messages()?;
+        let mut after_sources = Vec::new();
         let mut slots = view.sources.lock().unwrap().clone();
         let mut replaced = false;
         let mut additions = Vec::new();
@@ -1991,15 +2007,30 @@ impl Agent {
                 let committed_slots = slots
                     .into_iter()
                     .map(|slot| match slot {
-                        Slot::StagedSummary(_, stage) => {
+                        Slot::StagedSummary(source, stage) => {
                             let commit = ActualRetainedCommit::summary_issued(stage);
                             view.facts.lock().unwrap().retained.push(commit.clone());
+                            after_sources.push(crate::provenance::ActualSourcedMessage::issued(
+                                commit.clone(),
+                                source,
+                            ));
                             Slot::Pending(commit)
                         }
-                        Slot::StagedHostMessage(_, stage) => {
+                        Slot::StagedHostMessage(source, stage) => {
                             let commit = ActualRetainedCommit::host_issued(stage);
                             view.facts.lock().unwrap().retained.push(commit.clone());
+                            after_sources.push(crate::provenance::ActualSourcedMessage::issued(
+                                commit.clone(),
+                                source,
+                            ));
                             Slot::Pending(commit)
+                        }
+                        Slot::Bound(source, commit) => {
+                            after_sources.push(crate::provenance::ActualSourcedMessage::issued(
+                                commit.clone(),
+                                source.clone(),
+                            ));
+                            Slot::Bound(source, commit)
                         }
                         slot => slot,
                     })
@@ -2010,7 +2041,59 @@ impl Agent {
             input.finishing = true;
             counts
         };
+        let observer_error = (|| {
+            if counts.is_none() {
+                return Ok(());
+            }
+            if let Some(controller) = &self.boundary_policy {
+                let source = view
+                    .controllers
+                    .policy_source()
+                    .cloned()
+                    .ok_or_else(unavailable)?;
+                let event = crate::provenance::ActualIdleCompaction::issued(
+                    &view.owner,
+                    controller.clone(),
+                    source,
+                    before_sources,
+                    after_sources,
+                );
+                let _callback = event.own_callback();
+                view.facts
+                    .lock()
+                    .unwrap()
+                    .idle_compactions
+                    .push(event.clone());
+                let mut state = self.state.lock().unwrap();
+                if event.after().len() != state.messages.len()
+                    || event
+                        .after()
+                        .iter()
+                        .zip(&state.messages)
+                        .any(|(after, message)| after.commit().message() != message)
+                {
+                    return Err(unsourced());
+                }
+                let messages = state.messages.clone();
+                let result = controller.idle_compaction_committed_with_view(&mut state, &event);
+                if state.messages != messages {
+                    // Controller bookkeeping cannot replace the actual retained
+                    // messages. Save the original replacement, not invented input.
+                    state.messages = messages;
+                    return Err(unsourced());
+                }
+                result?;
+            }
+            Ok(())
+        })()
+        .err();
+        // Preserve the original callback-error ordering and save precedence.
+        // This is the actual final idle save, with no end-hook or save replay.
         self.save_progress_checkpoint(None).await?;
+        view.final_saved.store(true, Ordering::Release);
+        if let Some(error) = observer_error {
+            return Err(error);
+        }
         self.settle_sources(view).await?;
         Ok(counts)
     }
