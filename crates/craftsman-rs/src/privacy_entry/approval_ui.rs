@@ -4,9 +4,9 @@
 //! handlers, independently reviewed with the app bootstrap that registers them.
 
 use super::{HumanChoice, InlineDecisionProducer};
-use crate::privacy_session::{ConversationBoundary, FileRefusal, SessionStop};
+use crate::privacy_session::{ConversationBoundary, FileRefusal, ReviewedFile, SessionStop};
 use craftsman_harness::ToolCall;
-use craftsman_harness::provenance::{ActualPlannedInvocation, SourceRef};
+use craftsman_harness::provenance::ActualPlannedInvocation;
 use std::sync::{Arc, Mutex, Weak};
 
 type Callback =
@@ -40,15 +40,22 @@ struct Request {
     ui: Weak<UiOwner>,
     lane: Arc<ConversationBoundary>,
     planned: ActualPlannedInvocation,
-    review_source: Option<SourceRef>,
-    call: ToolCall,
-    summary: String,
-    details: String,
+    /// The reviewed operation this request is about, by identity only.
+    review: Option<Weak<ReviewedFile>>,
     shown: Option<[u8; 32]>,
     state: Mutex<RequestState>,
 }
+/// What a person is shown: the call, which for a reviewed file holds the real
+/// content, and the texts made from it. The request holds it from its issue
+/// until its answer is consumed, and a presentation while it is read.
+struct Preview {
+    call: ToolCall,
+    summary: String,
+    details: String,
+}
 struct RequestState {
     callback_open: bool,
+    preview: Option<Arc<Preview>>,
     presented: Option<Arc<()>>,
     answered: Option<Arc<Decision>>,
     consumed: bool,
@@ -60,6 +67,7 @@ struct Presented {
     request: PrivacyApprovalRequest,
     ui: Weak<UiOwner>,
     identity: Arc<()>,
+    preview: Arc<Preview>,
 }
 #[derive(Clone)]
 pub(crate) struct PrivacyApprovalDecision(Arc<Decision>);
@@ -83,7 +91,7 @@ impl PrivacyApprovalPrompt {
         gate: &Arc<InlineDecisionProducer>,
         lane: Arc<ConversationBoundary>,
         planned: ActualPlannedInvocation,
-        review_source: Option<SourceRef>,
+        review: Option<Weak<ReviewedFile>>,
         call: ToolCall,
         summary: String,
         details: String,
@@ -97,13 +105,15 @@ impl PrivacyApprovalPrompt {
             ui: self.owner.clone(),
             lane,
             planned,
-            review_source,
-            call,
-            summary,
-            details,
+            review,
             shown,
             state: Mutex::new(RequestState {
                 callback_open: true,
+                preview: Some(Arc::new(Preview {
+                    call,
+                    summary,
+                    details,
+                })),
                 presented: None,
                 answered: None,
                 consumed: false,
@@ -121,10 +131,10 @@ impl PrivacyApprovalRequest {
         &self,
     ) -> (
         &ActualPlannedInvocation,
-        Option<&SourceRef>,
+        Option<&Weak<ReviewedFile>>,
         Option<[u8; 32]>,
     ) {
-        (&self.0.planned, self.0.review_source.as_ref(), self.0.shown)
+        (&self.0.planned, self.0.review.as_ref(), self.0.shown)
     }
     fn live(&self) -> Result<(), FileRefusal> {
         let gate = self.0.gate.upgrade().ok_or(FileRefusal::NotApproved)?;
@@ -144,8 +154,10 @@ impl PrivacyApprovalRequest {
             .upgrade()
             .is_some_and(|issued| Arc::ptr_eq(&issued, gate))
     }
-    pub(super) fn same_request(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+    /// This request for the gate that issued it: an identity that keeps
+    /// nothing of the request alive.
+    pub(super) fn issued(&self) -> IssuedRequest {
+        IssuedRequest(Arc::downgrade(&self.0))
     }
     pub(super) fn own_callback(&self) -> CallbackOwnership {
         CallbackOwnership(self.clone())
@@ -153,7 +165,18 @@ impl PrivacyApprovalRequest {
     pub(super) fn close_callback(&self) {
         self.0.state.lock().unwrap().callback_open = false;
     }
+    /// The answer to this request, once. Whatever it is, this is the last
+    /// reader of what was shown, so the request lets go of it here. A
+    /// receiver that keeps the request or its decision keeps no preview.
     pub(super) fn consume(
+        &self,
+        decision: Option<PrivacyApprovalDecision>,
+    ) -> Result<HumanChoice, FileRefusal> {
+        let answer = self.answer(decision);
+        self.0.state.lock().unwrap().preview.take();
+        answer
+    }
+    fn answer(
         &self,
         decision: Option<PrivacyApprovalDecision>,
     ) -> Result<HumanChoice, FileRefusal> {
@@ -191,6 +214,17 @@ impl PrivacyApprovalRequest {
         }
     }
 }
+/// A request a gate issued, as that gate remembers it.
+pub(super) struct IssuedRequest(Weak<Request>);
+impl IssuedRequest {
+    pub(super) fn is(&self, request: &PrivacyApprovalRequest) -> bool {
+        std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&request.0))
+    }
+    /// Nothing refers to the request any more.
+    pub(super) fn gone(&self) -> bool {
+        self.0.strong_count() == 0
+    }
+}
 pub(super) struct CallbackOwnership(PrivacyApprovalRequest);
 impl Drop for CallbackOwnership {
     fn drop(&mut self) {
@@ -218,11 +252,13 @@ impl PrivacyApprovalUi {
         if !state.callback_open || state.presented.is_some() {
             return Err(FileRefusal::Spent);
         }
+        let preview = state.preview.clone().ok_or(FileRefusal::Spent)?;
         let identity = Arc::new(());
         let presented = Arc::new(Presented {
             request: request.clone(),
             ui: Arc::downgrade(&self.0),
             identity: identity.clone(),
+            preview,
         });
         state.presented = Some(identity);
         Ok(PrivacyApprovalPresentation(presented))
@@ -267,13 +303,24 @@ impl PrivacyApprovalUi {
 
 impl PrivacyApprovalPresentation {
     pub(crate) fn review(&self) -> PrivacyApprovalView<'_> {
-        let request = &self.0.request.0;
+        let preview = &self.0.preview;
         PrivacyApprovalView {
-            call: &request.call,
-            summary: &request.summary,
-            details: &request.details,
-            shown: request.shown,
+            call: &preview.call,
+            summary: &preview.summary,
+            details: &preview.details,
+            shown: self.0.request.0.shown,
         }
+    }
+}
+
+#[cfg(test)]
+impl PrivacyApprovalRequest {
+    /// For tests of what a request keeps: whether anything still holds what
+    /// this request showed. The handle itself holds nothing.
+    pub(crate) fn shown_handle(&self) -> Option<Weak<dyn std::any::Any + Send + Sync>> {
+        let preview: Arc<dyn std::any::Any + Send + Sync> =
+            self.0.state.lock().unwrap().preview.clone()?;
+        Some(Arc::downgrade(&preview))
     }
 }
 

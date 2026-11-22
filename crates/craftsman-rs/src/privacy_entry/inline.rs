@@ -2,7 +2,7 @@
 //! operation supplies data, never its own approval. No public issuer exists.
 
 use super::HumanChoice;
-use super::approval_ui::{PrivacyApprovalPrompt, PrivacyApprovalRequest};
+use super::approval_ui::{IssuedRequest, PrivacyApprovalPrompt, PrivacyApprovalRequest};
 use crate::hitl::{ApprovalState, ToolPermission};
 use crate::privacy_session::{
     CapturedRaw, ConversationBoundary, FileRefusal, PrivacySession, RawOrigin, ReviewedFile,
@@ -27,14 +27,39 @@ pub(crate) struct InlineDecisionProducer {
     workspace: PathBuf,
     privacy_prompt: Option<Arc<PrivacyApprovalPrompt>>,
     verification: Option<Arc<crate::verification::VerificationController>>,
-    plans: Mutex<Vec<RegisteredPlan>>,
-    received: Mutex<Vec<Arc<InlineDecisionInput>>>,
-    requests: Mutex<Vec<PrivacyApprovalRequest>>,
+    /// The plans this gate is deciding. A plan is taken once, and forgotten
+    /// when the agent's review of it is over: it cannot come here again.
+    plans: Mutex<Vec<TakenPlan>>,
+    /// The inputs this gate made and the requests it issued, by identity.
+    /// The gate keeps none of them alive; whoever still refers to one does.
+    received: Mutex<Vec<Weak<InlineDecisionInput>>>,
+    requests: Mutex<Vec<IssuedRequest>>,
 }
-struct RegisteredPlan {
+struct TakenPlan {
     planned: ActualPlannedInvocation,
-    review_source: Option<SourceRef>,
+    /// The reviewed operation of the plan, by identity only.
+    review: Option<Weak<ReviewedFile>>,
     shown: Option<[u8; 32]>,
+}
+
+/// Ends the reviewed operation of a plan this gate has taken, unless the
+/// gate allows the call. Whatever else ends the decision, a denial, no
+/// answer, a refusal or a cancelled turn, nothing can come of the operation
+/// any more, and what it holds is released when the gate returns.
+struct Release(Option<Arc<ReviewedFile>>);
+impl Release {
+    /// The call was allowed: the operation goes on to the file tool, which
+    /// ends it after its write.
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+impl Drop for Release {
+    fn drop(&mut self) {
+        if let Some(reviewed) = self.0.take() {
+            reviewed.over();
+        }
+    }
 }
 
 enum Observation {
@@ -51,7 +76,6 @@ pub(crate) struct InlineDecisionInput {
     review_source: Option<SourceRef>,
     shown: Option<[u8; 32]>,
     call: ToolCall,
-    shown_call: ToolCall,
     verification: Option<(
         Arc<crate::verification::VerificationController>,
         Arc<crate::verification::VerificationReview>,
@@ -261,15 +285,18 @@ impl InlineDecisionProducer {
         };
         {
             let mut plans = self.plans.lock().unwrap();
+            plans.retain(|known| known.planned.in_review());
             if plans.iter().any(|known| known.planned.same_plan(plan)) {
                 return Err(FileRefusal::Spent);
             }
-            plans.push(RegisteredPlan {
+            plans.push(TakenPlan {
                 planned: plan.clone(),
-                review_source: tracked.review_source().cloned(),
+                review: reviewed.as_ref().map(Arc::downgrade),
                 shown,
             });
         }
+        // From here on the plan is this gate's to decide.
+        let release = Release(reviewed.clone());
         // The actual automatic decision is captured from the registered
         // original state, under the same synchronous lock as ordinary gates.
         let verification = match self
@@ -292,7 +319,6 @@ impl InlineDecisionProducer {
         let policy = self.capture(
             tracked,
             lane.clone(),
-            &shown_call,
             shown,
             Observation::Policy(permission.clone()),
             verification.clone(),
@@ -325,13 +351,17 @@ impl InlineDecisionProducer {
                 self,
                 lane.clone(),
                 plan.clone(),
-                tracked.review_source().cloned(),
+                reviewed.as_ref().map(Arc::downgrade),
                 presented,
                 summary,
                 details,
                 shown,
             )?;
-            self.requests.lock().unwrap().push(request.clone());
+            {
+                let mut requests = self.requests.lock().unwrap();
+                requests.retain(|known| !known.gone());
+                requests.push(request.issued());
+            }
             let _callback = request.own_callback();
             let reply = prompt.read(request.clone());
             request.close_callback();
@@ -350,7 +380,6 @@ impl InlineDecisionProducer {
             let received = self.capture(
                 tracked,
                 lane.clone(),
-                &shown_call,
                 shown,
                 Observation::Human(choice),
                 verification.clone(),
@@ -398,7 +427,7 @@ impl InlineDecisionProducer {
         };
         *input.action.lock().unwrap() = action.clone();
         // A gate whose real permission became Deny while input/admission
-        // returned cannot execute; completed input/map facts remain retained.
+        // returned cannot execute; what was admitted stays admitted.
         lane.require_agent(plan.owner())
             .map_err(|_| FileRefusal::Stopped(SessionStop::Unbound))?;
         if !plan.in_review() {
@@ -440,8 +469,7 @@ impl InlineDecisionProducer {
             {
                 return Err(FileRefusal::NotApproved);
             }
-        } else if let Some(reviewed) = reviewed {
-            reviewed.over();
+            release.keep();
         }
         Ok(InlineResolution {
             input,
@@ -491,13 +519,13 @@ impl InlineDecisionProducer {
     ) -> Result<(), FileRefusal> {
         let session = self.owner.upgrade().ok_or(FileRefusal::NotApproved)?;
         session.check().map_err(FileRefusal::Stopped)?;
-        let (planned, source, shown) = request.issued_review();
+        let (planned, review, shown) = request.issued_review();
         let registered = self.plans.lock().unwrap().iter().any(|known| {
             known.planned.same_plan(planned)
                 && known.shown == shown
-                && match (&known.review_source, source) {
+                && match (&known.review, review) {
                     (None, None) => true,
-                    (Some(actual), Some(source)) => actual.is(source),
+                    (Some(actual), Some(review)) => actual.ptr_eq(review),
                     _ => false,
                 }
         });
@@ -509,7 +537,7 @@ impl InlineDecisionProducer {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|known| known.same_request(request))
+                .any(|known| known.is(request))
         {
             return Err(FileRefusal::NotApproved);
         }
@@ -520,7 +548,6 @@ impl InlineDecisionProducer {
         self: &Arc<Self>,
         tracked: &TrackedDispatch,
         lane: Arc<ConversationBoundary>,
-        shown_call: &ToolCall,
         shown: Option<[u8; 32]>,
         observation: Observation,
         verification: Option<(
@@ -537,7 +564,6 @@ impl InlineDecisionProducer {
             review_source: tracked.review_source().cloned(),
             shown,
             call: tracked.planned().unwrap().call().clone(),
-            shown_call: shown_call.clone(),
             observation,
             verification,
             action: Mutex::new(None),
@@ -546,7 +572,10 @@ impl InlineDecisionProducer {
             used: AtomicBool::new(false),
             effect_applied: AtomicBool::new(false),
         });
-        self.received.lock().unwrap().push(input.clone());
+        let mut received = self.received.lock().unwrap();
+        received.retain(|known| known.strong_count() != 0);
+        received.push(Arc::downgrade(&input));
+        drop(received);
         input
     }
 }
@@ -577,7 +606,7 @@ impl InlineDecisionInput {
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|input| std::ptr::eq(Arc::as_ptr(input), self))
+                .any(|input| std::ptr::eq(input.as_ptr(), self))
         {
             return None;
         }
@@ -641,10 +670,33 @@ impl InlineDecisionInput {
             return Err(FileRefusal::NotApproved);
         }
         let issuer = self.issuer.upgrade().ok_or(FileRefusal::NotApproved)?;
+        // The policy is asked again about the call as it was shown. For a
+        // reviewed file that is read from the operation itself, which holds
+        // it until it is over; this input keeps no copy of it.
+        let as_shown;
         let permission_call = if self.edited() {
             &expected
+        } else if let Some(reviewed) = self
+            .review_source
+            .as_ref()
+            .and_then(|source| source.downcast::<ReviewedFile>())
+        {
+            let Ok(args) = reviewed.shown_arguments() else {
+                // The operation is over and what was shown went with it. A
+                // second invocation is then a second use of this decision.
+                return Err(match &*self.terminal.lock().unwrap() {
+                    Some(prior) if !prior.same_invocation(invocation) => FileRefusal::Spent,
+                    _ => FileRefusal::NotApproved,
+                });
+            };
+            as_shown = ToolCall {
+                id: self.call.id.clone(),
+                name: self.call.name.clone(),
+                args,
+            };
+            &as_shown
         } else {
-            &self.shown_call
+            &self.call
         };
         let current = issuer.permission_for(permission_call, self.verification.as_ref());
         if matches!(current, ToolPermission::Deny(_))

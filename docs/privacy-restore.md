@@ -377,3 +377,33 @@ or file/application permission. Earlier operation-owned decision descriptions
 above record the incomplete candidate; no such record grants current authority.
 The real final file/source/destination checks and all remaining activation/native
 gates stay required.
+
+### What an inline decision keeps
+
+A gate's registered producer decides a plan once, during the agent's review of
+it, and keeps nothing of the operation afterwards.
+
+- **A decision that is not an allow ends the operation where it is taken.** A
+  denial, no answer, a missing private UI, an answer that cannot be consumed
+  or admitted, arguments that are not JSON, a decision that cannot be attached
+  and a turn stopped while a person is asked all release what the derived
+  operation holds, its content and for an edit the opened file, when the gate
+  returns. An allowed operation is released by the file tool after its write,
+  as before.
+- **The gate remembers by identity.** A plan is known while the agent reviews
+  it and forgotten afterwards. An input and a request are known for as long as
+  something else refers to them. The gate keeps none of them alive.
+- **What was shown is not copied into the decision.** A request holds the call
+  it shows, the summary and the details until its answer is consumed, and a
+  presentation holds them while it is read. A receiver that keeps a request or
+  a decision keeps no preview. When the policy is asked again at the terminal,
+  the shown arguments are read from the operation itself.
+- **What is kept is unchanged:** the recorded call and result, the person's
+  answer as it was typed for as long as the agent's terminal refers to the
+  decision, and every check of the plan, the gate, the registered UI, the
+  current policy and single use.
+
+The producer of the parked reader is not changed: it keeps every input it
+read, as its tests require. All of this is housekeeping of memory in use. It
+encrypts nothing, overwrites no released memory and changes nothing that is
+stored.

@@ -2003,3 +2003,6 @@ async fn registered_inline_raw_edits_keep_human_origin_on_main_and_delegated_cal
         }
     }
 }
+
+#[path = "inline_release_tests.rs"]
+mod inline_release;
