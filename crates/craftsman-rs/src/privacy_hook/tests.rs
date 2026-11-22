@@ -462,3 +462,81 @@ async fn the_detector_view_returns_checked_spans_or_one_typed_failure() {
     }
     assert_eq!(format!("{detector:?}"), "Detector([private])");
 }
+
+#[test]
+fn a_reply_is_checked_as_the_exact_bytes_the_detector_returned() {
+    let text = format!("mail {EMAIL}");
+    let request = Request::from_text(&text).unwrap();
+    let json = request.to_json();
+    let at = text.find(EMAIL).unwrap();
+    let batch = json["input_binding"].as_str().unwrap();
+    let node = json["nodes"][0]["input_binding"].as_str().unwrap();
+    let span = |start: &str| {
+        format!(
+            r#"{{"node_id":"t/0",{start}"end":{},"category":"email","input_binding":"{node}"}}"#,
+            at + EMAIL.len()
+        )
+    };
+    let reply = |head: &str, spans: &str| {
+        format!(r#"{{{head}"input_binding":"{batch}","spans":[{spans}]}}"#)
+    };
+    let start = format!(r#""start":{at},"#);
+    let good = reply(r#""version":1,"#, &span(&start));
+    assert_eq!(request.validate_reply(&good).unwrap().len(), 1);
+
+    // A repeated member is refused wherever it is and whichever value comes
+    // last. Parsing into a generic document first would keep only one.
+    for repeated in [
+        reply(r#""version":1,"version":1,"#, &span(&start)),
+        reply(r#""version":2,"version":1,"#, &span(&start)),
+        reply(r#""version":1,"spans":[],"#, &span(&start)),
+        reply(
+            r#""version":1,"#,
+            &span(&format!(r#""start":999999,"start":{at},"#)),
+        ),
+        reply(
+            r#""version":1,"#,
+            &span(&format!(r#""category":"secret","start":{at},"#)),
+        ),
+    ] {
+        assert_eq!(
+            request.validate_reply(&repeated).unwrap_err(),
+            ReplyRefusal::Shape,
+            "{repeated}"
+        );
+    }
+
+    // The size bound is on the bytes returned, not on a compact re-encoding.
+    let room = MAX_REPLY_BYTES - good.len();
+    let padded = |spaces: usize| format!("{{{}{}", " ".repeat(spaces), &good[1..]);
+    assert_eq!(padded(room).len(), MAX_REPLY_BYTES);
+    assert_eq!(request.validate_reply(&padded(room)).unwrap().len(), 1);
+    assert_eq!(
+        request.validate_reply(&padded(room + 1)).unwrap_err(),
+        ReplyRefusal::Output
+    );
+    // An escaped spelling decodes to the same id and is accepted. Its extra
+    // bytes count toward the bound as written.
+    let escaped = good.replace("t/0", "t\\u002f0");
+    assert_eq!(escaped.len(), good.len() + 5);
+    assert_eq!(request.validate_reply(&escaped).unwrap().len(), 1);
+
+    // One document and nothing after it; integers as integers.
+    for malformed in [
+        format!("{good}{{}}"),
+        format!("{good},"),
+        good.replace(&format!(r#""start":{at}"#), r#""start":1e1"#),
+        good.replace(&format!(r#""start":{at}"#), &format!(r#""start":{at}.0"#)),
+        good.replace(r#""version":1"#, r#""version":"1""#),
+    ] {
+        assert_eq!(
+            request.validate_reply(&malformed).unwrap_err(),
+            ReplyRefusal::Shape,
+            "{malformed}"
+        );
+    }
+    assert_eq!(
+        request.validate_reply(&format!("{good}\n")).unwrap().len(),
+        1
+    );
+}

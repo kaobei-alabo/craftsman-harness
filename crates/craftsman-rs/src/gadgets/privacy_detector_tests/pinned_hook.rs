@@ -298,6 +298,90 @@ async fn pinned_hook_native_fixture() {
     );
     assert_eq!(runtime.compiled_count(), 1);
 
+    // The reply is the guest's own bytes, in the guest's member order. A
+    // generic re-encoding would order the members by name. The same bytes
+    // with padding past the bound, or with a repeated member, are refused.
+    assert!(
+        result.json.starts_with("{\"version\":1,"),
+        "{}",
+        result.json
+    );
+    let padded = format!(
+        "{{{}{}",
+        " ".repeat(crate::privacy_hook::MAX_REPLY_BYTES),
+        &result.json[1..]
+    );
+    assert_eq!(
+        request.validate_reply(&padded).err(),
+        Some(ReplyRefusal::Output)
+    );
+    let repeated = result
+        .json
+        .replacen("{\"version\":1,", "{\"version\":2,\"version\":1,", 1);
+    assert_eq!(
+        request.validate_reply(&repeated).err(),
+        Some(ReplyRefusal::Shape)
+    );
+
+    // The source is reached by handle from the user configuration root, with
+    // no link followed, and each file must be a regular single-link file.
+    // Each control uses a new runtime and is refused before any compile.
+    let fresh = || installed.runtime(options.clone());
+    for name in ["gadget.wasm", "gadget.toml"] {
+        let extra = owned.join(format!("second-link-to-{name}"));
+        std::fs::hard_link(installed.bundle.join(name), &extra).unwrap();
+        let runtime = fresh();
+        refused!(runtime, &pin, ErrorKind::InvalidGadget);
+        std::fs::remove_file(&extra).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        // The configuration root itself is a link.
+        symlink(&installed.config, owned.join("linked-config")).unwrap();
+        let linked = GadgetRuntime::new(
+            &installed.workspace,
+            &owned.join("linked-config"),
+            options.clone(),
+        )
+        .unwrap();
+        refused!(linked, &pin, ErrorKind::InvalidGadget);
+        // A real root whose `gadgets` entry redirects to the approved one.
+        // Resolving the path would find the approved source and its grant.
+        let redirected = owned.join("redirected-config");
+        std::fs::create_dir(&redirected).unwrap();
+        symlink(installed.config.join("gadgets"), redirected.join("gadgets")).unwrap();
+        assert_eq!(
+            redirected.join("gadgets").join(ID).canonicalize().unwrap(),
+            source
+        );
+        let runtime =
+            GadgetRuntime::new(&installed.workspace, &redirected, options.clone()).unwrap();
+        refused!(runtime, &pin, ErrorKind::InvalidGadget);
+        // A real root and gadget directory whose own entry is a link.
+        let aliased = owned.join("aliased-config");
+        std::fs::create_dir_all(aliased.join("gadgets")).unwrap();
+        symlink(&installed.bundle, aliased.join("gadgets").join(ID)).unwrap();
+        let runtime = GadgetRuntime::new(&installed.workspace, &aliased, options.clone()).unwrap();
+        refused!(runtime, &pin, ErrorKind::InvalidGadget);
+        // A component that is a link to a file with the same bytes.
+        let copy = owned.join("same-bytes.wasm");
+        std::fs::write(&copy, &installed.image).unwrap();
+        std::fs::remove_file(installed.bundle.join("gadget.wasm")).unwrap();
+        symlink(&copy, installed.bundle.join("gadget.wasm")).unwrap();
+        let runtime = fresh();
+        refused!(runtime, &pin, ErrorKind::InvalidGadget);
+        std::fs::remove_file(installed.bundle.join("gadget.wasm")).unwrap();
+        installed.restore();
+    }
+    // The untouched source still runs.
+    assert!(
+        fresh()
+            .call_pinned(&pin, "detect", arguments.clone())
+            .await
+            .is_ok()
+    );
+
     // Replies of the actual guest that the host must refuse whole.
     let mut malformed = 0;
     for (mode, expected) in [
@@ -600,6 +684,10 @@ async fn pinned_detector_and_admission_pass_marked_actual_native_runtime() {
         status.success(),
         "pinned detector fixture failed: {stdout} {stderr}"
     );
-    assert!(stdout.contains("PRIVACY-HOOK-FIXTURE:COMPLETE refusals=18 malformed=19 admitted=3"));
+    // Six more refusals where links can be made, two elsewhere.
+    let refusals = if cfg!(unix) { 24 } else { 20 };
+    assert!(stdout.contains(&format!(
+        "PRIVACY-HOOK-FIXTURE:COMPLETE refusals={refusals} malformed=19 admitted=3"
+    )));
     assert!(!stdout.contains("NOT-SELECTED"));
 }

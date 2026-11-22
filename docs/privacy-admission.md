@@ -76,14 +76,31 @@ order, before any compile, `describe` or guest call:
 
 1. the selection is well formed;
 2. no project gadget has the same id;
-3. the user-level gadget directory and both files are regular and unlinked;
-4. the bytes just read hash to the selected component and manifest values;
-5. the manifest declares no read, write or HTTP capability;
-6. a stored grant exists for these exact component bytes at this source.
+3. the user configuration root is absolute and it and each of its ancestors is
+   a real directory, not a link;
+4. `gadgets` and the gadget's own directory are each opened by handle from that
+   root without following a link;
+5. both files are read through that one directory handle, and each is a regular
+   file with a single link, within its size bound, and unchanged in identity,
+   size and modification time across the read;
+6. after the reads, the root and the directory reached by path are still the
+   objects held by handle;
+7. the bytes just read hash to the selected component and manifest values;
+8. the manifest declares no read, write or HTTP capability;
+9. a stored grant exists for these exact component bytes at this source.
 
 Then the same bytes that were hashed are compiled, described and run with no
 capability. The source is read and checked again on every call, so a rebuilt or
-replaced detector is refused even after an earlier call compiled it.
+replaced detector is refused even after an earlier call compiled it. No path
+is resolved through a link on the way to the files: a `gadgets` entry or a
+gadget directory that is a link is refused even when it leads to an approved
+source. The ancestor checks in steps 3 and 6 are observations before and after
+the read, not a guarantee against another process of the same user renaming a
+directory at that moment.
+
+The call returns the guest's reply byte for byte. It is not parsed and encoded
+again first, so the size bound and the strict checks above apply to exactly
+what the guest wrote, including a repeated member or padding.
 
 Ordinary gadget approval is unchanged. Three things that satisfy it do not
 satisfy this path: a grant of an earlier build at the same path, an allow-list

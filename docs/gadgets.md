@@ -395,10 +395,12 @@ First-load "always" approval never becomes global permission bypass.
 
 A separate private call path exists for a detector that host code selects by
 id and by the SHA-256 of its component and manifest. It reads only the
-user-level source, refuses a project gadget of the same id, requires no
-declared capability and requires a stored grant for those exact component
-bytes; rebuild inheritance, allow-list entries and workspace trust do not count
-there, and it never prompts. Ordinary gadget calls, approval and grants are
+user-level source, by handle from the user configuration root and without
+following any link, requires each file to be a regular single-link file,
+refuses a project gadget of the same id, requires no declared capability and
+requires a stored grant for those exact component bytes; rebuild inheritance,
+allow-list entries and workspace trust do not count there, and it never
+prompts. It returns the guest's reply bytes unchanged. Ordinary gadget calls, approval and grants are
 unchanged, and nothing selects that path yet. See
 [privacy-admission.md](privacy-admission.md).
 

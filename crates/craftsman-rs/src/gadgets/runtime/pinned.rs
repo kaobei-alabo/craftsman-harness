@@ -17,6 +17,161 @@ pub(crate) struct PinnedSource {
     pub(crate) manifest_sha256: String,
 }
 
+fn refused(message: &'static str) -> GadgetError {
+    GadgetError::new(ErrorKind::InvalidGadget, message)
+}
+
+fn identity(metadata: &cap_std::fs::Metadata) -> (u64, u64) {
+    use cap_fs_ext::MetadataExt;
+    // Taken from an open handle, so the by-handle fields are populated on
+    // every platform.
+    (metadata.dev(), metadata.ino())
+}
+
+/// Every ancestor of `root`, and `root` itself, is a directory and not a link.
+fn real_directories(root: &Path) -> Result<(), GadgetError> {
+    if !root.is_absolute()
+        || root.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(refused(
+            "the user configuration root must be an absolute path",
+        ));
+    }
+    for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(ancestor).map_err(io_error)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(refused(
+                "the user configuration root must not be reached through a link",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The user configuration root and one gadget directory below it, both held
+/// by handle. Nothing here resolves a link.
+struct Anchored {
+    root: (u64, u64),
+    directory: cap_std::fs::Dir,
+    directory_identity: (u64, u64),
+}
+
+impl Anchored {
+    fn open(config: &Path, id: &str) -> Result<Self, GadgetError> {
+        use cap_fs_ext::DirExt;
+        real_directories(config)?;
+        let root = cap_std::fs::Dir::open_ambient_dir(config, cap_std::ambient_authority())
+            .map_err(io_error)?;
+        let gadgets = root
+            .open_dir_nofollow("gadgets")
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => GadgetError::new(
+                    ErrorKind::NotFound,
+                    "the pinned user gadget is not installed",
+                ),
+                _ => refused("the user gadget root must be a real directory"),
+            })?;
+        let directory = gadgets
+            .open_dir_nofollow(id)
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => GadgetError::new(
+                    ErrorKind::NotFound,
+                    "the pinned user gadget is not installed",
+                ),
+                _ => refused("gadget directories must not be symlinks"),
+            })?;
+        Ok(Self {
+            root: identity(&root.dir_metadata().map_err(io_error)?),
+            directory_identity: identity(&directory.dir_metadata().map_err(io_error)?),
+            directory,
+        })
+    }
+
+    /// One regular, single-link file of at most `maximum` bytes, read through
+    /// the held directory and unchanged across the read.
+    fn read(&self, name: &str, maximum: usize) -> Result<Vec<u8>, GadgetError> {
+        use cap_fs_ext::MetadataExt;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        if self
+            .directory
+            .symlink_metadata(name)
+            .map_err(io_error)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(refused(
+                "pinned gadget inputs must be regular single-link files",
+            ));
+        }
+        let file = self.directory.open_with(name, &options).map_err(io_error)?;
+        let before = file.metadata().map_err(io_error)?;
+        if !before.is_file() || before.nlink() != 1 {
+            return Err(refused(
+                "pinned gadget inputs must be regular single-link files",
+            ));
+        }
+        if before.len() > maximum as u64 {
+            return Err(refused("a pinned gadget input exceeds its size limit"));
+        }
+        let mut bytes = Vec::new();
+        (&file)
+            .take((maximum + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        let after = file.metadata().map_err(io_error)?;
+        if bytes.len() > maximum
+            || bytes.len() as u64 != before.len()
+            || after.len() != before.len()
+            || after.nlink() != 1
+            || identity(&after) != identity(&before)
+            || after.modified().ok() != before.modified().ok()
+        {
+            return Err(refused("a pinned gadget input changed while it was read"));
+        }
+        Ok(bytes)
+    }
+
+    /// After the reads: the root and the directory reached by path are still
+    /// the objects held by handle. Returns the directory's canonical path,
+    /// which is the source label a stored grant carries.
+    fn confirm(&self, config: &Path, id: &str) -> Result<PathBuf, GadgetError> {
+        real_directories(config)?;
+        let open = |path: &Path| {
+            cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
+                .and_then(|directory| directory.dir_metadata())
+                .map(|metadata| identity(&metadata))
+                .map_err(io_error)
+        };
+        let source = config
+            .join("gadgets")
+            .join(id)
+            .canonicalize()
+            .map_err(io_error)?;
+        if open(config)? != self.root
+            || open(&source)? != self.directory_identity
+            || identity(&self.directory.dir_metadata().map_err(io_error)?)
+                != self.directory_identity
+        {
+            return Err(refused("the pinned gadget source moved while it was read"));
+        }
+        Ok(source)
+    }
+}
+
 fn hash_shape(value: &str) -> bool {
     value.len() == 64
         && value
@@ -147,22 +302,10 @@ impl GadgetRuntime {
                 "gadget result exceeds 1 MiB",
             ));
         }
-        let value = serde_json::from_str::<serde_json::Value>(&json).map_err(|e| {
-            classify(
-                GadgetError::new(
-                    ErrorKind::InvalidGadget,
-                    format!("gadget returned invalid JSON: {e}"),
-                ),
-                store.data(),
-            )
-        })?;
-        let json = serde_json::to_string(&value).map_err(io_error)?;
-        if json.len() > MAX_JSON_BYTES {
-            return Err(classify(
-                GadgetError::new(ErrorKind::OutputLimit, "gadget result exceeds 1 MiB"),
-                store.data(),
-            ));
-        }
+        // The guest's return is handed back byte for byte. It is not parsed,
+        // re-serialized or escaped here: the host caller applies its own size
+        // and shape checks to exactly what the guest wrote, including
+        // repeated members and padding that a re-serialization would drop.
         let (logs, logs_truncated) = store.data().capture.contents();
         Ok(CallResult {
             json,
@@ -173,11 +316,22 @@ impl GadgetRuntime {
         })
     }
 
-    /// Reads the user-level source afresh, without the scan cache, and returns
-    /// it only if it is exactly the pinned one. The component bytes returned
-    /// are the bytes that were hashed.
+    /// Reads the user-level source afresh, without the scan cache and without
+    /// resolving any link, and returns it only if it is exactly the pinned one.
+    ///
+    /// The directory is reached by handle from the user configuration root:
+    /// every ancestor of that root is a real directory, and `gadgets` and the
+    /// gadget's own directory are each opened without following a link. Both
+    /// files are read through that one directory handle. Each must be a
+    /// regular file with a single link, within its size bound, and unchanged
+    /// in identity, size and modification time across the read. The component
+    /// bytes returned are the bytes that were hashed.
+    ///
+    /// The ancestor checks are observations made before and after the read.
+    /// They are not an operating-system guarantee against another process of
+    /// the same user renaming a directory at the same moment.
     async fn pinned_bundle(&self, pin: &PinnedSource) -> Result<(Bundle, Vec<u8>), GadgetError> {
-        let directory = self.config.join("gadgets").join(&pin.id);
+        let config = self.config.clone();
         let shadow = self.workspace.join(".craftsman/gadgets").join(&pin.id);
         let pin = pin.clone();
         tokio::task::spawn_blocking(move || {
@@ -191,29 +345,15 @@ impl GadgetRuntime {
                 }
                 Err(error) => return Err(io_error(error)),
             }
-            let kind = match fs::symlink_metadata(&directory) {
-                Ok(metadata) => metadata.file_type(),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(GadgetError::new(
-                        ErrorKind::NotFound,
-                        "the pinned user gadget is not installed",
-                    ));
-                }
-                Err(error) => return Err(io_error(error)),
-            };
-            if !kind.is_dir() || kind.is_symlink() {
-                return Err(GadgetError::new(
-                    ErrorKind::InvalidGadget,
-                    "gadget directories must not be symlinks",
-                ));
-            }
-            let source = directory.canonicalize().map_err(io_error)?;
-            let manifest_bytes = read_bounded(&source, "gadget.toml", MAX_MANIFEST_BYTES)?;
+            let anchored = Anchored::open(&config, &pin.id)?;
+            let manifest_bytes = anchored.read("gadget.toml", MAX_MANIFEST_BYTES)?;
             let text = std::str::from_utf8(&manifest_bytes).map_err(io_error)?;
             let manifest = Manifest::parse(text, &pin.id)?;
             let manifest_hash = digest(&manifest_bytes);
-            let bytes = read_bounded(&source, "gadget.wasm", MAX_COMPONENT_BYTES)?;
+            let bytes = anchored.read("gadget.wasm", MAX_COMPONENT_BYTES)?;
             let hash = digest(&bytes);
+            // The root and the directory are still the ones that were opened.
+            let source = anchored.confirm(&config, &pin.id)?;
             if hash != pin.component_sha256 || manifest_hash != pin.manifest_sha256 {
                 return Err(GadgetError::new(
                     ErrorKind::InvalidGadget,
