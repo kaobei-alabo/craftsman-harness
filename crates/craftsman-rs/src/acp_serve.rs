@@ -515,7 +515,7 @@ async fn build_acp_session(
             drop(open);
             // Blocking wait: the client's response, or `cancel_in_flight`
             // draining the map, wakes this up.
-            tokio::task::block_in_place(|| waiter_rx.recv())
+            crate::util::block_in_place(|| waiter_rx.recv())
                 .unwrap_or_else(|_| ApprovalPromptResult::Reject("turn cancelled".into()))
         },
     );
@@ -555,7 +555,7 @@ async fn build_acp_session(
             return None;
         }
         drop(open);
-        tokio::task::block_in_place(|| waiter_rx.recv())
+        crate::util::block_in_place(|| waiter_rx.recv())
             .ok()
             .flatten()
     });
