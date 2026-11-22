@@ -2514,6 +2514,14 @@ impl AgentBuilder {
         });
 
         let notification_inbox = Arc::new(Mutex::new(notifications.subscribe()));
+        let model_view = self.model_view_boundary.map(|boundary| {
+            Arc::new(ModelView::with_parent(
+                boundary,
+                self.task_parent,
+                self.boundary_policy.clone(),
+                self.completion_check.clone(),
+            ))
+        });
 
         Agent {
             instance: Arc::new(()),
@@ -2528,9 +2536,7 @@ impl AgentBuilder {
             finish_on_round_limit: self.finish_on_round_limit,
             completion_check: self.completion_check,
             boundary_policy: self.boundary_policy,
-            model_view: self
-                .model_view_boundary
-                .map(|boundary| Arc::new(ModelView::with_parent(boundary, self.task_parent))),
+            model_view,
             completion_sequence: Arc::new(AtomicU64::new(0)),
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,

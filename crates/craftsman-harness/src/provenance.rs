@@ -25,11 +25,11 @@ use std::sync::Arc;
 #[path = "provenance_facts.rs"]
 mod facts;
 pub use facts::{
-    ActualAgentOwner, ActualBoundaryController, ActualBoundaryInput, ActualHostScheduledCall,
-    ActualModelInput, ActualParkedCall, ActualPlannedInvocation, ActualProviderReturn,
-    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualSourcedMessage,
-    ActualStagedHostMessage, ActualStagedSummary, ActualTaskReturn, ActualTerminalOutcome,
-    ActualToolFact, ActualToolInvocation, RetainedEvent,
+    ActualAgentOwner, ActualBoundaryController, ActualBoundaryInput, ActualControllerBindings,
+    ActualHostScheduledCall, ActualModelInput, ActualParkedCall, ActualPlannedInvocation,
+    ActualProviderReturn, ActualReceivedReply, ActualRequestInput, ActualRetainedCommit,
+    ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary, ActualTaskReturn,
+    ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
@@ -583,6 +583,20 @@ fn refused<'f, T: Send + 'f>(why: &'static str) -> BoxedBoundaryFuture<'f, T> {
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// Validates the private sources and real installed controller objects
+    /// before a selected input/save/custom mutation. A declaration or opaque
+    /// SourceRef alone is no authority. Default refusal for any controller.
+    fn validate_controller_sources(
+        &self,
+        bindings: &ActualControllerBindings,
+    ) -> Result<(), AgentError> {
+        if bindings.has_policy() || bindings.has_completion() {
+            return Err(AgentError::State(
+                "This conversation has no verified controller sources.".into(),
+            ));
+        }
+        Ok(())
+    }
     /// Source of a call the actual installed completion controller scheduled.
     /// It has an immutable retained carrier, not model or permission origin.
     /// The default refuses; selected control adapters remain required.

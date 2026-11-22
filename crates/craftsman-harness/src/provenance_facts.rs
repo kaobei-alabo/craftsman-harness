@@ -10,6 +10,70 @@ use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourcePart, SourceRef};
 #[derive(Clone)]
 pub struct ActualAgentOwner(Arc<()>);
 
+/// The controller objects actually installed by this agent's builder and
+/// their captured source declarations. Feasibility only, not permission or
+/// callback authority. No public issuer, JSON or state-based reconstruction.
+#[derive(Clone)]
+pub struct ActualControllerBindings {
+    owner: ActualAgentOwner,
+    policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
+    completion: Option<Arc<dyn crate::CompletionCheck>>,
+    policy_source: Option<SourceRef>,
+    completion_source: Option<SourceRef>,
+}
+impl ActualControllerBindings {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
+        completion: Option<Arc<dyn crate::CompletionCheck>>,
+    ) -> Self {
+        let policy_source = policy.as_ref().and_then(|policy| policy.source_for_view());
+        let completion_source = completion
+            .as_ref()
+            .and_then(|policy| policy.source_for_view());
+        Self {
+            owner: owner.clone(),
+            policy,
+            completion,
+            policy_source,
+            completion_source,
+        }
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.owner
+    }
+    pub fn has_policy(&self) -> bool {
+        self.policy.is_some()
+    }
+    pub fn has_completion(&self) -> bool {
+        self.completion.is_some()
+    }
+    pub fn policy_source(&self) -> Option<&SourceRef> {
+        self.policy_source.as_ref()
+    }
+    pub fn completion_source(&self) -> Option<&SourceRef> {
+        self.completion_source.as_ref()
+    }
+    pub fn policy_matches(&self, policy: &Arc<dyn crate::AgentBoundaryPolicy>) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, policy))
+    }
+    pub fn completion_matches(&self, completion: &Arc<dyn crate::CompletionCheck>) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(|held| Arc::ptr_eq(held, completion))
+    }
+    pub(crate) fn feasible(&self) -> bool {
+        self.policy.as_ref().is_none_or(|policy| {
+            policy.view_support() == super::ViewSupport::Tracked && self.policy_source.is_some()
+        }) && self
+            .completion
+            .as_ref()
+            .is_none_or(|_| self.completion_source.is_some())
+    }
+}
+
 /// One actual dispatch proposal, issued before its approval/review chain.
 /// Equal call bytes cannot recreate the event. A plan is neither permission
 /// nor proof that a terminal ran; the final invocation retains it separately.
@@ -999,6 +1063,7 @@ macro_rules! opaque_debug {
 
 opaque_debug!(
     ActualAgentOwner,
+    ActualControllerBindings,
     ActualPlannedInvocation,
     ActualParkedCall,
     ActualReceivedReply,

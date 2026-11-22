@@ -331,6 +331,7 @@ pub(super) struct ModelView {
     /// committed. It lives only in memory and is never read from a checkpoint.
     pub(super) sources: Mutex<Vec<Slot>>,
     pub(super) owner: ActualAgentOwner,
+    controllers: crate::provenance::ActualControllerBindings,
     closed: AtomicBool,
     pub(super) decision: Mutex<Option<AppliedDecision>>,
     pub(super) parked: Mutex<Option<ActualParkedCall>>,
@@ -349,22 +350,27 @@ pub(super) struct ModelView {
 impl ModelView {
     #[cfg(test)]
     pub(super) fn new(boundary: Arc<dyn ModelViewBoundary>) -> Self {
-        Self::with_parent(boundary, None)
+        Self::with_parent(boundary, None, None, None)
     }
 
     pub(super) fn with_parent(
         boundary: Arc<dyn ModelViewBoundary>,
         parent: Option<ActualToolInvocation>,
+        policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
+        completion: Option<Arc<dyn crate::CompletionCheck>>,
     ) -> Self {
         let parent_failed = parent
             .as_ref()
             .is_some_and(|parent| boundary.bind_task_parent(parent).is_err());
         let owner = ActualAgentOwner::issued();
         let closed = parent_failed || boundary.bind_agent(&owner).is_err();
+        let controllers =
+            crate::provenance::ActualControllerBindings::issued(&owner, policy, completion);
         Self {
             boundary,
             sources: Mutex::new(Vec::new()),
             owner,
+            controllers,
             closed: AtomicBool::new(closed),
             decision: Mutex::new(None),
             parked: Mutex::new(None),
@@ -653,13 +659,14 @@ impl Agent {
             )
         });
         if !adapted
-            || self.boundary_policy.is_some()
-            || self.completion_check.is_some()
+            || !view.controllers.feasible()
             || !self.system_prompt.is_empty()
             || self.inbox.lock().unwrap().is_some()
         {
             return Err(unavailable());
         }
+        view.boundary
+            .validate_controller_sources(&view.controllers)?;
         Ok(view)
     }
 

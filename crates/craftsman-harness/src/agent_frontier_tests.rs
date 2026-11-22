@@ -66,10 +66,45 @@ struct Boundary {
     owner: Mutex<Option<ActualAgentOwner>>,
     closed: AtomicU64,
     plans: Mutex<Vec<ActualPlannedInvocation>>,
+    controller: Mutex<Option<Arc<TrackedControl>>>,
 }
 
 #[async_trait::async_trait]
 impl ModelViewBoundary for Boundary {
+    fn validate_controller_sources(
+        &self,
+        bindings: &ActualControllerBindings,
+    ) -> Result<(), AgentError> {
+        if !bindings.has_policy() && !bindings.has_completion() {
+            return Ok(());
+        }
+        let expected = self
+            .controller
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| AgentError::State("fixture controller not registered".into()))?;
+        let source = bindings
+            .policy_source()
+            .and_then(|source| source.downcast::<ControlSource>())
+            .and_then(|source| source.0.upgrade())
+            .ok_or_else(|| AgentError::State("fixture controller source refused".into()))?;
+        let controller: Arc<dyn crate::AgentBoundaryPolicy> = expected.clone();
+        if !Arc::ptr_eq(&expected, &source)
+            || !bindings.policy_matches(&controller)
+            || bindings.has_completion()
+            || !self
+                .owner
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .same_agent(bindings.owner())
+        {
+            return Err(AgentError::State("fixture controller owner refused".into()));
+        }
+        Ok(())
+    }
     fn before_review<'a, 'b, 'f>(
         &'a self,
         planned: &'b ActualPlannedInvocation,
@@ -179,6 +214,91 @@ impl ModelViewBoundary for Boundary {
         assert_eq!(invocation.shown(), Some([42; 32]));
         Ok(Some(source("checked actual invocation")))
     }
+}
+
+struct ControlSource(std::sync::Weak<TrackedControl>);
+struct TrackedControl {
+    this: std::sync::Weak<Self>,
+    calls: AtomicU64,
+}
+impl TrackedControl {
+    fn new() -> Arc<Self> {
+        Arc::new_cyclic(|this| Self {
+            this: this.clone(),
+            calls: AtomicU64::new(0),
+        })
+    }
+}
+impl crate::AgentBoundaryPolicy for TrackedControl {
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+    fn source_for_view(&self) -> Option<SourceRef> {
+        Some(SourceRef::new(Arc::new(ControlSource(self.this.clone()))))
+    }
+    fn user_input_with_view(
+        &self,
+        state: &mut AgentState,
+        event: &ActualBoundaryInput,
+    ) -> Result<(), AgentError> {
+        let controller: Arc<dyn crate::AgentBoundaryPolicy> = self.this.upgrade().unwrap();
+        assert!(event.in_callback() && event.same_controller(&controller));
+        assert_eq!(
+            state.messages.get(event.index()),
+            Some(event.input().commit().message())
+        );
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn private_installed_controller_source_allows_its_benign_input_path() {
+    let boundary = Arc::new(Boundary::default());
+    let control = TrackedControl::new();
+    *boundary.controller.lock().unwrap() = Some(control.clone());
+    let agent = Agent::builder(Arc::new(Model(Mutex::new(0))))
+        .tool(Arc::new(NoopTool::new("noop")))
+        .model_view_boundary(Some(boundary))
+        .boundary_policy(control.clone())
+        .build();
+    assert!(matches!(
+        agent
+            .run_turn_with_view("actual input", source("input"))
+            .await
+            .unwrap(),
+        TurnResult::Done(_)
+    ));
+    assert_eq!(control.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(agent.actual_boundary_inputs().unwrap().len(), 1);
+    assert!(!agent.actual_boundary_inputs().unwrap()[0].in_callback());
+}
+
+#[tokio::test]
+async fn a_tracked_declaration_and_some_wrong_source_refuse_before_input_or_save() {
+    let boundary = Arc::new(Boundary::default());
+    let expected = TrackedControl::new();
+    *boundary.controller.lock().unwrap() = Some(expected.clone());
+    let wrong = TrackedControl::new();
+    let saves = Arc::new(MemCheckpointer::default());
+    let agent = Agent::builder(Arc::new(Model(Mutex::new(0))))
+        .model_view_boundary(Some(boundary))
+        .boundary_policy(wrong.clone())
+        .checkpointer(saves.clone())
+        .durable_turn_checkpoints(true)
+        .build();
+    assert!(
+        agent
+            .run_turn_with_view("not accepted", source("input"))
+            .await
+            .is_err()
+    );
+    assert!(agent.state.lock().unwrap().messages.is_empty());
+    assert!(saves.saves.lock().unwrap().is_empty());
+    assert_eq!(expected.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(wrong.calls.load(Ordering::SeqCst), 0);
+    assert!(agent.actual_provider_returns().unwrap().is_empty());
+    // Ordinary declaration/issuer mismatch only; no main callback/budget fault.
 }
 
 #[test]

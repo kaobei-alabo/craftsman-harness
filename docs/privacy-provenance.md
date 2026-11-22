@@ -143,6 +143,16 @@ source hook also defaults to refusal. These helpers do not lift the current
 startup refusal for selected boundary/completion policies, and add no app
 dependencies, checkpoint fields or default request changes.
 
+The core compatibility gate now defaults to refusal per installed controller:
+a boundary policy must declare its actual tracked adapter and supply a source;
+a completion controller must supply its source. The actual builder captures
+those objects and sources in `ActualControllerBindings`, and the selected host
+must validate its private issuer and exact installed object before input/save
+or custom mutation. `validate_controller_sources` defaults to refusal for any
+controller. Declaration and `Some(SourceRef)` are feasibility only. The
+unadapted helper remains refused, while the application keeps RequestedPart
+holds until its real original-controller adapters are wired and reviewed.
+
 **Approvals.** A parked call is resumed only through
 `resume_with_view(action, deny_default, decision)`. The boundary checks the
 host's evidence of the decision against the parked call and the action before
