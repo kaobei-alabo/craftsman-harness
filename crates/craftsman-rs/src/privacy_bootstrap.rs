@@ -505,13 +505,7 @@ impl PrivateBuiltSession {
     pub(crate) fn session_for_terminal_mut(&mut self) -> &mut crate::agent::Session {
         &mut self.session
     }
-    pub fn thread_id(&self) -> &str {
-        &self.session.thread_id
-    }
-    pub async fn turn(
-        &self,
-        typed: &str,
-    ) -> std::result::Result<craftsman_harness::TurnResult, PrivateTurnError> {
+    pub(crate) fn task_owner(&self) -> std::result::Result<PrivateTaskOwner, PrivateTurnError> {
         self.owner
             .check_sources()
             .map_err(PrivateTurnError::Source)?;
@@ -522,8 +516,63 @@ impl PrivateBuiltSession {
             .ok_or(PrivateTurnError::Source(BootstrapError::Session(
                 SessionStop::Closed,
             )))?;
-        let result = view
-            .turn(&self.session.agent, typed)
+        Ok(PrivateTaskOwner {
+            agent: self.session.agent.clone(),
+            view: view.clone_for_terminal(),
+            owner: self.owner.clone(),
+        })
+    }
+    pub fn thread_id(&self) -> &str {
+        &self.session.thread_id
+    }
+    pub async fn turn(
+        &self,
+        typed: &str,
+    ) -> std::result::Result<craftsman_harness::TurnResult, PrivateTurnError> {
+        self.task_owner()?.turn(typed).await
+    }
+    pub async fn steer(&self, typed: &str) -> std::result::Result<bool, PrivateTurnError> {
+        self.task_owner()?.steer(typed).await
+    }
+    pub async fn request_decision(
+        &self,
+        deny_default: &str,
+    ) -> std::result::Result<Option<craftsman_harness::TurnResult>, PrivateTurnError> {
+        self.task_owner()?.request_decision(deny_default).await
+    }
+    pub fn close(&self) {
+        self.owner.close();
+    }
+    pub fn before_configuration_save(&self) -> Result<()> {
+        self.owner.before_configuration_save()
+    }
+}
+
+/// Only the actual built session creates this owner. Its same agent/view and
+/// captured key/policy stay live through an owned task while the UI retains the
+/// actual mutable notification receiver. It has no arbitrary constructor or
+/// raw source/agent getter, and creates no new conversation or receipt.
+pub(crate) struct PrivateTaskOwner {
+    agent: craftsman_harness::Agent,
+    view: crate::privacy_session::PrivacyView,
+    owner: Arc<PrivateConversation>,
+}
+impl std::fmt::Debug for PrivateTaskOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrivateTaskOwner([private])")
+    }
+}
+impl PrivateTaskOwner {
+    pub async fn turn(
+        &self,
+        typed: &str,
+    ) -> std::result::Result<craftsman_harness::TurnResult, PrivateTurnError> {
+        self.owner
+            .check_sources()
+            .map_err(PrivateTurnError::Source)?;
+        let result = self
+            .view
+            .turn(&self.agent, typed)
             .await
             .map_err(PrivateTurnError::Entry);
         let checked = self.owner.check_sources().map_err(PrivateTurnError::Source);
@@ -540,22 +589,13 @@ impl PrivateBuiltSession {
             }
         }
     }
-    pub fn close(&self) {
-        self.owner.close();
-    }
     pub async fn steer(&self, typed: &str) -> std::result::Result<bool, PrivateTurnError> {
         self.owner
             .check_sources()
             .map_err(PrivateTurnError::Source)?;
-        let view = self
-            .session
-            .privacy_view
-            .as_ref()
-            .ok_or(PrivateTurnError::Source(BootstrapError::Session(
-                SessionStop::Closed,
-            )))?;
-        let result = view
-            .steer(&self.session.agent, typed)
+        let result = self
+            .view
+            .steer(&self.agent, typed)
             .await
             .map_err(PrivateTurnError::Entry);
         let checked = self.owner.check_sources().map_err(PrivateTurnError::Source);
@@ -574,15 +614,9 @@ impl PrivateBuiltSession {
         self.owner
             .check_sources()
             .map_err(PrivateTurnError::Source)?;
-        let view = self
-            .session
-            .privacy_view
-            .as_ref()
-            .ok_or(PrivateTurnError::Source(BootstrapError::Session(
-                SessionStop::Closed,
-            )))?;
-        let result = view
-            .request_decision(&self.session.agent, deny_default)
+        let result = self
+            .view
+            .request_decision(&self.agent, deny_default)
             .await
             .map_err(PrivateTurnError::Entry);
         let checked = self.owner.check_sources().map_err(PrivateTurnError::Source);
@@ -593,9 +627,6 @@ impl PrivateBuiltSession {
                 Ok(returned)
             }
         }
-    }
-    pub fn before_configuration_save(&self) -> Result<()> {
-        self.owner.before_configuration_save()
     }
 }
 impl Drop for PrivateBuiltSession {

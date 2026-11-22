@@ -154,21 +154,27 @@ impl OwnedSecretTerminal {
             let owner = match bootstrap.unlock_private(&mut terminal).await {
                 Ok(owner) => std::sync::Arc::new(owner),
                 Err(error) => {
-                    if matches!(error, crate::privacy_bootstrap::BootstrapError::Key(KeyError::Cancelled))
-                        && terminal.inner.shutdown.exit_code() != 0
+                    if matches!(
+                        error,
+                        crate::privacy_bootstrap::BootstrapError::Key(KeyError::Cancelled)
+                    ) && terminal.inner.shutdown.exit_code() != 0
                     {
                         return Ok(terminal.inner.shutdown.exit_code());
                     }
                     return Err(PrivateTerminalError::Source(error));
                 }
             };
-            let mut frontend = terminal.request_full_session_on_bridge(owner, cfg, approval).await?;
+            let mut frontend = terminal
+                .request_full_session_on_bridge(owner, cfg, approval)
+                .await?;
             frontend.run().await
         }
         #[cfg(not(unix))]
         {
             let _ = (self, bootstrap, cfg, approval);
-            Err(PrivateTerminalError::Source(crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported)))
+            Err(PrivateTerminalError::Source(
+                crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported),
+            ))
         }
     }
 

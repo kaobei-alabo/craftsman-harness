@@ -148,7 +148,10 @@ pub(super) fn cancel_prompt<T: Send + 'static>(
     })
 }
 
-pub(super) fn scoped_prompt(event: UiEvent, turn: &Option<craftsman_harness::TurnCancellation>) -> UiEvent {
+pub(super) fn scoped_prompt(
+    event: UiEvent,
+    turn: &Option<craftsman_harness::TurnCancellation>,
+) -> UiEvent {
     match turn {
         Some(turn) => UiEvent::ScopedPrompt {
             cancellation: turn.clone(),

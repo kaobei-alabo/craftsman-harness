@@ -23,9 +23,7 @@ use std::sync::{Arc, mpsc};
 const REVIEW_BYTES: usize = 1024 * 1024;
 const INPUT_BYTES: usize = crate::privacy_hook::MAX_TEXT_BYTES;
 
-pub(super) fn register(
-    bridge: &UiBridge,
-) -> (Arc<PrivacyApprovalPrompt>, Arc<PrivacyApprovalUi>) {
+pub(super) fn register(bridge: &UiBridge) -> (Arc<PrivacyApprovalPrompt>, Arc<PrivacyApprovalUi>) {
     let tx = bridge.tx.clone();
     register_privacy_approval_ui(Arc::new(move |request: PrivacyApprovalRequest| {
         let turn = craftsman_harness::TurnCancellation::current();
@@ -37,8 +35,11 @@ pub(super) fn register(
         tx.send(scoped_prompt(
             UiEvent::PrivacyApproval { request, response },
             &turn,
-        )).ok()?;
-        let returned = tokio::task::block_in_place(|| receive.recv()).ok().flatten();
+        ))
+        .ok()?;
+        let returned = tokio::task::block_in_place(|| receive.recv())
+            .ok()
+            .flatten();
         if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
             None
         } else {
@@ -90,7 +91,11 @@ pub(super) fn handle(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum InputMode { Review, Feedback, Edit }
+enum InputMode {
+    Review,
+    Feedback,
+    Edit,
+}
 
 pub(super) struct PrivacyApprovalModal {
     presentation: Option<PrivacyApprovalPresentation>,
@@ -122,9 +127,16 @@ impl PrivacyApprovalModal {
         // this is never used as the raw source of a human Edit decision.
         let arguments = match serde_json::to_string_pretty(&view.call.args) {
             Ok(arguments) => arguments,
-            Err(_) => { let _ = response.send(None); return Err(()); }
+            Err(_) => {
+                let _ = response.send(None);
+                return Err(());
+            }
         };
-        let length = view.call.name.len().checked_add(view.summary.len())
+        let length = view
+            .call
+            .name
+            .len()
+            .checked_add(view.summary.len())
             .and_then(|length| length.checked_add(view.details.len()))
             .and_then(|length| length.checked_add(arguments.len()))
             .and_then(|length| length.checked_add(8));
@@ -132,13 +144,25 @@ impl PrivacyApprovalModal {
             let _ = response.send(None);
             return Err(());
         }
-        let contents = format!("{}\n\n{}\n\n{}\n\n{}", view.call.name, view.summary, view.details, arguments);
+        let contents = format!(
+            "{}\n\n{}\n\n{}\n\n{}",
+            view.call.name, view.summary, view.details, arguments
+        );
         let file_review = view.shown.is_some();
         let network = crate::tools::NETWORK_TOOLS.contains(&view.call.name.as_str());
         Ok(Self {
-            presentation: Some(presentation), ui, response, contents, file_review,
-            network, scroll: Cell::new(0), selected: 0, input_mode: InputMode::Review,
-            feedback: String::new(), edit: String::new(), input_refused: false,
+            presentation: Some(presentation),
+            ui,
+            response,
+            contents,
+            file_review,
+            network,
+            scroll: Cell::new(0),
+            selected: 0,
+            input_mode: InputMode::Review,
+            feedback: String::new(),
+            edit: String::new(),
+            input_refused: false,
         })
     }
     pub(super) fn cancel(&self) {
@@ -147,10 +171,15 @@ impl PrivacyApprovalModal {
         let _ = self.response.send(None);
     }
     fn answer(mut self, choice: HumanChoice) -> bool {
-        let Some(presentation) = self.presentation.take() else { return false; };
+        let Some(presentation) = self.presentation.take() else {
+            return false;
+        };
         match self.ui.decide(presentation, choice) {
             Ok(decision) => self.response.send(Some(decision)).is_ok(),
-            Err(_) => { let _ = self.response.send(None); false }
+            Err(_) => {
+                let _ = self.response.send(None);
+                false
+            }
         }
     }
     fn input_mut(&mut self) -> Option<&mut String> {
@@ -161,8 +190,14 @@ impl PrivacyApprovalModal {
         }
     }
     pub(super) fn paste(&mut self, text: &str) {
-        let Some(input) = self.input_mut() else { return; };
-        if input.len().checked_add(text.len()).is_none_or(|size| size > INPUT_BYTES) {
+        let Some(input) = self.input_mut() else {
+            return;
+        };
+        if input
+            .len()
+            .checked_add(text.len())
+            .is_none_or(|size| size > INPUT_BYTES)
+        {
             self.input_refused = true;
             return;
         }
@@ -172,14 +207,27 @@ impl PrivacyApprovalModal {
         self.input_refused = false;
     }
     pub(super) fn render(&self, frame: &mut Frame<'_>, area: Rect) {
-        let chunks = Layout::default().direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(7)]).split(area);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(7)])
+            .split(area);
         let (contents, title) = match self.input_mode {
-            InputMode::Review => (self.contents.as_str(), if self.file_review {
-                " private file review · PgUp/PgDn/Home/End "
-            } else { " private operation review · PgUp/PgDn/Home/End " }),
-            InputMode::Feedback => (self.feedback.as_str(), " deny with exact feedback · Enter sends · Esc returns "),
-            InputMode::Edit => (self.edit.as_str(), " raw edited JSON · F2/Ctrl-Enter sends · Esc returns "),
+            InputMode::Review => (
+                self.contents.as_str(),
+                if self.file_review {
+                    " private file review · PgUp/PgDn/Home/End "
+                } else {
+                    " private operation review · PgUp/PgDn/Home/End "
+                },
+            ),
+            InputMode::Feedback => (
+                self.feedback.as_str(),
+                " deny with exact feedback · Enter sends · Esc returns ",
+            ),
+            InputMode::Edit => (
+                self.edit.as_str(),
+                " raw edited JSON · F2/Ctrl-Enter sends · Esc returns ",
+            ),
         };
         let width = usize::from(chunks[0].width.saturating_sub(2).max(1));
         // Escape controls/bidi and literal backslashes before width wrapping,
@@ -190,25 +238,52 @@ impl PrivacyApprovalModal {
         let height = usize::from(chunks[0].height.saturating_sub(2));
         let start = self.scroll.get().min(lines.len().saturating_sub(height));
         self.scroll.set(start);
-        frame.render_widget(Paragraph::new(lines.into_iter().skip(start).take(height)
-            .map(Line::from).collect::<Vec<_>>()).block(Block::default().title(title)
-                .borders(Borders::ALL)), chunks[0]);
-        let always = if self.network { "Allow network this session" } else { "Allow local changes this session" };
-        let choices = ["Approve once", always, "Deny", "Deny with feedback", "Enter edited JSON"];
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .into_iter()
+                    .skip(start)
+                    .take(height)
+                    .map(Line::from)
+                    .collect::<Vec<_>>(),
+            )
+            .block(Block::default().title(title).borders(Borders::ALL)),
+            chunks[0],
+        );
+        let always = if self.network {
+            "Allow network this session"
+        } else {
+            "Allow local changes this session"
+        };
+        let choices = [
+            "Approve once",
+            always,
+            "Deny",
+            "Deny with feedback",
+            "Enter edited JSON",
+        ];
         let mut state = ListState::default().with_selected(Some(self.selected));
-        let title = if self.input_refused { " whole input refused: byte bound · earlier draft retained " }
-            else { " the original bound request decides this operation " };
-        frame.render_stateful_widget(List::new(choices.map(ListItem::new))
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .highlight_symbol("▶ ").highlight_style(Style::default().add_modifier(Modifier::BOLD)),
-            chunks[1], &mut state);
+        let title = if self.input_refused {
+            " whole input refused: byte bound · earlier draft retained "
+        } else {
+            " the original bound request decides this operation "
+        };
+        frame.render_stateful_widget(
+            List::new(choices.map(ListItem::new))
+                .block(Block::default().title(title).borders(Borders::ALL))
+                .highlight_symbol("▶ ")
+                .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+            chunks[1],
+            &mut state,
+        );
     }
 }
 
 fn escaped(text: &str) -> String {
     let mut displayed = String::new();
     for character in text.chars() {
-        if character == '\\' || (character.is_control() && character != '\n')
+        if character == '\\'
+            || (character.is_control() && character != '\n')
             || matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         {
             displayed.extend(character.escape_default());
@@ -220,12 +295,16 @@ fn escaped(text: &str) -> String {
 }
 impl Drop for PrivacyApprovalModal {
     fn drop(&mut self) {
-        if self.presentation.is_some() { self.cancel(); }
+        if self.presentation.is_some() {
+            self.cancel();
+        }
     }
 }
 
 pub(super) fn key(app: &mut App, key: KeyEvent) {
-    let Some(Modal::PrivacyApproval(modal)) = app.modal.as_mut() else { return; };
+    let Some(Modal::PrivacyApproval(modal)) = app.modal.as_mut() else {
+        return;
+    };
     let mut choice = None;
     match key.code {
         KeyCode::PageDown => modal.scroll.set(modal.scroll.get().saturating_add(10)),
@@ -233,22 +312,37 @@ pub(super) fn key(app: &mut App, key: KeyEvent) {
         KeyCode::Home => modal.scroll.set(0),
         KeyCode::End => modal.scroll.set(usize::MAX),
         _ if modal.input_mode != InputMode::Review => match key.code {
-            KeyCode::Esc => { modal.input_mode = InputMode::Review; modal.scroll.set(0); }
-            KeyCode::Backspace => { if let Some(input) = modal.input_mut() { input.pop(); } }
+            KeyCode::Esc => {
+                modal.input_mode = InputMode::Review;
+                modal.scroll.set(0);
+            }
+            KeyCode::Backspace => {
+                if let Some(input) = modal.input_mut() {
+                    input.pop();
+                }
+            }
             KeyCode::Enter if modal.input_mode == InputMode::Feedback => {
                 choice = Some(HumanChoice::Deny(std::mem::take(&mut modal.feedback)));
             }
             KeyCode::F(2) if modal.input_mode == InputMode::Edit => {
                 choice = Some(HumanChoice::Edit(std::mem::take(&mut modal.edit)));
             }
-            KeyCode::Enter if modal.input_mode == InputMode::Edit && key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Enter
+                if modal.input_mode == InputMode::Edit
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 choice = Some(HumanChoice::Edit(std::mem::take(&mut modal.edit)));
             }
             KeyCode::Enter if modal.input_mode == InputMode::Edit => modal.paste("\n"),
-            KeyCode::Char(character) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-                let mut bytes = [0; 4]; modal.paste(character.encode_utf8(&mut bytes));
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let mut bytes = [0; 4];
+                modal.paste(character.encode_utf8(&mut bytes));
             }
-            _ => {},
+            _ => {}
         },
         KeyCode::Up => modal.selected = modal.selected.saturating_sub(1),
         KeyCode::Down => modal.selected = (modal.selected + 1).min(4),
@@ -257,10 +351,16 @@ pub(super) fn key(app: &mut App, key: KeyEvent) {
             0 => choice = Some(HumanChoice::Approve),
             1 => choice = Some(HumanChoice::ApproveAlways),
             2 => choice = Some(HumanChoice::Deny(String::new())),
-            3 => { modal.input_mode = InputMode::Feedback; modal.scroll.set(0); }
-            _ => { modal.input_mode = InputMode::Edit; modal.scroll.set(0); }
+            3 => {
+                modal.input_mode = InputMode::Feedback;
+                modal.scroll.set(0);
+            }
+            _ => {
+                modal.input_mode = InputMode::Edit;
+                modal.scroll.set(0);
+            }
         },
-        _ => {},
+        _ => {}
     }
     if let Some(choice) = choice {
         if let Some(Modal::PrivacyApproval(modal)) = app.modal.take() {
