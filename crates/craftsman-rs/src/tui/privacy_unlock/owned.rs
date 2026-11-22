@@ -23,6 +23,10 @@ pub enum PrivateTerminalError {
     Cleanup,
     #[error("Private terminal cleanup also failed after this entry error: {0}")]
     CleanupAfter(Box<PrivateTerminalError>),
+    #[error(
+        "Fresh private clear could not complete input handoff; the old conversation has ended and no new work started."
+    )]
+    InputHandoff,
 }
 impl std::fmt::Debug for PrivateTerminalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

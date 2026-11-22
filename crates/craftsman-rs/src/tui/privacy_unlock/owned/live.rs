@@ -1,7 +1,7 @@
 //! A fresh private terminal's real receiver/input/task owner. This is never
 //! called by a normal selector. Password acquisition has finished before this
 //! sole ordinary reader exists; active-entry password reacquisition is refused.
-use super::{PrivateTerminalError, UnixPopup};
+use super::{OwnedSecretTerminal, PrivateTerminalError, UnixPopup};
 use crate::config::Config;
 use crate::hitl::ApprovalState;
 use crate::privacy_bootstrap::{
@@ -17,8 +17,7 @@ use crate::tui::{
     session_bridge::{UiBridge, UiEvent, apply_turn_cancellation},
     terminal::copy_to_clipboard,
 };
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
-use futures_util::StreamExt;
+use crossterm::event::{Event, KeyCode, KeyEventKind};
 use std::{
     future::Future,
     pin::Pin,
@@ -29,6 +28,28 @@ use tokio::{sync::mpsc, task::JoinSet};
 
 const EVENT_BATCH: usize = 32;
 
+/// Private sole normal reader; no EventStream wake thread is created. Its
+/// poll/read calls run synchronously in the owning task and finish before the
+/// task can transfer input to a secret popup. Ordinary TUI stays unchanged.
+struct OwnedNormalInput;
+impl OwnedNormalInput {
+    async fn next(&mut self) -> Option<std::io::Result<Event>> {
+        loop {
+            match crossterm::event::poll(Duration::ZERO) {
+                Ok(true) => return Some(crossterm::event::read()),
+                Ok(false) => tokio::time::sleep(Duration::from_millis(10)).await,
+                Err(error) => return Some(Err(error)),
+            }
+        }
+    }
+}
+async fn next_normal(input: &mut Option<OwnedNormalInput>) -> Option<std::io::Result<Event>> {
+    match input {
+        Some(input) => input.next().await,
+        None => std::future::pending().await,
+    }
+}
+
 enum Returned {
     Turn(Result<craftsman_harness::TurnResult, PrivateTurnError>),
     Steer(String, Result<bool, PrivateTurnError>),
@@ -36,7 +57,7 @@ enum Returned {
 }
 
 pub(super) struct Frontend {
-    popup: UnixPopup,
+    popup: OwnedSecretTerminal,
     owner: Arc<PrivateConversation>,
     cfg: Config,
     approval: Arc<Mutex<ApprovalState>>,
@@ -46,7 +67,7 @@ pub(super) struct Frontend {
     prompt: Arc<PrivacyApprovalPrompt>,
     ui: Arc<PrivacyApprovalUi>,
     cancellation: craftsman_harness::SessionCancellation,
-    input: EventStream,
+    input: Option<OwnedNormalInput>,
     built: Option<PrivateBuiltSession>,
     work: JoinSet<Returned>,
     queued_blocked: bool,
@@ -95,7 +116,7 @@ impl Frontend {
             // owned decoder fragment survives it, and Drop may not subsequently
             // flush the ordinary reader's accepted drafts/type-ahead.
             popup.secret_reader = false;
-            let input = EventStream::new();
+            let input = OwnedNormalInput;
             Ok((cancellation, receiver, bridge, prompt, ui, input))
         })();
         let (cancellation, receiver, bridge, prompt, ui, input) = match result {
@@ -106,7 +127,7 @@ impl Frontend {
             }
         };
         Ok(Self {
-            popup,
+            popup: OwnedSecretTerminal { inner: popup },
             owner,
             app: App::new(&cfg),
             cfg,
@@ -116,7 +137,7 @@ impl Frontend {
             prompt,
             ui,
             cancellation,
-            input,
+            input: Some(input),
             built: None,
             work: JoinSet::new(),
             queued_blocked: false,
@@ -158,9 +179,9 @@ impl Frontend {
                     self.app.dirty = true;
                     return Ok(());
                 }
-                _ = self.popup.shutdown.cancellation.cancelled() => return Err(PrivateTerminalError::Cancelled),
+                _ = self.popup.inner.shutdown.cancellation.cancelled() => return Err(PrivateTerminalError::Cancelled),
                 Some(event) = self.receiver.recv() => self.events(event),
-                event = self.input.next() => {
+                event = next_normal(&mut self.input) => {
                     let Some(Ok(event)) = event else { return Err(PrivateTerminalError::Terminal); };
                     if self.input_event(event) || self.app.cancel_requested {
                         self.cancellation.cancel();
@@ -185,7 +206,7 @@ impl Frontend {
             .as_ref()
             .map(|built| built.session_for_terminal());
         draw_session(
-            &mut self.popup.terminal,
+            &mut self.popup.inner.terminal,
             &mut self.app,
             &self.cfg,
             session,
@@ -405,7 +426,7 @@ impl Frontend {
                 Ok(_) => PrivateTerminalError::Cleanup,
             });
         }
-        let cursor = self.popup.terminal.show_cursor();
+        let cursor = self.popup.inner.terminal.show_cursor();
         match result {
             Err(primary) => {
                 if cursor.is_err() {
@@ -453,6 +474,99 @@ impl Frontend {
         })
         .await
     }
+    async fn fresh_clear(&mut self) -> Result<(), PrivateTerminalError> {
+        // The actual read future has returned/dropped at the select boundary.
+        // Move its sole ownership out before cancelling/draining any old work;
+        // no normal read can run during the subsequent requested password.
+        let input = self
+            .input
+            .take()
+            .ok_or(PrivateTerminalError::InputHandoff)?;
+        let old = self.owner.clone();
+        let old_id = old.thread_id().to_owned();
+        let old_guard = old.session_guard_for_retirement();
+        let cleanup = self.retire_owners().await;
+        if !matches!(cleanup, Ok(true))
+            || self
+                .session()
+                .is_some_and(|session| session.agent.checkpoint_failed())
+        {
+            return Err(PrivateTerminalError::Cleanup);
+        }
+        if old_guard.check().is_ok() || old.check_sources().is_ok() {
+            return Err(PrivateTerminalError::InputHandoff);
+        }
+        // Retain decoded ordinary type-ahead before secret entry. These reads
+        // still belong to the moved NORMAL owner, before a password is asked.
+        // Bound this handoff; overflow refuses instead of dropping draft data.
+        let mut retained = 0;
+        while crossterm::event::poll(Duration::ZERO)
+            .map_err(|_| PrivateTerminalError::InputHandoff)?
+        {
+            if retained >= EVENT_BATCH {
+                return Err(PrivateTerminalError::InputHandoff);
+            }
+            let event = crossterm::event::read().map_err(|_| PrivateTerminalError::InputHandoff)?;
+            if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press
+                && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('c' | 'C')))
+            {
+                return Err(PrivateTerminalError::Cancelled);
+            }
+            if self.input_event(event) {
+                return Err(PrivateTerminalError::Cancelled);
+            }
+            retained += 1;
+        }
+        drop(input);
+        self.built = None; // no closed lane/client/view is used for the rebuild
+        let bootstrap = old
+            .capture_after_retirement()
+            .map_err(PrivateTerminalError::Source)?;
+        self.popup.inner.secret_reader = true;
+        self.popup
+            .inner
+            .input
+            .finish_input()
+            .map_err(|_| PrivateTerminalError::InputHandoff)?;
+        let fresh = Arc::new(
+            bootstrap
+                .unlock_private(&mut self.popup)
+                .await
+                .map_err(PrivateTerminalError::Source)?,
+        );
+        if fresh.thread_id() == old_id {
+            fresh.close();
+            return Err(PrivateTerminalError::InputHandoff);
+        }
+        fresh
+            .check_sources()
+            .map_err(PrivateTerminalError::Source)?;
+        let cancellation = self
+            .popup
+            .inner
+            .shutdown
+            .cancellation
+            .child()
+            .map_err(|_| PrivateTerminalError::Cancelled)?;
+        let (tx, receiver) = mpsc::unbounded_channel();
+        let bridge = UiBridge { tx };
+        let (prompt, ui) = privacy_approval::register(&bridge);
+        self.owner = fresh;
+        self.cancellation = cancellation;
+        self.bridge = bridge;
+        self.receiver = receiver;
+        self.prompt = prompt;
+        self.ui = ui;
+        self.app.closing = false;
+        self.app.running = false;
+        self.app.cancel_requested = false;
+        self.app.dirty = true;
+        self.popup.inner.secret_reader = false;
+        self.input = Some(OwnedNormalInput);
+        self.build_full().await?;
+        Ok(())
+    }
     async fn loop_inner(&mut self) -> Result<i32, PrivateTerminalError> {
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -462,13 +576,13 @@ impl Frontend {
                 .map_err(PrivateTerminalError::Source)?;
             tokio::select! {
                 biased;
-                _ = self.popup.shutdown.cancellation.cancelled() => return Ok(self.popup.shutdown.exit_code()),
+                _ = self.popup.inner.shutdown.cancellation.cancelled() => return Ok(self.popup.inner.shutdown.exit_code()),
                 Some(returned) = self.work.join_next() => match returned {
                     Ok(returned) => self.returned(returned),
                     Err(_) => return Err(PrivateTerminalError::Terminal),
                 },
                 Some(event) = self.receiver.recv() => self.events(event),
-                event = self.input.next() => {
+                event = next_normal(&mut self.input) => {
                     let Some(Ok(event)) = event else { return Err(PrivateTerminalError::Terminal); };
                     if self.input_event(event) { return Ok(0); }
                 }
@@ -504,6 +618,10 @@ impl Frontend {
                         .flatten()
                 });
                 if let Some((typed, queue)) = next {
+                    if typed.trim() == "/clear" {
+                        self.fresh_clear().await?;
+                        continue;
+                    }
                     if self.start(typed, queue) {
                         return Ok(0);
                     }
