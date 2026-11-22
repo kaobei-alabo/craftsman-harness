@@ -156,8 +156,15 @@ pub(crate) fn spawn_in<T: Send + 'static>(
     set: &mut tokio::task::JoinSet<T>,
     task: impl Future<Output = T> + Send + 'static,
 ) -> tokio::task::AbortHandle {
-    let erased: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(task);
-    set.spawn(erased)
+    set.spawn(erased(task))
+}
+
+/// All that [`spawn_in`] does to a task before the set has it: the same
+/// future, boxed. Awaiting it gives what the task returned.
+fn erased<T>(
+    task: impl Future<Output = T> + Send + 'static,
+) -> Pin<Box<dyn Future<Output = T> + Send + 'static>> {
+    Box::pin(task)
 }
 
 #[cfg(test)]
@@ -289,24 +296,18 @@ mod tests {
         assert!(out.ends_with('…'));
     }
 
-    async fn panics_with_the_sets_output() -> Result<u8, &'static str> {
-        panic!("fixture panic")
-    }
-
     #[tokio::test]
     async fn a_task_spawned_in_a_set_is_that_sets_own_task_with_its_own_abort_handle() {
         use tokio::sync::oneshot;
-        use tokio::task::JoinSet;
         let wait = std::time::Duration::from_secs(30);
 
         // Spawned at the call, into that set: the task runs although the set
         // has not been polled, the set counts it, and what came back is the
         // abort handle of that very task.
-        let mut set: JoinSet<Result<u8, &'static str>> = JoinSet::new();
+        let mut set = tokio::task::JoinSet::new();
         let (ran, seen) = oneshot::channel();
         let handle: tokio::task::AbortHandle = spawn_in(&mut set, async move {
             ran.send(tokio::task::id()).unwrap();
-            Ok(7)
         });
         assert_eq!(set.len(), 1);
         let inside = tokio::time::timeout(wait, seen)
@@ -314,21 +315,15 @@ mod tests {
             .expect("the task ran without a poll of its set")
             .unwrap();
         assert_eq!(inside, handle.id());
-
-        // The set gives that task's id and its own return, of its own type,
-        // an error of the task's own included.
-        let (joined, returned) = set.join_next_with_id().await.unwrap().unwrap();
+        // The set completes with that task's id and its return.
+        let (joined, ()) = set.join_next_with_id().await.unwrap().unwrap();
         assert_eq!(joined, handle.id());
-        assert_eq!(returned, Ok(7));
         assert!(handle.is_finished() && set.is_empty());
-        spawn_in(&mut set, async { Err("the task's own error") });
-        assert_eq!(
-            set.join_next().await.unwrap().unwrap(),
-            Err("the task's own error")
-        );
 
         // A panic is tokio's own join error for that task, with its payload.
-        let handle = spawn_in(&mut set, panics_with_the_sets_output());
+        let handle = spawn_in(&mut set, async {
+            panic!("fixture panic");
+        });
         let error = set.join_next().await.unwrap().unwrap_err();
         assert!(error.is_panic() && !error.is_cancelled());
         assert_eq!(error.id(), handle.id());
@@ -344,14 +339,14 @@ mod tests {
         let aborted = spawn_in(&mut set, async move {
             let _held = held;
             started.send(()).unwrap();
-            std::future::pending::<Result<u8, &'static str>>().await
+            std::future::pending::<()>().await;
         });
         let (other_held, other_released) = oneshot::channel::<()>();
         let (other_started, other_entered) = oneshot::channel();
         let kept = spawn_in(&mut set, async move {
             let _held = other_held;
             other_started.send(()).unwrap();
-            std::future::pending::<Result<u8, &'static str>>().await
+            std::future::pending::<()>().await;
         });
         entered.await.unwrap();
         other_entered.await.unwrap();
@@ -376,66 +371,57 @@ mod tests {
         assert!(kept.is_finished());
     }
 
-    #[test]
-    fn a_unit_task_on_a_supplied_handle_runs_on_that_runtime_with_its_own_join_handle() {
-        use std::sync::mpsc;
+    #[tokio::test]
+    async fn a_unit_task_on_a_supplied_handle_runs_on_that_runtime_with_its_own_join_handle() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::sync::oneshot;
         let wait = std::time::Duration::from_secs(30);
-        let runtime = |name: &str| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .thread_name(name)
-                .build()
-                .unwrap()
-        };
-        let supplied = runtime("owned-supplied-runtime");
-        let entered_elsewhere = runtime("owned-other-runtime");
+        // This test's own runtime is the one entered here. The supplied one
+        // is another, with one worker thread that carries its name.
+        let supplied = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("owned-supplied-runtime")
+            .build()
+            .unwrap();
         let handle = supplied.handle().clone();
-        let thread = || std::thread::current().name().map(str::to_owned);
+        let on_supplied = || std::thread::current().name() == Some("owned-supplied-runtime");
+        assert!(!on_supplied());
 
-        // Spawned at the call, with no runtime entered here: the task runs
-        // on the supplied runtime although its handle has not been polled,
-        // and what came back is the join handle of that very task.
-        let (ran, seen) = mpsc::channel();
+        // Spawned at the call, on the supplied runtime and not on the one
+        // that is entered: the task runs on the supplied worker although its
+        // handle has not been polled, and what came back is the join handle
+        // of that very task.
+        let there = Arc::new(AtomicBool::new(false));
+        let seen_there = there.clone();
+        let (ran, seen) = oneshot::channel();
         let join: tokio::task::JoinHandle<()> = spawn_unit_on(&handle, async move {
-            ran.send((tokio::task::id(), thread())).unwrap();
+            seen_there.store(on_supplied(), Ordering::SeqCst);
+            ran.send(tokio::task::id()).unwrap();
         });
-        let (inside, ran_on) = seen
-            .recv_timeout(wait)
-            .expect("the task ran without a poll of its handle");
+        let inside = tokio::time::timeout(wait, seen)
+            .await
+            .expect("the task ran without a poll of its handle")
+            .unwrap();
         assert_eq!(inside, join.id());
-        assert_eq!(ran_on.as_deref(), Some("owned-supplied-runtime"));
-        assert!(matches!(supplied.block_on(join), Ok(())));
-
-        // Called inside another runtime, the task still goes to the supplied
-        // one, not to the runtime that happens to be entered.
-        let join = entered_elsewhere.block_on(async {
-            let (ran, seen) = tokio::sync::oneshot::channel();
-            let join = spawn_unit_on(&handle, async move {
-                ran.send(thread()).unwrap();
-            });
-            assert_eq!(
-                seen.await.unwrap().as_deref(),
-                Some("owned-supplied-runtime")
-            );
-            join
-        });
-        assert!(matches!(supplied.block_on(join), Ok(())));
+        assert!(there.load(Ordering::SeqCst));
+        assert!(matches!(join.await, Ok(())));
 
         // A dropped handle detaches the task; it still runs to its return.
-        let (ran, seen) = mpsc::channel();
+        let (ran, seen) = oneshot::channel();
         drop(spawn_unit_on(&handle, async move {
             tokio::task::yield_now().await;
             ran.send(()).unwrap();
         }));
-        seen.recv_timeout(wait)
+        seen.await
             .expect("the task returned after its handle was dropped");
 
         // A panic is tokio's own join error and carries the panic's payload.
-        let error = supplied
-            .block_on(spawn_unit_on(&handle, async {
-                panic!("fixture panic");
-            }))
-            .unwrap_err();
+        let error = spawn_unit_on(&handle, async {
+            panic!("fixture panic");
+        })
+        .await
+        .unwrap_err();
         assert!(error.is_panic() && !error.is_cancelled());
         assert_eq!(
             error.into_panic().downcast_ref::<&str>(),
@@ -443,21 +429,34 @@ mod tests {
         );
 
         // An abort cancels the task where it waits and drops what it holds.
-        let (held, released) = mpsc::channel::<()>();
-        let (started, entered) = mpsc::channel();
+        let (held, released) = oneshot::channel::<()>();
+        let (started, entered) = oneshot::channel();
         let join = spawn_unit_on(&handle, async move {
             let _held = held;
             started.send(()).unwrap();
             std::future::pending::<()>().await;
         });
-        entered.recv_timeout(wait).unwrap();
+        entered.await.unwrap();
         assert!(!join.is_finished());
         join.abort();
-        let error = supplied.block_on(join).unwrap_err();
+        let error = join.await.unwrap_err();
         assert!(error.is_cancelled() && !error.is_panic());
+        assert!(released.await.is_err());
+        supplied.shutdown_background();
+    }
+
+    #[test]
+    fn the_boxed_future_of_a_set_task_returns_what_the_task_returned() {
+        // Boxing is all the helper does to a task. Polled as it is, with no
+        // runtime behind it, the boxed future gives the task's own value, of
+        // its own type, an error of the task's own included.
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        let mut task = erased(async { Ok::<u8, &'static str>(7) });
+        assert_eq!(task.as_mut().poll(&mut context), Poll::Ready(Ok(7)));
+        let mut task = erased(async { Err::<u8, &'static str>("the task's own error") });
         assert_eq!(
-            released.recv_timeout(wait),
-            Err(mpsc::RecvTimeoutError::Disconnected)
+            task.as_mut().poll(&mut context),
+            Poll::Ready(Err("the task's own error"))
         );
     }
 }
