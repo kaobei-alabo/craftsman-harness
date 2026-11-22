@@ -183,7 +183,7 @@ impl UiBridge {
         agent::build_session_ext(cfg, approval, "", false, false, thread_id, extras).await
     }
 
-    fn session_extras(&self) -> SessionExtras {
+    pub(super) fn session_extras(&self) -> SessionExtras {
         let round_tx = self.tx.clone();
         let token_tx = self.tx.clone();
         let activity_tx = self.tx.clone();

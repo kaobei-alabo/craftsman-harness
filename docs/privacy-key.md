@@ -137,9 +137,12 @@ silently omitted. Private clear closes the old owner and reserves a new one;
 the eventual full Agent must be rebuilt with that same new id in every lane.
 Existing 128-scope capacity and exhaustion are unchanged.
 
-Full expected-set Agent construction is unavailable. The stable B interface
-offers only a fixture permission to omit middleware and refuses native wires;
-this bootstrap never uses it as user policy or drops protected components.
+Full expected-set Agent construction is unavailable. The B340 interface now
+accepts the actual captured policy owner and permits no omission; this private
+composition implements that policy from its retained key/user-root/workspace
+owners and requests the real terminal extras. The builder currently refuses
+unsupported requested parts before effects. The captured schema grants no
+opaque-item exemption, so native opaque items also refuse conservatively.
 Normal init/status/enable and /privacy selectors, full native/mutator/HITL/
 display/file adapters, active-turn popup integration, and activation/native
 review remain pending. Reopen/transfer are unsupported; void thread setters

@@ -42,7 +42,7 @@ impl OwnedSecretTerminal {
             let first = self.inner.prompt(Prompt::Initialize).await?;
             let confirmation = self.inner.prompt(Prompt::Confirm).await?;
             self.inner
-                .work(operations.initialize(first, confirmation))
+                .work(Box::pin(operations.initialize(first, confirmation)))
                 .await
         }
         .await;
@@ -57,12 +57,71 @@ impl OwnedSecretTerminal {
         #[cfg(unix)]
         let result = async {
             let phrase = self.inner.prompt(Prompt::Unlock).await?;
-            self.inner.work(operations.unlock(phrase)).await
+            self.inner.work(Box::pin(operations.unlock(phrase))).await
         }
         .await;
         #[cfg(not(unix))]
         let result = Err(KeyError::SecureStorageUnsupported);
         finish(result, operations.close_and_wait().await)
+    }
+
+    /// Private post-unlock request using the actual UI bridge's COMPLETE normal
+    /// extras and owned cancellation scope. It omits no unsupported part; the
+    /// current shared builder refuses before effects. No normal route calls it.
+    pub async fn request_full_session(
+        &mut self,
+        owner: &std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
+        cfg: &crate::config::Config,
+        approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+    ) -> std::result::Result<
+        crate::privacy_bootstrap::PrivateBuiltSession,
+        crate::privacy_bootstrap::PrivateBuildError,
+    > {
+        #[cfg(unix)]
+        {
+            use crate::privacy_bootstrap::{BootstrapError, PrivateBuildError};
+            self.inner
+                .check()
+                .map_err(|error| PrivateBuildError::Source(BootstrapError::Key(error)))?;
+            owner.check_sources().map_err(PrivateBuildError::Source)?;
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let bridge = crate::tui::session_bridge::UiBridge { tx };
+            let mut extras = bridge.session_extras();
+            extras.cancellation_session = Some(
+                self.inner
+                    .shutdown
+                    .cancellation
+                    .child()
+                    .map_err(|_| PrivateBuildError::Unavailable)?,
+            );
+            self.inner.ui_events = Some(rx);
+            let result = owner.request_full_session(cfg, approval, extras).await;
+            if result.is_err() {
+                self.inner.ui_events = None;
+            }
+            result
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (owner, cfg, approval);
+            Err(crate::privacy_bootstrap::PrivateBuildError::Source(
+                crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported),
+            ))
+        }
+    }
+
+    pub fn pending_ui_events(&self) -> usize {
+        #[cfg(unix)]
+        {
+            self.inner
+                .ui_events
+                .as_ref()
+                .map_or(0, |events| events.len())
+        }
+        #[cfg(not(unix))]
+        {
+            0
+        }
     }
 }
 
@@ -126,6 +185,7 @@ struct UnixPopup {
     guard: TerminalGuard,
     panic: PanicHookGuard,
     shutdown: Shutdown,
+    ui_events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::session_bridge::UiEvent>>,
 }
 
 #[cfg(unix)]
@@ -148,6 +208,7 @@ impl UnixPopup {
             guard,
             panic,
             shutdown,
+            ui_events: None,
         })
     }
 
@@ -218,7 +279,9 @@ impl UnixPopup {
 
     async fn work(
         &mut self,
-        operation: impl std::future::Future<Output = Result<UnlockedVault>>,
+        mut operation: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<UnlockedVault>> + '_>,
+        >,
     ) -> Result<UnlockedVault> {
         self.terminal
             .draw(|frame| {
@@ -228,7 +291,6 @@ impl UnixPopup {
                 );
             })
             .map_err(|_| KeyError::Terminal)?;
-        tokio::pin!(operation);
         loop {
             tokio::select! {
                 biased;

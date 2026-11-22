@@ -17,8 +17,8 @@ Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under
 PR #32. The PR head and the separate run on the merged main each passed all
 four hosted contexts in both native modes.
-Normal Craftsman sessions do not select this hook yet. Actual key ownership,
-required-hook policy and model/file integration remain open. Existing gadget
+Normal Craftsman sessions do not select this hook yet. Public key selection,
+required-hook enforcement and display/file integration remain open. Existing gadget
 grants and permissions remain in force.
 
 A private [detector contract and admission core](privacy-admission.md) now

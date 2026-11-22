@@ -25,6 +25,18 @@ const COMPLETE: &str = "PRIVATE-KEY-UI:COMPLETE";
 const LIMIT: Duration = Duration::from_secs(60);
 const CAPTURE: usize = 1024 * 1024;
 
+// One runtime/block_on implementation for new fixture futures. Type erasure
+// avoids duplicating its generic runtime scaffolding in the app test binary;
+// it changes no existing test, deadline, compiler option or limit.
+fn run_owned(future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("owned secret fixture runtime")
+        .block_on(future);
+}
+
 #[derive(Clone, Copy)]
 enum Case {
     Init,
@@ -82,12 +94,16 @@ impl Case {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[test]
 #[ignore = "owned secret PTY; exact registered argv marker required before env/config/stdin"]
-async fn private_key_ui_fixture() {
+fn private_key_ui_fixture() {
     let Some(case) = Case::selected(std::env::args_os()) else {
         return;
     };
+    run_owned(Box::pin(private_key_ui_child(case)));
+}
+
+async fn private_key_ui_child(case: Case) {
     // Every environment, path, configuration and terminal access is AFTER the
     // complete marker decision. Unmarked/unknown/duplicate startup is inert.
     let config = crate::config::config_dir();
@@ -211,6 +227,32 @@ async fn private_key_ui_fixture() {
                             .replacements(),
                         2
                     );
+                    let conversation = Arc::new(conversation);
+                    let selection = conversation.selection().unwrap();
+                    assert!(selection.report().refusal().is_none());
+                    use crate::privacy_session::CapturedUserPolicy;
+                    assert!(conversation.requires_inspectable_provider_items());
+                    assert!(!conversation.enables_privacy_in(&"0".repeat(64)));
+                    let server = wiremock::MockServer::start().await;
+                    let cfg=serde_json::from_value(serde_json::json!({
+                        "base_url":server.uri(),"api_key":"fixture-key","model":"fixture-model",
+                        "voice":{"enabled":false},"gadgets":{"enabled":false},"mcp_servers":[],"lsp_servers":{}
+                    })).unwrap();
+                    assert!(matches!(
+                        terminal
+                            .request_full_session(
+                                &conversation,
+                                &cfg,
+                                Arc::new(Mutex::new(crate::hitl::ApprovalState::default()))
+                            )
+                            .await,
+                        Err(crate::privacy_bootstrap::PrivateBuildError::Refused(
+                            crate::privacy_session::BuildRefusal::RequestedPart
+                        ))
+                    ));
+                    assert!(server.received_requests().await.unwrap().is_empty());
+                    assert_eq!(terminal.pending_ui_events(), 0);
+                    assert!(conversation.check_sources().is_ok());
                     conversation.close_before_rebind();
                     assert!(conversation.check_sources().is_err());
                 }
@@ -257,7 +299,9 @@ async fn ordinary_builder_without_password(workspace: &Path) {
         "mcp_servers":[],"lsp_servers":{}
     }))
     .unwrap();
-    let session = build_session_ext(
+    let build: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<crate::agent::Session>> + '_>,
+    > = Box::pin(build_session_ext(
         &cfg,
         Arc::new(Mutex::new(crate::hitl::ApprovalState::default())),
         "",
@@ -270,9 +314,10 @@ async fn ordinary_builder_without_password(workspace: &Path) {
             activity_sink: Some(Arc::new(|_| {})),
             ..Default::default()
         },
-    )
-    .await
-    .expect("the unchanged full ordinary builder constructs");
+    ));
+    let session = build
+        .await
+        .expect("the unchanged full ordinary builder constructs");
     assert!(session.privacy_view.is_none() && session.send_guard.is_none());
     let result = session
         .agent
@@ -756,7 +801,8 @@ impl Pty {
                 "output_base64":base64::engine::general_purpose::STANDARD.encode(&bytes),
                 "entry_modes":entry,"restored_modes":restored,
                 "terminal_read_end":end,"capture_complete_until_owned_terminal_close":true,
-                "all_mode_fields_match":true,"echo_before_input":false,
+                "mode_fields_match_under_documented_mask":true,
+                "excluded_local_bits":!local_mask,"echo_before_input":false,
                 "actual_child_exit":status.code(),
             })
         );
@@ -775,158 +821,166 @@ async fn initialize(home: &Home) {
     pty.finish().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn owned_pty_real_confirmation_nfc_key_existing_unlock_and_shared_builder_secret_isolation() {
-    let home = Home::new();
-    initialize(&home).await;
-    let original = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
-    assert_eq!(original.len(), ENVELOPE_BYTES);
-    for case in [Case::Unlock, Case::Builder] {
-        let mut pty = Pty::start(&home, case);
+#[test]
+fn owned_pty_real_confirmation_nfc_key_existing_unlock_and_shared_builder_secret_isolation() {
+    run_owned(Box::pin(async {
+        let home = Home::new();
+        initialize(&home).await;
+        let original = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        assert_eq!(original.len(), ENVELOPE_BYTES);
+        for case in [Case::Unlock, Case::Builder] {
+            let mut pty = Pty::start(&home, case);
+            pty.expect("Unlock private privacy key").await;
+            pty.send(format!("{SECRET}\r").as_bytes()).await;
+            pty.finish().await;
+            assert_eq!(
+                std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+                original
+            );
+        }
+        absent_secrets(&home.config);
+    }));
+}
+
+#[test]
+fn owned_popup_escape_control_c_signal_and_mismatch_never_create_or_submit_a_draft() {
+    run_owned(Box::pin(async {
+        for input in [b"\x1b".as_slice(), b"\x03".as_slice()] {
+            let home = Home::new();
+            let mut pty = Pty::start(&home, Case::Cancel);
+            pty.expect("Initialize private privacy key").await;
+            pty.send(SECRET.as_bytes()).await;
+            pty.send(input).await;
+            pty.finish().await;
+        }
+        let home = Home::new();
+        let mut pty = Pty::start(&home, Case::Cancel);
+        pty.expect("Initialize private privacy key").await;
+        pty.send(SECRET.as_bytes()).await;
+        assert_eq!(
+            unsafe { libc::kill(pty.child.id().unwrap() as i32, libc::SIGTERM) },
+            0
+        );
+        pty.finish().await;
+        let home = Home::new();
+        let mut pty = Pty::start(&home, Case::Mismatch);
+        pty.expect("Initialize private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("Confirm private passphrase").await;
+        pty.send(format!("{WRONG}\r").as_bytes()).await;
+        pty.finish().await;
+    }));
+}
+
+#[test]
+fn actual_wrong_password_and_create_only_partial_files_have_no_recovery_or_opt_out() {
+    run_owned(Box::pin(async {
+        let home = Home::new();
+        initialize(&home).await;
+        let before = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        let mut pty = Pty::start(&home, Case::Wrong);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{WRONG}\r").as_bytes()).await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+            before
+        );
+        let home = Home::new();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(home.config.join("privacy-vault.db-journal"))
+            .unwrap();
+        file.write_all(b"foreign partial fixture").unwrap();
+        let mut pty = Pty::start(&home, Case::PartialInit);
+        pty.expect("Initialize private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("Confirm private passphrase").await;
+        pty.send(format!("{CONFIRMATION}\r").as_bytes()).await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("privacy-vault.db-journal")).unwrap(),
+            b"foreign partial fixture"
+        );
+        assert!(!home.config.join("privacy-key.v1").exists());
+        let home = Home::new();
+        initialize(&home).await;
+        let envelope = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        std::fs::remove_file(home.config.join("privacy-vault.db")).unwrap();
+        let mut pty = Pty::start(&home, Case::MissingExisting);
         pty.expect("Unlock private privacy key").await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.finish().await;
         assert_eq!(
             std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
-            original
+            envelope
         );
-    }
-    absent_secrets(&home.config);
+        assert!(!home.config.join("privacy-vault.db").exists());
+    }));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn owned_popup_escape_control_c_signal_and_mismatch_never_create_or_submit_a_draft() {
-    for input in [b"\x1b".as_slice(), b"\x03".as_slice()] {
+#[test]
+fn unmarked_unknown_and_duplicate_markers_return_before_poisoned_config_or_stdin() {
+    run_owned(Box::pin(async {
+        use tokio::io::AsyncReadExt;
         let home = Home::new();
-        let mut pty = Pty::start(&home, Case::Cancel);
-        pty.expect("Initialize private privacy key").await;
-        pty.send(SECRET.as_bytes()).await;
-        pty.send(input).await;
-        pty.finish().await;
-    }
-    let home = Home::new();
-    let mut pty = Pty::start(&home, Case::Cancel);
-    pty.expect("Initialize private privacy key").await;
-    pty.send(SECRET.as_bytes()).await;
-    assert_eq!(
-        unsafe { libc::kill(pty.child.id().unwrap() as i32, libc::SIGTERM) },
-        0
-    );
-    pty.finish().await;
-    let home = Home::new();
-    let mut pty = Pty::start(&home, Case::Mismatch);
-    pty.expect("Initialize private privacy key").await;
-    pty.send(format!("{SECRET}\r").as_bytes()).await;
-    pty.expect("Confirm private passphrase").await;
-    pty.send(format!("{WRONG}\r").as_bytes()).await;
-    pty.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn actual_wrong_password_and_create_only_partial_files_have_no_recovery_or_opt_out() {
-    let home = Home::new();
-    initialize(&home).await;
-    let before = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
-    let mut pty = Pty::start(&home, Case::Wrong);
-    pty.expect("Unlock private privacy key").await;
-    pty.send(format!("{WRONG}\r").as_bytes()).await;
-    pty.finish().await;
-    assert_eq!(
-        std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
-        before
-    );
-    let home = Home::new();
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(home.config.join("privacy-vault.db-journal"))
-        .unwrap();
-    file.write_all(b"foreign partial fixture").unwrap();
-    let mut pty = Pty::start(&home, Case::PartialInit);
-    pty.expect("Initialize private privacy key").await;
-    pty.send(format!("{SECRET}\r").as_bytes()).await;
-    pty.expect("Confirm private passphrase").await;
-    pty.send(format!("{CONFIRMATION}\r").as_bytes()).await;
-    pty.finish().await;
-    assert_eq!(
-        std::fs::read(home.config.join("privacy-vault.db-journal")).unwrap(),
-        b"foreign partial fixture"
-    );
-    assert!(!home.config.join("privacy-key.v1").exists());
-    let home = Home::new();
-    initialize(&home).await;
-    let envelope = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
-    std::fs::remove_file(home.config.join("privacy-vault.db")).unwrap();
-    let mut pty = Pty::start(&home, Case::MissingExisting);
-    pty.expect("Unlock private privacy key").await;
-    pty.send(format!("{SECRET}\r").as_bytes()).await;
-    pty.finish().await;
-    assert_eq!(
-        std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
-        envelope
-    );
-    assert!(!home.config.join("privacy-vault.db").exists());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unmarked_unknown_and_duplicate_markers_return_before_poisoned_config_or_stdin() {
-    use tokio::io::AsyncReadExt;
-    let home = Home::new();
-    let bad = home.root.join("missing-config");
-    for markers in [
-        vec![],
-        vec![std::ffi::OsString::from(format!("{MARKER}unknown"))],
-        vec![std::ffi::OsString::from(format!("{MARKER}init")); 2],
-    ] {
-        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args([
-                "--ignored",
-                "--exact",
-                HELPER,
-                "--test-threads=1",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("CRAFTSMAN_CONFIG_DIR", &bad)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        for marker in markers {
-            command.arg("--skip").arg(marker);
+        let bad = home.root.join("missing-config");
+        for markers in [
+            vec![],
+            vec![std::ffi::OsString::from(format!("{MARKER}unknown"))],
+            vec![std::ffi::OsString::from(format!("{MARKER}init")); 2],
+        ] {
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--ignored",
+                    "--exact",
+                    HELPER,
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("CRAFTSMAN_CONFIG_DIR", &bad)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            for marker in markers {
+                command.arg("--skip").arg(marker);
+            }
+            let mut child = command.spawn().unwrap();
+            // Keep stdin open and empty: a read would wait and fail this bound.
+            let _stdin = child.stdin.take().unwrap();
+            let out = child.stdout.take().unwrap();
+            let err = child.stderr.take().unwrap();
+            let stdout = tokio::spawn(async move {
+                let mut b = Vec::new();
+                out.take(65537).read_to_end(&mut b).await.unwrap();
+                b
+            });
+            let stderr = tokio::spawn(async move {
+                let mut b = Vec::new();
+                err.take(65537).read_to_end(&mut b).await.unwrap();
+                b
+            });
+            assert!(
+                tokio::time::timeout(Duration::from_secs(10), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+            let bytes = [stdout.await.unwrap(), stderr.await.unwrap()].concat();
+            assert!(
+                !bytes
+                    .windows(COMPLETE.len())
+                    .any(|w| w == COMPLETE.as_bytes())
+            );
+            assert!(!bad.exists());
         }
-        let mut child = command.spawn().unwrap();
-        // Keep stdin open and empty: a read would wait and fail this bound.
-        let _stdin = child.stdin.take().unwrap();
-        let out = child.stdout.take().unwrap();
-        let err = child.stderr.take().unwrap();
-        let stdout = tokio::spawn(async move {
-            let mut b = Vec::new();
-            out.take(65537).read_to_end(&mut b).await.unwrap();
-            b
-        });
-        let stderr = tokio::spawn(async move {
-            let mut b = Vec::new();
-            err.take(65537).read_to_end(&mut b).await.unwrap();
-            b
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_secs(10), child.wait())
-                .await
-                .unwrap()
-                .unwrap()
-                .success()
-        );
-        let bytes = [stdout.await.unwrap(), stderr.await.unwrap()].concat();
-        assert!(
-            !bytes
-                .windows(COMPLETE.len())
-                .any(|w| w == COMPLETE.as_bytes())
-        );
-        assert!(!bad.exists());
-    }
+    }));
 }
 
 #[test]
@@ -940,121 +994,124 @@ fn marker_parser_counts_a_malformed_registered_companion_before_decoding() {
 }
 
 #[cfg(feature = "gadgets")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn real_password_pinned_source_policy_vault_commits_and_new_clear_owner_without_reduced_agent()
- {
-    use crate::gadgets::{GadgetRuntime, RuntimeOptions};
-    use sha2::{Digest, Sha256};
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/privacy-detector");
-    let home = Home::new();
-    let target = home.root.join("source-build");
-    let output = tokio::time::timeout(
-        Duration::from_secs(120),
-        tokio::process::Command::new(env!("CARGO"))
-            .args([
-                "build",
-                "--offline",
-                "--locked",
-                "--release",
-                "--target",
-                "wasm32-wasip2",
-                "--manifest-path",
-            ])
-            .arg(source.join("Cargo.toml"))
-            .arg("--target-dir")
-            .arg(&target)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "the owned pinned detector source build must pass"
-    );
-    assert!(output.stdout.len() + output.stderr.len() <= 65536);
-    eprintln!(
-        "PRIVATE-KEY-SOURCE-BUILD:{}",
-        base64::engine::general_purpose::STANDARD.encode([output.stdout, output.stderr].concat())
-    );
-    let image =
-        std::fs::read(target.join("wasm32-wasip2/release/privacy_detector_fixture.wasm")).unwrap();
-    let manifest = std::fs::read(source.join("gadget.toml")).unwrap();
-    let bundle = home.config.join("gadgets/privacy-detector");
-    std::fs::create_dir_all(&bundle).unwrap();
-    for (name, bytes) in [
-        ("gadget.wasm", image.as_slice()),
-        ("gadget.toml", manifest.as_slice()),
-    ] {
+#[test]
+fn real_password_pinned_source_policy_vault_commits_and_new_clear_owner_without_reduced_agent() {
+    run_owned(Box::pin(async {
+        use crate::gadgets::{GadgetRuntime, RuntimeOptions};
+        use sha2::{Digest, Sha256};
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/privacy-detector");
+        let home = Home::new();
+        let target = home.root.join("source-build");
+        let output = tokio::time::timeout(
+            Duration::from_secs(120),
+            tokio::process::Command::new(env!("CARGO"))
+                .args([
+                    "build",
+                    "--offline",
+                    "--locked",
+                    "--release",
+                    "--target",
+                    "wasm32-wasip2",
+                    "--manifest-path",
+                ])
+                .arg(source.join("Cargo.toml"))
+                .arg("--target-dir")
+                .arg(&target)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "the owned pinned detector source build must pass"
+        );
+        assert!(output.stdout.len() + output.stderr.len() <= 65536);
+        eprintln!(
+            "PRIVATE-KEY-SOURCE-BUILD:{}",
+            base64::engine::general_purpose::STANDARD
+                .encode([output.stdout, output.stderr].concat())
+        );
+        let image =
+            std::fs::read(target.join("wasm32-wasip2/release/privacy_detector_fixture.wasm"))
+                .unwrap();
+        let manifest = std::fs::read(source.join("gadget.toml")).unwrap();
+        let bundle = home.config.join("gadgets/privacy-detector");
+        std::fs::create_dir_all(&bundle).unwrap();
+        for (name, bytes) in [
+            ("gadget.wasm", image.as_slice()),
+            ("gadget.toml", manifest.as_slice()),
+        ] {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(bundle.join(name))
+                .unwrap();
+            file.write_all(bytes).unwrap();
+        }
+        let image_hash = format!("{:x}", Sha256::digest(&image));
+        let manifest_hash = format!("{:x}", Sha256::digest(&manifest));
+        let user=serde_json::to_vec(&serde_json::json!({"privacy":{"enabled":true,"detector":{
+        "gadget":"privacy-detector","function":"detect","component_sha256":image_hash,"manifest_sha256":manifest_hash
+    }}})).unwrap();
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(bundle.join(name))
+            .open(home.config.join("config.json"))
             .unwrap();
-        file.write_all(bytes).unwrap();
-    }
-    let image_hash = format!("{:x}", Sha256::digest(&image));
-    let manifest_hash = format!("{:x}", Sha256::digest(&manifest));
-    let user=serde_json::to_vec(&serde_json::json!({"privacy":{"enabled":true,"detector":{
-        "gadget":"privacy-detector","function":"detect","component_sha256":image_hash,"manifest_sha256":manifest_hash
-    }}})).unwrap();
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(home.config.join("config.json"))
-        .unwrap();
-    file.write_all(&user).unwrap();
-    initialize(&home).await;
-    // Pin data alone does not approve anything: actual first input is refused.
-    let mut pty = Pty::start(&home, Case::Unapproved);
-    pty.expect("Unlock private privacy key").await;
-    pty.send(format!("{SECRET}\r").as_bytes()).await;
-    pty.finish().await;
-    // Use the actual existing source/capability approval path and grant writer,
-    // not caller JSON, a hash label, allow-list or privacy fixture Boolean.
-    let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let observed = decisions.clone();
-    let approved_path = bundle.canonicalize().unwrap().display().to_string();
-    let approved_hash = image_hash.clone();
-    let runtime = GadgetRuntime::new(
-        &home.workspace,
-        &home.config,
-        RuntimeOptions {
-            interactive: true,
-            disk_cache: false,
-            prompt: Some(Arc::new(move |tool, summary, details| {
-                assert_eq!(tool, "gadget_call");
-                assert!(summary.contains("privacy-detector"));
-                assert!(details.contains(&approved_path) && details.contains(&approved_hash));
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                crate::agent::ApprovalPromptResult::Approve
-            })),
-            ..RuntimeOptions::default()
-        },
-    )
-    .unwrap();
-    runtime
-        .call(
-            "privacy-detector",
-            "detect",
-            crate::privacy_hook::Request::from_text(
-                "中文 typed alice@example.invalid and +886 912 345 678.",
-            )
-            .unwrap()
-            .to_json(),
+        file.write_all(&user).unwrap();
+        initialize(&home).await;
+        // Pin data alone does not approve anything: actual first input is refused.
+        let mut pty = Pty::start(&home, Case::Unapproved);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.finish().await;
+        // Use the actual existing source/capability approval path and grant writer,
+        // not caller JSON, a hash label, allow-list or privacy fixture Boolean.
+        let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = decisions.clone();
+        let approved_path = bundle.canonicalize().unwrap().display().to_string();
+        let approved_hash = image_hash.clone();
+        let runtime = GadgetRuntime::new(
+            &home.workspace,
+            &home.config,
+            RuntimeOptions {
+                interactive: true,
+                disk_cache: false,
+                prompt: Some(Arc::new(move |tool, summary, details| {
+                    assert_eq!(tool, "gadget_call");
+                    assert!(summary.contains("privacy-detector"));
+                    assert!(details.contains(&approved_path) && details.contains(&approved_hash));
+                    observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    crate::agent::ApprovalPromptResult::Approve
+                })),
+                ..RuntimeOptions::default()
+            },
         )
-        .await
         .unwrap();
-    assert_eq!(decisions.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(home.config.join("gadgets/.grants.json").is_file());
-    drop(runtime);
-    // The genuine temp user-root approval now precedes describe/execution.
-    let mut pty = Pty::start(&home, Case::Conversation);
-    pty.expect("Unlock private privacy key").await;
-    pty.send(format!("{SECRET}\r").as_bytes()).await;
-    pty.finish().await;
-    absent_secrets(&home.config);
+        runtime
+            .call(
+                "privacy-detector",
+                "detect",
+                crate::privacy_hook::Request::from_text(
+                    "中文 typed alice@example.invalid and +886 912 345 678.",
+                )
+                .unwrap()
+                .to_json(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decisions.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(home.config.join("gadgets/.grants.json").is_file());
+        drop(runtime);
+        // The genuine temp user-root approval now precedes describe/execution.
+        let mut pty = Pty::start(&home, Case::Conversation);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.finish().await;
+        absent_secrets(&home.config);
+    }));
 }

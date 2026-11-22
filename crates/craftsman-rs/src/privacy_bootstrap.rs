@@ -5,8 +5,8 @@ use crate::privacy_cli::{FilePresence, PrivateKeyOperations};
 use crate::privacy_key::{ConfigRoot, KeyError, UnlockedVault};
 use crate::privacy_policy::{CapturedPolicy, PolicyError};
 use crate::privacy_session::{
-    AdmitError, AdmittedNode, CapturedRaw, FreshConversationBinding, PrivacySession, RawOrigin,
-    SessionStop,
+    AdmitError, AdmittedNode, BuildRefusal, CapturedRaw, CapturedUserPolicy,
+    FreshConversationBinding, PrivacySession, PrivacyViewSelection, RawOrigin, SessionStop,
 };
 use crate::tui::privacy_unlock::OwnedSecretTerminal;
 use std::path::{Path, PathBuf};
@@ -322,6 +322,157 @@ impl PrivateConversation {
     }
     pub fn close_before_rebind(&self) {
         self.session.stop();
+    }
+
+    /// The policy implementation is this actual captured owner, not a host
+    /// flag, string, arbitrary trait answer or fixture supported-set permission.
+    pub fn selection(self: &Arc<Self>) -> std::result::Result<PrivacyViewSelection, BuildRefusal> {
+        PrivacyViewSelection::from_user_policy(self.clone(), self.session.clone())
+    }
+
+    /// Requests the SAME shared builder with real frontend extras. Unsupported
+    /// paths are reported by that builder; no field/part is silently turned off.
+    /// A successful future build retains these owners beside its real Session.
+    #[cfg(unix)]
+    pub(crate) async fn request_full_session(
+        self: &Arc<Self>,
+        cfg: &crate::config::Config,
+        approval: Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+        mut extras: crate::agent::SessionExtras,
+    ) -> std::result::Result<PrivateBuiltSession, PrivateBuildError> {
+        self.check_sources().map_err(PrivateBuildError::Source)?;
+        if extras.privacy_view.is_some() || extras.send_guard.is_some() {
+            return Err(PrivateBuildError::Refused(BuildRefusal::NotFresh));
+        }
+        if let Some(root) = &extras.workspace_root
+            && std::fs::canonicalize(root).ok().as_ref() != Some(&self.workspace.canonical)
+        {
+            return Err(PrivateBuildError::Source(BootstrapError::Workspace));
+        }
+        extras.workspace_root = Some(self.workspace.canonical.clone());
+        let selection = self.selection().map_err(PrivateBuildError::Refused)?;
+        let report = selection.report();
+        extras.privacy_view = Some(selection);
+        // Keep the shared builder's large future owned in one allocation.
+        // Erasing its concrete type avoids duplicating its runtime/drop graph
+        // in this caller; it changes no decision, ordering or cancellation.
+        let build: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<crate::agent::Session>> + '_>,
+        > = Box::pin(crate::agent::build_session_ext(
+            cfg, approval, "", false, false, None, extras,
+        ));
+        let built = build.await;
+        let Some(session) = built else {
+            return Err(match report.refusal() {
+                Some(refusal) => PrivateBuildError::Refused(refusal),
+                None => PrivateBuildError::Unavailable,
+            });
+        };
+        // The caller cannot substitute a thread/guard or lose the actual owner
+        // while returning a live Agent. Reopen/transfer APIs are not exposed.
+        let bound = session.thread_id == self.thread_id()
+            && session
+                .privacy_view
+                .as_ref()
+                .is_some_and(|view| Arc::ptr_eq(view.session(), &self.session))
+            && session
+                .send_guard
+                .as_ref()
+                .is_some_and(|guard| Arc::ptr_eq(guard, &self.session.send_guard()));
+        if !bound {
+            self.session.stop();
+            return Err(PrivateBuildError::Unavailable);
+        }
+        self.check_sources().map_err(PrivateBuildError::Source)?;
+        Ok(PrivateBuiltSession {
+            session,
+            owner: self.clone(),
+        })
+    }
+}
+
+impl CapturedUserPolicy for PrivateConversation {
+    fn enables_privacy_in(&self, workspace_sha256: &str) -> bool {
+        workspace_sha256 == self.session.workspace_sha256()
+            && self.check_sources().is_ok()
+            && matches!(self.policy.proposed_detector(), Ok(Some(_)))
+    }
+    fn requires_inspectable_provider_items(&self) -> bool {
+        // The captured schema currently grants no opaque-item exemption.
+        // Keep this conservative requirement; never manufacture permission to
+        // accept opaque items from a fixture flag or a transport's name.
+        true
+    }
+}
+
+#[derive(Clone, thiserror::Error)]
+pub enum PrivateBuildError {
+    #[error("The full private terminal session was refused.")]
+    Refused(BuildRefusal),
+    #[error("The private terminal session source owner stopped.")]
+    Source(BootstrapError),
+    #[error("The full private terminal session is unavailable.")]
+    Unavailable,
+}
+impl std::fmt::Debug for PrivateBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrivatePrivacyBuildError([fixed])")
+    }
+}
+
+/// Holds the key/policy owner through the real session's lifetime, including
+/// every shared lane. Currently unreachable: the full source paths refuse.
+pub struct PrivateBuiltSession {
+    session: crate::agent::Session,
+    owner: Arc<PrivateConversation>,
+}
+
+#[derive(thiserror::Error)]
+pub enum PrivateTurnError {
+    #[error("The private terminal source owner stopped before this input.")]
+    Source(BootstrapError),
+    #[error("The private terminal entry did not finish successfully.")]
+    Entry(crate::privacy_entry::PrivateEntryError),
+}
+impl std::fmt::Debug for PrivateTurnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrivatePrivacyTurnError([fixed])")
+    }
+}
+impl std::fmt::Debug for PrivateBuiltSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrivateBuiltPrivacySession([private])")
+    }
+}
+impl PrivateBuiltSession {
+    pub fn thread_id(&self) -> &str {
+        &self.session.thread_id
+    }
+    pub async fn turn(
+        &self,
+        typed: &str,
+    ) -> std::result::Result<craftsman_harness::TurnResult, PrivateTurnError> {
+        self.owner
+            .check_sources()
+            .map_err(PrivateTurnError::Source)?;
+        let view = self
+            .session
+            .privacy_view
+            .as_ref()
+            .ok_or(PrivateTurnError::Source(BootstrapError::Session(
+                SessionStop::Closed,
+            )))?;
+        view.turn(&self.session.agent, typed)
+            .await
+            .map_err(PrivateTurnError::Entry)
+    }
+    pub fn close(&self) {
+        self.owner.close_before_rebind();
+    }
+}
+impl Drop for PrivateBuiltSession {
+    fn drop(&mut self) {
+        self.owner.close_before_rebind();
     }
 }
 impl Drop for PrivateConversation {

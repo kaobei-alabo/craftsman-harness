@@ -86,7 +86,7 @@ this is not a continuous external-writer lease or an OS race-proof guarantee.
 A private clear closes the old scope before reserving and opening a new one.
 It does not raise the 128-scope ceiling, prune, reopen, transfer or replay.
 
-The stable B575 admission interface masks with DeclaredIdentifiers::none(). A
+The stable B340 admission interface masks with DeclaredIdentifiers::none(). A
 nonempty actual user identifier policy therefore refuses before unlock; it is
 never quietly narrowed. The feature-off composition also refuses a detector
 selection; standalone private key initialization/unlock remains typechecked
@@ -94,17 +94,25 @@ and available only through the owned private operation.
 
 ## Full Agent construction remains unavailable
 
-B575's selection is a bare fixture statement permitting a limited set. Its
-builder removes middleware that does not declare source support, including
-protected call repair and checkpoints, and refuses the three native wires.
-This bootstrap does not use that statement as production policy, omit expected
-components or fabricate a successful Agent. The full-selection interface must
-consume and retain the actual captured policy/key/conversation owner, use its
-same reserved id for Agent/checkpointer and every lane, preserve mandatory
-component/transport/source capability checks, and refuse before effects while
-any required adapter is missing.
+B340 replaces B575's bare permission with CapturedUserPolicy and a real
+full-set selection. PrivateConversation implements that interface from its
+actual retained key/user-policy owner and matching reserved workspace digest,
+rechecking real source liveness. No arbitrary trait answer or fixture permission
+is used. The captured schema grants no opaque-item exemption, so the private
+policy conservatively requires inspectable provider items; an opaque native
+wire refuses rather than being called safe or downgraded to Chat.
 
-Typed PrivacyView turn/steer/decide, the actual accepted human input/decision
+The owned popup requests the shared builder with the actual UiBridge's complete
+ordinary terminal extras, its real cancellation child and the same reserved
+conversation. It turns no feature off to get a build. Current terminal extras
+receive the builder's actual RequestedPart refusal before effects; other full
+extras can report missing source paths. These are genuine refusals, not an
+Agent or successful activation. A future successful return would retain the
+key/policy owner beside the real Session, verify identical thread/view/guard
+ownership and use the typed PrivacyView turn entry. Such a return is currently
+unavailable for the expected full terminal feature set.
+
+Actual PrivacyView turn/steer/decide integration and accepted human input/decision
 producers, native signed items, tracked mutators, compaction/delegation,
 checkpoints, HITL, display and file restoration remain integration work. An
 eventual terminal /clear requires a new owner and full build; an old void setter
@@ -117,14 +125,21 @@ The new fixtures use exact argv-marked native PTYs, private temporary roots,
 synthetic passwords, real KDF/envelope/vault IO, and an approved source-built
 WASM detector. A separate full ordinary builder/loopback/checkpoint control
 after successful popup acquisition checks password isolation with privacy
-unselected; it is not full-set selected-bootstrap coverage. Unmarked/unknown/
+unselected; it is not full-set selected-bootstrap coverage. The WASM composition
+also exercises the captured-policy full-builder refusal. Unmarked/unknown/
 duplicate helper startup returns before environment/config/stdin. Restricted
 private MAIN callback/budget/interleaving probes remain uninspected/unexecuted.
 
+Only the new fixture runtime wrappers and private KDF wait are type-erased to
+avoid duplicating generic runtime code in the large native test binary. This
+changes no existing test, compiler flag, dependency, warning setting or bound.
+First fixture/interface/format failures and linker warnings are retained.
+
 This key/B union has no hosted or Linux/Windows validation. The independently
 validated installed guard main a903 and its separate main run cover that
-earlier source only. Full local verification on the final union, source/native
-review, all four hosted jobs and a separate merged-main proof remain required
+earlier source only. Local verification records its exact head in the new
+ignored report; source/native review, all four hosted jobs and a separate
+merged-main proof remain required
 before public delivery. The same $24.285934/$25 ledger with 40 unknowns, SDK/WIT,
 dependencies/pins/lock, SQL/schema/frames/goldens, native permissions/limits and
 binary/container publication hold remain unchanged.
