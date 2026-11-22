@@ -2158,3 +2158,5 @@ async fn supported_json_replace_all_keeps_every_actual_value_and_unchanged_docum
     assert!(!result_at(&f.agent, 2).1);
     nothing_original_sent(&server).await;
 }
+#[path = "inline_release_tests.rs"]
+mod inline_release;

@@ -44,9 +44,10 @@ use super::view::{
 };
 use super::{CapturedUserPolicy, Inner, PrivacySession, SessionStop};
 use crate::privacy_restore::{FileDataFormat, RestoreError, Restored, Restorer, file_candidate};
+#[cfg(test)]
+use craftsman_harness::provenance::ActualParkedCall;
 use craftsman_harness::provenance::{
-    ActualParkedCall, ActualPlannedInvocation, ActualToolInvocation, OutcomePart, SourceRef,
-    TrackedDispatch,
+    ActualPlannedInvocation, ActualToolInvocation, OutcomePart, SourceRef, TrackedDispatch,
 };
 use craftsman_harness::{AgentError, HitlAction, Tool, ToolCall, ToolCtx, ToolDef, ToolOutcome};
 use sha2::{Digest, Sha256};
