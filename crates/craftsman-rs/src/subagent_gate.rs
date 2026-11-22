@@ -92,8 +92,32 @@ impl Tool for SubagentGate {
     }
 
     async fn call(&self, args: Value, ctx: &mut ToolCtx<'_>) -> Result<ToolOutcome, AgentError> {
+        self.call_tracked(args, ctx, None).await
+    }
+
+    /// The same decision and the same activity events on an agent with a
+    /// source view. A call the gate lets through reaches the wrapped tool's
+    /// own view call, so what that tool says about its outcome is kept. An
+    /// answer of the gate itself is the gate's, and says nothing.
+    async fn call_with_view(
+        &self,
+        args: Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &craftsman_harness::provenance::TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        self.call_tracked(args, ctx, Some(tracked)).await
+    }
+}
+
+impl SubagentGate {
+    async fn call_tracked(
+        &self,
+        args: Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: Option<&craftsman_harness::provenance::TrackedDispatch>,
+    ) -> Result<ToolOutcome, AgentError> {
         let Some((_, sink)) = &self.correlated else {
-            return self.call_gated(args, ctx, None).await;
+            return self.call_gated(args, ctx, None, tracked).await;
         };
         // Different specs own different wrappers. The shared process counter
         // prevents identity reuse across specs and concurrent child runs.
@@ -112,7 +136,7 @@ impl Tool for SubagentGate {
             summary: crate::tools::summarize_call(&call.name, &args),
             details: crate::tools::approval_details_at(&call.name, &args, &self.workspace_root),
         });
-        let result = self.call_gated(args, ctx, Some(&call)).await;
+        let result = self.call_gated(args, ctx, Some(&call), tracked).await;
         let (content, is_error) = match &result {
             Ok(outcome) => (outcome.content.clone(), outcome.is_error),
             Err(error) => (error.to_string(), true),
@@ -125,14 +149,27 @@ impl Tool for SubagentGate {
         });
         result
     }
-}
 
-impl SubagentGate {
+    /// Runs the wrapped tool: through its view call when the agent has a
+    /// source view, and through its ordinary call otherwise.
+    async fn run(
+        &self,
+        args: Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: Option<&craftsman_harness::provenance::TrackedDispatch>,
+    ) -> Result<ToolOutcome, AgentError> {
+        match tracked {
+            Some(tracked) => self.inner.call_with_view(args, ctx, tracked).await,
+            None => self.inner.call(args, ctx).await,
+        }
+    }
+
     async fn call_gated(
         &self,
         args: Value,
         ctx: &mut ToolCtx<'_>,
         call: Option<&ToolCall>,
+        tracked: Option<&craftsman_harness::provenance::TrackedDispatch>,
     ) -> Result<ToolOutcome, AgentError> {
         let name = self.inner.def().name;
         // Same decision the main gate makes — auto_approve, the network
@@ -140,7 +177,7 @@ impl SubagentGate {
         // synchronous only (never held across the await below).
         let permission = self.approval.lock().unwrap().permission(&name, &args);
         match permission {
-            ToolPermission::Allow => self.inner.call(args, ctx).await,
+            ToolPermission::Allow => self.run(args, ctx, tracked).await,
             ToolPermission::Deny(reason) => Ok(ToolOutcome::err(reason)),
             ToolPermission::Prompt => {
                 if self.approval_prompt.is_none() && self.correlated.is_none() {
@@ -158,7 +195,7 @@ impl SubagentGate {
                     ApprovalPromptResult::Reject("no correlated approval channel".into())
                 };
                 match decision {
-                    ApprovalPromptResult::Approve => self.inner.call(args, ctx).await,
+                    ApprovalPromptResult::Approve => self.run(args, ctx, tracked).await,
                     ApprovalPromptResult::ApproveAlways => {
                         {
                             let mut state = self.approval.lock().unwrap();
@@ -168,7 +205,7 @@ impl SubagentGate {
                                 state.auto_approve = true;
                             }
                         }
-                        self.inner.call(args, ctx).await
+                        self.run(args, ctx, tracked).await
                     }
                     ApprovalPromptResult::Reject(feedback) => {
                         Ok(ToolOutcome::err(rejection_result(&feedback)))

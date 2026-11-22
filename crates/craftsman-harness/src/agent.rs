@@ -909,6 +909,17 @@ impl Agent {
                     tool_calls: vec![call.clone()],
                 };
                 self.state.lock().unwrap().messages.push(assistant.clone());
+                if let Some(view) = &self.model_view {
+                    // Issued at the real host-scheduling event, not from a
+                    // caller message, model reply, label or permission flag.
+                    let scheduled = crate::provenance::ActualHostScheduledCall::issued(
+                        &view.owner,
+                        policy.clone(),
+                        call.clone(),
+                        assistant.clone(),
+                    );
+                    view.facts.lock().unwrap().host_calls.push(scheduled);
+                }
                 self.journal(
                     "assistant",
                     serde_json::to_value(&assistant).unwrap_or_default(),

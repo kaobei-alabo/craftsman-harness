@@ -838,3 +838,102 @@ async fn a_cancelled_background_task_reports_its_own_closing_note() {
     ));
     assert_eq!(child.requests(), 1);
 }
+
+/// A middleware that adds one note of the host's own before a round, once,
+/// and remembers under its own key that it did.
+struct Notes;
+
+#[async_trait::async_trait]
+impl AgentMiddleware for Notes {
+    fn name(&self) -> &str {
+        "notes"
+    }
+
+    fn view_support(&self) -> crate::provenance::ViewSupport {
+        crate::provenance::ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut crate::provenance::TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        if prepare.state().custom.contains_key("notes.seen") {
+            return Ok(());
+        }
+        prepare
+            .append_host_message(vec![
+                SourcePart::fixed(Arc::from("<note>")),
+                SourcePart::read("runtime data", Arc::from("three gadgets")),
+                SourcePart::fixed(Arc::from("</note>")),
+            ])
+            .await?;
+        prepare.set_own_custom("notes.seen", serde_json::Value::Bool(true));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_tracked_middleware_appends_a_host_note_as_parts() {
+    let root = Family::root();
+    let model = Scripted::new(vec![Msg::assistant("one"), Msg::assistant("two")]);
+    let agent = Agent::builder(model.clone())
+        .model_view_boundary(Some(root.clone()))
+        .middleware(Arc::new(Notes))
+        .build();
+    agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+
+    // The note is recorded where the ordinary hook records it, after the
+    // input and before the reply, and went out with the source the boundary
+    // gave for its parts.
+    assert_eq!(
+        contents(&agent),
+        vec!["go", "<note>three gadgets</note>", "one"]
+    );
+    assert!(
+        root.events().contains(
+            &"root envelope HostNote [fixed=<note>|read runtime data=three gadgets|fixed=</note>]"
+                .to_owned()
+        )
+    );
+    assert_eq!(
+        model.seen.lock().unwrap()[0].messages,
+        vec!["input", "root:envelope:0"]
+    );
+    assert!(
+        agent
+            .recorded_sources()
+            .unwrap()
+            .iter()
+            .all(Option::is_some)
+    );
+
+    // It is added once: the next turn finds the middleware's own key.
+    agent
+        .run_turn_with_view("again", source("second"))
+        .await
+        .unwrap();
+    assert_eq!(
+        contents(&agent),
+        vec!["go", "<note>three gadgets</note>", "one", "again", "two"]
+    );
+    assert_eq!(
+        model.seen.lock().unwrap()[1].messages,
+        vec!["input", "root:envelope:1", "root:model:receipt:0", "second"]
+    );
+    // Staging and canonical retention are different actual events.
+    let retained = agent.actual_retained_commits().unwrap();
+    let note = retained
+        .iter()
+        .find(|commit| commit.host_stage().is_some())
+        .unwrap();
+    assert_eq!(note.message(), &Msg::user("<note>three gadgets</note>"));
+    assert_eq!(
+        note.event(),
+        crate::provenance::RetainedEvent::Framework(FrameworkCommit::HostNote)
+    );
+    let sources = agent.actual_sourced_messages().unwrap();
+    assert!(sources[1].commit().same_commit(note));
+}

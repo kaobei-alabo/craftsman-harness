@@ -10,7 +10,14 @@ use wiremock::{MockServer, ResponseTemplate};
 
 /// An owned configuration that points one wire at `server`.
 pub(crate) fn config(wire: &str, server: &MockServer) -> Config {
-    let shared = r#""harness_profile":"general","voice":{"enabled":false},"gadgets":{"enabled":false},"mcp_servers":[],"lsp_servers":{}"#;
+    config_with(wire, server, false)
+}
+
+/// As [`config`], with the model-visible gadget runtime switched as given.
+pub(crate) fn config_with(wire: &str, server: &MockServer, gadgets: bool) -> Config {
+    let shared = format!(
+        r#""harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":{gadgets}}},"mcp_servers":[],"lsp_servers":{{}}"#
+    );
     let uri = server.uri();
     let text = match wire {
         "chat" => {

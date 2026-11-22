@@ -22,12 +22,13 @@ use crate::ModelResponse;
 use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
     ActualAgentOwner, ActualFacts, ActualModelInput, ActualParkedCall, ActualProviderReturn,
-    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualStagedSummary,
-    ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, FrameworkCommit, ModelDelivery,
-    ModelViewBoundary, OutcomePart, PartFrom, ReachedTool, ReplyEdit, RetainedEvent,
-    ReturnRecorder, SourcePart, SourceRef, TrackedDispatch, TrackedModelRequest, TrackedPrepare,
-    TrackedReply, ViewSupport,
+    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualSourcedMessage,
+    ActualStagedHostMessage, ActualStagedSummary, ActualTaskReturn, ActualTerminalOutcome,
+    ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary, OutcomePart, PartFrom,
+    ReachedTool, ReplyEdit, RetainedEvent, ReturnRecorder, SourcePart, SourceRef, TrackedDispatch,
+    TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
 };
+use crate::provenance::{ActualBoundaryController, ActualHostScheduledCall};
 use std::sync::atomic::AtomicBool;
 
 /// Everything the agent records or carries between rounds. A middleware of a
@@ -435,7 +436,7 @@ impl ModelView {
             && slots.iter().zip(messages).all(|(slot, message)| {
                 let commit = match slot {
                     Slot::Bound(_, commit) | Slot::Pending(commit) => commit,
-                    Slot::StagedSummary(_, _) => return false,
+                    Slot::StagedSummary(_, _) | Slot::StagedHostMessage(_, _) => return false,
                 };
                 commit.owner().same_agent(&self.owner) && commit.message() == message
             })
@@ -675,7 +676,9 @@ impl Agent {
                 .iter()
                 .map(|slot| match slot {
                     Slot::Bound(source, _) => Some(source.clone()),
-                    Slot::Pending(_) | Slot::StagedSummary(_, _) => None,
+                    Slot::Pending(_)
+                    | Slot::StagedSummary(_, _)
+                    | Slot::StagedHostMessage(_, _) => None,
                 })
                 .collect(),
         )
@@ -686,6 +689,58 @@ impl Agent {
     /// no token certifies transport, persistence, restoration or permission.
     /// Returned data of the selected provider call, including returns whose
     /// later receipt/projection checks failed. No record grants app origin.
+    /// Genuine source/event pairs for a complementary context/controller
+    /// adapter. Complete immutable messages are checked under state -> source
+    /// guards. Caller state, labels and ordinals cannot issue these pairs.
+    pub fn actual_sourced_messages(&self) -> Result<Vec<ActualSourcedMessage>, AgentError> {
+        let view = self.model_view.as_ref().ok_or_else(unavailable)?;
+        view.live()?;
+        let state = self.state.lock().unwrap();
+        let sources = view.sources.lock().unwrap();
+        if state.messages.len() != sources.len() {
+            return Err(unsourced());
+        }
+        sources
+            .iter()
+            .zip(&state.messages)
+            .map(|(slot, message)| {
+                let Slot::Bound(source, commit) = slot else {
+                    return Err(unsourced());
+                };
+                if !commit.owner().same_agent(&view.owner) || commit.message() != message {
+                    return Err(unsourced());
+                }
+                Ok(ActualSourcedMessage::issued(commit.clone(), source.clone()))
+            })
+            .collect()
+    }
+
+    pub fn actual_boundary_controller(
+        &self,
+    ) -> Result<Option<ActualBoundaryController>, AgentError> {
+        let Some(controller) = &self.boundary_policy else {
+            return Ok(None);
+        };
+        let view = self.model_view.as_ref().ok_or_else(unavailable)?;
+        Ok(Some(ActualBoundaryController::issued(
+            &view.owner,
+            controller.clone(),
+            self.actual_sourced_messages()?,
+        )))
+    }
+
+    pub fn actual_host_scheduled_calls(&self) -> Option<Vec<ActualHostScheduledCall>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .host_calls
+                .clone(),
+        )
+    }
+
     pub fn actual_task_returns(&self) -> Option<Vec<ActualTaskReturn>> {
         Some(
             self.model_view
@@ -845,7 +900,7 @@ impl Agent {
                     |(index, slot)| match slot {
                         Slot::Pending(commit) => Some((index, commit.clone())),
                         Slot::Bound(_, _) => None,
-                        Slot::StagedSummary(_, _) => None,
+                        Slot::StagedSummary(_, _) | Slot::StagedHostMessage(_, _) => None,
                     },
                 );
             let Some((index, commit)) = next else {
@@ -1007,6 +1062,7 @@ impl Agent {
                 .any(|(slot, message)| match slot {
                     Slot::Bound(_, commit) | Slot::Pending(commit) => commit.message() != message,
                     Slot::StagedSummary(_, stage) => stage.message() != message,
+                    Slot::StagedHostMessage(_, stage) => stage.message() != message,
                 })
         {
             return Err(unsourced());
@@ -1016,6 +1072,11 @@ impl Agent {
             .map(|slot| match slot {
                 Slot::StagedSummary(_, stage) => {
                     let commit = ActualRetainedCommit::summary_issued(stage);
+                    view.facts.lock().unwrap().retained.push(commit.clone());
+                    Slot::Pending(commit)
+                }
+                Slot::StagedHostMessage(_, stage) => {
+                    let commit = ActualRetainedCommit::host_issued(stage);
                     view.facts.lock().unwrap().retained.push(commit.clone());
                     Slot::Pending(commit)
                 }
@@ -1349,6 +1410,58 @@ impl Agent {
 }
 
 impl TrackedPrepare<'_> {
+    /// Appends one message of the host's own before this round's request, as
+    /// the parts it is made of. It is recorded with the user role, where the
+    /// ordinary hook of the middleware records it, and is committed with the
+    /// round. The boundary gives its source from the parts, so nothing here
+    /// can pass for text of the model or of a person.
+    pub async fn append_host_message(&mut self, parts: Vec<SourcePart>) -> Result<(), AgentError> {
+        if parts.len() > crate::provenance::MAX_ENVELOPE_PARTS
+            || parts.iter().map(|part| part.text.len()).sum::<usize>()
+                > crate::provenance::MAX_ENVELOPE_BYTES
+        {
+            return Err(AgentError::State(
+                "A host message of this conversation exceeds its bound.".into(),
+            ));
+        }
+        if self.slots.len() != self.state.messages.len() {
+            return Err(unsourced());
+        }
+        let message = Msg::user(crate::provenance::joined(&parts));
+        self.state.messages.push(message.clone());
+        let stage = ActualStagedHostMessage::issued(self.owner, message, parts.into());
+        self.facts
+            .lock()
+            .unwrap()
+            .staged_host_messages
+            .push(stage.clone());
+        let source = self.boundary.staged_host_message_source(&stage).await?;
+        self.slots.push(Slot::StagedHostMessage(source, stage));
+        *self.replaced = true;
+        Ok(())
+    }
+
+    /// An actual retained event/source for quoted context input. An index
+    /// locates it; the full immutable event and owner validate it. Staged or
+    /// unsourced items return None and cannot be promoted from mutable state.
+    pub fn retained_message(&self, index: usize) -> Option<ActualSourcedMessage> {
+        let Slot::Bound(source, commit) = self.slots.get(index)? else {
+            return None;
+        };
+        if !commit.owner().same_agent(self.owner)
+            || self.state.messages.get(index)? != commit.message()
+        {
+            return None;
+        }
+        Some(ActualSourcedMessage::issued(commit.clone(), source.clone()))
+    }
+
+    /// Sets a key of the custom state that the middleware keeps as its own
+    /// bookkeeping. Nothing the model sees is read from it.
+    pub fn set_own_custom(&mut self, key: &str, value: serde_json::Value) {
+        self.state.custom.insert(key.to_owned(), value);
+    }
+
     /// Replaces recorded messages with a summary of them, made by
     /// `summarizer` through its view path.
     ///
@@ -1609,6 +1722,11 @@ impl Agent {
                     .map(|slot| match slot {
                         Slot::StagedSummary(_, stage) => {
                             let commit = ActualRetainedCommit::summary_issued(stage);
+                            view.facts.lock().unwrap().retained.push(commit.clone());
+                            Slot::Pending(commit)
+                        }
+                        Slot::StagedHostMessage(_, stage) => {
+                            let commit = ActualRetainedCommit::host_issued(stage);
                             view.facts.lock().unwrap().retained.push(commit.clone());
                             Slot::Pending(commit)
                         }

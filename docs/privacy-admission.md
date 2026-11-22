@@ -27,7 +27,8 @@ It is local, unmerged and not installed.
 | Mixed text from the system prompt, todos, memory, reminders and task workflow notes, as parts | implemented, private; see provenance |
 | Compaction summaries, with the summarizer's text kept as model text | implemented, private; see provenance |
 | Mixed text from delegated agents: task descriptions, results, notifications and inbox messages, as parts | implemented, private; see provenance |
-| Mixed text from context controls | not implemented |
+| The gadget catalog update as a host note of parts; instruction files, skills and extensions as separate pieces of the system prompt; host tool outcomes that repeat an argument | implemented, private; see provenance |
+| Mixed text from verification, context and failure controls | not implemented |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
@@ -242,6 +243,8 @@ session.summary_view(&tracked)                     // explicit source-derived su
 
 // framework-issued events, no public issuer/serialization
 tracked.message_inputs() / tracked.retained_commits()
+prepare.retained_message(index) / agent.actual_sourced_messages()
+agent.actual_host_scheduled_calls() / agent.actual_boundary_controller() // complementary controls remain refused
 agent.actual_provider_returns() / agent.actual_received_replies()
 agent.actual_retained_commits() / agent.actual_tool_facts()
 agent.actual_terminal_outcomes() / agent.actual_parked_call()

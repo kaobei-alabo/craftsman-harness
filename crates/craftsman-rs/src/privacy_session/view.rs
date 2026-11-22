@@ -31,9 +31,10 @@
 
 use super::*;
 use craftsman_harness::provenance::{
-    ActualAgentOwner, ActualModelInput, ActualRetainedCommit, ActualStagedSummary, ActualToolFact,
-    ActualToolInvocation, FrameworkCommit, ModelViewBoundary, ObservedToolResult, PartFrom,
-    ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef, TrackedModelRequest,
+    ActualAgentOwner, ActualModelInput, ActualRetainedCommit, ActualStagedHostMessage,
+    ActualStagedSummary, ActualToolFact, ActualToolInvocation, FrameworkCommit, ModelViewBoundary,
+    ObservedToolResult, PartFrom, ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef,
+    TrackedModelRequest,
 };
 use craftsman_harness::{
     AgentError, HitlAction, ModelRequest, Msg, ToolCall, ToolDef, ToolOutcome,
@@ -81,6 +82,11 @@ enum ViewSource {
     Envelope {
         parts: Vec<AdditionPart>,
         commit: ActualRetainedCommit,
+    },
+    HostNote {
+        parts: Vec<AdditionPart>,
+        stage: ActualStagedHostMessage,
+        commit: Option<ActualRetainedCommit>,
     },
 }
 
@@ -856,6 +862,28 @@ impl PrivacySession {
                             content: pieces(parts, content)?,
                         }
                     }
+                    (
+                        Msg::User { content },
+                        ViewSource::HostNote {
+                            parts,
+                            stage,
+                            commit,
+                        },
+                    ) => {
+                        let bound = match (input, commit) {
+                            (ActualModelInput::StagedHostMessage(actual), None) => {
+                                actual.same_stage(stage)
+                            }
+                            (ActualModelInput::Retained(actual), Some(commit)) => {
+                                actual.same_commit(commit)
+                            }
+                            _ => false,
+                        };
+                        if !bound || stage.message() != message {
+                            return Err(SessionStop::Unbound);
+                        }
+                        Msg::user(pieces(parts, content)?)
+                    }
                     // The input of a delegated agent: text that a call of the
                     // delegating agent's committed reply wrote. It goes out
                     // as the model wrote it.
@@ -1023,12 +1051,39 @@ impl PrivacySession {
         self: &Arc<Self>,
         system: &[AdmittedNode],
     ) -> Result<Arc<ConversationBoundary>, SessionStop> {
-        let mut sources = Vec::with_capacity(system.len());
+        let mut sections = Vec::with_capacity(system.len());
         for node in system {
-            if !node.is_accepted_fact() {
-                return Err(SessionStop::Unbound);
+            sections.push(vec![node.clone()]);
+        }
+        self.boundary_of_sections(&sections)
+    }
+
+    /// As [`boundary`](Self::boundary), for a system channel whose sections
+    /// can each be made of several pieces: text of different files or
+    /// extensions and the application's own headings between them, each
+    /// captured and admitted on its own. A section's pieces go out joined;
+    /// the sections go out separated as always.
+    pub fn boundary_of_sections(
+        self: &Arc<Self>,
+        system: &[Vec<AdmittedNode>],
+    ) -> Result<Arc<ConversationBoundary>, SessionStop> {
+        let mut sources = Vec::with_capacity(system.len());
+        for section in system {
+            let mut parts = Vec::with_capacity(section.len());
+            for node in section {
+                if !node.is_accepted_fact() || !node.admitted_by(self) {
+                    return Err(SessionStop::Unbound);
+                }
+                parts.push(AdditionPart::Admitted(node.clone()));
             }
-            sources.push(self.source(node)?);
+            sources.push(match section.as_slice() {
+                [] => return Err(SessionStop::Unbound),
+                [node] => self.source(node)?,
+                _ => {
+                    self.inner.live()?;
+                    SourceRef::new(Arc::new(ViewSource::Addition(parts)))
+                }
+            });
         }
         if self.inner.bound.swap(true, Ordering::AcqRel) {
             return Err(SessionStop::Unbound);
@@ -1107,6 +1162,27 @@ impl ConversationBoundary {
             return Err(fault(SessionStop::Unbound));
         }
         Ok(())
+    }
+
+    async fn host_note_source(
+        &self,
+        stage: &ActualStagedHostMessage,
+        commit: Option<ActualRetainedCommit>,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(stage.owner())?;
+        if !stage
+            .parts()
+            .iter()
+            .all(|part| matches!(part.from, PartFrom::Fixed | PartFrom::Read { .. }))
+            || !matches!(stage.message(), Msg::User { content } if *content == craftsman_harness::provenance::joined(stage.parts()))
+        {
+            return Err(fault(unbound(&self.session.inner)));
+        }
+        Ok(SourceRef::new(Arc::new(ViewSource::HostNote {
+            parts: self.held_parts(stage.parts()).await?,
+            stage: stage.clone(),
+            commit,
+        })))
     }
 
     async fn summary_node(
@@ -1411,6 +1487,13 @@ impl ModelViewBoundary for ConversationBoundary {
         };
         let node = self.owned_part(origin, &part.text).await?;
         Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node))))
+    }
+
+    async fn staged_host_message_source(
+        &self,
+        stage: &ActualStagedHostMessage,
+    ) -> Result<SourceRef, AgentError> {
+        self.host_note_source(stage, None).await
     }
 
     fn validate_summary_inputs(&self, request: &TrackedModelRequest) -> Result<(), AgentError> {
@@ -1782,6 +1865,12 @@ impl ModelViewBoundary for ConversationBoundary {
         let RetainedEvent::Framework(event) = commit.event() else {
             return Err(fault(SessionStop::Unbound));
         };
+        if let Some(stage) = commit.host_stage() {
+            if event != FrameworkCommit::HostNote || commit.message() != stage.message() {
+                return Err(fault(unbound(&self.session.inner)));
+            }
+            return self.host_note_source(stage, Some(commit.clone())).await;
+        }
         if let Some(parts) = commit.parts() {
             let joined = craftsman_harness::provenance::joined(parts);
             if !matches!(

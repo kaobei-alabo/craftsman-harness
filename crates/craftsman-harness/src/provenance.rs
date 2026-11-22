@@ -25,8 +25,9 @@ use std::sync::Arc;
 #[path = "provenance_facts.rs"]
 mod facts;
 pub use facts::{
-    ActualAgentOwner, ActualModelInput, ActualParkedCall, ActualProviderReturn,
-    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualStagedSummary,
+    ActualAgentOwner, ActualBoundaryController, ActualHostScheduledCall, ActualModelInput,
+    ActualParkedCall, ActualProviderReturn, ActualReceivedReply, ActualRequestInput,
+    ActualRetainedCommit, ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary,
     ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
@@ -130,6 +131,10 @@ pub enum FrameworkCommit {
     /// A message another agent of the conversation sent to this one's inbox,
     /// recorded as it arrived.
     InboxMessage,
+    /// A message a middleware of the host added before a round's request:
+    /// data the host found at run time, inside the host's own framing. It
+    /// is appended with the parts it is made of.
+    HostNote,
 }
 
 /// What a middleware's author states about it for an agent that selected a
@@ -303,6 +308,7 @@ pub(crate) enum Slot {
     Pending(ActualRetainedCommit),
     /// Exists only beside the working state until an actual commit.
     StagedSummary(SourceRef, ActualStagedSummary),
+    StagedHostMessage(SourceRef, ActualStagedHostMessage),
 }
 
 impl Slot {
@@ -314,6 +320,10 @@ impl Slot {
             Self::StagedSummary(source, stage) => Some((
                 source.clone(),
                 ActualModelInput::StagedSummary(stage.clone()),
+            )),
+            Self::StagedHostMessage(source, stage) => Some((
+                source.clone(),
+                ActualModelInput::StagedHostMessage(stage.clone()),
             )),
             Self::Pending(_) => None,
         }
@@ -536,6 +546,16 @@ fn refused<'f, T: Send + 'f>(why: &'static str) -> BoxedBoundaryFuture<'f, T> {
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// A real host-note stage; application boundaries validate actual owners
+    /// and source parts. The default compatibility bridge grants no authority.
+    async fn staged_host_message_source(
+        &self,
+        stage: &ActualStagedHostMessage,
+    ) -> Result<SourceRef, AgentError> {
+        self.observe_envelope(FrameworkCommit::HostNote, stage.parts(), stage.message())
+            .await
+    }
+
     /// The child builder carries the actual delegating terminal witness.
     /// A host must match it to the private parent that created the boundary.
     fn bind_task_parent(&self, _parent: &ActualToolInvocation) -> Result<(), AgentError> {

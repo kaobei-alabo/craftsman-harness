@@ -1212,7 +1212,9 @@ async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
                 crate::provenance::RetainedEvent::Framework(event) => format!("{event:?}"),
                 event => format!("{event:?}"),
             },
-            Slot::StagedSummary(_, _) => panic!("an uncommitted stage entered canonical slots"),
+            Slot::StagedSummary(_, _) | Slot::StagedHostMessage(_, _) => {
+                panic!("an uncommitted stage entered canonical slots")
+            }
         })
         .collect();
     assert_eq!(

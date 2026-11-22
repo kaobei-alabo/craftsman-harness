@@ -426,6 +426,24 @@ pub(crate) fn help_section_in_cwd(cfg: &crate::config::Config) -> String {
     help_section(&discover_at(&current_dir(), terminal_gadgets_enabled(cfg)))
 }
 
+/// The text of [`prompt_block`] piece by piece: the application's own
+/// heading and separators, and one piece per extension that declares
+/// instructions, which is that extension's name and text. The flag marks an
+/// extension's piece.
+pub(crate) fn prompt_pieces<S: ExtensionSpec>(plugins: &[S]) -> Vec<(String, bool)> {
+    let mut pieces = Vec::new();
+    for plugin in plugins {
+        if let Some(prompt) = plugin.prompt().filter(|p| !p.trim().is_empty()) {
+            pieces.push(match pieces.is_empty() {
+                true => (format!("# {} instructions\n\n", title(plugins)), false),
+                false => ("\n\n".to_string(), false),
+            });
+            pieces.push((format!("## {}\n\n{}", plugin.name(), prompt.trim()), true));
+        }
+    }
+    pieces
+}
+
 /// The system-prompt block for extension instructions (empty when no plugin
 /// declares one).
 pub(crate) fn prompt_block<S: ExtensionSpec>(plugins: &[S]) -> String {

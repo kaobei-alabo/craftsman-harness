@@ -25,7 +25,7 @@ remain bound to their original replies after movement; changed native replies
 refuse normal replay. Delegated tasks, messages and notification envelopes now
 have actual agent/parent/commit witnesses in the private combined source.
 Nothing selects it: actual user policy and frontend adapters are absent, and
-configured controls, runtime/catalog and inline human adapters still refuse or
+configured controls and inline human adapters still refuse or
 remain unwired.
 Sealed parked-call decisions have a private registered input producer and actual
 commit/invocation witnesses. Approval receipts inside the gate, terminal frontend
@@ -591,7 +591,7 @@ original client/request context. The summarizer sees committed text/calls in its
 explicit projection; opaque originals stay in their private source receipts.
 A changed native reply refuses later replay instead of silently stripping items.
 A policy requiring opaque inspectability still refuses those wires at startup.
-Configured controls, runtime/catalog and real frontend/inline-human adapters
+Configured controls and real frontend/inline-human adapters
 remain incomplete.
 
 Validation belongs to its exact source head in

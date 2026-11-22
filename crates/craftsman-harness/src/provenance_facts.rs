@@ -110,6 +110,7 @@ struct Retained {
     edits: Vec<ReplyEdit>,
     summary: Option<ActualStagedSummary>,
     parts: Option<Arc<[SourcePart]>>,
+    host_stage: Option<ActualStagedHostMessage>,
 }
 
 impl ActualRetainedCommit {
@@ -127,6 +128,7 @@ impl ActualRetainedCommit {
             edits: Vec::new(),
             summary: None,
             parts: None,
+            host_stage: None,
         }))
     }
 
@@ -144,6 +146,7 @@ impl ActualRetainedCommit {
             edits,
             summary: None,
             parts: None,
+            host_stage: None,
         }))
     }
 
@@ -156,6 +159,7 @@ impl ActualRetainedCommit {
             edits: Vec::new(),
             summary: Some(stage),
             parts: None,
+            host_stage: None,
         }))
     }
 
@@ -173,7 +177,25 @@ impl ActualRetainedCommit {
             edits: Vec::new(),
             summary: None,
             parts: Some(parts),
+            host_stage: None,
         }))
+    }
+
+    pub(crate) fn host_issued(stage: ActualStagedHostMessage) -> Self {
+        Self(Arc::new(Retained {
+            owner: stage.owner().clone(),
+            event: RetainedEvent::Framework(FrameworkCommit::HostNote),
+            message: stage.message().clone(),
+            received: None,
+            edits: Vec::new(),
+            summary: None,
+            parts: Some(stage.0.parts.clone()),
+            host_stage: Some(stage),
+        }))
+    }
+
+    pub fn host_stage(&self) -> Option<&ActualStagedHostMessage> {
+        self.0.host_stage.as_ref()
     }
 
     pub fn owner(&self) -> &ActualAgentOwner {
@@ -274,6 +296,134 @@ impl ActualStagedSummary {
     }
 }
 
+/// A host message actually appended to the working state. It is distinct
+/// from an actual retained commit and carries its complete source parts.
+#[derive(Clone)]
+pub struct ActualStagedHostMessage(Arc<StagedHost>);
+struct StagedHost {
+    owner: ActualAgentOwner,
+    message: Msg,
+    parts: Arc<[SourcePart]>,
+}
+impl ActualStagedHostMessage {
+    pub(crate) fn issued(owner: &ActualAgentOwner, message: Msg, parts: Arc<[SourcePart]>) -> Self {
+        Self(Arc::new(StagedHost {
+            owner: owner.clone(),
+            message,
+            parts,
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn message(&self) -> &Msg {
+        &self.0.message
+    }
+    pub fn parts(&self) -> &[SourcePart] {
+        &self.0.parts
+    }
+    pub fn same_stage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// A source already bound to a real immutable retained message. The getter
+/// verifies the complete current message; this cannot be minted from caller
+/// JSON, a role, an index, a label or equal text. It grants no app authority.
+#[derive(Clone)]
+pub struct ActualSourcedMessage {
+    commit: ActualRetainedCommit,
+    source: SourceRef,
+}
+impl ActualSourcedMessage {
+    pub(crate) fn issued(commit: ActualRetainedCommit, source: SourceRef) -> Self {
+        Self { commit, source }
+    }
+    pub fn commit(&self) -> &ActualRetainedCommit {
+        &self.commit
+    }
+    pub fn source(&self) -> &SourceRef {
+        &self.source
+    }
+}
+
+/// The completion controller actually scheduled this exact host call after
+/// its directive returned and the carrier message was appended. Neither a
+/// model reply nor user permission is inferred from it. No public issuer.
+#[derive(Clone)]
+pub struct ActualHostScheduledCall {
+    owner: ActualAgentOwner,
+    controller: Arc<dyn crate::CompletionCheck>,
+    call: ToolCall,
+    message: Msg,
+    source: Option<SourceRef>,
+}
+impl ActualHostScheduledCall {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        controller: Arc<dyn crate::CompletionCheck>,
+        call: ToolCall,
+        message: Msg,
+    ) -> Self {
+        let source = controller.source_for_view();
+        Self {
+            owner: owner.clone(),
+            controller,
+            call,
+            message,
+            source,
+        }
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.owner
+    }
+    pub fn call(&self) -> &ToolCall {
+        &self.call
+    }
+    pub fn message(&self) -> &Msg {
+        &self.message
+    }
+    pub fn source(&self) -> Option<&SourceRef> {
+        self.source.as_ref()
+    }
+    pub fn same_controller(&self, controller: &Arc<dyn crate::CompletionCheck>) -> bool {
+        Arc::ptr_eq(&self.controller, controller)
+    }
+}
+
+/// The original boundary-controller object installed on this actual agent,
+/// with genuine retained sources for a future selected controller adapter.
+/// This proves installation/source binding, not that a callback ran or that
+/// mutable custom state is provenance. No public issuer or serialized form.
+#[derive(Clone)]
+pub struct ActualBoundaryController {
+    owner: ActualAgentOwner,
+    controller: Arc<dyn crate::AgentBoundaryPolicy>,
+    messages: Vec<ActualSourcedMessage>,
+}
+impl ActualBoundaryController {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        controller: Arc<dyn crate::AgentBoundaryPolicy>,
+        messages: Vec<ActualSourcedMessage>,
+    ) -> Self {
+        Self {
+            owner: owner.clone(),
+            controller,
+            messages,
+        }
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.owner
+    }
+    pub fn messages(&self) -> &[ActualSourcedMessage] {
+        &self.messages
+    }
+    pub fn same_controller(&self, controller: &Arc<dyn crate::AgentBoundaryPolicy>) -> bool {
+        Arc::ptr_eq(&self.controller, controller)
+    }
+}
+
 /// The actual event behind an item in a model request. The host validates
 /// its own source against this immutable event; none of the variants grants
 /// transport, human, restoration or tool permission authority.
@@ -282,6 +432,7 @@ impl ActualStagedSummary {
 pub enum ActualModelInput {
     Retained(ActualRetainedCommit),
     StagedSummary(ActualStagedSummary),
+    StagedHostMessage(ActualStagedHostMessage),
     RequestInput(ActualRequestInput),
 }
 impl ActualModelInput {
@@ -289,6 +440,7 @@ impl ActualModelInput {
         match self {
             Self::Retained(commit) => commit.owner(),
             Self::StagedSummary(stage) => stage.owner(),
+            Self::StagedHostMessage(stage) => stage.owner(),
             Self::RequestInput(input) => input.owner(),
         }
     }
@@ -296,6 +448,7 @@ impl ActualModelInput {
         match self {
             Self::Retained(commit) => commit.message(),
             Self::StagedSummary(stage) => stage.message(),
+            Self::StagedHostMessage(stage) => stage.message(),
             Self::RequestInput(input) => input.message(),
         }
     }
@@ -309,6 +462,8 @@ pub(crate) struct ActualFacts {
     pub(crate) chains: Vec<ActualToolFact>,
     pub(crate) request_inputs: Vec<ActualRequestInput>,
     pub(crate) staged_summaries: Vec<ActualStagedSummary>,
+    pub(crate) staged_host_messages: Vec<ActualStagedHostMessage>,
+    pub(crate) host_calls: Vec<ActualHostScheduledCall>,
     pub(crate) provider_returns: Vec<ActualProviderReturn>,
     pub(crate) tasks: Vec<ActualTaskReturn>,
 }
@@ -651,6 +806,10 @@ opaque_debug!(
     ActualRetainedCommit,
     ActualRequestInput,
     ActualStagedSummary,
+    ActualStagedHostMessage,
+    ActualSourcedMessage,
+    ActualHostScheduledCall,
+    ActualBoundaryController,
     ActualModelInput,
     ActualProviderReturn,
     ActualTaskReturn,

@@ -813,6 +813,110 @@ impl Tool for HostTool {
             }
         })
     }
+
+    /// The same call on an agent with a source view. Where the outcome
+    /// repeats a string of the call's own arguments, the tool says so, piece
+    /// by piece. The agent binds such a piece to the reply that asked for
+    /// the call only if the call ran as that reply wrote it.
+    async fn call_with_view(
+        &self,
+        args: Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &craftsman_harness::provenance::TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        let outcome = self.call(args.clone(), ctx).await?;
+        if let Some(parts) = repeated_arguments(&self.kind, &args, &outcome) {
+            tracked.outcome_is(parts);
+        }
+        Ok(outcome)
+    }
+}
+
+/// The system prompt's sections with the gadget authoring skill added the
+/// way the ordinary text has it: directly after the last section, as a piece
+/// of its own.
+#[cfg(feature = "gadgets")]
+fn with_gadget_skill(
+    mut chunks: Vec<crate::prompt::SystemChunk>,
+    skill: &str,
+) -> Vec<crate::prompt::SystemChunk> {
+    if !skill.is_empty()
+        && let Some(last) = chunks.last_mut()
+    {
+        if last.pieces.is_empty() {
+            last.pieces.push(crate::prompt::SystemPiece {
+                text: last.text.clone(),
+                read: last.read,
+            });
+        }
+        last.pieces.push(crate::prompt::SystemPiece {
+            text: skill.to_owned(),
+            read: Some("gadget authoring skill"),
+        });
+        last.text.push_str(skill);
+    }
+    chunks
+}
+
+/// The pieces of a host tool's own outcome that repeat the call's arguments,
+/// for the three outcomes that do: a written or edited file's path, with the
+/// language diagnostics that follow it, and a glob pattern that matched
+/// nothing. `None` for every other outcome, which is then the tool's result
+/// as a whole.
+fn repeated_arguments(
+    kind: &HostKind,
+    args: &Value,
+    outcome: &ToolOutcome,
+) -> Option<Vec<craftsman_harness::provenance::OutcomePart>> {
+    use craftsman_harness::provenance::OutcomePart;
+    use std::sync::OnceLock;
+    static UPDATED: OnceLock<Arc<str>> = OnceLock::new();
+    static NO_MATCH: OnceLock<Arc<str>> = OnceLock::new();
+    static QUOTE: OnceLock<Arc<str>> = OnceLock::new();
+    let fixed = |cell: &'static OnceLock<Arc<str>>, text: &'static str| {
+        OutcomePart::Fixed(cell.get_or_init(|| Arc::from(text)).clone())
+    };
+    if outcome.is_error {
+        return None;
+    }
+    match kind {
+        HostKind::Write | HostKind::Edit => {
+            let path = args["file_path"].as_str()?;
+            let rest = outcome
+                .content
+                .strip_prefix("Updated file ")?
+                .strip_prefix(path)?;
+            let mut parts = vec![
+                fixed(&UPDATED, "Updated file "),
+                OutcomePart::Argument {
+                    pointer: "/file_path".into(),
+                    text: Arc::from(path),
+                },
+            ];
+            if !rest.is_empty() {
+                // What the language server said about the file.
+                parts.push(OutcomePart::Read {
+                    what: "language diagnostics".into(),
+                    text: Arc::from(rest),
+                });
+            }
+            Some(parts)
+        }
+        HostKind::Glob => {
+            let pattern = args["pattern"].as_str()?;
+            (outcome.content == format!("No files match pattern '{pattern}'")).then(|| {
+                vec![
+                    fixed(&NO_MATCH, "No files match pattern '"),
+                    OutcomePart::Argument {
+                        pointer: "/pattern".into(),
+                        text: Arc::from(pattern),
+                    },
+                    fixed(&QUOTE, "'"),
+                ]
+            })
+        }
+        _ => None,
+    }
 }
 
 fn host_and_web_tools(
@@ -1535,8 +1639,10 @@ async fn build_session_with_capture_profile(
     let privacy_view = match &extras.privacy_view {
         None => None,
         Some(selection) => {
+            // The model-visible gadget runtime has a source path. A script
+            // capture has none.
             #[cfg(feature = "gadgets")]
-            let gadgets_requested = extras.local_gadgets || extras.script_capture.is_some();
+            let gadgets_requested = extras.script_capture.is_some();
             #[cfg(not(feature = "gadgets"))]
             let gadgets_requested = false;
             use crate::privacy_session::BuildRefusal;
@@ -2051,33 +2157,56 @@ async fn build_session_with_capture_profile(
                 &cwd,
                 &extensions,
             );
+            #[cfg(feature = "gadgets")]
+            let chunks = with_gadget_skill(chunks, &gadget_system_suffix);
             let joined = chunks
                 .iter()
                 .map(|chunk| chunk.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            let mut nodes = Vec::with_capacity(chunks.len());
+            // A section of several origins is admitted piece by piece: each
+            // instruction file, skill and extension is its own capture.
+            let mut sections = Vec::with_capacity(chunks.len());
             if joined == system {
-                for chunk in &chunks {
-                    let origin = match chunk.read {
-                        Some(_) => RawOrigin::HostConfig,
-                        None => RawOrigin::HostStatic,
+                'sections: for chunk in &chunks {
+                    let whole = [(chunk.text.as_str(), chunk.read)];
+                    let pieces: Vec<(&str, Option<&'static str>)> = match chunk.pieces.is_empty() {
+                        true => whole.to_vec(),
+                        false => chunk
+                            .pieces
+                            .iter()
+                            .map(|piece| (piece.text.as_str(), piece.read))
+                            .collect(),
                     };
-                    match session
-                        .admit_raw(&CapturedRaw::from_producer(origin, &chunk.text))
-                        .await
-                    {
-                        Ok(node) => nodes.push(node),
-                        Err(_) => {
-                            nodes.clear();
-                            break;
+                    let mut section = Vec::with_capacity(pieces.len());
+                    for (text, read) in pieces {
+                        let origin = match read {
+                            None => RawOrigin::HostStatic,
+                            Some(what)
+                                if what.ends_with("instruction file")
+                                    || what == "discovered skill" =>
+                            {
+                                RawOrigin::HostFile
+                            }
+                            Some(_) => RawOrigin::HostConfig,
+                        };
+                        match session
+                            .admit_raw(&CapturedRaw::from_producer(origin, text))
+                            .await
+                        {
+                            Ok(node) => section.push(node),
+                            Err(_) => {
+                                sections.clear();
+                                break 'sections;
+                            }
                         }
                     }
+                    sections.push(section);
                 }
             }
-            let boundary = match nodes.is_empty() {
+            let boundary = match sections.is_empty() {
                 true => None,
-                false => session.boundary(&nodes).ok(),
+                false => session.boundary_of_sections(&sections).ok(),
             };
             let Some(boundary) = boundary else {
                 if let Some(selection) = &extras.privacy_view {
