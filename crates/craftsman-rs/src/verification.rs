@@ -241,7 +241,7 @@ impl VerificationController {
         let root = self.root.clone();
         let paths = self.plan.paths.clone();
         let excluded = self.excluded.clone();
-        let image = tokio::task::spawn_blocking(move || {
+        let image = crate::util::blocking(move || {
             workspace_checkpoint::observe_source(&root, &paths, &excluded)
         })
         .await
@@ -271,7 +271,7 @@ impl VerificationController {
     async fn revalidate_policy(&self) -> Result<(), AgentError> {
         if let Some(expected) = &self.plan.project_policy {
             let root = self.root.clone();
-            let bytes = tokio::task::spawn_blocking(move || {
+            let bytes = crate::util::blocking(move || {
                 workspace_checkpoint::read_verification_policy(&root, POLICY_FILE)
             })
             .await
