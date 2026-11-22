@@ -414,7 +414,16 @@ impl Frontend {
             }
             Err(error) => UiEvent::TurnFinished(Err(error.to_string())),
         };
-        self.events(event);
+        // The committed reply and other actual turn events were sent before
+        // the task returned. Complete on that SAME FIFO, so the UI cannot
+        // become idle and discard a reply that it has not consumed yet.
+        // Retirement closes the receiver before awaiting tasks; keep their
+        // actual returned errors/results directly in that cleanup path.
+        if self.receiver.is_closed() {
+            self.events(event);
+        } else if let Err(returned) = self.bridge.tx.send(event) {
+            self.events(returned.0);
+        }
     }
 
     pub(super) async fn run(&mut self) -> Result<i32, PrivateTerminalError> {
