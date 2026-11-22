@@ -177,6 +177,12 @@ impl HumanDecisionInput {
             && self.shown == parked.shown()
             && self.action.as_ref() == Some(action)
     }
+    /// The agent's own event for the proposal this input decided, as the
+    /// parked call carried it. For a consumer that has to know which plan
+    /// a decision is about; it grants nothing.
+    pub(crate) fn planned(&self) -> &craftsman_harness::provenance::ActualPlannedInvocation {
+        self.parked.planned()
+    }
     pub(crate) fn edited_raw(&self) -> Option<&CapturedRaw> {
         self.edited_raw.as_ref()
     }

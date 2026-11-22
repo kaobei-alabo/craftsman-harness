@@ -71,7 +71,7 @@ impl CapturedUserPolicy for PlainTextFiles {
         false
     }
 
-    fn restorable_file_data(&self, _: &str, _: &str) -> Option<FileDataFormat> {
+    fn restorable_file_data(&self, _: &str, _: &Path) -> Option<FileDataFormat> {
         Some(FileDataFormat::PlainText)
     }
 }

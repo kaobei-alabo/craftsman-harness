@@ -931,9 +931,10 @@ fn repeated_arguments(
 }
 
 /// The tools of an agent of a privacy conversation: the two file tools
-/// wrapped so that a call that names a placeholder runs only as it was
-/// derived and approved. Every other tool, and every tool of a session
-/// without a review, is as it was.
+/// wrapped, directly on the tool, so that a call that names a placeholder
+/// runs only as the operation that was derived for its plan, reviewed and
+/// decided. Every other tool, and every tool of a session without a review,
+/// is as it was.
 fn with_restored_files(
     tools: Vec<Arc<dyn Tool>>,
     review: Option<&Arc<crate::privacy_session::FileReview>>,
@@ -955,9 +956,9 @@ fn with_restored_files(
 }
 
 /// A delegated agent's tools behind the legacy gate. In a privacy
-/// conversation its two file tools are derived before that gate and record
-/// behind it that the gate let the call through; the gate itself, its rules
-/// and its prompt are the same.
+/// conversation its two file tools are the same as the root agent's, and
+/// the gate in front of them decides on the operation the delegated agent's
+/// own boundary derived; the gate, its rules and its prompt are the same.
 pub(crate) fn gated_for_delegation(
     tools: Vec<Arc<dyn Tool>>,
     approval: &Arc<Mutex<ApprovalState>>,
@@ -968,24 +969,12 @@ pub(crate) fn gated_for_delegation(
     cwd: &std::path::Path,
     review: Option<&Arc<crate::privacy_session::FileReview>>,
 ) -> Vec<Arc<dyn Tool>> {
-    let mut reached = Vec::with_capacity(tools.len());
-    for tool in tools {
-        reached.push(match (review, tool.def().name.as_str()) {
-            (Some(_), "write_file" | "edit_file") => {
-                Arc::new(crate::privacy_session::ReachedFileTool::new(tool)) as Arc<dyn Tool>
-            }
-            _ => tool,
-        });
-    }
-    with_restored_files(
-        crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
-            reached,
-            approval,
-            prompt.0.clone(),
-            cwd,
-            prompt.1.clone(),
-        ),
-        review,
+    crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
+        with_restored_files(tools, review),
+        approval,
+        prompt.0.clone(),
+        cwd,
+        prompt.1.clone(),
     )
 }
 
@@ -2325,18 +2314,21 @@ async fn build_session_with_capture_profile(
     if let (Some(display), Some(boundary)) = (reply_display, &privacy_boundary) {
         boundary.show_replies(display);
     }
-    // In a privacy conversation the file tools of the root agent and of
-    // every delegated agent run what was derived, shown and approved for a
-    // call that names a placeholder. One review serves them all and finds
-    // each agent by its own boundary.
-    let file_review = match (&privacy_view, &privacy_boundary, &extras.privacy_view) {
-        (Some(session), Some(boundary), Some(selection)) => {
-            Some(crate::privacy_session::FileReview::new(
-                session.clone(),
-                boundary.clone(),
-                selection.policy(),
-                cwd.clone(),
-            ))
+    // In a privacy conversation the boundaries of the root agent and of
+    // every delegated agent derive, before a call is reviewed, what a file
+    // write or edit that names a placeholder will really do, and the file
+    // tools run only that. The user's policy is kept by the session that is
+    // built here; the review and the tools refer to it weakly.
+    let user_policy = extras
+        .privacy_view
+        .as_ref()
+        .filter(|_| privacy_view.is_some())
+        .map(|selection| selection.policy());
+    let file_review = match (&privacy_boundary, &user_policy) {
+        (Some(boundary), Some(policy)) => {
+            let review = crate::privacy_session::FileReview::new(policy, cwd.clone());
+            boundary.review_files(review.clone());
+            Some(review)
         }
         _ => None,
     };
@@ -2989,8 +2981,7 @@ async fn build_session_with_capture_profile(
                 cwd,
             )
             .with_call_prompt(extras.call_approval_prompt.clone())
-            .with_verification(verification.clone())
-            .with_file_review(file_review.clone()),
+            .with_verification(verification.clone()),
         ));
     }
 
@@ -3167,9 +3158,19 @@ async fn build_session_with_capture_profile(
             let effect_approval = approval;
             crate::privacy_entry::HumanDecisionProducer::register_with_effect(
                 privacy.clone(),
-                Arc::new(move |parked, _shown| {
+                Arc::new(move |parked, shown| {
                     let call = parked.call();
                     let summary = crate::tools::summarize_call(&call.name, &call.args);
+                    // A parked file operation is shown as it will really be
+                    // written: the preview of the operation the agent
+                    // carried with the parked call, taken under the digest
+                    // the agent handed over with it. If that digest is not
+                    // the operation's, nobody is asked.
+                    let Some(shown_call) = crate::privacy_session::call_to_show(parked, shown)
+                    else {
+                        return crate::privacy_entry::HumanChoice::Absent;
+                    };
+                    let call = &shown_call;
                     let details =
                         crate::tools::approval_details_at(&call.name, &call.args, &workspace);
                     match prompt(call, &summary, &details) {
@@ -3214,7 +3215,8 @@ async fn build_session_with_capture_profile(
         privacy_view: privacy_view
             .zip(privacy_boundary)
             .map(|(session, boundary)| {
-                let view = crate::privacy_session::PrivacyView::new(session, boundary);
+                let view = crate::privacy_session::PrivacyView::new(session, boundary)
+                    .with_policy(user_policy);
                 match human_source {
                     Some(source) => view.with_human_source(source),
                     None => view,

@@ -42,7 +42,8 @@ normal-session integration is still pending. See [development status](docs/priva
 A private [restoration candidate](docs/privacy-restore.md) supplies a separate
 human view of a committed reply and derived content for file writes or edits,
 for the main agent and delegated agents behind their own gate. Its actual
-pre-review and human/automatic decision consumers are still incomplete; a
+pre-review source is wired, while independently registered human/automatic
+decision producers remain incomplete; a
 digest or gate-owned approval is insufficient. The file tool still runs
 its own checkpoint and diagnostics around such a write, and the terminal's
 bridge draws a committed reply once through its safe backend. Nothing selects
