@@ -57,9 +57,8 @@ async fn build(
 ) -> Option<Session> {
     let activity = activity.clone();
     let mut extras = SessionExtras {
-        privacy_view: selected.map(|session| {
-            PrivacyViewSelection::limited_set_permitted_by_host_policy(session.clone())
-        }),
+        privacy_view: selected
+            .map(|session| PrivacyViewSelection::fixture_limited_set(session.clone())),
         workspace_root: Some(directory.to_path_buf()),
         token_sink: Some(Arc::new(|_| {})),
         activity_sink: Some(Arc::new(move |line: &str| {
@@ -169,9 +168,11 @@ async fn conversation(
         .find(|line| line.starts_with("This private conversation runs without: "))
         .cloned()
         .expect("the frontend is told what is left out");
-    for part in ["patch_tool_calls", "compaction"] {
+    for part in ["todo", "compaction"] {
         assert!(named.contains(part), "{named}");
     }
+    // The protected call repair is not among them: it runs, tracked.
+    assert!(!named.contains("patch_tool_calls"), "{named}");
     // The untyped entry is refused before anything is recorded.
     assert!(session.agent.run_turn("untyped").await.is_err());
     assert!(session.agent.state.lock().unwrap().messages.is_empty());
@@ -364,17 +365,51 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
     // None of them ended the conversation that was offered.
     assert!(owner.check().is_ok());
 
-    // A wire with provider items of its own has no receipts yet.
+    // A selection that must be able to inspect what a provider is sent
+    // refuses a native wire, which sends back items that cannot be inspected.
     let native = config("responses", &server);
     assert!(
-        build(&native, directory, Some(&owner), None, activity, |_| {})
-            .await
-            .is_none()
+        build(&native, directory, Some(&owner), None, activity, |extras| {
+            extras.privacy_view = Some(
+                PrivacyViewSelection::fixture_limited_set(owner.clone())
+                    .requiring_inspectable_provider_items(),
+            )
+        })
+        .await
+        .is_none()
     );
     assert_eq!(
-        count("The private conversation view supports only the Chat wire."),
+        count(
+            "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected."
+        ),
         1
     );
+    // Without the fixture's permission nothing is left out: a part with no
+    // source path refuses the build, by name. This is the only selection
+    // that exists outside tests.
+    assert!(
+        build(&cfg, directory, Some(&owner), None, activity, |extras| {
+            extras.privacy_view = Some(PrivacyViewSelection::for_conversation(owner.clone()))
+        })
+        .await
+        .is_none()
+    );
+    let refused = activity
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|line| {
+            line.starts_with(
+                "This private conversation cannot be built. No source path exists for: ",
+            )
+        })
+        .cloned()
+        .expect("the frontend is told why");
+    assert!(
+        refused.contains("compaction") && !refused.contains("patch_tool_calls"),
+        "{refused}"
+    );
+    assert!(owner.check().is_ok());
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 

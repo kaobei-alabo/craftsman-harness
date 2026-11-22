@@ -963,6 +963,10 @@ async fn source_built_privacy_detector_passes_marked_actual_native_runtime() {
 // Additive: the production pinned call path and admission owner, run against
 // this module's source-built detector. Nothing above or below is changed.
 mod pinned_hook;
+// Additive: one privacy conversation per model wire through the shared
+// session builder, with this module's source-built detector approved and
+// pinned. Nothing above or below is changed.
+mod view_wires;
 
 mod offline_lock_tests {
     use super::root;

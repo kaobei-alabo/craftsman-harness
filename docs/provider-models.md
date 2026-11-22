@@ -135,6 +135,16 @@ assistant records. Existing SQLite layout/retention, native shell/cleanup limits
 dependency/toolchain/SDK/WIT pins and frozen protocols/goldens remain unchanged.
 Private prepared runtimes refuse named provider configuration.
 
+A private, unselected path for privacy conversations uses the same three native
+adapters and the same client. There the provider items of a reply are held in
+an in-memory receipt of the conversation instead of this cache: the history
+middleware is not installed, nothing is written under the reserved custom key,
+and a checkpoint cannot supply items. The identity rule, the validation
+against the portable message, the bounds above, the absence of redirects and
+retries, and the refusal of a reply changed after validation are the same. No
+frontend, configuration or command selects that path. See
+[privacy-provenance.md](privacy-provenance.md).
+
 ## Verification and status
 
 Scripted loopback HTTP tests cover the four request protocols, authentication,

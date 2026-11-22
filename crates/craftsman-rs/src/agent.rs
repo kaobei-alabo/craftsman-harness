@@ -884,9 +884,10 @@ pub struct SessionExtras {
     /// Private final-send guard, minted only from an actual live vault session
     /// and its own records. No frontend, configuration or CLI route sets this.
     pub(crate) send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
-    /// Private source-view selection for one live privacy conversation,
-    /// minted only by the host's trusted policy. No frontend, configuration
-    /// or CLI route sets this.
+    /// Private source-view selection for one live privacy conversation, made
+    /// only by host code. It is not policy or key authority and carries no
+    /// permission to build with fewer parts. No frontend, configuration or
+    /// CLI route sets this.
     pub(crate) privacy_view: Option<crate::privacy_session::PrivacyViewSelection>,
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
@@ -1867,21 +1868,54 @@ async fn build_session_with_capture_profile(
             extras.output_closed.clone(),
         )?,
         None if privacy_view.is_some() => {
-            // The view provider binds the conversation's own guard itself and
-            // sends only requests composed from sources, on the Chat wire.
+            // A view provider binds the conversation's own guard itself and
+            // sends only requests composed from sources, on the wire the
+            // configured client speaks. The native history cache is not
+            // installed: provider items live in the conversation's receipts.
             let session = privacy_view.clone()?;
-            match crate::privacy_provider::ViewChatProvider::new(
-                make_unguarded_client()?,
-                session,
-                usage.clone(),
-                main_sink,
-            ) {
-                Ok(provider) => Arc::new(
-                    provider.with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
-                ),
-                Err(_) => {
+            let client = make_unguarded_client()?;
+            let inspectable = extras
+                .privacy_view
+                .as_ref()
+                .is_some_and(|selection| selection.requires_inspectable_items());
+            let built: Result<Arc<dyn ModelProvider>, &str> = if client.native.is_none() {
+                crate::privacy_provider::ViewChatProvider::new(
+                    client,
+                    session,
+                    usage.clone(),
+                    main_sink,
+                )
+                .await
+                .map(|provider| {
+                    Arc::new(
+                        provider
+                            .with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
+                    ) as Arc<dyn ModelProvider>
+                })
+                .map_err(|_| "The model connection of this session has no private view.")
+            } else if inspectable {
+                Err(
+                    "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected.",
+                )
+            } else {
+                crate::privacy_provider::ViewNativeProvider::new(
+                    client,
+                    session,
+                    usage.clone(),
+                    main_sink,
+                )
+                .await
+                .map(|provider| {
+                    Arc::new(provider.with_round_sink(extras.round_sink.clone()))
+                        as Arc<dyn ModelProvider>
+                })
+                .map_err(|_| "The model connection of this session has no private view.")
+            };
+            match built {
+                Ok(provider) => provider,
+                Err(line) => {
                     if let Some(sink) = &extras.activity_sink {
-                        sink("The private conversation view supports only the Chat wire.");
+                        sink(line);
                     }
                     return None;
                 }
@@ -2613,23 +2647,43 @@ async fn build_session_with_capture_profile(
         // disabled while its provider is selected. No model/tool work in hooks.
         middleware.insert(0, history as Arc<dyn AgentMiddleware>);
     }
-    // The selection permits the limited supported set. Every middleware
-    // whose author made no statement for the source view is left out and
-    // named to the frontend; nothing is dropped silently.
+    // A privacy conversation is built only if every middleware has a
+    // source-preserving path. One whose author made no statement for the
+    // source view refuses the build, and the frontend is told which. A
+    // selection carries no permission to run with fewer parts than the user
+    // configured. Test fixtures alone may leave such parts out, by name.
     let middleware = match &privacy_view {
         None => middleware,
         Some(_) => {
-            let (kept, left_out): (Vec<_>, Vec<_>) = middleware.into_iter().partition(|entry| {
-                entry.view_support() == craftsman_harness::provenance::ViewSupport::Preserving
+            use craftsman_harness::provenance::ViewSupport;
+            let (kept, unadapted): (Vec<_>, Vec<_>) = middleware.into_iter().partition(|entry| {
+                matches!(
+                    entry.view_support(),
+                    ViewSupport::Preserving | ViewSupport::TrackedReply
+                )
             });
-            if !left_out.is_empty()
-                && let Some(sink) = &extras.activity_sink
-            {
-                let names: Vec<&str> = left_out.iter().map(|entry| entry.name()).collect();
-                sink(&format!(
-                    "This private conversation runs without: {}.",
-                    names.join(", ")
-                ));
+            if !unadapted.is_empty() {
+                let names: Vec<&str> = unadapted.iter().map(|entry| entry.name()).collect();
+                let leave_out = extras
+                    .privacy_view
+                    .as_ref()
+                    .is_some_and(|selection| selection.leaves_out_unadapted_parts());
+                if let Some(sink) = &extras.activity_sink {
+                    sink(&if leave_out {
+                        format!(
+                            "This private conversation runs without: {}.",
+                            names.join(", ")
+                        )
+                    } else {
+                        format!(
+                            "This private conversation cannot be built. No source path exists for: {}.",
+                            names.join(", ")
+                        )
+                    });
+                }
+                if !leave_out {
+                    return None;
+                }
             }
             kept
         }

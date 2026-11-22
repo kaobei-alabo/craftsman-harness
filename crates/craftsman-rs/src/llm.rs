@@ -197,6 +197,12 @@ impl LlmClient {
         }
     }
 
+    /// Everything this client adds to a Chat request by itself: the model id
+    /// and the configured request settings.
+    pub(crate) fn chat_request_defaults(&self) -> String {
+        serde_json::json!({"model": self.model, "settings": self.request_defaults}).to_string()
+    }
+
     /// Binds this client and its native transport to one explicitly selected
     /// guard. From here on it sends only bodies that guard sealed. A private
     /// headless client has its own checked source and refuses the combination.

@@ -490,9 +490,14 @@ impl Agent {
             working.last_usage = Some(response.usage.clone());
             working.last_usage_msg_count = working.messages.len();
 
-            let kept = self.view_phase_start(&working);
-            let decision = self.chain.review_model_flow(&mut working).await?;
-            self.view_phase_end(kept, &working)?;
+            let mut reply_edits = Vec::new();
+            let decision = match &self.model_view {
+                Some(_) => {
+                    self.review_with_view(&mut working, assistant_idx, &mut reply_edits)
+                        .await?
+                }
+                None => self.chain.review_model_flow(&mut working).await?,
+            };
 
             // End and Remodel both leave this round's tool_calls unanswered
             // (no tool results will follow). OpenAI-compatible providers
@@ -522,7 +527,7 @@ impl Agent {
             self.save_checkpoint(None).await?;
             if let (Some(view), Some(receipt)) = (&self.model_view, view_receipt) {
                 // The actual reply is committed, journaled and saved above.
-                self.record_model_source(view, receipt, &assistant, assistant_idx)
+                self.record_model_source(view, receipt, &assistant, assistant_idx, &reply_edits)
                     .await?;
             }
 
@@ -1036,10 +1041,6 @@ impl Agent {
             // Nothing has run yet. A refusal leaves the call without a result.
             view.boundary.before_dispatch(&call, bypass_chain).await?;
         }
-        let reached = self
-            .model_view
-            .as_ref()
-            .map(|_| Arc::new(Mutex::new(Vec::new())));
         let id = call.id.clone();
         let tool_name = call.name.clone();
         // t0 = the committed state snapshot the tool starts from. Keep it so the
@@ -1048,6 +1049,10 @@ impl Agent {
         // `merge_dispatch_result` and the two-channel note atop this module).
         let t0 = self.snapshot();
         let mut working = t0.clone();
+        let reached = self
+            .model_view
+            .as_ref()
+            .map(|_| Arc::new(Mutex::new(DispatchWatch::new(&t0))));
         let backend = self.backend.clone();
         let tools = self.tools.clone();
         let names = self.tool_names();
@@ -1073,12 +1078,10 @@ impl Agent {
                             // The exact call and outcome of the tool itself,
                             // before any middleware sees the outcome.
                             Some(record) => {
+                                record.lock().unwrap().entering(ctx.state);
                                 let given = call.clone();
                                 let result = tool.call(call.args, ctx).await;
-                                record
-                                    .lock()
-                                    .unwrap()
-                                    .push(ReachedTool::new(given, &result));
+                                record.lock().unwrap().left(given, &result, ctx.state);
                                 result
                             }
                             None => tool.call(call.args, ctx).await,
@@ -1097,6 +1100,9 @@ impl Agent {
             }
         };
 
+        // On a selected agent: every run of the tool, and whether anything
+        // other than the tool changed the recorded state during the dispatch.
+        let watched = reached.map(|record| record.lock().unwrap().finish(&working));
         // Three-way merge instead of a blanket overwrite commit: the backend may
         // have written to committed.files mid-dispatch (StateFs shares the Arc),
         // which a plain `commit(working)` would clobber with the stale snapshot.
@@ -1131,11 +1137,15 @@ impl Agent {
         if let (Some(view), Some(observed)) = (&self.model_view, observed) {
             // The actual result is journaled and committed above, and saved
             // there when durable turn checkpoints are selected.
-            let reached = reached
-                .map(|record| std::mem::take(&mut *record.lock().unwrap()))
-                .unwrap_or_default();
+            let (reached, changed) = watched.unwrap_or_default();
             self.record_tool_source(view, &tool_name, &observed, &reached, returned.as_ref())
                 .await?;
+            if changed {
+                // The result and the tool's own effects are kept. A middleware
+                // changed recorded state outside the tool, which no statement
+                // allows, so the turn stops here.
+                return Err(model_view::state_changed());
+            }
         }
         Ok(())
     }
@@ -2164,8 +2174,8 @@ mod idle_compaction;
 
 #[path = "agent_model_view.rs"]
 mod model_view;
-use crate::provenance::{FrameworkCommit, ReachedTool};
-use model_view::{ModelView, QueuedInput};
+use crate::provenance::FrameworkCommit;
+use model_view::{DispatchWatch, ModelView, QueuedInput};
 
 #[cfg(test)]
 #[path = "agent_model_view_tests.rs"]

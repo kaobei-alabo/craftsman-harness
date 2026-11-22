@@ -21,12 +21,13 @@ It is local, unmerged and not installed.
 | Detector request and reply checks, with a host floor (`privacy_hook`) | implemented, private |
 | Source-pinned detector call on the gadget engine | implemented, private |
 | Admission owner for one conversation (`privacy_session`) | implemented, private |
-| Session builder use of the reserved thread id | implemented, private; selected by nothing |
+| Session builder use of the reserved thread id | implemented, private; selected by nothing, and buildable only in test fixtures until every part has a source path |
 | Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
-| Conversation boundary, model-origin nodes and request composition for the Chat wire | implemented, private; see provenance |
+| Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
 | Mixed text from memory, todos, context, tasks and compaction | not implemented |
 | Display and file restoration | not implemented |
-| Key envelope, unlock, user policy, activation | not implemented; separate work |
+| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. This work does not consume it yet: `PrivacyViewSelection` is a placeholder made by host code, not policy or key authority |
+| Secret input, frontend selector, activation | not implemented |
 
 ## Detector contract
 
@@ -214,7 +215,7 @@ session.admit_raw(&raw).await                     -> Result<AdmittedNode, AdmitE
 node.model_view() / node.admits(&raw) / node.with_records(|scope, records| ...)
 session.thread_id() / session.send_guard() / session.check() / session.stop()
 session.source(&node)                             -> Result<SourceRef, SessionStop>
-session.boundary(&system_nodes)                   -> Arc<ConversationBoundary>
+session.boundary(&system_nodes)                   -> Arc<ConversationBoundary>   // once per conversation
 session.model_view(&tracked_request)              -> Result<ModelRequest, SessionStop>
 session.admitted(&source) / session.committed_model(&source) / session.actual_result(&source)
 session.human_decision(&call, &action)            -> Result<SourceRef, SessionStop>
@@ -222,11 +223,15 @@ boundary.operation_in_flight()                    -> Option<Arc<ApprovedOperatio
 operation.call() / .model() / .edited_by_human() / .fields()
 committed_model.message() / .fields()
 field.place() / .range() / .with_record(|scope, records, index| ...)
-PrivacyViewSelection::limited_set_permitted_by_host_policy(session)   // SessionExtras.privacy_view
+PrivacyViewSelection::for_conversation(session)   // SessionExtras.privacy_view
+    .requiring_inspectable_provider_items()       // optional; refuses native wires
 view.turn(&agent, typed) / view.steer(&agent, typed) / view.decide(&agent, &shown, action, deny_default)
 
 // crate::privacy_provider
-ViewChatProvider::new(chat_client, session, usage, sink)
+ViewChatProvider::new(chat_client, session, usage, sink).await
+ViewNativeProvider::new(native_client, session, usage, sink).await
+session.chat_view(&tracked) / session.native_view(&tracked, identity)
+committed_model.received_message() / .edits() / .native_request_sha256()
 
 // crate::privacy_vault, additive
 Category::admits(value)

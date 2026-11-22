@@ -19,9 +19,89 @@
 use super::*;
 use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
-    FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult, ReachedTool, SourceRef,
-    TrackedModelRequest, ViewSupport,
+    FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult, ReachedTool, ReplyEdit,
+    SourceRef, TrackedModelRequest, TrackedReply, ViewSupport,
 };
+
+/// Everything the agent records or carries between rounds. A middleware of a
+/// selected agent stated that it leaves all of it alone.
+pub(super) struct Kept {
+    messages: Vec<Msg>,
+    todos: Vec<crate::state::Todo>,
+    files: crate::state::FileMap,
+    custom: serde_json::Map<String, serde_json::Value>,
+    system_extras: Vec<String>,
+}
+
+impl Kept {
+    fn of(state: &AgentState) -> Self {
+        Self {
+            messages: state.messages.clone(),
+            todos: state.todos.clone(),
+            files: state.files.clone(),
+            custom: state.custom.clone(),
+            system_extras: state.system_extras.clone(),
+        }
+    }
+
+    fn is(&self, state: &AgentState) -> bool {
+        self.messages == state.messages
+            && self.todos == state.todos
+            && self.files == state.files
+            && self.custom == state.custom
+            && self.system_extras == state.system_extras
+    }
+}
+
+/// What the agent watches during one dispatch on a selected agent: every run
+/// of the tool itself, and whether anything else changed the recorded state.
+/// Only the tool may change it.
+pub(super) struct DispatchWatch {
+    reached: Vec<ReachedTool>,
+    /// The state as the agent, and then each run of the tool, left it.
+    last: Kept,
+    changed: bool,
+}
+
+impl DispatchWatch {
+    pub(super) fn new(state: &AgentState) -> Self {
+        Self {
+            reached: Vec::new(),
+            last: Kept::of(state),
+            changed: false,
+        }
+    }
+
+    /// The tool is about to run.
+    pub(super) fn entering(&mut self, state: &AgentState) {
+        self.changed |= !self.last.is(state);
+    }
+
+    /// The tool has run: its exact call and outcome, before any middleware
+    /// sees the outcome, and the state as it left it.
+    pub(super) fn left(
+        &mut self,
+        call: ToolCall,
+        result: &Result<ToolOutcome, AgentError>,
+        state: &AgentState,
+    ) {
+        self.reached.push(ReachedTool::new(call, result));
+        self.last = Kept::of(state);
+    }
+
+    /// The dispatch chain has returned.
+    pub(super) fn finish(&mut self, state: &AgentState) -> (Vec<ReachedTool>, bool) {
+        self.changed |= !self.last.is(state);
+        (std::mem::take(&mut self.reached), self.changed)
+    }
+}
+
+pub(super) fn state_changed() -> AgentError {
+    AgentError::State(
+        "A middleware of this conversation changed recorded state. Nothing further was sent."
+            .into(),
+    )
+}
 
 pub(super) enum Slot {
     Bound(SourceRef),
@@ -139,11 +219,12 @@ impl Agent {
                 "No source view boundary is selected for this agent.".into(),
             ));
         };
-        let adapted = self
-            .chain
-            .middlewares()
-            .iter()
-            .all(|entry| entry.view_support() == ViewSupport::Preserving);
+        let adapted = self.chain.middlewares().iter().all(|entry| {
+            matches!(
+                entry.view_support(),
+                ViewSupport::Preserving | ViewSupport::TrackedReply
+            )
+        });
         if !adapted
             || self.boundary_policy.is_some()
             || self.completion_check.is_some()
@@ -306,26 +387,58 @@ impl Agent {
         }
     }
 
-    /// The recorded messages before a phase of middleware hooks, on a
-    /// selected agent.
-    pub(super) fn view_phase_start(&self, working: &AgentState) -> Option<Vec<Msg>> {
-        self.model_view.as_ref().map(|_| working.messages.clone())
+    /// The recorded state before a phase of middleware hooks, on a selected
+    /// agent.
+    pub(super) fn view_phase_start(&self, working: &AgentState) -> Option<Kept> {
+        self.model_view.as_ref().map(|_| Kept::of(working))
     }
 
-    /// Refuses the turn when a hook of the phase changed a recorded message.
+    /// Refuses the turn when a hook of the phase changed recorded state.
     /// Every middleware of a selected agent stated that it does not.
     pub(super) fn view_phase_end(
         &self,
-        kept: Option<Vec<Msg>>,
+        kept: Option<Kept>,
         working: &AgentState,
     ) -> Result<(), AgentError> {
         match kept {
-            Some(kept) if kept != working.messages => Err(AgentError::State(
-                "A middleware of this conversation changed a recorded message. Nothing further was sent."
-                    .into(),
-            )),
+            Some(kept) if !kept.is(working) => Err(state_changed()),
             _ => Ok(()),
         }
+    }
+
+    /// The review of a received reply on a selected agent, in the order and
+    /// with the verdict rule of the ordinary review. A middleware with a
+    /// tracked review changes the reply only through recorded operations and
+    /// sees nothing else. Every other middleware must leave the state alone.
+    pub(super) async fn review_with_view(
+        &self,
+        working: &mut AgentState,
+        reply: usize,
+        edits: &mut Vec<ReplyEdit>,
+    ) -> Result<Flow, AgentError> {
+        let mut decision = Flow::Proceed;
+        for entry in self.chain.middlewares().iter().rev() {
+            let verdict = if entry.view_support() == ViewSupport::TrackedReply {
+                let message = working.messages.get_mut(reply).ok_or_else(unsourced)?;
+                let mut tracked = TrackedReply {
+                    message,
+                    edits,
+                    by: entry.name(),
+                };
+                entry.review_model_with_view(&mut tracked).await?
+            } else {
+                let kept = Kept::of(working);
+                let verdict = entry.review_model(working).await?;
+                if !kept.is(working) {
+                    return Err(state_changed());
+                }
+                verdict
+            };
+            if decision == Flow::Proceed {
+                decision = verdict;
+            }
+        }
+        Ok(decision)
     }
 
     /// Composes the request from sources and hands it to the provider's view
@@ -394,11 +507,15 @@ impl Agent {
         receipt: SourceRef,
         committed: &Msg,
         index: usize,
+        edits: &[ReplyEdit],
     ) -> Result<(), AgentError> {
         if view.sources.lock().unwrap().len() != index {
             return Err(unsourced());
         }
-        let source = view.boundary.commit_model(receipt, committed).await?;
+        let source = view
+            .boundary
+            .commit_reviewed_model(receipt, committed, edits)
+            .await?;
         let mut sources = view.sources.lock().unwrap();
         if sources.len() != index {
             return Err(unsourced());

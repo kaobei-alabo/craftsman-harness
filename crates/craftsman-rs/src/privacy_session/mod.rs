@@ -33,7 +33,7 @@ mod view_tests;
 
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    ReceivedModel, SourceField,
+    NativeReplay, ReceivedModel, SourceField,
 };
 
 use crate::checkpoints::LibsqlCheckpointer;
@@ -164,21 +164,65 @@ impl FreshConversationBinding {
     }
 }
 
-/// The selection a host's trusted policy hands to the session builder for
-/// one live privacy conversation. It states that the policy permits that
-/// conversation to run with the limited set of parts that have a
-/// source-preserving path. It cannot be built from configuration.
+/// The selection host code hands to the session builder for one live privacy
+/// conversation. It cannot be built from configuration, and it carries no
+/// permission to run with fewer parts than the user configured: the builder
+/// refuses a session in which any part has no source-preserving path.
 pub struct PrivacyViewSelection {
     session: Arc<PrivacySession>,
+    inspectable_items: bool,
+    #[cfg(test)]
+    fixture_limited_set: bool,
 }
 
 impl PrivacyViewSelection {
-    pub fn limited_set_permitted_by_host_policy(session: Arc<PrivacySession>) -> Self {
-        Self { session }
+    pub fn for_conversation(session: Arc<PrivacySession>) -> Self {
+        Self {
+            session,
+            inspectable_items: false,
+            #[cfg(test)]
+            fixture_limited_set: false,
+        }
+    }
+
+    /// For a policy that must be able to inspect everything a provider is
+    /// sent. Native wires send provider items back that are signed or
+    /// encrypted and cannot be inspected, so such a selection refuses them.
+    pub fn requiring_inspectable_provider_items(mut self) -> Self {
+        self.inspectable_items = true;
+        self
+    }
+
+    /// Test fixtures only: build with the parts that have a source-preserving
+    /// path, and name the others to the frontend. This is not a user policy
+    /// and does not exist outside tests.
+    #[cfg(test)]
+    pub(crate) fn fixture_limited_set(session: Arc<PrivacySession>) -> Self {
+        Self {
+            fixture_limited_set: true,
+            ..Self::for_conversation(session)
+        }
     }
 
     pub(crate) fn session(&self) -> &Arc<PrivacySession> {
         &self.session
+    }
+
+    pub(crate) fn requires_inspectable_items(&self) -> bool {
+        self.inspectable_items
+    }
+
+    /// Whether parts without a source-preserving path are left out and named
+    /// instead of refusing the build. Never outside tests.
+    pub(crate) fn leaves_out_unadapted_parts(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.fixture_limited_set
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
     }
 }
 
@@ -377,6 +421,8 @@ struct Inner {
     operation: tokio::sync::Mutex<Ledger>,
     slots: tokio::sync::Semaphore,
     stopped: AtomicBool,
+    /// Whether the one boundary of this conversation has been handed out.
+    bound: AtomicBool,
     #[cfg(test)]
     after_commit: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -439,6 +485,7 @@ impl PrivacySession {
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
+                bound: AtomicBool::new(false),
                 #[cfg(test)]
                 after_commit: std::sync::Mutex::new(None),
             }),
