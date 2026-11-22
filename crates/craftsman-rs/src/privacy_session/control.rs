@@ -17,14 +17,16 @@
 //! own callback, once, for text this conversation admitted for exactly the
 //! recorded message. The original then sees that one message and its own
 //! bookkeeping keys, and nothing else of the recorded state; only those keys
-//! are written back.
+//! are written back. The callback after an idle compaction is reached the
+//! same way, for the agent's own event of that replacement, and sees only
+//! those keys.
 
 use super::view::ConversationBoundary;
 use crate::agent_controls::AppControls;
 use crate::context_compiler::InputStamp;
 use crate::verification::VerificationController;
 use craftsman_harness::provenance::{
-    ActualBoundaryInput, ActualControllerBindings, SourceRef, ViewSupport,
+    ActualBoundaryInput, ActualControllerBindings, ActualIdleCompaction, SourceRef, ViewSupport,
 };
 use craftsman_harness::{
     AgentBoundaryPolicy, AgentError, AgentState, CompletionAction, CompletionAfterCheck,
@@ -167,6 +169,7 @@ pub(crate) struct SelectedControls {
     source: SourceRef,
     own: Weak<SelectedControls>,
     taken: Mutex<Vec<ActualBoundaryInput>>,
+    compacted: Mutex<Vec<ActualIdleCompaction>>,
 }
 
 impl SelectedControls {
@@ -184,6 +187,7 @@ impl SelectedControls {
             source: own_source("controls"),
             own: own.clone(),
             taken: Mutex::new(Vec::new()),
+            compacted: Mutex::new(Vec::new()),
         });
         boundary.install_controls(&adapter).then_some(adapter)
     }
@@ -260,12 +264,48 @@ impl AgentBoundaryPolicy for SelectedControls {
         self.original.runtime_input();
     }
 
-    fn idle_compaction_committed(&self, state: &mut AgentState) -> Result<(), AgentError> {
-        self.boundary.controls_live()?;
+    fn idle_compaction_committed_with_view(
+        &self,
+        state: &mut AgentState,
+        event: &ActualIdleCompaction,
+    ) -> Result<(), AgentError> {
+        let installed: Arc<dyn AgentBoundaryPolicy> = self.own.upgrade().ok_or_else(refused)?;
+        // The conversation's own side: it is live, the event is its agent's
+        // real replacement, issued for this installed adapter with this
+        // adapter's source and still in its callback, and what stands in the
+        // record now is what was kept and the summary the agent staged.
+        self.boundary
+            .idle_compaction(event, &installed, &self.source)?;
+        let recorded = event.after().len() == state.messages.len()
+            && event
+                .after()
+                .iter()
+                .zip(&state.messages)
+                .all(|(after, message)| after.commit().message() == message);
+        if !recorded {
+            return Err(refused());
+        }
+        {
+            let mut compacted = self.compacted.lock().map_err(|_| refused())?;
+            if compacted.iter().any(|known| known.same_compaction(event)) {
+                return Err(refused());
+            }
+            if compacted.len() >= TAKEN {
+                compacted.remove(0);
+            }
+            compacted.push(event.clone());
+        }
+        // The original callback sees its own keys and no message.
         let keys = self.original.own_keys();
         on_own_keys(state, None, &keys, |own| {
             self.original.idle_compaction_committed(own)
         })
+    }
+
+    /// An agent with a source view tells its controller of an idle
+    /// compaction only with its event.
+    fn idle_compaction_committed(&self, _: &mut AgentState) -> Result<(), AgentError> {
+        Err(refused())
     }
 
     fn stop_committed(&self, state: &AgentState) {

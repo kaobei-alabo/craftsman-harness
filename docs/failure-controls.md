@@ -71,5 +71,7 @@ live checks remain separate from a full performance evaluation.
 
 In a privacy conversation, which nothing selects yet, the same governor runs
 behind a private adapter of its controller: its observations, input stamp,
-advisory and pause are unchanged, and the advisory is sent as fixed text. See
+advisory and pause are unchanged, and the advisory is sent as fixed text. A
+pause returns an error, and a turn that returns an error ends such a
+conversation; that was not driven in a built one. See
 [privacy-provenance.md](privacy-provenance.md#controller-adapters).

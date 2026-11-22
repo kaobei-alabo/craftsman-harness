@@ -68,4 +68,5 @@ from corrected-source validation.
 In a privacy conversation, which nothing selects yet, the same controller runs
 behind a private adapter. Its record is unchanged; the section the model is
 given is made of source parts and carries no digest or size of recorded text.
-See [privacy-provenance.md](privacy-provenance.md#controller-adapters).
+A compaction, automatic or manual, is recorded by the same controller. See
+[privacy-provenance.md](privacy-provenance.md#controller-adapters).

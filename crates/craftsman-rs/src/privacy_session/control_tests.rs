@@ -753,3 +753,265 @@ async fn a_section_quotes_an_input_only_from_the_source_its_own_agent_was_given(
     assert!(fourth.session.check().is_err());
     let _ = recorded;
 }
+
+/// The agent a session builder makes when automatic compaction is part of
+/// the profile: the original controller's wrapper around the original
+/// compaction, with a summarizer of the same conversation.
+async fn compacting(
+    made: &Unbuilt,
+    server: &MockServer,
+    adapter: Arc<SelectedControls>,
+    threshold_msgs: usize,
+    transitions: Arc<std::sync::atomic::AtomicUsize>,
+) -> (Agent, Arc<craftsman_harness::builtin::CompactionMiddleware>) {
+    use craftsman_harness::builtin::{CompactionMiddleware, CompactionTrigger};
+    let client = LlmClient::new_with_options(
+        &server.uri(),
+        "fixture-key",
+        "fixture-model",
+        &BTreeMap::new(),
+    );
+    let summarizer = ViewChatProvider::new(
+        client,
+        made.session.clone(),
+        Arc::default(),
+        Arc::new(|_: &str| {}),
+    )
+    .await
+    .unwrap();
+    let compaction = Arc::new(CompactionMiddleware::new(
+        Arc::new(summarizer),
+        CompactionTrigger::MessageCount {
+            threshold_msgs,
+            keep_tail_msgs: 2,
+        },
+    ));
+    let controls = &made.controls;
+    let reset = controls.clone();
+    let agent = Agent::builder(made.provider.clone())
+        .tool(Arc::new(ReadFile))
+        .middleware(controls.prepare())
+        .middleware(controls.context.wrap_compaction_with(
+            compaction.clone(),
+            Some(Arc::new(move |observation| {
+                transitions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                reset.compacted(observation)
+            })),
+        ))
+        .middleware(controls.context.observer_with_trust(Arc::new(|_| true)))
+        .middleware(controls.context.request_observer())
+        .middleware(controls.observer())
+        .model_view_boundary(Some(made.boundary.clone()))
+        .boundary_policy(adapter)
+        // The owned terminal's durable checkpoints, which an idle
+        // compaction needs, into a store in memory.
+        .checkpointer(Arc::new(
+            craftsman_harness::testing::MemCheckpointer::default(),
+        ))
+        .durable_turn_checkpoints(true)
+        .build();
+    (agent, compaction)
+}
+
+#[tokio::test]
+async fn an_automatic_compaction_goes_through_the_original_wrapper_and_the_section_keeps_its_quotation()
+ {
+    let directory = tempfile::tempdir().unwrap();
+    let vault = vault(&directory).await;
+    // Two answers, the summarizer's answer, then the third answer.
+    let server = scripted(vec![
+        answer("chat", &["one"]),
+        answer("chat", &["two"]),
+        answer("chat", &["SUMMARY of the work"]),
+    ])
+    .await;
+    let made = unbuilt(&vault, &server).await;
+    let adapter = SelectedControls::install(&made.boundary, made.controls.clone()).unwrap();
+    let transitions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (agent, _) = compacting(&made, &server, adapter, 4, transitions.clone()).await;
+    let typed = format!("Who handles {EMAIL}?");
+    for input in [typed.as_str(), "And then?", "Go on."] {
+        let source = made.typed(input).await;
+        agent.run_turn_with_view(input, source).await.unwrap();
+    }
+
+    // The record: the summary in the place of what was summarized, as the
+    // ordinary compaction records it, and the kept tail.
+    let state = agent.state.lock().unwrap().clone();
+    assert_eq!(
+        state.messages,
+        [
+            Msg::user("<conversation_summary>\nSUMMARY of the work\n</conversation_summary>"),
+            Msg::assistant("two"),
+            Msg::user("Go on."),
+            Msg::assistant("fixture answer"),
+        ]
+    );
+    // The original controller observed the change itself, once, under its
+    // own key, and its transition callback ran once.
+    assert_eq!(state.custom[CONTEXT_KEY]["compactions"], json!(1));
+    assert_eq!(state.custom[CONTEXT_KEY]["uncertain_compactions"], json!(0));
+    assert_eq!(transitions.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        state.custom[CONTEXT_KEY]["initial_input"]["text"],
+        json!(typed)
+    );
+    assert!(
+        agent
+            .recorded_sources()
+            .unwrap()
+            .iter()
+            .all(Option::is_some)
+    );
+    // An automatic compaction is no idle compaction: the agent issued no
+    // such event.
+    assert!(agent.actual_idle_compactions().unwrap().is_empty());
+
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.to_string().contains(EMAIL))
+    );
+    // The request after the compaction: the first input is no longer a
+    // recorded message, and the section still quotes it whole from the
+    // source of its accepted-input event, as the input itself was seen.
+    let first_input = requests[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(first_input.starts_with("Who handles ") && !first_input.contains(EMAIL));
+    let last = &requests[3];
+    let system = system_of(last);
+    assert!(system.contains(&format!("Initial request (event 1):\n{first_input}\n")));
+    assert!(system.contains("\"known_compactions\":1"));
+    assert!(system_of(&requests[1]).contains("\"known_compactions\":0"));
+    assert_eq!(
+        last["messages"][1]["content"],
+        "<conversation_summary>\nSUMMARY of the work\n</conversation_summary>"
+    );
+    assert_eq!(last.to_string().matches(first_input).count(), 1);
+    assert!(made.session.check().is_ok());
+}
+
+#[tokio::test]
+async fn the_compaction_callback_is_reached_only_for_the_agents_own_live_replacement() {
+    let directory = tempfile::tempdir().unwrap();
+    let vault = vault(&directory).await;
+    let server = scripted(vec![
+        asks_to_read("call-1", "notes.txt"),
+        answer("chat", &["one"]),
+        answer("chat", &["two"]),
+        answer("chat", &["SUMMARY of the work"]),
+    ])
+    .await;
+    let made = unbuilt(&vault, &server).await;
+    let adapter = SelectedControls::install(&made.boundary, made.controls.clone()).unwrap();
+    let transitions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // A threshold no turn here reaches: nothing is compacted automatically.
+    let (agent, compaction) =
+        compacting(&made, &server, adapter.clone(), 64, transitions.clone()).await;
+    let typed = format!("Who handles {EMAIL}? See notes.txt.");
+    for input in [typed.as_str(), "And then?"] {
+        let source = made.typed(input).await;
+        agent.run_turn_with_view(input, source).await.unwrap();
+    }
+    let before = agent.state.lock().unwrap().clone();
+    assert_eq!(before.messages.len(), 6);
+    assert_eq!(before.custom[CONTEXT_KEY]["compactions"], json!(0));
+    assert_eq!(
+        before.custom[CONTEXT_KEY]["files"][0]["freshness"],
+        json!("historical")
+    );
+
+    // The idle compaction: the agent replaces messages, tells the installed
+    // adapter with its own event, and the original controller records the
+    // compaction under its own keys before the final save.
+    let counts = agent.compact_idle_with_view(&compaction).await.unwrap();
+    let after = agent.state.lock().unwrap().clone();
+    assert_eq!(counts, Some((6, after.messages.len())));
+    assert_eq!(
+        after.messages[0],
+        Msg::user("<conversation_summary>\nSUMMARY of the work\n</conversation_summary>")
+    );
+    assert!(
+        after.messages[1..]
+            .iter()
+            .all(|kept| before.messages.contains(kept))
+    );
+    assert!(!after.messages.contains(&before.messages[0]));
+    assert_eq!(after.custom[CONTEXT_KEY]["compactions"], json!(1));
+    assert_eq!(
+        after.custom[CONTEXT_KEY]["files"][0]["freshness"],
+        json!("uncertain")
+    );
+    assert_eq!(after.custom[INPUT_KEY], before.custom[INPUT_KEY]);
+    assert_eq!(after.custom.len(), 2);
+    // The transition callback belongs to the automatic path and did not run.
+    assert_eq!(transitions.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(
+        agent
+            .recorded_sources()
+            .unwrap()
+            .iter()
+            .all(Option::is_some)
+    );
+    let events = agent.actual_idle_compactions().unwrap();
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    let installed: Arc<dyn AgentBoundaryPolicy> = adapter.clone();
+    assert!(event.same_controller(&installed) && !event.in_callback());
+    assert!(event.source().is(&adapter.source_for_view().unwrap()));
+    assert_eq!(event.before().len(), 6);
+    assert_eq!(event.after().len(), after.messages.len());
+
+    // The agent's own event, after its callback: refused, and the original
+    // controller is not reached a second time.
+    let unchanged =
+        |state: &AgentState| state.messages == after.messages && state.custom == after.custom;
+    let mut state = after.clone();
+    assert!(
+        adapter
+            .idle_compaction_committed_with_view(&mut state, event)
+            .is_err()
+    );
+    assert!(unchanged(&state));
+    // The entry without an event: refused.
+    assert!(adapter.idle_compaction_committed(&mut state).is_err());
+    assert!(unchanged(&state));
+    // The boundary accepts it for nobody, and another conversation's
+    // adapter and boundary do not take it either.
+    let own = adapter.source_for_view().unwrap();
+    assert!(
+        made.boundary
+            .idle_compaction(event, &installed, &own)
+            .is_err()
+    );
+    let other = unbuilt(&vault, &server).await;
+    let foreign = SelectedControls::install(&other.boundary, other.controls.clone()).unwrap();
+    let foreign_installed: Arc<dyn AgentBoundaryPolicy> = foreign.clone();
+    assert!(
+        foreign
+            .idle_compaction_committed_with_view(&mut state, event)
+            .is_err()
+    );
+    assert!(
+        other
+            .boundary
+            .idle_compaction(
+                event,
+                &foreign_installed,
+                &foreign.source_for_view().unwrap()
+            )
+            .is_err()
+    );
+    assert!(unchanged(&state));
+    assert!(made.session.check().is_ok() && other.session.check().is_ok());
+
+    // The conversation goes on from the summary with one known compaction.
+    let source = made.typed("Go on.").await;
+    agent.run_turn_with_view("Go on.", source).await.unwrap();
+    let requests = sent(&server).await;
+    let last = requests.last().unwrap();
+    assert!(system_of(last).contains("\"known_compactions\":1"));
+    assert!(system_of(last).contains("Initial request (event 1):\nWho handles "));
+    assert!(!last.to_string().contains(EMAIL) && !last.to_string().contains(PHONE));
+}

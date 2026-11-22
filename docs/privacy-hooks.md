@@ -659,3 +659,29 @@ event, and a manual compaction does not call the controller's callback.
 This remains unmerged, uninstalled and unselected. No frontend, key, policy or
 normal privacy selection is enabled by it, stored history is not encrypted or
 redacted, and no paid call was made.
+
+
+## Controller adapters on the corrected framework — November 23, 2026
+
+The framework now keeps a turn of an agent with a source view open through
+its completion check, issues an event for its fixed stop note, and tells the
+installed controller of an idle compaction with an event. The adapters above
+consume all three; the section of November 22 stays as the record of the base
+where the scheduled check failed.
+
+In built sessions, on all four wires:
+
+- the check the verification controller schedules runs with the protected
+  review a person is shown, the real command and its real result, and the
+  model is given that result's view;
+- a stop by that controller, after a check a person turned down and after a
+  check that really failed with no repair round left, returns the
+  controller's own refusal; the agent's note is recorded with its source and
+  the conversation ends there, with nothing of that turn sent afterwards;
+- a manual compaction tells the original controller once, on its own keys,
+  and the context section still quotes the first input afterwards.
+
+Still separate: the key, the user's policy, the terminal's entry, sealed
+inline decisions, any default-on selection, and native or hosted validation.
+Nothing is merged, installed or selected, stored history is not encrypted or
+redacted, and no paid call was made.

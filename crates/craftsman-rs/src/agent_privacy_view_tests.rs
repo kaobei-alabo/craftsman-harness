@@ -146,7 +146,7 @@ async fn privacy_view_builder_fixture() {
     if selected.len() != 1
         || !(matches!(
             selected[0].as_str(),
-            "chat" | "controls" | "verification" | "scheduled"
+            "chat" | "controls" | "verification" | "scheduled" | "stopped"
         ) || on_a_pty)
     {
         return;
@@ -169,7 +169,11 @@ async fn privacy_view_builder_fixture() {
             match selected[0].as_str() {
                 "controls" => controls(wire, &directory, &vault, &activity).await,
                 "verification" => verification(wire, false, &directory, &vault, &activity).await,
-                _ => verification(wire, true, &directory, &vault, &activity).await,
+                "scheduled" => verification(wire, true, &directory, &vault, &activity).await,
+                _ => {
+                    stopped(wire, true, &directory, &vault, &activity).await;
+                    stopped(wire, false, &directory, &vault, &activity).await;
+                }
             }
         }
         eprintln!("{DONE}");
@@ -1725,8 +1729,9 @@ fn privacy_view_check() {
         .collect();
     if named.len() != 1
         || !WIRES.iter().any(|wire| {
-            named[0] == format!("asked-{wire}/value.txt")
-                || named[0] == format!("scheduled-{wire}/value.txt")
+            ["asked", "scheduled", "denied", "failed"]
+                .iter()
+                .any(|case| named[0] == format!("{case}-{wire}/value.txt"))
         })
     {
         return;
@@ -1831,6 +1836,9 @@ async fn controls(
         extras.context_compilation = true;
         extras.failure_controls = true;
         extras.task_workflow = true;
+        // The owned terminal's durable checkpoints, which idle compaction
+        // needs.
+        extras.cancellation_session = Some(craftsman_harness::SessionCancellation::default());
     })
     .await
     .unwrap_or_else(|| panic!("the configured controller is built on {wire}"));
@@ -1950,6 +1958,64 @@ async fn controls(
         last.contains("Initial request (event 1):") && last.contains("Recent user input (event")
     );
     assert!(!last.contains(EMAIL) && !last.contains(PHONE));
+    assert!(last.contains("known_compactions\\\":0"), "{wire}");
+    assert!(owner.check().is_ok(), "{wire}");
+
+    // A manual compaction through the conversation's typed entry. The
+    // agent tells the installed controller of the real replacement, once,
+    // before its final save, and the original controller records it under
+    // its own key: one known compaction, and every observed file uncertain.
+    let before = session.agent.state.lock().unwrap().messages.clone();
+    assert_eq!(before.len(), 10);
+    let counts = view
+        .compact(&session.agent, &session.compaction)
+        .await
+        .unwrap_or_else(|error| panic!("the conversation is compacted on {wire}: {error}"))
+        .expect("something was replaced");
+    let after = session.agent.state.lock().unwrap().messages.clone();
+    assert_eq!(counts, (before.len(), after.len()), "{wire}");
+    assert!(matches!(&after[0], Msg::User { content }
+        if content == "<conversation_summary>\nwelcome\n</conversation_summary>"));
+    assert!(after[1..].iter().all(|kept| before.contains(kept)));
+    let compactions = session.agent.actual_idle_compactions().unwrap();
+    assert_eq!(compactions.len(), 1);
+    assert!(!compactions[0].in_callback());
+    assert_eq!(compactions[0].before().len(), before.len());
+    assert_eq!(compactions[0].after().len(), after.len());
+    let custom = session.agent.state.lock().unwrap().custom.clone();
+    let record = &custom["_craftsman_context_v1"];
+    assert_eq!(record["compactions"], json!(1), "{wire}");
+    assert_eq!(record["uncertain_compactions"], json!(0));
+    assert_eq!(record["initial_input"]["text"], json!(typed));
+    let files = record["files"].as_array().unwrap();
+    assert!(!files.is_empty());
+    assert!(
+        files.iter().all(|file| file["freshness"] == "uncertain"),
+        "{wire}"
+    );
+    let sources = session.agent.recorded_sources().unwrap();
+    assert!(sources.len() == after.len() && sources.iter().all(Option::is_some));
+    assert!(original.confirmed_pause().is_none());
+
+    // The conversation goes on from the summary. The first input is no
+    // longer a recorded message, and the section still quotes it from the
+    // source of its accepted-input event, as its own view.
+    let TurnResult::Done(output) = view.turn(&session.agent, "Go on.").await.unwrap() else {
+        panic!("the conversation continues on {wire}");
+    };
+    assert_eq!(output.final_text(), "welcome");
+    let requests = sent(&server).await;
+    // The summarizer's request, and the request of the new turn.
+    assert_eq!(requests.len(), 7, "{wire}");
+    for body in &requests[5..] {
+        assert!(!body.contains(EMAIL) && !body.contains(PHONE), "{wire}");
+    }
+    let last = requests.last().unwrap();
+    assert!(last.contains("known_compactions\\\":1"), "{wire}");
+    assert!(last.contains("Initial request (event 1):"), "{wire}");
+    assert!(last.contains("Who handles "), "{wire}");
+    assert!(last.contains("conversation_summary"), "{wire}");
+    assert_eq!(session.agent.actual_boundary_inputs().unwrap().len(), 3);
     assert!(owner.check().is_ok(), "{wire}");
     assert!(
         !activity
@@ -1959,6 +2025,215 @@ async fn controls(
             .any(|line| line.starts_with("This private conversation ")),
         "{wire}"
     );
+    session.lsp.shutdown().await;
+}
+
+/// The verification controller stops a turn in a built privacy conversation
+/// on one wire, after the model answered and the controller scheduled its
+/// check: because a person turned the check down (`denied`), or because the
+/// real check failed and no repair round is allowed.
+///
+/// The turn returns the controller's own refusal. The agent's fixed note of
+/// it is recorded with its source, and so is everything before it; the
+/// check's real result is recorded exactly. A turn that ends with an error
+/// ends the conversation, so nothing of it is sent to a model afterwards.
+async fn stopped(
+    wire: &'static str,
+    denied: bool,
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let folder = match denied {
+        true => format!("denied-{wire}"),
+        false => format!("failed-{wire}"),
+    };
+    std::fs::create_dir(directory.join(&folder)).unwrap();
+    let value = format!("{folder}/value.txt");
+    let note = format!("{folder}/note.txt");
+    std::fs::write(directory.join(&value), format!("broken for {PHONE}")).unwrap();
+    std::fs::write(directory.join(&note), "draft").unwrap();
+    let server = MockServer::start().await;
+    // A denied check would have passed: the model fixes the value. A failed
+    // check finds the value as it was: the model edits another source.
+    let edit = match denied {
+        true => json!({"file_path": value, "old_string": "broken", "new_string": "fixed"}),
+        false => json!({"file_path": note, "old_string": "draft", "new_string": "final"}),
+    };
+    let scripted = [
+        reply(wire, 0, Some(("call-edit", "edit_file", &edit)), ""),
+        reply(wire, 1, None, "edited"),
+    ];
+    for (place, scripted) in scripted.into_iter().enumerate() {
+        mount_once(
+            &server,
+            place as u8 + 1,
+            Mock::given(method("POST")).respond_with(scripted),
+        )
+        .await;
+    }
+    Mock::given(method("POST"))
+        .respond_with(reply(wire, 2, None, "never asked"))
+        .mount(&server)
+        .await;
+    let mut cfg = config(wire, &server);
+    cfg.extra.insert(
+        "verification".into(),
+        json!({"commands": [check_command(&value)], "paths": [folder], "max_repair_rounds": 0}),
+    );
+    cfg.extra.insert("context".into(), json!({"enabled": true}));
+    cfg.extra
+        .insert("failure_control".into(), json!({"repeat_limit": 5}));
+    let owner = privacy(vault, directory).await;
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let prompt: ApprovalPrompt = {
+        let asked = asked.clone();
+        Arc::new(move |tool, _, _| {
+            asked.lock().unwrap().push(tool.to_owned());
+            match denied && tool == "verify" {
+                true => ApprovalPromptResult::Reject("not yet".into()),
+                false => ApprovalPromptResult::Approve,
+            }
+        })
+    };
+    let session = build(&cfg, directory, Some(&owner), None, activity, |extras| {
+        extras.verification = true;
+        extras.context_compilation = true;
+        extras.failure_controls = true;
+        extras.task_workflow = true;
+        extras.approval_prompt = Some(prompt);
+    })
+    .await
+    .unwrap_or_else(|| panic!("the configured controllers are built on {wire}"));
+    let view = session.privacy_view.as_ref().unwrap();
+    let typed = format!("Finish the work for {EMAIL}.");
+
+    // The turn returns the original controller's own refusal.
+    let reason = match view.turn(&session.agent, &typed).await {
+        Err(PrivateEntryError::Agent(AgentError::State(reason))) => reason,
+        other => panic!(
+            "the controller stops the turn on {wire}: {:?}",
+            other.map(|_| ())
+        ),
+    };
+    let expected = match denied {
+        true => {
+            "Required verification did not run; review its permissions or policy before continuing."
+        }
+        false => {
+            "Verification still failed after the allowed repair rounds. Completed work and actual check results are retained."
+        }
+    };
+    assert_eq!(reason, expected, "{wire}");
+    assert_eq!(*asked.lock().unwrap(), ["edit_file", "verify"], "{wire}");
+
+    // The record is exact and complete: the input, the edit and its result,
+    // the answer, the call the controller scheduled, what came back for it,
+    // and the agent's fixed note.
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    assert_eq!(messages.len(), 7, "{wire}: {messages:?}");
+    assert_eq!(messages[0], Msg::user(typed.clone()));
+    assert!(
+        matches!(&messages[4], Msg::Assistant { content, tool_calls }
+        if content == "Running the declared completion check."
+            && tool_calls.len() == 1 && tool_calls[0].name == "verify")
+    );
+    let Msg::Tool {
+        content: evidence,
+        is_error: true,
+        ..
+    } = &messages[5]
+    else {
+        panic!("the check did not pass on {wire}: {:?}", messages[5]);
+    };
+    match denied {
+        // The person's own words, and no run of the check.
+        true => assert_eq!(evidence, "Tool call denied by the user. Feedback: not yet"),
+        // The real command, its real status and its real output.
+        false => assert!(
+            evidence.starts_with(&format!(
+                "Verification did not pass.\nCheck: {}\nExit: 7\n",
+                check_command(&value)
+            )) && evidence.contains(&format!("checked value: broken for {PHONE}\n")),
+            "{wire}: {evidence}"
+        ),
+    }
+    assert_eq!(
+        messages[6],
+        Msg::assistant(
+            "The declared completion check did not accept this turn. Completed effects and check results are retained."
+        )
+    );
+    // What was done stays done.
+    assert_eq!(
+        std::fs::read_to_string(directory.join(&value)).unwrap(),
+        match denied {
+            true => format!("fixed for {PHONE}"),
+            false => format!("broken for {PHONE}"),
+        }
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join(&note)).unwrap(),
+        if denied { "draft" } else { "final" }
+    );
+
+    // Every recorded message has its source. The note's is the agent's own
+    // event for it: fixed text of the host, and no reply of a model.
+    let sources = session.agent.recorded_sources().unwrap();
+    assert_eq!(sources.len(), 7);
+    assert!(sources.iter().all(Option::is_some), "{wire}");
+    let noted = sources[6].as_ref().unwrap();
+    assert_eq!(
+        owner.admitted(noted).unwrap().origin(),
+        RawOrigin::HostStatic
+    );
+    assert!(owner.committed_model(noted).is_none());
+    let stops = session
+        .agent
+        .actual_retained_commits()
+        .unwrap()
+        .iter()
+        .filter(|commit| {
+            commit.event()
+                == craftsman_harness::provenance::RetainedEvent::Framework(
+                    craftsman_harness::provenance::FrameworkCommit::CompletionStop,
+                )
+        })
+        .count();
+    assert_eq!(stops, 1, "{wire}");
+    assert_eq!(
+        session.agent.actual_host_scheduled_calls().unwrap().len(),
+        1
+    );
+    let result = owner
+        .actual_result(sources[5].as_ref().unwrap())
+        .expect("the check's result has its record");
+    assert_eq!(result.reached().len(), usize::from(!denied));
+    assert!(result.operation().is_none());
+    // The one failure the agent kept for this turn is the refusal itself:
+    // no source was missing.
+    let failures = session.agent.actual_entry_failures().unwrap();
+    assert_eq!(failures.len(), 1, "{wire}: {failures:?}");
+    assert!(failures[0].contains(expected), "{wire}: {failures:?}");
+
+    // Two requests were sent, both before the check, and neither holds a
+    // private value. The check's result never went to a model.
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 2, "{wire}");
+    for body in &requests {
+        assert!(!body.contains(EMAIL) && !body.contains(PHONE), "{wire}");
+        assert!(!body.contains("Verification did not pass") && !body.contains("not yet"));
+    }
+
+    // A turn that ended with an error ends the conversation. Nothing more
+    // is recorded or sent.
+    assert!(owner.check().is_err(), "{wire}");
+    assert!(matches!(
+        view.turn(&session.agent, "And now?").await,
+        Err(PrivateEntryError::Stopped(_))
+    ));
+    assert_eq!(session.agent.state.lock().unwrap().messages.len(), 7);
+    assert_eq!(sent(&server).await.len(), 2);
     session.lsp.shutdown().await;
 }
 
@@ -2489,13 +2764,17 @@ async fn actual_builder_runs_declared_verification_in_a_privacy_conversation_on_
 }
 
 /// The check the verification controller schedules itself, after the
-/// model's answer. On an agent with a source view the framework closes the
-/// turn's window before its completion check and then refuses the call it
-/// scheduled; until that is corrected in the framework this case fails
-/// there, before any effect of the check.
+/// model's answer.
 #[tokio::test]
 async fn actual_builder_runs_the_check_the_verification_controller_schedules_on_four_wires() {
     run_marked("scheduled").await;
+}
+
+/// A stop by the verification controller: a check a person turned down, and
+/// a check that failed with no repair round left.
+#[tokio::test]
+async fn actual_builder_ends_a_privacy_conversation_at_a_verification_stop_on_four_wires() {
+    run_marked("stopped").await;
 }
 
 /// Everything a child wrote to the terminal it was started on: a newly

@@ -36,10 +36,10 @@
 use super::*;
 use craftsman_harness::provenance::{
     ActualAgentOwner, ActualBoundaryInput, ActualControllerBindings, ActualHostScheduledCall,
-    ActualModelInput, ActualPlannedInvocation, ActualRetainedCommit, ActualStagedHostMessage,
-    ActualStagedSummary, ActualToolFact, ActualToolInvocation, BoxedBoundaryFuture,
-    FrameworkCommit, ModelViewBoundary, ObservedToolResult, PartFrom, ReachedTool, ReplyEdit,
-    RetainedEvent, SourcePart, SourceRef, TrackedModelRequest,
+    ActualIdleCompaction, ActualModelInput, ActualPlannedInvocation, ActualRetainedCommit,
+    ActualStagedHostMessage, ActualStagedSummary, ActualToolFact, ActualToolInvocation,
+    BoxedBoundaryFuture, FrameworkCommit, ModelViewBoundary, ObservedToolResult, PartFrom,
+    ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef, TrackedModelRequest,
 };
 use craftsman_harness::{
     AgentError, HitlAction, ModelRequest, Msg, ToolCall, ToolDef, ToolOutcome,
@@ -1048,7 +1048,7 @@ impl PrivacySession {
                         },
                         ViewSource::Framework {
                             node,
-                            event: FrameworkCommit::CancelNote,
+                            event: FrameworkCommit::CancelNote | FrameworkCommit::CompletionStop,
                             commit,
                         },
                     ) if tool_calls.is_empty()
@@ -1437,6 +1437,63 @@ impl ConversationBoundary {
             node,
             commit: commit.clone(),
         })))
+    }
+
+    /// Whether `event` is this agent's own idle compaction for the
+    /// controller adapter this boundary holds: issued for that adapter with
+    /// its own source, still in its callback, with every message of the
+    /// record before and after it this agent's. What is recorded after it
+    /// is, in the order it had, what was recorded before with the very same
+    /// event and source, and at least one new summary, each beside the
+    /// source this conversation gave when the agent staged exactly that
+    /// summary. Equal text, a role or a count gives nothing.
+    pub(super) fn idle_compaction(
+        &self,
+        event: &ActualIdleCompaction,
+        installed: &Arc<dyn craftsman_harness::AgentBoundaryPolicy>,
+        own: &SourceRef,
+    ) -> Result<(), AgentError> {
+        self.require_agent(event.owner())?;
+        let refuse = || fault(SessionStop::Unbound);
+        if !event.in_callback()
+            || !event.same_controller(installed)
+            || !self.controls.policy_is(installed)
+            || !event.source().is(own)
+        {
+            return Err(refuse());
+        }
+        for message in event.before().iter().chain(event.after()) {
+            self.require_agent(message.commit().owner())?;
+        }
+        let mut next = 0;
+        let mut summaries = 0;
+        for message in event.after() {
+            let kept = event.before()[next..].iter().position(|before| {
+                before.commit().same_commit(message.commit())
+                    && before.source().is(message.source())
+            });
+            if let Some(place) = kept {
+                next += place + 1;
+                continue;
+            }
+            let held = message.source().downcast::<ViewSource>();
+            let staged = matches!(
+                (message.commit().event(), message.commit().summary(), held.as_deref()),
+                (
+                    RetainedEvent::Summary,
+                    Some(actual),
+                    Some(ViewSource::Summary { stage, commit: None, .. }),
+                ) if actual.same_stage(stage) && actual.message() == message.commit().message()
+            );
+            if !staged {
+                return Err(refuse());
+            }
+            summaries += 1;
+        }
+        if summaries == 0 {
+            return Err(refuse());
+        }
+        self.session.inner.live().map_err(fault)
     }
 
     /// The source of the message that carries a call the installed
@@ -2351,8 +2408,11 @@ impl ModelViewBoundary for ConversationBoundary {
                 | FrameworkCommit::UnrecordedCall,
                 Msg::Tool { content, .. },
             ) => (RawOrigin::HostStatic, content),
+            // The agent's fixed closing note of a cancelled turn, and its
+            // fixed note that the completion check did not accept a turn.
+            // Each is known by the agent's own event for its append.
             (
-                FrameworkCommit::CancelNote,
+                FrameworkCommit::CancelNote | FrameworkCommit::CompletionStop,
                 Msg::Assistant {
                     content,
                     tool_calls,

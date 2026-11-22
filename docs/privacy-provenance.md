@@ -52,7 +52,7 @@ not detection of everything a model writes or of opaque provider content.
 | Compaction: automatic, and manual or idle through a typed entry | private explicit summary projection, actual stage/commit witnesses and retained native items for unchanged moved replies; see "Compaction" below |
 | Session builder selection and typed session entries | private full ordinary component set; no limited-set constructor. Actual policy/frontend selection remains absent; configured unsupported components refuse; see below |
 | Delegated agents with `task`, notifications and inbox | private actual child/parent/retained-envelope adapters; task returns retain real partial state and facts |
-| Verification, context and failure controls | private adapters around the original controllers, installed by the session builder; context and failure controls and a check the model asks for run in built sessions on all four wires. A check the verification controller schedules itself is still refused by the framework on the current base; see "Controller adapters" below |
+| Verification, context and failure controls | private adapters around the original controllers, installed by the session builder. Context and failure controls, a check the model asks for, a check the verification controller schedules, its stop and a manual compaction run in built sessions on all four wires; see "Controller adapters" below |
 | Sealed parked-call human decisions | private registered input producer; actual decision and raw edit retained, no caller action factory |
 | Decisions inside the approval gate; `ask_user` answers as drafts | producer adapters not implemented |
 | Terminal ingress, `/clear` | not implemented |
@@ -748,13 +748,10 @@ How each normal component runs on a selected agent today.
   output, a file's content, a web page, an MCP result or a gadget's output
   that holds a placeholder this conversation issued is refused, and the
   conversation ends, even when the tool only echoed what the model wrote.
-- A check the verification controller schedules itself does not run yet on
-  an agent with a source view: the framework closes the turn's window before
-  its completion check and then refuses the call it scheduled. A stop by that
-  controller leaves a note of the framework without a source, which ends the
-  conversation at its next entry, and a manual compaction does not tell the
-  context and failure controller. All three are the framework's; see
-  "Controller adapters".
+- A turn that returns an error ends a privacy conversation. A stop by the
+  verification controller and a pause by the failure controls are such
+  returns: the record, the controllers' keys and every source are complete,
+  and the conversation is over. See "Controller adapters".
 - Vault capacity is fixed at 128 conversations that hold a value, 512 values
   each and 4096 in total, with no retention.
 
@@ -838,23 +835,47 @@ gives a source for the agent's message only for the completion adapter it
 holds, with that adapter's source, for the one check the original controller
 directed last, once, when the message is the agent's retained carrier of
 exactly that call and the call's arguments are structure only. The call then
-runs as that schedule and as no reply's operation.
+runs as that schedule and as no reply's operation. The agent keeps its turn
+open through that check and closes it where the original completion boundary
+closes it.
 
-**Not yet, on the current base.** These are the framework's, and the
-application cannot supply them:
+**A stop.** When the verification controller does not accept a turn, because
+the required check did not run or still failed after the allowed repair
+rounds, the turn returns the controller's own refusal, as always. The agent's
+fixed note of it is known by the agent's own event for its append and is held
+as fixed host text; no role or wording decides that. Everything recorded up to
+it has its source and the check's real result is recorded exactly. A turn
+that returns an error ends a privacy conversation, so nothing of that turn is
+sent to a model afterwards and a later input is refused before it is recorded.
+The failure controls' pause is such a return too; it was not driven in a
+built privacy conversation.
 
-1. An agent with a source view closes the turn's window at the end of the
-   round, before its completion check, and then refuses the call the check
-   schedules ("This selected invocation has no live turn."). A scheduled
-   check therefore fails before any effect of the check. The fixture for it
-   is kept and fails on this base.
-2. A stop by the completion controller appends the framework's fixed note
-   without an event, so the note has no source and the conversation ends at
-   its next entry.
-3. A manual or idle compaction through the typed entry does not call the
-   controller's compaction callback, so the context record and the governor
-   are not told. Automatic compaction goes through the wrapper and tells
-   them.
+**Compaction.** An automatic compaction goes through the original
+controller's wrapper on the tracked path: the original compaction makes the
+summary through the summarizer's view path, the controller records the
+change under its own key and its transition callback runs once. A manual or
+idle compaction through the typed entry reaches the original controller's
+callback only for the agent's own event of that replacement: this agent's,
+issued for this installed adapter with the adapter's own source, still in
+its callback, taken once. The boundary checks that what is recorded after
+it is, in order, what was recorded before with the very same event and
+source, and the new summary beside the source this conversation gave when
+the agent staged exactly that summary. The original callback then sees only
+its own keys and no message, and runs once, before the agent's final save.
+After either kind the section still quotes an input that is no longer a
+recorded message, from the source of its accepted-input event.
+
+**What remains.** These are not part of the adapters:
+
+- no frontend selects a privacy conversation, the user's policy and key have
+  no owner outside fixtures, and a person's inline decision at a gate is not
+  yet a sealed input;
+- a script capture is refused at selection;
+- a scheduled check that a gate parks cannot be resumed, and nothing in the
+  application parks a call;
+- the framework corrections these adapters use and the adapters themselves
+  have only local runs on one platform; that is not native, hosted or
+  activation acceptance.
 
 Nothing here is selected by a frontend, and normal sessions are unchanged.
 

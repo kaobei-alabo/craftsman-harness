@@ -63,9 +63,12 @@ native replies refuse replay. Declared verification, context compilation and
 failure controls now have private
 [controller adapters](docs/privacy-provenance.md#controller-adapters): the
 session's original controllers run behind them, the context section is sent as
-source parts, and a check the model asks for runs with its real commands and
-result. A check the verification controller schedules itself is still refused
-by the framework for such a conversation, and that fixture fails. Real
+source parts, and a declared check runs with its real commands and result,
+whether the model asks for it or the verification controller schedules it. A
+stop by that controller is recorded with its source and ends the conversation,
+and a compaction tells the original controller. These consume the framework's
+controller, completion and compaction events; they do not supply the key,
+policy, terminal entry or inline-decision owners. Real
 policy/frontend/restore adapters and independent validation remain required
 before activation. Failed local checks and the unresolved native linker warning
 remain recorded.
