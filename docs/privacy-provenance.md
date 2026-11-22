@@ -227,9 +227,24 @@ destination and approval checks, belongs to the restoration work.
 Two providers send the view. Both are the existing clients and encoders, bound
 to the conversation's send guard, so the final bytes of every attempt still
 pass the guard under the existing transport policy. Both refuse the ordinary
-`complete` call, so recorded text cannot be sent through them. Both make their
-receipt from the reply as received, before the agent reviews or commits it,
-and keep the real usage.
+`complete` call, so recorded text cannot be sent through them. Both keep the
+real usage.
+
+**Receipts.** The providers live inside the conversation module and are the
+only producers of a reply's receipt. The functions that make one are private
+to that module and are called only there, at the moment a client returns a
+reply, before the agent reviews or commits it. No other code can make a
+receipt from a message it holds. Every receipt, on all four wires, carries the
+position of the reply and the SHA-256 of the exact request bytes that were
+sent, taken where those bytes are sealed for sending.
+
+One half of this is still open. When the agent reports a commit, the
+conversation checks that the receipt is its own and that the committed reply
+is the received one with the recorded changes. It does not yet verify a
+witness issued by the framework that the reply was actually retained. That
+witness, and the equivalent producer for human decisions, are being added to
+the framework on a separate correction branch; `PrivacySession::human_decision`
+is still a public factory here.
 
 **Chat.** `ViewChatProvider` composes the view, encodes it with the functions
 the ordinary provider uses and sends it with the existing retry policy. It
@@ -248,11 +263,9 @@ another wire, as before. What differs:
   history cache. That cache is neither read nor written, the history
   middleware is not installed, and nothing about provider items is written to
   the checkpointed state. A checkpoint cannot produce a receipt.
-- A receipt is made at the moment a reply is received. It holds the client's
-  identity (endpoint, model, protocol and credential, as one digest), the
-  position of the reply, the SHA-256 of the exact request bytes that were sent,
-  and the provider's items exactly as received, signed and opaque ones
-  included. The items are validated against the reply with the native
+- A native receipt also holds the client's identity (endpoint, model,
+  protocol and credential, as one digest) and the provider's items exactly as
+  received, signed and opaque ones included. The items are validated against the reply with the native
   transport's own check and size bound before the receipt exists.
 - Items are sent back only for the reply they were received with, at its
   position, by a client of the same identity, and only if that reply was

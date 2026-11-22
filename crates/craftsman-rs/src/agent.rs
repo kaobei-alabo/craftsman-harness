@@ -1899,7 +1899,7 @@ async fn build_session_with_capture_profile(
                 .native
                 .is_none()
             {
-                crate::privacy_provider::ViewChatProvider::new(
+                crate::privacy_session::ViewChatProvider::new(
                     client,
                     session,
                     usage.clone(),
@@ -1919,7 +1919,7 @@ async fn build_session_with_capture_profile(
                     "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected.",
                 ))
             } else {
-                crate::privacy_provider::ViewNativeProvider::new(
+                crate::privacy_session::ViewNativeProvider::new(
                     client,
                     session,
                     usage.clone(),

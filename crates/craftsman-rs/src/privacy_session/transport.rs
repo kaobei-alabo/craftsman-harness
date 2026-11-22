@@ -1,6 +1,12 @@
-//! Private providers for a conversation whose requests are composed from
-//! views of sources. The session builder constructs one only for a private
+//! The transports of a conversation whose requests are composed from views
+//! of sources. The session builder constructs one only for a private
 //! selection, which no frontend, configuration or CLI route can make.
+//!
+//! This module is the only producer of a reply's receipt. The functions that
+//! make one are private to the conversation module, and they are called here
+//! and nowhere else, at the moment a client returns a reply, with the digest
+//! of the exact request bytes that client sent. No other code can make a
+//! receipt from a message it holds.
 //!
 //! They are the existing clients and the existing request encodings. What
 //! differs is the input: the request they encode is the conversation's model
@@ -21,13 +27,12 @@
 //! value cannot be replaced without changing what it means, so such a client
 //! is refused.
 
+use super::view::{received_chat_reply, received_native_reply};
+use super::{AdmitError, AdmittedNode, CapturedRaw, PrivacySession, RawOrigin, SessionStop};
 use crate::agent::{
     ActivitySink, RoundSink, TokenSink, to_fw_message, to_llm_messages, to_openai_tools,
 };
 use crate::llm::LlmClient;
-use crate::privacy_session::{
-    AdmitError, AdmittedNode, CapturedRaw, PrivacySession, RawOrigin, SessionStop,
-};
 use craftsman_harness::provenance::{ModelDelivery, SourceRef, TrackedModelRequest};
 use craftsman_harness::{AgentError, ModelProvider, ModelRequest, ModelResponse, Usage};
 use std::sync::{Arc, Mutex};
@@ -149,9 +154,9 @@ impl ModelProvider for ViewChatProvider {
         let view = self.session.chat_view(&req).map_err(fault)?;
         let messages = to_llm_messages(&view.system, &view.messages);
         let tools = to_openai_tools(&view.tools);
-        let turn = self
+        let (turn, request_sha256) = self
             .client
-            .stream_turn(
+            .stream_view_turn(
                 &messages,
                 &tools,
                 |text| (self.sink)(text),
@@ -173,9 +178,11 @@ impl ModelProvider for ViewChatProvider {
             output_tokens: turn.usage.output_tokens,
         };
         let message = to_fw_message(turn);
-        // The receipt is made from the reply as it was received, before the
-        // agent reviews or commits it.
-        let receipt = self.session.received_model(&message).map_err(fault)?;
+        // The receipt is made here, from the reply as it was received and
+        // the request it answered, before the agent reviews or commits it.
+        let receipt =
+            received_chat_reply(&self.session, &message, view.messages.len(), request_sha256)
+                .map_err(fault)?;
         Ok(ModelDelivery::new(
             ModelResponse { message, usage },
             SourceRef::new(Arc::new(receipt)),
@@ -287,16 +294,15 @@ impl ModelProvider for ViewNativeProvider {
         }
         // The receipt is made from the reply and its items as received,
         // before the agent reviews or commits the reply.
-        let receipt = self
-            .session
-            .received_native_model(
-                &exchange.response.message,
-                native.identity(),
-                view.messages.len(),
-                exchange.request_sha256,
-                exchange.items,
-            )
-            .map_err(fault)?;
+        let receipt = received_native_reply(
+            &self.session,
+            &exchange.response.message,
+            native.identity(),
+            view.messages.len(),
+            exchange.request_sha256,
+            exchange.items,
+        )
+        .map_err(fault)?;
         Ok(ModelDelivery::new(
             exchange.response,
             SourceRef::new(Arc::new(receipt)),

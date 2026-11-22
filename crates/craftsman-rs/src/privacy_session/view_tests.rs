@@ -4,10 +4,10 @@
 //! and the guard are real; the detector is fixed host reply rules.
 
 use super::tests::{draft, vault};
+use super::view::received_chat_reply;
 use super::*;
 use crate::llm::LlmClient;
 use crate::privacy_hook::tests::{EMAIL, LiteralSource, PHONE};
-use crate::privacy_provider::ViewChatProvider;
 use crate::privacy_send::tests::answer;
 use craftsman_harness::provenance::{ModelViewBoundary, SourceRef};
 use craftsman_harness::{
@@ -372,7 +372,9 @@ async fn a_source_that_is_not_this_conversations_or_does_not_fit_is_refused() {
 
     // A reply received by another conversation cannot be committed here.
     let reply = Msg::assistant("a reply");
-    let receipt = SourceRef::new(Arc::new(other.session.received_model(&reply).unwrap()));
+    let receipt = SourceRef::new(Arc::new(
+        received_chat_reply(&other.session, &reply, 0, [0; 32]).unwrap(),
+    ));
     assert!(c.boundary.commit_model(receipt, &reply).await.is_err());
     assert_eq!(c.session.check(), Err(SessionStop::Closed));
 
@@ -901,7 +903,6 @@ async fn a_call_the_committed_reply_did_not_ask_for_is_refused_before_it_runs() 
 
 // ---- native wires: receipts, and the protected call repair -------------------
 
-use crate::privacy_provider::ViewNativeProvider;
 use crate::provider_config::Protocol;
 use craftsman_harness::ModelResponse;
 use craftsman_harness::builtin::PatchToolCallsMiddleware;

@@ -53,23 +53,70 @@ enum ViewSource {
 pub struct ReceivedModel {
     owner: Arc<Inner>,
     message: Msg,
+    request: RequestContext,
     native: Option<NativeReceipt>,
 }
 
+/// The request a reply answered, as the transport that sent it knows it.
+#[derive(Clone, Copy)]
+struct RequestContext {
+    /// The number of messages in the request, which is the position of the
+    /// reply.
+    index: usize,
+    /// SHA-256 of the exact request bytes that were sent.
+    sha256: [u8; 32],
+}
+
 /// What this conversation's own native transport actually received with one
-/// reply, and the request it answered. It exists only in memory, from the
-/// moment of receipt. A checkpoint or a history cache cannot make one.
+/// reply. It exists only in memory, from the moment of receipt. A checkpoint
+/// or a history cache cannot make one.
 struct NativeReceipt {
     /// Endpoint, model, protocol and credential of the receiving client.
     identity: String,
-    /// The number of messages in the request that was answered, which is the
-    /// position of the reply.
-    index: usize,
-    /// SHA-256 of the exact request bytes that were sent.
-    request_sha256: [u8; 32],
     /// The provider's own items, signed and opaque ones included, exactly as
     /// received.
     items: Vec<serde_json::Value>,
+}
+
+/// The receipt of a reply that the Chat transport for `session` has just
+/// received.
+/// Called only by that transport, with the request it actually sent.
+pub(super) fn received_chat_reply(
+    session: &PrivacySession,
+    message: &Msg,
+    index: usize,
+    request_sha256: [u8; 32],
+) -> Result<ReceivedModel, SessionStop> {
+    session.inner.live()?;
+    Ok(ReceivedModel {
+        owner: session.inner.clone(),
+        message: message.clone(),
+        request: RequestContext {
+            index,
+            sha256: request_sha256,
+        },
+        native: None,
+    })
+}
+
+/// The receipt of a reply that a native transport for `session` has just
+/// received:
+/// the client's identity and the provider's items exactly as received.
+/// Called only by that transport, with the request it actually sent.
+pub(super) fn received_native_reply(
+    session: &PrivacySession,
+    message: &Msg,
+    identity: &str,
+    index: usize,
+    request_sha256: [u8; 32],
+    items: Vec<serde_json::Value>,
+) -> Result<ReceivedModel, SessionStop> {
+    let mut received = received_chat_reply(session, message, index, request_sha256)?;
+    received.native = Some(NativeReceipt {
+        identity: identity.to_owned(),
+        items,
+    });
+    Ok(received)
 }
 
 struct ModelInner {
@@ -81,6 +128,7 @@ struct ModelInner {
     /// The recorded changes that lead from the received reply to the
     /// committed one, in order.
     edits: Vec<ReplyEdit>,
+    request: RequestContext,
     native: Option<NativeReceipt>,
     fields: Option<Vec<SourceField>>,
 }
@@ -137,15 +185,17 @@ impl CommittedModelNode {
         Ok(&self.inner.edits)
     }
 
-    /// The SHA-256 of the exact native request this reply answered, when a
-    /// native transport that belongs to this conversation received it.
-    pub fn native_request_sha256(&self) -> Result<Option<[u8; 32]>, SessionStop> {
+    /// The SHA-256 of the exact request bytes this reply answered, as the
+    /// transport that sent them recorded it.
+    pub fn request_sha256(&self) -> Result<[u8; 32], SessionStop> {
         self.inner.owner.live()?;
-        Ok(self
-            .inner
-            .native
-            .as_ref()
-            .map(|receipt| receipt.request_sha256))
+        Ok(self.inner.request.sha256)
+    }
+
+    /// Whether a native transport received the reply, with provider items.
+    pub fn has_provider_items(&self) -> Result<bool, SessionStop> {
+        self.inner.owner.live()?;
+        Ok(self.inner.native.is_some())
     }
 
     /// Every occurrence in the reply's text of a placeholder this
@@ -413,42 +463,6 @@ impl PrivacySession {
         Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node.clone()))))
     }
 
-    /// Called by this conversation's own transport with the reply it has just
-    /// received, before anything else happens to that reply.
-    pub fn received_model(&self, message: &Msg) -> Result<ReceivedModel, SessionStop> {
-        self.inner.live()?;
-        Ok(ReceivedModel {
-            owner: self.inner.clone(),
-            message: message.clone(),
-            native: None,
-        })
-    }
-
-    /// Called by this conversation's own native transport with the reply it
-    /// has just received: the client's identity, the position of the reply,
-    /// the digest of the exact request bytes it answered, and the provider's
-    /// items exactly as received.
-    pub fn received_native_model(
-        &self,
-        message: &Msg,
-        identity: &str,
-        index: usize,
-        request_sha256: [u8; 32],
-        items: Vec<serde_json::Value>,
-    ) -> Result<ReceivedModel, SessionStop> {
-        self.inner.live()?;
-        Ok(ReceivedModel {
-            owner: self.inner.clone(),
-            message: message.clone(),
-            native: Some(NativeReceipt {
-                identity: identity.to_owned(),
-                index,
-                request_sha256,
-                items,
-            }),
-        })
-    }
-
     /// The request a model may see on the Chat wire. Refused, and the
     /// session stopped, when a reply of the conversation was received by a
     /// native transport: its items are not sent on another wire.
@@ -483,12 +497,9 @@ impl PrivacySession {
                 items.push(None);
                 continue;
             };
-            let Some(receipt) = node
-                .inner
-                .native
-                .as_ref()
-                .filter(|receipt| receipt.identity == identity && receipt.index == index)
-            else {
+            let Some(receipt) = node.inner.native.as_ref().filter(|receipt| {
+                receipt.identity == identity && node.inner.request.index == index
+            }) else {
                 return Err(unbound(&self.inner));
             };
             items.push((node.inner.received == node.inner.message).then(|| receipt.items.clone()));
@@ -845,8 +856,6 @@ impl ModelViewBoundary for ConversationBoundary {
         }
         let native = received.native.as_ref().map(|receipt| NativeReceipt {
             identity: receipt.identity.clone(),
-            index: receipt.index,
-            request_sha256: receipt.request_sha256,
             items: receipt.items.clone(),
         });
         let fields = match committed {
@@ -861,6 +870,7 @@ impl ModelViewBoundary for ConversationBoundary {
                 message: committed.clone(),
                 received: received.message.clone(),
                 edits: edits.to_vec(),
+                request: received.request,
                 native,
                 fields,
             }),

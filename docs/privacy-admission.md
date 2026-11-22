@@ -229,11 +229,11 @@ selection.report().refusal()                      -> Option<BuildRefusal>   // w
 session.workspace_sha256()
 view.turn(&agent, typed) / view.steer(&agent, typed) / view.decide(&agent, &shown, action, deny_default)
 
-// crate::privacy_provider
+// crate::privacy_session, the only producers of a reply's receipt
 ViewChatProvider::new(chat_client, session, usage, sink).await
 ViewNativeProvider::new(native_client, session, usage, sink).await
 session.chat_view(&tracked) / session.native_view(&tracked, identity)
-committed_model.received_message() / .edits() / .native_request_sha256()
+committed_model.received_message() / .edits() / .request_sha256() / .has_provider_items()
 
 // crate::privacy_vault, additive
 Category::admits(value)

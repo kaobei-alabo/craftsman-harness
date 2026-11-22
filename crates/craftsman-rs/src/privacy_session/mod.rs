@@ -27,10 +27,12 @@
 
 #[cfg(test)]
 mod tests;
+mod transport;
 mod view;
 #[cfg(test)]
 mod view_tests;
 
+pub use transport::{ViewChatProvider, ViewNativeProvider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
     NativeReplay, ReceivedModel, SourceField,

@@ -437,6 +437,40 @@ impl LlmClient {
         on_text: impl FnMut(&str),
         on_status: impl FnMut(&str),
     ) -> anyhow::Result<TurnResult> {
+        self.stream_turn_noting(messages, tools, on_text, on_status, None)
+            .await
+    }
+
+    /// One Chat turn of a conversation whose requests are composed from
+    /// views of sources: [`stream_turn`](Self::stream_turn) on a client bound
+    /// to a send guard, returning also the SHA-256 of the exact sealed bytes
+    /// that every attempt of this turn sent. An unbound client is refused.
+    pub(crate) async fn stream_view_turn(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        on_text: impl FnMut(&str),
+        on_status: impl FnMut(&str),
+    ) -> anyhow::Result<(TurnResult, [u8; 32])> {
+        if self.send_guard.is_none() {
+            return Err(crate::privacy_send::SendRefusal::Unsealed.into());
+        }
+        let mut sent = None;
+        let turn = self
+            .stream_turn_noting(messages, tools, on_text, on_status, Some(&mut sent))
+            .await?;
+        let sent = sent.ok_or(crate::privacy_send::SendRefusal::Unsealed)?;
+        Ok((turn, sent))
+    }
+
+    async fn stream_turn_noting(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        on_text: impl FnMut(&str),
+        on_status: impl FnMut(&str),
+        sent: Option<&mut Option<[u8; 32]>>,
+    ) -> anyhow::Result<TurnResult> {
         if self.request_source.is_some() {
             return Err(crate::exec::provider::request::Fault::Collision.into());
         }
@@ -457,7 +491,7 @@ impl LlmClient {
 
         if let Some(guard) = &self.send_guard {
             return self
-                .stream_sealed_turn(guard, &body, on_text, on_status)
+                .stream_sealed_turn(guard, &body, on_text, on_status, sent)
                 .await;
         }
         let result = self
@@ -479,10 +513,15 @@ impl LlmClient {
         body: &Value,
         on_text: impl FnMut(&str),
         on_status: impl FnMut(&str),
+        sent: Option<&mut Option<[u8; 32]>>,
     ) -> anyhow::Result<TurnResult> {
         let encoded =
             serde_json::to_vec(body).map_err(|_| crate::privacy_send::SendRefusal::Unsupported)?;
         let sealed = guard.seal(encoded, &[])?;
+        if let Some(sent) = sent {
+            use sha2::Digest;
+            *sent = Some(sha2::Sha256::digest(sealed.bytes()).into());
+        }
         let result = self
             .stream_body(RequestBody::Sealed(&sealed), on_text, on_status)
             .await;

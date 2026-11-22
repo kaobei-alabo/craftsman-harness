@@ -384,12 +384,10 @@ async fn view_wires_native_fixture() {
                 "{wire}"
             );
             assert!(node.edits().unwrap().is_empty(), "{wire}");
+            // Every wire: the reply knows the exact bytes it answered.
             let sent = <[u8; 32]>::from(Sha256::digest(&request.body));
-            assert_eq!(
-                node.native_request_sha256().unwrap(),
-                (wire != "chat").then_some(sent),
-                "{wire}"
-            );
+            assert_eq!(node.request_sha256().unwrap(), sent, "{wire}");
+            assert_eq!(node.has_provider_items().unwrap(), wire != "chat", "{wire}");
         }
         let result = owner.actual_result(sources[2].as_ref().unwrap()).unwrap();
         assert_eq!(result.tool(), "read_file", "{wire}");
