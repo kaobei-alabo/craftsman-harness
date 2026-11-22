@@ -569,7 +569,7 @@ impl WorkspaceCheckpointManager {
             }
         }
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || restore_checkpoint(&root, checkpoint, force))
+        crate::util::spawn_blocking(move || restore_checkpoint(&root, checkpoint, force))
             .await
             .map_err(|error| AgentError::State(format!("rewind task failed: {error}")))?
             .map_err(AgentError::State)
@@ -678,7 +678,7 @@ impl WorkspaceCheckpointManager {
         requested.protected.extend(self.protected.iter().cloned());
         let retained = snapshots.before.retained_bytes();
         let captured =
-            tokio::task::spawn_blocking(move || capture_selection(&root, &requested, retained))
+            crate::util::spawn_blocking(move || capture_selection(&root, &requested, retained))
                 .await;
         match captured {
             Ok(Ok(before)) => {
@@ -726,7 +726,7 @@ impl WorkspaceCheckpointManager {
         }
         let root = self.root.clone();
         let selection = snapshots.selection.clone();
-        let after = match tokio::task::spawn_blocking(move || {
+        let after = match crate::util::spawn_blocking(move || {
             capture_selection(&root, &selection, 0)
         })
         .await

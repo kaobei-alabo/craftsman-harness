@@ -117,7 +117,7 @@ impl Vault {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
         #[cfg(test)]
         observation.pre_dispatch();
-        let opened = tokio::task::spawn_blocking(move || {
+        let opened = crate::util::blocking(move || {
             #[cfg(test)]
             observation.worker_entry();
             let result = runtime.block_on(open_worker(
@@ -1018,7 +1018,7 @@ pub(super) async fn mask(
     let worker_live = live.clone();
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
     let started = Instant::now();
-    let returned = tokio::task::spawn_blocking(move || {
+    let returned = crate::util::blocking(move || {
         let mut budget = Budget::new(worker_live.vault.limits, Some(worker_live.clone()));
         budget.started = started;
         let result = runtime.block_on(mask_worker(
@@ -1078,7 +1078,7 @@ pub(super) async fn resolve(live: Arc<SessionLife>, aliases: &[&str]) -> Result<
     let worker_live = live.clone();
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
     let started = Instant::now();
-    let returned = tokio::task::spawn_blocking(move || {
+    let returned = crate::util::blocking(move || {
         let mut budget = Budget::new(worker_live.vault.limits, Some(worker_live.clone()));
         budget.started = started;
         let result = runtime.block_on(resolve_worker(&worker_live, aliases, &mut budget));

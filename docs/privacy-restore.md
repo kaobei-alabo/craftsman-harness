@@ -24,11 +24,11 @@ what is written to disk are separate views derived from that record.
 | The same for every delegated agent, in its own lane and at its own gate | implemented, private |
 | A parked call's source and preview | legacy test-only registered-reader primitive retained; production input is unregistered until an opaque UI lifetime adapter exists |
 | The file tool's own workspace checkpoint, language diagnostics and result around a derived write | kept; the tool takes only its write from the derived operation |
-| The user's rule for file content (`supported_file_data` / `retained_file_effect`) | local typed range/effect consumer wired; actual A captured-provider integration and independent/native proof pending; the old format-only hook is test-only and supplies no authority |
-| Typing a turn into a privacy conversation in the terminal, the secret and bootstrap interface, `/clear` | not implemented here; another owner's |
+| The user's rule for file content (`supported_file_data` / `retained_file_effect`) | local typed range/effect consumer and actual captured-user provider integrated; independent combined-source/native proof pending; the old format-only hook is test-only and supplies no authority |
+| Owned private terminal entry, key/bootstrap, receiver/modal/input and fresh `/clear` | A's immutable source is integrated locally; normal routes remain unselected and combined native/full-suite acceptance is pending |
 | Memory files, MCP, gadget, shell, web and every other tool argument | not restored |
 | Delete, rename, batch plans | unchanged; no restoration |
-| A sealed human input for a decision taken at an inline prompt, without a parked call | local registered producer and opaque UI request/presentation/decision core; A's real receiver/modal/choice consumer and independent validation remain pending |
+| A sealed human input for an inline prompt | registered producer and opaque UI request/presentation/decision plus A's actual private receiver/modal/choice source are integrated; independent combined-source/native validation pending |
 
 The current consumer uses only grants returned by its selected policy for the
 actual full before/after data request. Whole JSON and every changed alias span
@@ -38,8 +38,9 @@ the held update is checked against that parent's actual no-follow name before
 writing. Unsupported hosts or data roles refuse. Ordinary activity keeps model
 arguments, and only the private opaque UI receives decoded previews. These
 details and the remaining application/permission/same-user limits are recorded
-in [privacy-provenance.md](privacy-provenance.md); A's actual UI/provider union,
-full native proof and normal activation remain separate.
+in [privacy-provenance.md](privacy-provenance.md). A's immutable actual UI/provider
+and approved KDF fixture/scheduling source are in this local union; combined
+source/full-native proof and normal activation remain separate.
 
 ## What a person reads
 
@@ -131,14 +132,16 @@ value.
 argument, a credential, a setting, an instruction, a schema. An alias in the
 path or in any other argument refuses the operation.
 
-**The rule.** Content is restored only if the user's captured policy names a
-data format for that file (`CapturedUserPolicy::restorable_file_data`). The
-policy is asked about the file the operation is bound to, as an absolute
-path the host resolved when the operation was derived: the opened file for
-an edit, the observed directory and the new name for a create. It is never
-asked about the path as the model spelled it, and it is asked again at the
-write. A file's name or extension is not a rule. Without a rule the tool
-answers with a fixed refusal and nothing is written.
+**The rule.** Content is restored only when the actual captured-user policy
+returns a supported-data record for the real full-image request, and a retained
+effect record for the final effect. The request binds the planned source,
+resolved destination, operation and every changed range. The policy validates
+its actual root/source, explicit application and operation declaration, complete
+images and current native facts; the consumer calls it again before writing.
+An absolute path, format, name, extension, prefix or pointer alone supplies no
+authority. Without a supported record the tool refuses and writes nothing.
+The old `restorable_file_data` examples below describe the retained historical
+fixture seam; production no longer consults it.
 
 The session that is built for the conversation keeps the user's policy. The
 file review, the boundaries and the file tools refer to it weakly, so a tool

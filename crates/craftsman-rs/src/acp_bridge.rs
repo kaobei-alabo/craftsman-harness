@@ -127,7 +127,7 @@ async fn stats(State(state): State<AppState>, headers: HeaderMap) -> Response {
         Some(v) => v,
         None => {
             let walk_root = home.clone();
-            let v = tokio::task::spawn_blocking(move || dir_used_bytes(&walk_root))
+            let v = crate::util::blocking(move || dir_used_bytes(&walk_root))
                 .await
                 .unwrap_or(0);
             *state.home_cache.lock().unwrap() = Some((Instant::now(), v));

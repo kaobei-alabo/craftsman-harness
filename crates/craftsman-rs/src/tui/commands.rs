@@ -299,8 +299,8 @@ pub(super) async fn handle_slash(
         "/diff" => {
             app.push_kind(TranscriptKind::Activity, "Generating workspace diff…");
             let tx = slot.bridge.tx.clone();
-            tokio::spawn(async move {
-                let text = tokio::task::spawn_blocking(crate::workspace_diff::workspace_diff)
+            crate::util::spawn_unit(async move {
+                let text = crate::util::spawn_blocking(crate::workspace_diff::workspace_diff)
                     .await
                     .unwrap_or_else(|error| format!("Unable to show workspace diff: {error}"));
                 let _ = tx.send(UiEvent::Activity(text));

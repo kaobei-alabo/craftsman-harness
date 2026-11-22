@@ -21,7 +21,7 @@ impl Shutdown {
             let mut interrupt = signal(SignalKind::interrupt())?;
             let mut terminate = signal(SignalKind::terminate())?;
             let mut hangup = signal(SignalKind::hangup())?;
-            tokio::spawn(async move {
+            crate::util::spawn_unit(async move {
                 let exit = tokio::select! {
                     _ = interrupt.recv() => 130,
                     _ = terminate.recv() => 143,

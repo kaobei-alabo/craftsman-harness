@@ -112,6 +112,7 @@ impl JsonString {
     }
 
     /// The token as written, both quotes included.
+    #[cfg(test)]
     pub fn token(&self) -> Range<usize> {
         self.token.clone()
     }
@@ -123,6 +124,7 @@ impl JsonString {
 
     /// Whether an escape stands in it. Without one, its content as written
     /// is its decoded text.
+    #[cfg(test)]
     pub fn escaped(&self) -> bool {
         !self.escapes.is_empty()
     }
@@ -170,9 +172,13 @@ enum Open {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Within {
     string: usize,
+    #[cfg(test)]
     range: Range<usize>,
+    #[cfg(test)]
     content: Range<usize>,
+    #[cfg(test)]
     decoded: Range<usize>,
+    #[cfg(test)]
     literal: bool,
 }
 
@@ -181,7 +187,13 @@ impl Within {
     pub fn string(&self) -> usize {
         self.string
     }
+}
 
+// The production contact-data validator needs the checked value identity.
+// Additional lexical observation facades belong only to their pure tests;
+// they grant no source, application, permission or effect authority.
+#[cfg(test)]
+impl Within {
     /// The range that was asked about, as given.
     pub fn range(&self) -> Range<usize> {
         self.range.clone()
@@ -215,6 +227,7 @@ pub enum Outside {
     /// Not a range of this document.
     Document,
     /// An empty text has no occurrence.
+    #[cfg(test)]
     Empty,
     /// It touches no string: punctuation, white space, a number or a
     /// literal.
@@ -234,6 +247,7 @@ pub enum Outside {
 /// The first occurrence of a text that does not lie wholly inside one
 /// string value.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub struct Refused {
     /// Which occurrence, counted from zero in the order written.
     pub occurrence: usize,
@@ -484,6 +498,7 @@ impl<'a> JsonRanges<'a> {
     }
 
     /// The decoded text of one of [`Self::strings`].
+    #[cfg(test)]
     pub fn decoded(&self, string: usize) -> Option<&str> {
         let string = self.strings.get(string)?;
         Some(&self.decoded[string.decoded.clone()])
@@ -548,24 +563,28 @@ impl<'a> JsonRanges<'a> {
             return Err(Outside::Key { string });
         }
         let escapes = &self.escapes[found.escapes.clone()];
-        let start = self
+        let _start = self
             .unit(found, escapes, range.start)
             .ok_or(Outside::Splits { at: range.start })?;
-        let end = self
+        let _end = self
             .unit(found, escapes, range.end)
             .ok_or(Outside::Splits { at: range.end })?;
         // Both ends stand between units, so an escape that begins in the
         // range is wholly in it.
         let first = escapes.partition_point(|escape| (escape.raw as usize) < range.start);
-        let literal = escapes
+        let _literal = escapes
             .get(first)
             .is_none_or(|escape| escape.raw as usize >= range.end);
         Ok(Within {
             string,
+            #[cfg(test)]
             range,
+            #[cfg(test)]
             content,
-            decoded: start..end,
-            literal,
+            #[cfg(test)]
+            decoded: _start.._end,
+            #[cfg(test)]
+            literal: _literal,
         })
     }
 
@@ -600,6 +619,7 @@ impl<'a> JsonRanges<'a> {
     /// Occurrences are found the way `str::replace` finds them: from the
     /// left, not overlapping. A text that does not occur gives no
     /// occurrence. An empty text is refused.
+    #[cfg(test)]
     pub fn locate_all(&self, needle: &str) -> Result<Vec<Within>, Refused> {
         if needle.is_empty() {
             return Err(Refused {

@@ -870,9 +870,10 @@ recorded message, from the source of its accepted-input event.
 
 **What remains.** These are not part of the adapters:
 
-- no frontend selects a privacy conversation, the user's policy and key have
-  no owner outside fixtures, and a person's inline decision at a gate is not
-  yet a sealed input;
+- no normal frontend selects a privacy conversation. The local combined source
+  now has the captured-user key/policy and owned private UI/entry/clear owners,
+  with original opaque inline decisions; their independent combined-source,
+  full-native and activation gates remain separate;
 - a script capture is refused at selection;
 - a scheduled check that a gate parks cannot be resumed, and nothing in the
   application parks a call;
@@ -1058,8 +1059,13 @@ input is unregistered: ordinary tuple callbacks cannot receive restored data
 or issue human provenance. The old test-only parked fixture remains available,
 and the original delegated no-channel refusal is retained.
 
-The range/effect consumer is wired locally, but A's actual captured-provider,
-key/UI/entry/clear branch has not yet been integrated at this slice. DATA-01/02/03
-need independent combined-source and native proof; API, parser, metadata and
-local fixture checks do not authorize live restoration, activation or
-publication. A's live-None hold remains required until the real union is proved.
+The range/effect consumer and A's immutable actual captured-provider,
+key/UI/entry/clear source are integrated locally, including exact root identity
+and approved test-only KDF fixture isolation. The scheduled unit and observable
+blocking work retain their actual JoinHandle/JoinError semantics through the
+reviewed erased helpers; no retry, budget refresh or fake quiescence is added.
+Additional unused JSON lexical observation facades are test-only, while
+production keeps every full-document, value/path and complete-unit refusal.
+DATA-01/02/03 need independent combined-source and native proof; API, parser,
+metadata and local fixture checks do not authorize activation or publication.
+Normal selection remains absent until the real union is independently proved.

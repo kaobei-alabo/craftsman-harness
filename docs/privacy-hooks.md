@@ -47,10 +47,12 @@ summary as model text in an explicit source-derived request. Kept native items
 remain bound to their original replies after movement; changed native replies
 refuse normal replay. Delegated tasks, messages and notification envelopes now
 have actual agent/parent/commit witnesses in the private combined source.
-Nothing selects it in a normal session: actual captured key/user-policy ownership
-now exists privately in A, while full frontend adapters remain incomplete, and
-configured controls and inline human adapters still refuse or
-remain unwired.
+Nothing selects it in a normal session. The local union includes actual
+captured-user key/policy, owned private receiver/modal/input/fresh-clear,
+controller adapters, opaque inline decisions and typed source-bound file
+consumers. Full frontend coverage and independent combined-source/full-native
+proof remain pending; unsupported channels refuse and normal activation stays
+unavailable.
 Sealed parked-call decisions retain test-only registered-input primitives and
 actual commit/invocation witnesses; production has no opaque parked UI adapter
 and remains unregistered. Restoration has a private path of its own: a
@@ -72,8 +74,9 @@ automatic-policy issuers. The real private UI must return the original opaque
 decision for that actual request/presentation; an operation-owned decision or
 ordinary approval callback grants no such authority. Captured key/user-policy
 ownership now exists privately in A. The owned terminal consumer and fresh
-unlock clear exist on the local unselected branch; guarded data consumers,
-other native adapters and normal activation remain unfinished. The target diagram
+unlock clear and guarded data consumers are integrated in local source;
+independent combined-source/native proof, other required frontend adapters and
+normal activation remain unfinished. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 
