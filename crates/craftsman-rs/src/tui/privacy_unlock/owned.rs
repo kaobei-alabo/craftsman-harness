@@ -1,5 +1,5 @@
-//! A private pre-session popup. It owns input before any ordinary event stream
-//! exists; no crossterm event queue, UI channel or shell reader receives secrets.
+//! A private popup that owns input before construction or after old owners
+//! retire. No ordinary reader, UI channel or shell reader receives secrets.
 #[cfg(unix)]
 use super::SecretField;
 use crate::privacy_cli::PrivateKeyOperations;
@@ -145,7 +145,8 @@ impl OwnedSecretTerminal {
 
     /// Actual fresh terminal bootstrap and loop, unselected by every normal
     /// route. The secret phase ends before the ordinary event reader begins;
-    /// private clear/reopen/transfer and settings saves remain explicit refusals.
+    /// private clear retires that reader and the old owners for another unlock.
+    /// Reopen/transfer and settings saves remain explicit refusals.
     pub async fn run_private(
         self,
         bootstrap: crate::privacy_bootstrap::PrivateBootstrap,
