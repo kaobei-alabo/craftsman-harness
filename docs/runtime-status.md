@@ -139,7 +139,7 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations under PR #32; normal sessions inactive | CI44891734880 returns selected LINK0 then an unattributed PE refusal; both source/Cargo/WASM parents fail. Windows core, CMD controls and77 vault cases per mode pass without a vault Deadline phase. Earlier failures remain. Fixed PE refusal labels and the new declaration correction await source review/native validation; key ownership, native-history and actual display/file consumers remain separate. See [privacy-hooks.md](privacy-hooks.md) |
+| Privacy hooks | Reviewed private foundations/candidates; normal sessions inactive | 61ac/run44957234452 failed required gates: fmt/Ubuntu pass; Windows core has two `Vault::open` Deadline unwraps; both Windows gadget source/guest parents fail, the installed-linker helper refusing the section's VirtualSize 40 against the unchanged 16 after LINK0; macOS core's closed-stdout observer returns an unsuccessful helper status; required post steps are skipped. The inner vault and observer causes and the producer of the extra 24-byte header are unknown. `/EMITVOLATILEMETADATA:NO` is source-supported only and awaits a fresh native run; no full PE, Prepared, Cargo or WASM pass exists yet. Earlier: ac17/run44937824282 refused `pe.align.section` with `/NOCOFFGRPINFO`, and 56aa/run44949456781 identified VirtualSize 40. Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
 | Private send guard | Private, default-absent refusal seam at both model send sites; unselected | Refuses final request bytes that contain originals already held by real vault mapping records. No configuration, frontend, key source, detector, masking, restoration or activation. A separate candidate, not part of PR #32. Guard source `70d4b0e` has a source-scoped independent acceptance. Merged with the fixture foundation as `38da30b`, the unchanged `scripts/verify.sh` passed once on macOS: 17 of 17 checks, the default voice build build-checked only, and both no-default-feature test modes (core 2208 passed/36 ignored, gadgets 2527/48, 26 groups each, no compiler warnings). That run belongs to `38da30b`, not to later documentation commits. No Linux, Windows or hosted run covers the guard; the foundation's hosted run 44937824282 refused its Windows fixture at `pe.align.section` and gives the guard no coverage. Not merged to main or installed. Concurrency, charge propagation and the copy bound remain source-only, and key, policy, hook, masking, restoration and activation remain separate work. See [privacy-send.md](privacy-send.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
@@ -413,3 +413,53 @@ a conditional candidate pending fresh Windows acceptance of the unchanged PE
 validator and original Prepared/source-Cargo-WASM gates. The closed refusal
 labels, strict all-directory-zero rule, native bounds and source approval stay
 unchanged. Normal privacy remains off; this adds no public command or capability.
+
+The private alignment diagnostic preserves `pe.align.section` and every original
+predicate/read/short-circuit. On its first failed predicate it attempts one fixed
+`PEA:<id>:<16hex>[:<16hex>]` stderr line (at most41 bytes including newline)
+using only that predicate's owned header operands. Success stays silent; missing
+reads retain the coarse fallback. The line can block or be partial and is not a
+new time or quiescence guarantee. Actual first operands remain pending a fresh
+Windows run; PE acceptance, native/source-Cargo-WASM gates and normal privacy
+activation remain unchanged and unmet.
+
+Run [44949456781](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44949456781)
+at 56aa observed `PEA:09:0000000000000028` after LINK0 and the banner: every
+directory was zero, and the one section declares 40 bytes where the unchanged
+check requires 16. What the other 24 bytes are, the section's flags and raw
+layout, and the cause remain unknown; no linker switch is chosen from the size.
+The diagnostic now also attempts one `PES:<hex>` line (at most 133 bytes) with
+exactly the declared 17 to 64 bytes, only when that predicate fails first and
+the bytes lie in the already captured image and begin with the public fixture
+marker. Otherwise it writes `PES:unavailable`. It reads no file again and
+changes no predicate, label or limit. Its data awaits a fresh Windows run; PE
+acceptance, the source-Cargo-WASM gates and normal privacy remain unmet and
+inactive.
+
+Run [44957234452](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44957234452)
+at 61ac returned that record. The section's 40 declared bytes are the 16-byte
+marker followed by six little-endian 32-bit values: 24, 0x80008000, 0, 0, 0, 0.
+That is the size and field order of `IMAGE_VOLATILE_METADATA` as a pinned
+third-party header defines it
+([FEX-Emu `winnt.h`](https://github.com/FEX-Emu/FEX/blob/53e148474caff8a8eae50e66a9da643da232b3d9/Source/Windows/include/winnt.h#L220-L227)).
+The fixture now appends `/EMITVOLATILEMETADATA:NO` as its eleventh argument.
+[FlexDLL](https://github.com/ocaml/flexdll/blob/ab8161fc7161a598c5aaf66f02298035639d5ef3/reloc.ml#L1154-L1161)
+passes that switch when LINK advertises it, and two other projects list or use
+it ([msvc-undoc](https://github.com/assarbad/msvc-undoc/blob/5423c9f0390e770b8b6c667209aacaa33970643f/LINK.exe.md),
+[TinyPE](https://github.com/Masfo/TinyPE/blob/6560d797ea40678d3b951c9f8d3cfb6ab63c18e1/CMake/SetupMSVC.cmake#L122)).
+Microsoft does not document its effect, and the fixture does not ask LINK for
+its help text. This is a conditional candidate: which tool wrote the block,
+what its second value means and whether the switch removes it are not
+established. The unchanged 16-byte check and the original Prepared, source-Cargo
+and WASM gates decide on a fresh Windows run; a refusal stays a refusal. Normal
+privacy remains off.
+
+The completed audit of that run records failed required gates. Fmt and Ubuntu
+passed. Windows core failed two restoration cases whose `Vault::open` returned
+Deadline. Both Windows gadget source/guest parents failed: the installed-linker
+helper's record is the strict check refusing the section's 40 declared bytes
+against the unchanged 16, and the same operands are not inferred for the
+source-built parent. macOS core failed one closed-stdout observer case with an
+unsuccessful helper status. The required post steps were skipped. Which vault
+phase ran out of time and why, and how and why the observer's helper failed,
+remain unknown. No full PE, Prepared, Cargo or WASM pass exists yet.
