@@ -7,10 +7,12 @@
 //! is checked against the original text before it is used. A guest's success
 //! text, logs or diagnostics are never read as authority.
 //!
-//! The host cannot see what an approved detector fails to report. It checks
-//! what is reported, and the admission owner separately refuses text that
-//! leaves a value already known in its scope uncovered.
+//! The host cannot see everything an approved detector fails to report. For
+//! the two supported categories it applies a narrow floor of its own (see
+//! `floor`) and refuses a reply that leaves a floor match unreported. That is
+//! a check on the reply, not a second detector and not a coverage claim.
 
+mod floor;
 #[cfg(feature = "gadgets")]
 mod pinned;
 #[cfg(test)]
@@ -50,6 +52,8 @@ pub enum ReplyRefusal {
     Order,
     #[error("The detector reply reports an unsupported category or value.")]
     Category,
+    #[error("The detector reply leaves a supported value unreported.")]
+    Coverage,
 }
 
 /// Why no usable detector result exists for one text. Fixed diagnostics.
@@ -179,8 +183,9 @@ impl<'a> Request<'a> {
     /// with no extra field; another version or request binding; more than 128
     /// spans; an unknown node or a wrong node binding; an empty, reversed,
     /// out-of-range or scalar-splitting range; spans out of order or
-    /// overlapping; a category other than `email` or `phone`; and a span whose
-    /// text the vault's own grammar does not admit for that category.
+    /// overlapping; a category other than `email` or `phone`; a span whose
+    /// text the vault's own grammar does not admit for that category; and a
+    /// reply that leaves a match of the host floor outside every span.
     pub fn validate_reply(&self, reply: &str) -> Result<Vec<TextSpan>, ReplyRefusal> {
         if reply.len() > MAX_REPLY_BYTES {
             return Err(ReplyRefusal::Output);
@@ -193,6 +198,7 @@ impl<'a> Request<'a> {
             return Err(ReplyRefusal::Count);
         }
         let mut spans = Vec::with_capacity(reply.spans.len());
+        let mut reported: Vec<Vec<(usize, usize)>> = vec![Vec::new(); self.nodes.len()];
         let mut previous: Option<(usize, usize)> = None;
         for span in &reply.spans {
             let index = self
@@ -225,11 +231,24 @@ impl<'a> Request<'a> {
                 return Err(ReplyRefusal::Category);
             }
             previous = Some((index, span.end));
+            reported[index].push((span.start, span.end));
             spans.push(TextSpan {
                 start: node.offset + span.start,
                 end: node.offset + span.end,
                 category,
             });
+        }
+        // The host floor: every match of the fixed email and telephone rules
+        // must lie inside a reported span of its node.
+        for (node, reported) in self.nodes.iter().zip(&reported) {
+            for (start, end, _) in floor::matches(node.text) {
+                if !reported
+                    .iter()
+                    .any(|(from, to)| *from <= start && *to >= end)
+                {
+                    return Err(ReplyRefusal::Coverage);
+                }
+            }
         }
         Ok(spans)
     }

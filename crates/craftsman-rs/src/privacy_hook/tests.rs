@@ -15,6 +15,7 @@ pub(crate) struct LiteralSource {
     rules: Mutex<Vec<(String, &'static str)>>,
     failure: Mutex<Option<HookError>>,
     during: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     first_only: AtomicBool,
     pub(crate) calls: AtomicUsize,
 }
@@ -25,6 +26,7 @@ impl LiteralSource {
             rules: Mutex::new(Vec::new()),
             failure: Mutex::new(None),
             during: Mutex::new(None),
+            gate: Mutex::new(None),
             first_only: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
         });
@@ -47,6 +49,11 @@ impl LiteralSource {
         *self.during.lock().unwrap() = Some(Box::new(hook));
     }
 
+    /// Every later reply waits for one permit of this gate.
+    pub(crate) fn gate(&self, gate: Arc<tokio::sync::Semaphore>) {
+        *self.gate.lock().unwrap() = Some(gate);
+    }
+
     /// Report only the first occurrence of each rule in a node.
     pub(crate) fn first_only(&self, first_only: bool) {
         self.first_only.store(first_only, Ordering::SeqCst);
@@ -63,6 +70,10 @@ impl ReplySource for LiteralSource {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some(hook) = self.during.lock().unwrap().as_ref() {
             hook();
+        }
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
         }
         if let Some(failure) = *self.failure.lock().unwrap() {
             return Err(failure);
@@ -218,18 +229,86 @@ fn a_valid_reply_returns_checked_spans_in_whole_text_offsets() {
     assert_eq!(spans[0].category, Category::Email);
     assert_eq!(spans[2].category, Category::Telephone);
     assert!(spans[0].end <= spans[1].start && spans[1].end <= spans[2].start);
-    // An empty report is a valid reply; the host cannot see an omission.
-    assert!(
-        request
-            .validate_reply(&reply(&json, vec![]).to_string())
+}
+
+#[test]
+fn a_reply_that_leaves_a_floor_match_unreported_is_refused() {
+    let text = format!("mail {EMAIL} or call {PHONE}.\nsecond line {EMAIL}");
+    let request = Request::from_text(&text).unwrap();
+    let json = request.to_json();
+    let at = |value: &str| text.find(value).unwrap();
+    let email = span(&json, 0, at(EMAIL), at(EMAIL) + EMAIL.len(), "email");
+    let phone = span(&json, 0, at(PHONE), at(PHONE) + PHONE.len(), "phone");
+    let last = text.rfind(EMAIL).unwrap();
+    let again = span(&json, 0, last, last + EMAIL.len(), "email");
+    let check = |spans: Vec<Value>| request.validate_reply(&reply(&json, spans).to_string());
+    assert_eq!(
+        check(vec![email.clone(), phone.clone(), again.clone()])
             .unwrap()
-            .is_empty()
+            .len(),
+        3
     );
+    // An empty report, a missing category and a missing repeat are refused.
+    for partial in [
+        vec![],
+        vec![email.clone(), again.clone()],
+        vec![phone.clone()],
+        vec![email.clone(), phone.clone()],
+    ] {
+        assert_eq!(check(partial).unwrap_err(), ReplyRefusal::Coverage);
+    }
+
+    // The floor is narrow. Text it does not match needs no span, and that is
+    // no statement that the text holds nothing private.
+    for unmatched in [
+        "nothing here",
+        "中alice@example.invalid",
+        "alice@localhost",
+        "call 12345 or 1-2-3",
+        "Alice Example, 12 Example Street",
+        "token sk-test-0123456789abcdef",
+    ] {
+        let request = Request::from_text(unmatched).unwrap();
+        let json = request.to_json();
+        assert_eq!(
+            request
+                .validate_reply(&reply(&json, vec![]).to_string())
+                .map(|spans| spans.len()),
+            Ok(0),
+            "{unmatched}"
+        );
+    }
+    // Each supported telephone layout and a few addresses are floor matches.
+    for matched in [
+        "+14155550123",
+        "+1 (415) 555-0123",
+        "415-555-0123",
+        "415.555.0123",
+        "+44 20 7946 0958",
+        "+886 912 345 678",
+        "+886-2-2345-6789",
+        "0912-345-678",
+        "02-2345-6789",
+        "a.b+c@sub.example.org",
+        "_alice@example.invalid",
+        "x@example.invalid.",
+    ] {
+        let line = format!("see {matched} now");
+        let request = Request::from_text(&line).unwrap();
+        let json = request.to_json();
+        assert_eq!(
+            request
+                .validate_reply(&reply(&json, vec![]).to_string())
+                .unwrap_err(),
+            ReplyRefusal::Coverage,
+            "{matched}"
+        );
+    }
 }
 
 #[test]
 fn every_unbound_or_malformed_reply_is_refused_whole() {
-    let text = format!("中文🦀 {EMAIL}; {PHONE}\nsecond {EMAIL}");
+    let text = format!("中文🦀 {EMAIL}; {PHONE}\nsecond line");
     let request = Request::from_text(&text).unwrap();
     let json = request.to_json();
     let email = text.find(EMAIL).unwrap();

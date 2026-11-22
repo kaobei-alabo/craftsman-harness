@@ -497,18 +497,6 @@ impl Category {
     }
 }
 
-impl MappingSession {
-    /// Every authenticated mapping of this session's own live scope, read and
-    /// verified in one bounded operation. The records carry this session's
-    /// identity exactly as mask and resolve records do. Nothing is created,
-    /// changed, guessed or accepted from a caller: there is no alias, status or
-    /// record constructor here, and another scope's rows are never returned.
-    /// A refusal closes this session, as every refused vault request does.
-    pub async fn scope_records(&self) -> Result<ResolutionRecords> {
-        storage::scope_records(self.live.clone()).await
-    }
-}
-
 macro_rules! private_debug {
     ($($type:ty),+ $(,)?) => {$(
         impl fmt::Debug for $type {

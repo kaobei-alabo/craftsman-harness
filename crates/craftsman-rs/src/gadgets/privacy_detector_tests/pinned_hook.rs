@@ -14,7 +14,8 @@ use crate::privacy_hook::{
 };
 use crate::privacy_send::SendRefusal;
 use crate::privacy_session::{
-    AdmitError, AdmitRefusal, ConversationScope, PrivacySession, SessionStop,
+    AdmitError, AdmitRefusal, CapturedRaw, FreshConversationBinding, PrivacySession, RawOrigin,
+    SessionStop,
 };
 use crate::privacy_vault::{HostKey, HostKeySource, Limits, Vault, VaultLocation};
 use serde_json::json;
@@ -313,6 +314,8 @@ async fn pinned_hook_native_fixture() {
         ("count", ReplyRefusal::Count),
         ("oversized", ReplyRefusal::Output),
         ("wrong_category", ReplyRefusal::Category),
+        // An empty report for text that holds supported values.
+        ("omit", ReplyRefusal::Coverage),
     ] {
         let reply = runtime
             .call_pinned(
@@ -329,17 +332,6 @@ async fn pinned_hook_native_fixture() {
         );
         malformed += 1;
     }
-    // An empty report is well formed. The host cannot see an omission; the
-    // admission owner covers only values its scope already knows.
-    let omitted = runtime
-        .call_pinned(
-            &pin,
-            "fixture_adversarial",
-            json!({"mode": "omit", "request": arguments}),
-        )
-        .await
-        .unwrap();
-    assert!(request.validate_reply(&omitted.json).unwrap().is_empty());
     // A guest failure, an oversized result and an unknown function.
     for (function, input, kind) in [
         (
@@ -419,85 +411,93 @@ async fn pinned_hook_native_fixture() {
         DetectorPin::supplied_by_host(ID, "detect", "not-a-hash", &pin.manifest_sha256).err(),
         Some(HookError::Source)
     );
-    let scope = || ConversationScope::fresh(&installed.workspace).unwrap();
-    let session = PrivacySession::open(&vault, scope(), detector(&pin, "detect"))
+    let binding = || FreshConversationBinding::reserve(&installed.workspace).unwrap();
+    let draft = |text: &str| CapturedRaw::from_producer(RawOrigin::TerminalDraft, text);
+    let session = PrivacySession::open(&vault, binding(), detector(&pin, "detect"))
         .await
         .unwrap();
     let guard = session.send_guard();
-    let admitted = session.admit_raw(&text).await.unwrap();
-    let masked = admitted.text().unwrap().to_owned();
-    assert_eq!(admitted.replacements(), 3);
-    assert!(!masked.contains(EMAIL) && !masked.contains(PHONE));
-    assert!(masked.starts_with("中文🦀 pv1-") && masked.ends_with('.'));
-    assert_eq!(
-        session
-            .with_scope_records(|_, records| records.len().unwrap())
-            .await
-            .unwrap(),
-        2
-    );
+    let raw = draft(&text);
+    let node = session.admit_raw(&raw).await.unwrap();
+    let view = node.model_view().unwrap().to_owned();
+    assert_eq!(node.replacements(), 3);
+    assert!(node.admits(&raw) && node.admitted_by(&session));
+    assert!(!view.contains(EMAIL) && !view.contains(PHONE));
+    assert!(view.starts_with("中文🦀 pv1-") && view.ends_with('.'));
+    assert_eq!(session.known_values().await, 2);
     assert_eq!(
         guard.seal(body(&text), &[]).err(),
         Some(SendRefusal::KnownOriginal)
     );
-    assert!(guard.seal(body(&masked), &[]).is_ok());
-    // A repeated value reuses its placeholder; admitted text is not raw text.
-    let again = session.admit_raw(&format!("re: {EMAIL}")).await.unwrap();
-    assert!(masked.contains(again.text().unwrap().strip_prefix("re: ").unwrap()));
+    assert!(guard.seal(body(&view), &[]).is_ok());
+    // A repeated value reuses its placeholder through a new commit. The
+    // bytes of a view are raw again when they arrive as a new capture.
+    let again = session
+        .admit_raw(&CapturedRaw::from_producer(
+            RawOrigin::ToolResult,
+            &format!("re: {EMAIL}"),
+        ))
+        .await
+        .unwrap();
+    assert!(view.contains(again.model_view().unwrap().strip_prefix("re: ").unwrap()));
     assert_eq!(
-        session.admit_raw(&masked).await.err(),
+        session.admit_raw(&draft(&view)).await.err(),
         Some(AdmitError::Refused(AdmitRefusal::IssuedPlaceholder))
     );
     let mut admitted_texts = 2;
-    // A text the request cannot carry is refused; the session continues.
+    // A draft the request cannot carry is refused; the session continues,
+    // and text with nothing to report is admitted through the real detector
+    // and the vault.
     assert_eq!(
         session
-            .admit_raw(&format!("{}\n", "x".repeat(70 * 1024)))
+            .admit_raw(&draft(&format!("{}\n", "x".repeat(70 * 1024))))
             .await
             .err(),
         Some(AdmitError::Refused(AdmitRefusal::TooLarge))
     );
-    assert!(session.admit_raw("no value here").await.is_ok());
+    let plain = session.admit_raw(&draft("no value here")).await.unwrap();
+    assert_eq!(
+        (plain.model_view().unwrap(), plain.replacements()),
+        ("no value here", 0)
+    );
     admitted_texts += 1;
-    // A changed source ends the session: no admission, no send.
+    // A changed source ends the session: no admission, no view, no send.
     std::fs::write(installed.bundle.join("gadget.wasm"), &changed).unwrap();
     assert_eq!(
-        session.admit_raw(&format!("call {PHONE}")).await.err(),
-        Some(AdmitError::Stopped(SessionStop::Detector))
+        session
+            .admit_raw(&draft(&format!("call {PHONE}")))
+            .await
+            .err(),
+        Some(AdmitError::Stopped(SessionStop::Detector(
+            HookError::Source
+        )))
     );
     installed.restore();
     assert_eq!(session.check(), Err(SessionStop::Closed));
-    assert_eq!(admitted.text(), Err(SessionStop::Closed));
+    assert_eq!(node.model_view(), Err(SessionStop::Closed));
     assert_eq!(
         guard.seal(body("clean"), &[]).err(),
         Some(SendRefusal::Closed)
     );
     refusals += 1;
-    // A selector for other bytes, and a detector whose replies are malformed.
+    // A selector for other bytes, and a function that is not the detector.
     let wrong = PinnedSource {
         component_sha256: "5".repeat(64),
         ..pin.clone()
     };
-    let unselected = PrivacySession::open(&vault, scope(), detector(&wrong, "detect"))
-        .await
-        .unwrap();
-    assert_eq!(
-        unselected.admit_raw(&text).await.err(),
-        Some(AdmitError::Stopped(SessionStop::Detector))
-    );
-    refusals += 1;
-    let unknown = PrivacySession::open(&vault, scope(), detector(&pin, "fixture_adversarial"))
-        .await
-        .unwrap();
-    assert_eq!(
-        unknown.admit_raw(&text).await.err(),
-        Some(AdmitError::Stopped(SessionStop::Detector))
-    );
-    refusals += 1;
-    assert_eq!(
-        unknown.with_scope_records(|_, _| ()).await.err(),
-        Some(SessionStop::Closed)
-    );
+    for (pin, function) in [(&wrong, "detect"), (&pin, "fixture_adversarial")] {
+        let session = PrivacySession::open(&vault, binding(), detector(pin, function))
+            .await
+            .unwrap();
+        assert_eq!(
+            session.admit_raw(&draft(&text)).await.err(),
+            Some(AdmitError::Stopped(SessionStop::Detector(
+                HookError::Source
+            )))
+        );
+        assert_eq!(session.check(), Err(SessionStop::Closed));
+        refusals += 1;
+    }
     println!(
         "PRIVACY-HOOK-FIXTURE:COMPLETE refusals={refusals} malformed={malformed} admitted={admitted_texts}"
     );
@@ -600,6 +600,6 @@ async fn pinned_detector_and_admission_pass_marked_actual_native_runtime() {
         status.success(),
         "pinned detector fixture failed: {stdout} {stderr}"
     );
-    assert!(stdout.contains("PRIVACY-HOOK-FIXTURE:COMPLETE refusals=18 malformed=18 admitted=3"));
+    assert!(stdout.contains("PRIVACY-HOOK-FIXTURE:COMPLETE refusals=18 malformed=19 admitted=3"));
     assert!(!stdout.contains("NOT-SELECTED"));
 }

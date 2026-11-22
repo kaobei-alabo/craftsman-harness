@@ -10,10 +10,13 @@ grants and permissions remain in force.
 
 A private [detector contract and admission core](privacy-admission.md) now
 exists as a local, unmerged slice: a source-pinned detector call on the gadget
-engine and an owner that saves mappings and admits them to the send guard
-before releasing admitted text. It is not connected to any provider, tool,
-display, file, key source or policy, and it does not yet handle text the model
-produced or mixed text.
+engine and an owner that turns one actual raw capture into an admitted node
+only after the vault's commit and the send guard's admission. It is not
+connected to any provider, tool, display, file, key source or policy.
+[Privacy provenance](privacy-provenance.md) records how sources and model views
+are meant to reach a request; most of that is not built. The target diagram
+below predates that contract where it shows masked history: stored history
+stays exact and the model gets a separate view.
 
 The selected behavior is to replace supported personal data before a model
 request and restore known replacements in **displayed replies and file edits**.

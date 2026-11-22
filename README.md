@@ -154,6 +154,7 @@ documents and folders containing several projects are supported too.
 [Privacy hook development](docs/privacy-hooks.md) ·
 [Private send guard](docs/privacy-send.md) ·
 [Private admission core](docs/privacy-admission.md) ·
+[Privacy provenance](docs/privacy-provenance.md) ·
 [Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
