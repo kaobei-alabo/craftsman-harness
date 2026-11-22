@@ -2181,3 +2181,98 @@ async fn supported_json_replace_all_keeps_every_actual_value_and_unchanged_docum
 }
 #[path = "inline_release_tests.rs"]
 mod inline_release;
+
+#[tokio::test]
+async fn undeclared_private_selectors_have_one_refusal_before_data_reads_or_comparisons() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let contents = [
+        b"Contact another@example.test.\n".to_vec(),
+        format!("Contact {EMAIL}.\nContact {EMAIL}.\n").into_bytes(),
+        vec![b'x'; 256 * 1024 + 1],
+        b"{\"owner\":\"broken\"".to_vec(),
+        vec![0xff, 0xfe, 0xfd],
+    ];
+    for before in contents {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, None).await;
+        let path = f.dir.path().join("contacts.txt");
+        std::fs::write(&path, &before).unwrap();
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "edit-unregistered",
+                    "edit_file",
+                    json!({
+                        "file_path":"contacts.txt", "old_string":f.placeholder,
+                        "new_string":"Contact finished.",
+                    }),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            result_at(&f.agent, 2),
+            (FileRefusal::NoRule.to_string(), true)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(f.reviewer.shown.lock().unwrap().is_empty());
+        assert!(f.around.steps.lock().unwrap().is_empty());
+        nothing_original_sent(&server).await;
+    }
+}
+
+#[tokio::test]
+async fn actual_declared_targets_keep_ordinary_selector_miss_and_multiplicity_results() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    for duplicate in [false, true] {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+        let before = if duplicate {
+            format!("Contact {EMAIL}.\nContact {EMAIL}.\n")
+        } else {
+            "Contact another@example.test.\n".to_owned()
+        };
+        let path = f.dir.path().join("contacts.txt");
+        std::fs::write(&path, &before).unwrap();
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "edit-declared",
+                    "edit_file",
+                    json!({
+                        "file_path":"contacts.txt", "old_string":f.placeholder,
+                        "new_string":"Contact finished.",
+                    }),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        let expected = if duplicate {
+            format!(
+                "Error: old_string occurs 2 times in {}; pass replace_all or a longer unique string",
+                path.display()
+            )
+        } else {
+            format!("Error: old_string not found in {}", path.display())
+        };
+        assert_eq!(result_at(&f.agent, 2), (expected, true));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(f.reviewer.shown.lock().unwrap().is_empty());
+        assert!(f.around.steps.lock().unwrap().is_empty());
+        nothing_original_sent(&server).await;
+    }
+}

@@ -16,6 +16,88 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const BEFORE: &str = "Contact old text";
 
+#[tokio::test]
+async fn actual_absent_delegated_channel_releases_only_its_derived_review_and_keeps_the_refusal() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let ground = ground(&vault, &server).await;
+    let watched = Arc::new(Watch::default());
+    let around = Arc::new(Around::default());
+    let store = Arc::new(MemCheckpointer::default());
+    let approval = Arc::new(Mutex::new(ApprovalState::default()));
+    let plain: Vec<Arc<dyn Tool>> = vec![Arc::new(PlainFile(
+        "edit_file",
+        ground.dir.path().to_path_buf(),
+        around.clone(),
+    ))];
+    let tools = crate::agent::gated_for_delegation_with_privacy(
+        plain,
+        &approval,
+        (&None, &None),
+        ground.dir.path(),
+        Some(&ground.review),
+        Some(&ground.boundary),
+        None,
+    );
+    let mut builder = Agent::builder(ground.provider.clone())
+        .model_view_boundary(Some(ground.boundary.clone()))
+        .middleware(watched.clone())
+        .checkpointer(store.clone())
+        .durable_turn_checkpoints(true);
+    for tool in tools {
+        builder = builder.tool(tool);
+    }
+    let agent = Arc::new(builder.build());
+    let typed = format!("who handles {EMAIL}?");
+    let node = ground.session.admit_raw(&draft(&typed)).await.unwrap();
+    let placeholder = issued(&node);
+    scripted(&server, vec![file_call("no-channel", "edit_file", json!({
+        "file_path":"note.txt", "old_string":BEFORE, "new_string":format!("to {placeholder}"),
+    })), answer("chat", &["done"])]).await;
+    let source = ground.session.source(&node).unwrap();
+    agent
+        .run_turn_with_view(typed.clone(), source)
+        .await
+        .unwrap();
+    let refused = "'edit_file' requires user approval, but this delegated run has no interactive approval channel. Do this step directly or use an explicit permission mode.";
+    assert_eq!(result_at(&agent, 2), (refused.to_owned(), true));
+    assert_eq!(
+        std::fs::read_to_string(ground.dir.path().join("note.txt")).unwrap(),
+        BEFORE
+    );
+    assert!(around.steps.lock().unwrap().is_empty());
+    let seen = watched.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].held, Err(FileRefusal::Spent));
+    assert!(!seen[0].done);
+    // Actual terminal facts may still refer to the review metadata. The
+    // original preview/file must be gone without discarding those facts.
+    let retained = seen[0]
+        .operation
+        .upgrade()
+        .expect("actual review metadata is retained");
+    assert!(matches!(
+        retained.shown_arguments(),
+        Err(FileRefusal::Spent)
+    ));
+    assert!(!retained.is_done());
+    drop(seen);
+    let saved = store.saves.lock().unwrap();
+    assert!(saved.iter().any(|(_, _, state, _)| {
+        state
+            .messages
+            .iter()
+            .any(|message| matches!(message, Msg::User { content } if content == &typed))
+    }));
+    assert!(saved.iter().any(|(_, _, state, _)| {
+        state.messages.iter().any(
+        |message| matches!(message, Msg::Tool { content, is_error:true, .. } if content == refused)
+    )
+    }));
+    nothing_original_sent(&server).await;
+}
+
 /// A conversation up to the point where its agent is built: everything a
 /// gate has to be registered with.
 struct Ground {

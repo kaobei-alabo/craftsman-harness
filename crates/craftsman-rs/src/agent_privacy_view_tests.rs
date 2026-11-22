@@ -1447,20 +1447,21 @@ struct WritesItsInput(std::path::PathBuf);
 
 impl wiremock::Respond for WritesItsInput {
     fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let input = content_at(request, 1);
+        let content = if let Some(data) = input.strip_prefix("Work on this: Note that ") {
+            format!("Contact {data}")
+        } else if let Some(data) = input.strip_prefix("Work on this: Who handles ") {
+            format!("Contact {data}")
+        } else {
+            input
+        };
         reply(
             "chat",
             1,
             Some((
                 "call-note",
                 "write_file",
-                &json!({"file_path": self.0, "content": {
-                    let input = content_at(request, 1);
-                    if let Some(data) = input.strip_prefix("Work on this: Note that ") {
-                        format!("Contact {data}")
-                    } else if let Some(data) = input.strip_prefix("Work on this: Who handles ") {
-                        format!("Contact {data}")
-                    } else { input }
-                }}),
+                &json!({"file_path": self.0, "content":content}),
             )),
             "",
         )

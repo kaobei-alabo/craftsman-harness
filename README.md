@@ -35,59 +35,25 @@ shell commands retain their separate permission checks.
 Text statistics, slug generation, checked CSV totals and JSON inspection have
 already been built and used in [live model sessions](docs/live-gadget-evaluation.md).
 
-Also in development: **privacy hooks** that mask supported personal data before
-model requests and restore it in local replies and file edits. The encrypted
-vault, WASM detector and restoration views are implemented privately;
-normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
-A private [restoration candidate](docs/privacy-restore.md) supplies a separate
-human view of a committed reply and derived content for file writes or edits,
-for the main agent and delegated agents behind their own gate. Its actual
-pre-review source and independently registered inline policy/human producers now
-exist in the local correction branch. Human approval uses an opaque request,
-presentation and original reply from the registered UI; an ordinary callback,
-digest or operation-owned decision is insufficient. The file tool still runs
-its own checkpoint and diagnostics around such a write, and the terminal's
-bridge draws a committed reply once through its safe backend. The local file
-consumer now requires typed full-image data and retained-parent grants from
-its selected policy; ordinary activity keeps model arguments and decoded
-previews remain in the private UI. The local private union includes the
-captured user policy/key owner and an owned terminal entry; combined-source
-review and native validation are still pending. Nothing selects it in normal
-sessions, and normal activation remains unavailable.
-A private [final-send guard](docs/privacy-send.md) that refuses requests
-containing already-mapped values is also implemented; nothing selects it yet.
-Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrapped
-vault key and existing-only unlock backend. An unselected
-[owned password popup and private bootstrap](docs/privacy-bootstrap.md) compose
-those owners with a pinned detector and fresh conversation. The actual private
-receiver carries opaque approvals and human questions, and refuses active
-settings saves. Its private `/clear` retires the old owners, asks for the
-password again, and builds a distinct fresh conversation; normal activation
-remains unavailable.
-The local key/UI union still has a retained macOS test-binary unwind warning;
-warning and native integration gates remain open.
-A private [detector contract and admission core](docs/privacy-admission.md)
-and a private way to compose model requests from
-[views of sources](docs/privacy-provenance.md), for all four model wires, are
-in development on top of them. No frontend, configuration or command selects
-either. The local core correction retains actual input/reply/tool facts and
-sealed human decisions, with a separate sourced model view and actual child/
-notification owners. It adds actual pre-review/terminal events, retained end/save
-failures and stop checks for new selected invocations. Kept native items remain exact through compaction; changed
-native replies refuse replay. Declared verification, context compilation and
-failure controls now have private
-[controller adapters](docs/privacy-provenance.md#controller-adapters): the
-session's original controllers run behind them, the context section is sent as
-source parts, and a declared check runs with its real commands and result,
-whether the model asks for it or the verification controller schedules it. A
-stop by that controller is recorded with its source and ends the conversation,
-and a compaction tells the original controller. These consume the framework's
-controller, completion and compaction events; they do not supply the key,
-policy or actual terminal receiver/modal/choice/shutdown ownership. The local
-inline core supplies its own opaque decision producers; real
-policy/frontend/restore adapters and independent validation remain required
-before activation. Failed local checks and the unresolved native linker warning
-remain recorded.
+Also in development: [**privacy hooks**](docs/privacy-hooks.md) that mask
+supported personal data before model requests and restore it in local replies
+and permitted data-file edits. The encrypted vault, source-built detector and
+[default-absent send guard](docs/privacy-send.md) are private foundations.
+Normal-session privacy activation remains unavailable.
+
+The local, unmerged source now combines [key and policy ownership](docs/privacy-key.md),
+an [owned password popup and private entry](docs/privacy-bootstrap.md),
+[committed source/model views](docs/privacy-provenance.md) and
+[restoration consumers](docs/privacy-restore.md). Local macOS fixtures exercise
+actual human approvals, captured Contact-data restoration, checkpoints and
+fresh `/clear`. Recorded inputs, replies, actual results and usage remain
+original; the model gets a separate view, and source records grant no tool
+permission. Unsupported frontends and representations refuse.
+
+Independent combined-source review, the recorded native unwind-size warning,
+full-suite/platform/hosted validation and later merged-main/install gates
+remain open. Earlier failures and unknown causes are retained. These local
+checks do not mean normal startup, complete privacy or release readiness.
 
 ## Planned WASM enhancement
 

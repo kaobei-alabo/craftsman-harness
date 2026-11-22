@@ -59,10 +59,80 @@ impl HostKeySource for SyntheticKey {
     }
 }
 
-/// A user's policy with a rule for file content: plain text, for every file.
-struct PlainTextFiles;
+/// One concrete contact-data declaration for the owned fixture target, with
+/// the actual workspace directory retained before any model proposal.
+struct PlainTextFiles {
+    destination: PathBuf,
+    directory: std::fs::File,
+}
+
+impl PlainTextFiles {
+    fn at(workspace: &Path, destination: &Path) -> Self {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        Self {
+            destination: destination.to_owned(),
+            directory: options.open(workspace).unwrap(),
+        }
+    }
+    fn names(&self, destination: &Path) -> bool {
+        if destination != self.destination {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let Some(parent) = destination.parent() else {
+                return false;
+            };
+            let (Ok(named), Ok(held)) = (std::fs::metadata(parent), self.directory.metadata())
+            else {
+                return false;
+            };
+            named.dev() == held.dev() && named.ino() == held.ino()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+}
 
 impl CapturedUserPolicy for PlainTextFiles {
+    fn precheck_file_target(
+        &self,
+        request: &crate::privacy_session::FileTargetRequest,
+    ) -> Option<crate::privacy_session::FileTargetPrecheck> {
+        if !self.names(request.destination()) {
+            return None;
+        }
+        request
+            .check_application(crate::privacy_session::SupportedDataApplication::ContactLinesV1)
+            .ok()
+    }
+    fn supported_file_data(
+        &self,
+        request: &crate::privacy_session::FileDataRequest,
+    ) -> Option<crate::privacy_session::SupportedFileData> {
+        if !self.names(request.destination()) {
+            return None;
+        }
+        request
+            .validate_application(crate::privacy_session::SupportedDataApplication::ContactLinesV1)
+            .ok()
+    }
+    fn retained_file_effect(
+        &self,
+        request: &crate::privacy_session::FileEffectRequest,
+    ) -> Option<crate::privacy_session::RetainedFileEffect> {
+        self.supported_file_data(request.data())?;
+        request.bind_retained_parent(&self.directory).ok()
+    }
     fn enables_privacy_in(&self, _: &str) -> bool {
         true
     }
@@ -74,6 +144,30 @@ impl CapturedUserPolicy for PlainTextFiles {
     fn restorable_file_data(&self, _: &str, _: &Path) -> Option<FileDataFormat> {
         Some(FileDataFormat::PlainText)
     }
+}
+
+fn bound_fixture_ui(read: ApprovalPrompt) -> Arc<crate::privacy_entry::PrivacyApprovalPrompt> {
+    let slot: Arc<Mutex<Option<Arc<crate::privacy_entry::PrivacyApprovalUi>>>> =
+        Arc::new(Mutex::new(None));
+    let receiver = slot.clone();
+    let (prompt, ui) =
+        crate::privacy_entry::register_privacy_approval_ui(Arc::new(move |request| {
+            let ui = receiver.lock().unwrap().clone()?;
+            let presented = ui.present(&request).ok()?;
+            let view = presented.review();
+            let choice = match read(&view.call.name, view.summary, view.details) {
+                ApprovalPromptResult::Approve => crate::privacy_entry::HumanChoice::Approve,
+                ApprovalPromptResult::ApproveAlways => {
+                    crate::privacy_entry::HumanChoice::ApproveAlways
+                }
+                ApprovalPromptResult::Reject(feedback) => {
+                    crate::privacy_entry::HumanChoice::Deny(feedback)
+                }
+            };
+            ui.decide(presented, choice).ok()
+        }));
+    *slot.lock().unwrap() = Some(ui);
+    prompt
 }
 
 /// A reply made from the placeholder the request carries for the address in
@@ -224,9 +318,13 @@ async fn restore_wires_native_fixture() {
             None,
             SessionExtras {
                 privacy_view: Some(
-                    PrivacyViewSelection::from_user_policy(Arc::new(PlainTextFiles), owner.clone())
-                        .unwrap(),
+                    PrivacyViewSelection::from_user_policy(
+                        Arc::new(PlainTextFiles::at(&workspace, &note)),
+                        owner.clone(),
+                    )
+                    .unwrap(),
                 ),
+                privacy_approval_prompt: Some(bound_fixture_ui(prompt.clone())),
                 approval_prompt: Some(prompt),
                 workspace_root: Some(workspace.clone()),
                 token_sink: Some(Arc::new(|_| {})),
@@ -314,7 +412,7 @@ async fn restore_wires_native_fixture() {
             1,
             FromTask(Box::new(move |placeholder| {
                 let write =
-                    json!({"file_path": path, "content": format!("Delegated: {placeholder}.")});
+                    json!({"file_path": path, "content": format!("Contact delegated {placeholder}.")});
                 reply(wire, 1, Some(("wire-note", "write_file", &write)), "")
             })),
         )
@@ -368,9 +466,13 @@ async fn restore_wires_native_fixture() {
             None,
             SessionExtras {
                 privacy_view: Some(
-                    PrivacyViewSelection::from_user_policy(Arc::new(PlainTextFiles), owner.clone())
-                        .unwrap(),
+                    PrivacyViewSelection::from_user_policy(
+                        Arc::new(PlainTextFiles::at(&workspace, &note)),
+                        owner.clone(),
+                    )
+                    .unwrap(),
                 ),
+                privacy_approval_prompt: Some(bound_fixture_ui(prompt.clone())),
                 approval_prompt: Some(prompt),
                 workspace_root: Some(workspace.clone()),
                 token_sink: Some(Arc::new(move |text| stream.lock().unwrap().push_str(text))),
@@ -396,12 +498,13 @@ async fn restore_wires_native_fixture() {
         let details = shown.lock().unwrap().clone();
         assert_eq!(details.len(), 1, "{wire}");
         assert!(
-            details[0].contains(&format!("Delegated: {EMAIL}.")) && !details[0].contains("pv1-"),
+            details[0].contains(&format!("Contact delegated {EMAIL}."))
+                && !details[0].contains("pv1-"),
             "{wire}"
         );
         assert_eq!(
             std::fs::read_to_string(&note).unwrap(),
-            format!("Delegated: {EMAIL}."),
+            format!("Contact delegated {EMAIL}."),
             "{wire}"
         );
         delegated += 1;
