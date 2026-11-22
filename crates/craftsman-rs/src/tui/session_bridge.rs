@@ -137,7 +137,7 @@ fn cancel_prompt<T: Send + 'static>(
     refusal: T,
 ) -> Option<CancelPrompt> {
     turn.map(|turn| {
-        CancelPrompt(tokio::spawn(async move {
+        CancelPrompt(crate::util::spawn_unit(async move {
             turn.cancelled().await;
             let _ = response.send(refusal);
         }))
