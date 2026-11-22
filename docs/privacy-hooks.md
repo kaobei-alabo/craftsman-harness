@@ -28,9 +28,13 @@ Nothing selects it: actual user policy and frontend adapters are absent, and
 configured controls, runtime/catalog and inline human adapters still refuse or
 remain unwired.
 Sealed parked-call decisions have a private registered input producer and actual
-commit/invocation witnesses. Approval receipts inside the gate, terminal frontend
-input and display, restoration,
-key handling and activation are not built. The target diagram
+commit/invocation witnesses. Restoration has a private path of its own: a
+person's view of a committed reply, a hold on a streamed reply, and file writes
+and edits of the root agent that are derived with the real content before the
+approval gate decides, bound to that decision and checked again where they run;
+see [privacy-restore.md](privacy-restore.md). Approval receipts inside the gate,
+terminal frontend input and drawing, restoration for delegated agents and other
+tools, key handling and activation are not built. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 

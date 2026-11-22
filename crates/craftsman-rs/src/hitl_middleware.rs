@@ -32,6 +32,9 @@ pub struct ApprovalMiddleware {
     call_approval_prompt: Option<CallApprovalPrompt>,
     workspace_root: PathBuf,
     verification: Option<Arc<crate::verification::VerificationController>>,
+    /// The file review of a privacy conversation. Absent in every other
+    /// session, where nothing here changes.
+    file_review: Option<Arc<crate::privacy_session::FileReview>>,
 }
 
 impl ApprovalMiddleware {
@@ -71,7 +74,18 @@ impl ApprovalMiddleware {
             workspace_root,
             call_approval_prompt: None,
             verification: None,
+            file_review: None,
         }
+    }
+
+    /// The file review of a privacy conversation, which this gate asks
+    /// before it decides on a file write or edit.
+    pub(crate) fn with_file_review(
+        mut self,
+        review: Option<Arc<crate::privacy_session::FileReview>>,
+    ) -> Self {
+        self.file_review = review;
+        self
     }
 
     pub fn with_call_prompt(mut self, prompt: Option<CallApprovalPrompt>) -> Self {
@@ -192,10 +206,48 @@ impl AgentMiddleware for ApprovalMiddleware {
             || summarize_call(&call.name, &call.args),
             |review| review.summary.clone(),
         );
-        let details = review.as_ref().map_or_else(
-            || crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root),
-            |review| review.details.clone(),
-        );
+        // In a privacy conversation, what a file write or edit will really
+        // do is derived before anything here looks at the call. A person and
+        // the policy then decide on the real content, and the decision is
+        // bound to exactly that. The call itself stays as the model wrote
+        // it. A call that cannot be derived is answered with the refusal
+        // before any effect.
+        let derived = match &self.file_review {
+            Some(files) => match files.propose(&call).await {
+                Ok(derived) => derived,
+                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+            },
+            None => None,
+        };
+        let shown = match &derived {
+            Some(derived) => {
+                match derived.preview(|preview| {
+                    (
+                        crate::tools::approval_details_at(
+                            &call.name,
+                            preview.arguments,
+                            &self.workspace_root,
+                        ),
+                        preview.digest,
+                    )
+                }) {
+                    Ok(shown) => Some(shown),
+                    Err(stop) => {
+                        return Ok(ToolOutcome::err(
+                            crate::privacy_session::FileRefusal::Stopped(stop).to_string(),
+                        ));
+                    }
+                }
+            }
+            None => None,
+        };
+        let details = match (&shown, &review) {
+            (Some((details, _)), _) => details.clone(),
+            (None, Some(review)) => review.details.clone(),
+            (None, None) => {
+                crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root)
+            }
+        };
         let call_id = call.id.clone();
         let tool = call.name.clone();
         self.emit(&summary);
@@ -232,6 +284,26 @@ impl AgentMiddleware for ApprovalMiddleware {
         } else {
             self.approval_decision(&call, &summary, &details)
         };
+        // The decision that was taken is the decision on what was shown.
+        if let (Some(derived), Some((_, digest))) = (&derived, &shown) {
+            let bound = match &decision {
+                Some(Decision::Reject(_)) => {
+                    derived.refuse();
+                    Ok(())
+                }
+                _ => derived.approve(*digest),
+            };
+            if let Err(refusal) = bound {
+                let content = refusal.to_string();
+                self.emit_tool_event(ToolActivityEvent::Finished {
+                    call_id,
+                    tool,
+                    content: content.clone(),
+                    is_error: true,
+                });
+                return Ok(ToolOutcome::err(content));
+            }
+        }
         if let Some(Decision::Reject(feedback)) = decision {
             let content = rejection_result(&feedback);
             self.emit_tool_event(ToolActivityEvent::Finished {

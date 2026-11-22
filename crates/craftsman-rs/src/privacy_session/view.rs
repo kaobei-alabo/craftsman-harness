@@ -279,6 +279,12 @@ pub struct CommittedModelNode {
 }
 
 impl CommittedModelNode {
+    /// Whether both are the same committed reply: the same object, not an
+    /// equal one.
+    pub fn is(&self, other: &CommittedModelNode) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Whether this exact session received and committed the reply.
     pub fn committed_by(&self, session: &PrivacySession) -> bool {
         Arc::ptr_eq(&self.inner.owner, &session.inner)
@@ -417,6 +423,45 @@ impl ApprovedOperation {
     pub fn fields(&self) -> Result<Option<&[SourceField]>, SessionStop> {
         self.owner.live()?;
         Ok(self.fields.as_deref())
+    }
+}
+
+/// What the last committed reply proposes with one of its calls, before
+/// anything has reviewed that call: the call exactly as the reply wrote it,
+/// the reply, and where the call's arguments name issued placeholders. It
+/// approves nothing and is not the checked operation of a running call. It
+/// exists so that what a call will really do can be derived and shown before
+/// a person or a policy decides on it.
+pub struct ProposedOperation {
+    owner: Arc<Inner>,
+    model: CommittedModelNode,
+    call: ToolCall,
+    fields: Option<Vec<SourceField>>,
+}
+
+impl ProposedOperation {
+    /// The call as the committed reply wrote it.
+    pub fn call(&self) -> Result<&ToolCall, SessionStop> {
+        self.owner.live()?;
+        Ok(&self.call)
+    }
+
+    /// The committed reply that asked for the call.
+    pub fn model(&self) -> &CommittedModelNode {
+        &self.model
+    }
+
+    /// Every occurrence of an issued placeholder in a string value of the
+    /// arguments. `None` when occurrences overlap.
+    pub fn fields(&self) -> Result<Option<&[SourceField]>, SessionStop> {
+        self.owner.live()?;
+        Ok(self.fields.as_deref())
+    }
+}
+
+impl std::fmt::Debug for ProposedOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProposedOperation([private])")
     }
 }
 
@@ -1155,6 +1200,28 @@ impl ConversationBoundary {
     /// component at the tool that needs to know exactly what was approved.
     pub fn operation_in_flight(&self) -> Option<Arc<ApprovedOperation>> {
         self.dispatch.lock().unwrap().in_flight.clone()
+    }
+
+    /// What the last committed reply proposes with `call`, for a review that
+    /// has to know what the call will really do before it decides. Refused
+    /// when that reply did not ask for exactly this call.
+    pub async fn proposed_operation(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Arc<ProposedOperation>, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        let model = self
+            .asked_for(call)
+            .ok_or_else(|| fault(SessionStop::Unbound))?;
+        let fields = inner.argument_fields(&call.name, &call.args).await;
+        inner.live().map_err(fault)?;
+        Ok(Arc::new(ProposedOperation {
+            owner: inner.clone(),
+            model,
+            call: call.clone(),
+            fields,
+        }))
     }
 
     /// The last committed reply, if it asked for exactly this call.

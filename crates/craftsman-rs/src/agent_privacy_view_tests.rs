@@ -121,6 +121,7 @@ async fn privacy_view_builder_fixture() {
     normal_parts(&directory, &vault, &activity).await;
     compaction_lane(&directory, &vault, &activity).await;
     delegation(&directory, &vault, &activity).await;
+    restoration(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -869,6 +870,172 @@ async fn delegation(
     );
     assert!(owner.check().is_ok());
     session.lsp.shutdown().await;
+}
+
+/// A user's policy with a rule for file content: plain text, for every file.
+struct PlainTextFiles;
+
+impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
+    fn enables_privacy_in(&self, _: &str) -> bool {
+        true
+    }
+
+    fn requires_inspectable_provider_items(&self) -> bool {
+        false
+    }
+
+    fn restorable_file_data(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Option<crate::privacy_restore::FileDataFormat> {
+        Some(crate::privacy_restore::FileDataFormat::PlainText)
+    }
+}
+
+/// A reply made from the placeholder the request carries for the address in
+/// its input.
+struct FromInput(Box<dyn Fn(&str) -> ResponseTemplate + Send + Sync>);
+
+impl wiremock::Respond for FromInput {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let input = content_at(request, 1);
+        let placeholder = input
+            .strip_prefix("Who handles ")
+            .and_then(|rest| rest.strip_suffix('?'))
+            .expect("the input carries the placeholder");
+        (self.0)(placeholder)
+    }
+}
+
+/// Restoration in a built session: the approval gate shows a person the
+/// real content of a file write, the file gets that content, the recorded
+/// call keeps the placeholder, and the person reads the reply with the value.
+async fn restoration(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let typed = format!("Who handles {EMAIL}?");
+    // What the approval prompt was shown, and what it answers.
+    let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let approve = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let run = |file: &'static str, with_rule: bool| {
+        let (shown, approve, typed) = (shown.clone(), approve.clone(), typed.clone());
+        let activity = activity.clone();
+        async move {
+            let note = directory.join(file);
+            let server = MockServer::start().await;
+            let path = note.clone();
+            mount_once(
+                &server,
+                1,
+                Mock::given(method("POST")).respond_with(FromInput(Box::new(move |placeholder| {
+                    reply(
+                        "chat",
+                        0,
+                        Some((
+                            "call-write",
+                            "write_file",
+                            &json!({"file_path": path, "content": format!("Contact {placeholder} today.")}),
+                        )),
+                        "",
+                    )
+                }))),
+            )
+            .await;
+            Mock::given(method("POST"))
+                .respond_with(FromInput(Box::new(|placeholder| {
+                    answer("chat", &[&format!("Saved it for {placeholder}.")])
+                })))
+                .mount(&server)
+                .await;
+            let cfg = config("chat", &server);
+            let owner = privacy(vault, directory).await;
+            let policy: Arc<dyn crate::privacy_session::CapturedUserPolicy> = match with_rule {
+                true => Arc::new(PlainTextFiles),
+                false => Arc::new(FixturePolicy::default()),
+            };
+            let selection = PrivacyViewSelection::from_user_policy(policy, owner.clone()).unwrap();
+            let prompt: ApprovalPrompt = Arc::new(move |_, _, details| {
+                shown.lock().unwrap().push(details.to_owned());
+                match approve.load(std::sync::atomic::Ordering::SeqCst) {
+                    true => ApprovalPromptResult::Approve,
+                    false => ApprovalPromptResult::Reject("not this one".into()),
+                }
+            });
+            let session = build(&cfg, directory, None, None, &activity, |extras| {
+                extras.privacy_view = Some(selection);
+                extras.approval_prompt = Some(prompt);
+            })
+            .await
+            .expect("a session with a file rule is built");
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(_) = view.turn(&session.agent, &typed).await.unwrap() else {
+                panic!("the turn finishes");
+            };
+            let requests = sent(&server).await;
+            assert!(requests.iter().all(|body| !body.contains(EMAIL)));
+            let messages = session.agent.state.lock().unwrap().messages.clone();
+            let sources = session.agent.recorded_sources().unwrap();
+            // The recorded call still holds the placeholder.
+            let recorded_content = match &messages[1] {
+                Msg::Assistant { tool_calls, .. } => {
+                    tool_calls[0].args["content"].as_str().unwrap().to_owned()
+                }
+                _ => panic!("the call is recorded"),
+            };
+            assert!(recorded_content.contains("pv1-") && !recorded_content.contains(EMAIL));
+            let result = match &messages[2] {
+                Msg::Tool { content, .. } => content.clone(),
+                _ => panic!("the result is recorded"),
+            };
+            // A person reads the reply with the value; the record keeps the
+            // placeholder.
+            let human = owner.human_reply(sources[3].as_ref().unwrap()).unwrap();
+            assert_eq!(
+                human.read(str::to_owned).unwrap(),
+                format!("Saved it for {EMAIL}.")
+            );
+            assert!(matches!(&messages[3], Msg::Assistant { content, .. }
+                if content.contains("pv1-") && !content.contains(EMAIL)));
+            assert!(owner.check().is_ok());
+            session.lsp.shutdown().await;
+            (note, result)
+        }
+    };
+
+    // Approved by the person: the prompt showed the real content, and the
+    // file holds it.
+    let (note, result) = run("restored-note.txt", true).await;
+    assert_eq!(
+        std::fs::read_to_string(&note).unwrap(),
+        format!("Contact {EMAIL} today.")
+    );
+    assert_eq!(result, format!("Updated file {}", note.display()));
+    let details = shown.lock().unwrap().clone();
+    assert_eq!(details.len(), 1);
+    assert!(details[0].contains(&format!("Contact {EMAIL} today.")));
+    assert!(!details[0].contains("pv1-"));
+    std::fs::remove_file(&note).unwrap();
+
+    // Rejected by the person: nothing is written.
+    approve.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (note, result) = run("rejected-note.txt", true).await;
+    assert!(!note.exists());
+    assert!(result.contains("not this one"), "{result}");
+    assert_eq!(shown.lock().unwrap().len(), 2);
+
+    // No rule in the user's policy: the tool refuses before anyone is
+    // asked, and nothing is written.
+    approve.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (note, result) = run("unruled-note.txt", false).await;
+    assert!(!note.exists());
+    assert_eq!(
+        result,
+        crate::privacy_session::FileRefusal::NoRule.to_string()
+    );
+    assert_eq!(shown.lock().unwrap().len(), 2);
 }
 
 /// Selections that are refused before a session exists, each with its

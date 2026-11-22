@@ -815,6 +815,31 @@ impl Tool for HostTool {
     }
 }
 
+/// The tools of an agent of a privacy conversation: the two file tools
+/// wrapped so that a call that names a placeholder runs only as it was
+/// derived and approved, or not at all where the agent has no review. Every
+/// other tool, and every tool of any other session, is as it was.
+fn with_restored_files(
+    tools: Vec<Arc<dyn Tool>>,
+    review: Option<&Arc<crate::privacy_session::FileReview>>,
+    private: bool,
+) -> Vec<Arc<dyn Tool>> {
+    if !private {
+        return tools;
+    }
+    let mut wrapped = Vec::with_capacity(tools.len());
+    for tool in tools {
+        wrapped.push(match tool.def().name.as_str() {
+            "write_file" | "edit_file" => Arc::new(crate::privacy_session::RestoredFileTool::new(
+                tool,
+                review.cloned(),
+            )) as Arc<dyn Tool>,
+            _ => tool,
+        });
+    }
+    wrapped
+}
+
 fn host_and_web_tools(
     backend: Arc<dyn Backend>,
     cfg: &Config,
@@ -2443,7 +2468,9 @@ async fn build_session_with_capture_profile(
         }
         #[cfg(feature = "gadgets")]
         subagent_prompt.push_str(&gadget_skill_block);
-        let subagent_tools = shared_tools.clone();
+        // A delegated agent's file tools have no review of their own yet.
+        let subagent_tools =
+            with_restored_files(shared_tools.clone(), None, privacy_view.is_some());
         Some(SubAgentSpec {
             name: "general-purpose".into(),
             description: gp_profile.description.unwrap_or_else(|| {
@@ -2725,6 +2752,19 @@ async fn build_session_with_capture_profile(
     }
     // Legacy approval remains the last policy gate. Headless protects its immutable
     // gate before profile hooks AND wraps every contributed tool terminal.
+    // In a privacy conversation the root agent's file tools run what was
+    // derived, shown and approved for a call that names a placeholder.
+    let file_review = match (&privacy_view, &privacy_boundary, &extras.privacy_view) {
+        (Some(session), Some(boundary), Some(selection)) => {
+            Some(crate::privacy_session::FileReview::new(
+                session.clone(),
+                boundary.clone(),
+                selection.policy(),
+                cwd.clone(),
+            ))
+        }
+        _ => None,
+    };
     if let Some(gate) = construction.gate() {
         // Also gate tools contributed by todo/subagent/profile middleware at
         // their terminal handles, not only by the dispatch middleware onion.
@@ -2743,7 +2783,8 @@ async fn build_session_with_capture_profile(
                 cwd,
             )
             .with_call_prompt(extras.call_approval_prompt.clone())
-            .with_verification(verification.clone()),
+            .with_verification(verification.clone())
+            .with_file_review(file_review.clone()),
         ));
     }
 
@@ -2856,8 +2897,12 @@ async fn build_session_with_capture_profile(
             .checkpointer(cp.clone() as Arc<dyn craftsman_harness::Checkpointer>)
             .journal(Arc::new(JsonlJournal::new()));
     }
-    for tool in &shared_tools {
-        builder = builder.tool(tool.clone());
+    for tool in with_restored_files(
+        shared_tools.clone(),
+        file_review.as_ref(),
+        privacy_view.is_some(),
+    ) {
+        builder = builder.tool(tool);
     }
     if let Some(controller) = &verification {
         builder = builder.tool(Arc::new(crate::verification::VerifyTool(

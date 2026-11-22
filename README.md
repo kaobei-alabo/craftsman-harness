@@ -39,6 +39,10 @@ Also in development: **privacy hooks** that mask supported personal data before
 model requests and restore it in local replies and file edits. The encrypted
 vault, WASM detector and restoration views are implemented privately;
 normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
+A private [restoration path](docs/privacy-restore.md) now gives a person the
+values in a committed reply and puts them into the content of a file write or
+edit that was derived, shown and approved with the real content; nothing draws
+or selects it yet.
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
 A private [detector contract and admission core](docs/privacy-admission.md)
@@ -162,6 +166,7 @@ documents and folders containing several projects are supported too.
 [Private send guard](docs/privacy-send.md) ·
 [Private admission core](docs/privacy-admission.md) ·
 [Privacy provenance](docs/privacy-provenance.md) ·
+[Privacy restoration](docs/privacy-restore.md) ·
 [Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).

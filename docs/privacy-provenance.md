@@ -54,9 +54,9 @@ not detection of everything a model writes or of opaque provider content.
 | Verification, context and failure controls, gadget catalog | not implemented; a selection that asks for one is refused |
 | Sealed parked-call human decisions | private registered input producer; actual decision and raw edit retained, no caller action factory |
 | Decisions inside the approval gate; `ask_user` answers as drafts | producer adapters not implemented |
-| Terminal ingress, `/clear`, display of replies | not implemented |
+| Terminal ingress, `/clear`, drawing replies in the terminal | not implemented. The human view of a committed reply and the hold on a streamed one exist as private typed producers; see [privacy-restore.md](privacy-restore.md) |
 | Reopening, transferring or rebinding a privacy conversation | refused |
-| Restoration into replies, files and tool arguments | not implemented; separate work |
+| Restoration into what a person reads and into the content of `write_file` and `edit_file` | implemented, private, for the root agent; see [privacy-restore.md](privacy-restore.md). Every other tool argument, delegated agents' file writes, delete and rename are not restored |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
 

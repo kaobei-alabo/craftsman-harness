@@ -27,6 +27,8 @@
 
 #[cfg(test)]
 mod deadline_tests;
+mod file_view;
+mod human;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -36,10 +38,14 @@ mod view_tests;
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
+pub use file_view::{
+    DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, RestoredFileTool,
+};
+pub use human::{HeldStream, HumanRefusal, HumanText, Streamed};
 pub use transport::{ViewChatProvider, ViewNativeProvider, delegated_provider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    NativeReplay, ReceivedModel, SourceField,
+    NativeReplay, ProposedOperation, ReceivedModel, SourceField,
 };
 
 use crate::checkpoints::LibsqlCheckpointer;
@@ -193,6 +199,21 @@ pub trait CapturedUserPolicy: Send + Sync {
     /// Whether the policy requires that everything a provider is sent can be
     /// inspected. Native wires send back provider items that cannot.
     fn requires_inspectable_provider_items(&self) -> bool;
+
+    /// The data format the user's policy names for content that the file
+    /// tools write to `path`, as the call wrote the path, in the workspace
+    /// with this digest. Private values are restored into a file's content
+    /// only under such a rule. `None`, the default, restores nothing. A
+    /// file's name or extension is not a rule: only what the user or the
+    /// host reviewed for that file is.
+    fn restorable_file_data(
+        &self,
+        workspace_sha256: &str,
+        path: &str,
+    ) -> Option<crate::privacy_restore::FileDataFormat> {
+        let _ = (workspace_sha256, path);
+        None
+    }
 }
 
 /// Why no session was built for a selection. Each is decided before the
@@ -293,6 +314,12 @@ impl PrivacyViewSelection {
 
     pub(crate) fn requires_inspectable_items(&self) -> bool {
         self.policy.requires_inspectable_provider_items()
+    }
+
+    /// The user's captured policy, for the parts of the session that ask it
+    /// about one operation.
+    pub(crate) fn policy(&self) -> Arc<dyn CapturedUserPolicy> {
+        self.policy.clone()
     }
 }
 
