@@ -328,7 +328,7 @@ impl GadgetRuntime {
             (self.workspace.join(".craftsman/gadgets"), true),
         ];
         let scans = self.scans.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking(move || {
             let mut effective = BTreeMap::new();
             let mut seen = BTreeSet::new();
             for (root, project) in roots {
@@ -518,7 +518,7 @@ impl GadgetRuntime {
         let source = bundle.source.clone();
         let expected = hash.clone();
         let engine = self.engine.clone();
-        let component = tokio::task::spawn_blocking(move || {
+        let component = crate::util::spawn_blocking(move || {
             let bytes = read_bounded(&source, "gadget.wasm", MAX_COMPONENT_BYTES)?;
             if digest(&bytes) != expected {
                 return Err(GadgetError::new(
