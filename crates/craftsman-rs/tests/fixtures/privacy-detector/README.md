@@ -391,3 +391,21 @@ marker. Otherwise it writes `PES:unavailable`. It reads no file again and
 changes no predicate, label or limit. Its data awaits a fresh Windows run; PE
 acceptance, the source-Cargo-WASM gates and normal privacy remain unmet and
 inactive.
+
+Run [44957234452](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44957234452)
+at 61ac returned that record. The section's 40 declared bytes are the 16-byte
+marker followed by six little-endian 32-bit values: 24, 0x80008000, 0, 0, 0, 0.
+That is the size and field order of `IMAGE_VOLATILE_METADATA` as a pinned
+third-party header defines it
+([FEX-Emu `winnt.h`](https://github.com/FEX-Emu/FEX/blob/53e148474caff8a8eae50e66a9da643da232b3d9/Source/Windows/include/winnt.h#L220-L227)).
+The fixture now appends `/EMITVOLATILEMETADATA:NO` as its eleventh argument.
+[FlexDLL](https://github.com/ocaml/flexdll/blob/ab8161fc7161a598c5aaf66f02298035639d5ef3/reloc.ml#L1154-L1161)
+passes that switch when LINK advertises it, and two other projects list or use
+it ([msvc-undoc](https://github.com/assarbad/msvc-undoc/blob/5423c9f0390e770b8b6c667209aacaa33970643f/LINK.exe.md),
+[TinyPE](https://github.com/Masfo/TinyPE/blob/6560d797ea40678d3b951c9f8d3cfb6ab63c18e1/CMake/SetupMSVC.cmake#L122)).
+Microsoft does not document its effect, and the fixture does not ask LINK for
+its help text. This is a conditional candidate: which tool wrote the block,
+what its second value means and whether the switch removes it are not
+established, and the full audit of that run is still in progress. The unchanged
+16-byte check and the original Prepared, source-Cargo and WASM gates decide on a
+fresh Windows run; a refusal stays a refusal. Normal privacy remains off.
