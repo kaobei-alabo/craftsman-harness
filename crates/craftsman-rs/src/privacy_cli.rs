@@ -1,6 +1,6 @@
 //! Private explicit operations only. No clap command/flag, enable writer or
 //! frontend selects these; presence is not unlock, ownership approval or privacy.
-use crate::privacy_key::{KeyManager, Passphrase, Result, UnlockedVault};
+use crate::privacy_key::{ConfigRoot, KeyManager, Passphrase, Result, UnlockedVault};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilePresence {
@@ -18,9 +18,14 @@ impl std::fmt::Debug for PrivateKeyOperations {
 }
 impl PrivateKeyOperations {
     pub fn capture_actual() -> Result<Self> {
-        Ok(Self {
-            keys: KeyManager::capture_actual()?,
-        })
+        Ok(Self::from_captured_root(ConfigRoot::capture_actual()?))
+    }
+    /// The caller must already own the actual user root. No path, flag or
+    /// merged configuration value can substitute for this retained authority.
+    pub fn from_captured_root(root: ConfigRoot) -> Self {
+        Self {
+            keys: KeyManager::from_root(root),
+        }
     }
     pub fn status(&self) -> Result<FilePresence> {
         Ok(match self.keys.files_present()? {

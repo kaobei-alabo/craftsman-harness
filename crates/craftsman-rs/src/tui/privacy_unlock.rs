@@ -1,6 +1,9 @@
-//! Owned secret field only. It reads no stdin and is not selected by any modal.
-//! Final integration must route the owned non-echoing terminal's input directly,
-//! never through composer/history/UiEvent. This is not an echo-mode proof.
+//! Private password popup and directly retained terminal input. Nothing selects
+//! it in a normal frontend. Input never enters composer/history/UiEvent.
+mod owned;
+pub use owned::OwnedSecretTerminal;
+#[cfg(all(test, unix))]
+mod native;
 use crate::privacy_key::{KeyError, Passphrase, Result};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -22,7 +25,8 @@ impl std::fmt::Debug for SecretField {
 impl Default for SecretField {
     fn default() -> Self {
         Self {
-            text: Zeroizing::new(String::new()),
+            // No growth or reallocation while typing within the byte ceiling.
+            text: Zeroizing::new(String::with_capacity(1024)),
             closed: false,
         }
     }
@@ -43,11 +47,18 @@ impl SecretField {
             }
             KeyCode::Enter => {
                 let owned = std::mem::take(&mut *self.text);
+                self.closed = true;
                 let phrase = Passphrase::from_owned(Zeroizing::new(owned.into_bytes()))?;
                 Ok(Some(phrase))
             }
             KeyCode::Backspace => {
-                self.text.pop();
+                if let Some((end, _)) = self.text.char_indices().next_back() {
+                    // SAFETY: zero the removed bytes, then truncate at their
+                    // original scalar boundary before using the string again.
+                    let bytes = unsafe { self.text.as_mut_vec() };
+                    zeroize::Zeroize::zeroize(&mut bytes[end..]);
+                    bytes.truncate(end);
+                }
                 Ok(None)
             }
             KeyCode::Char(character)

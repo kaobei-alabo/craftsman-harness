@@ -20,6 +20,40 @@ impl fmt::Debug for ConfigRoot {
     }
 }
 impl ConfigRoot {
+    /// Retains the same directory authority for independent policy/key owners;
+    /// never obtains another root by reopening a caller's string.
+    pub(crate) fn duplicate_owned(&self) -> Result<Self> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let copy = Self {
+                path: self.path.clone(),
+                ancestors: self
+                    .ancestors
+                    .iter()
+                    .map(|file| file.try_clone().map_err(|_| KeyError::Io))
+                    .collect::<Result<Vec<_>>>()?,
+                names: self.names.clone(),
+            };
+            copy.recheck()?;
+            Ok(copy)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    pub(crate) fn with_captured_path<T>(
+        &self,
+        use_root: impl FnOnce(&std::path::Path) -> Result<T>,
+    ) -> Result<T> {
+        self.recheck()?;
+        let result = use_root(&self.path)?;
+        self.recheck()?;
+        Ok(result)
+    }
+
     pub(crate) fn verify_config_absent(&self) -> Result<()> {
         self.recheck()?;
         #[cfg(unix)]

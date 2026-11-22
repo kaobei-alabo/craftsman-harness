@@ -2,7 +2,7 @@
 
 This is an unselected Step A foundation, not an enabled privacy feature. There
 is no `privacy init`, `unlock`, `status` or `enable` CLI route and no automatic
-unlock popup. The private app owners are `privacy_key::KeyManager`,
+unlock popup in the normal terminal. The private app owners are `privacy_key::KeyManager`,
 `privacy_policy::CapturedPolicy` and `privacy_cli::PrivateKeyOperations`.
 Normal sessions retain their existing behavior when user privacy policy is
 absent or disabled. An enabled user policy refuses as not yet available before
@@ -117,24 +117,33 @@ valid. Literals are plain user policy data, not passwords/keys or wildcard
 authority. Source/capability consent and real approval must precede any
 describe/compile/call; neither a pin nor this owner supplies that approval.
 
-## Remaining real wiring
+## Private owned input and remaining wiring
 
-The new zeroizing TUI secret field renders bullets through SafeBackend and
-never enters UiEvent/composer/history. It reads no stdin and is unselected;
-these controls do not prove terminal echo mode. A real popup must borrow the
-actual TerminalGuard's retained terminal/input ownership, receive direct owned
-events, run the tracked worker and refuse before session construction. CLI
-selectors, that non-echoing reader/popup, initialization confirmation flow and
-the final activation gate still need coordinated implementation/review.
-Escape/Ctrl-C clears the owned secret and returns an explicit cancellation;
-it is distinct from pending editing and from an ordinary empty/no-answer event.
+The [private password popup](privacy-bootstrap.md) now owns actual input from
+the descriptor TerminalGuard retained before raw entry. It renders bullets
+through SafeBackend and keeps secret buffers outside UiEvent/composer/history.
+Real initialization asks for confirmation; unlock authenticates the existing
+envelope and vault. Escape/Ctrl-C or an owned shutdown signal returns explicit
+cancellation, closes key admission and awaits started handles. This differs
+from pending editing and an ordinary empty/no-answer event.
 
-The corrected source/view assignment requires the actual fresh app/checkpointer
-thread id and captured canonical workspace, one owner for main/delegated/
-compaction. It forbids an independent conversation id or constant thread to
-avoid 128-scope capacity; existing capacities/exhaustion remain truthful.
-Reopen/model transfer and bound void set_thread_id must refuse/close before
-rebinding without replay. Step A does not mint that conversation binding.
+The private composition captures actual user policy before project merges,
+retains the same root with the key owner, reserves the application's fresh
+thread id and captured canonical workspace, and opens PrivacySession with a
+user-policy-pinned WASM detector. Stored exact source approval remains required
+before compilation/describe. A nonempty declared-identifier policy refuses
+because the stable admission interface currently supplies none; it is not
+silently omitted. Private clear closes the old owner and reserves a new one;
+the eventual full Agent must be rebuilt with that same new id in every lane.
+Existing 128-scope capacity and exhaustion are unchanged.
+
+Full expected-set Agent construction is unavailable. The stable B interface
+offers only a fixture permission to omit middleware and refuses native wires;
+this bootstrap never uses it as user policy or drops protected components.
+Normal init/status/enable and /privacy selectors, full native/mutator/HITL/
+display/file adapters, active-turn popup integration, and activation/native
+review remain pending. Reopen/transfer are unsupported; void thread setters
+cannot replace a fresh owner and full rebuild.
 
 Canonical accepted input/results/history/journal/checkpoints remain actual
 truth. Only a separate source-derived model view is masked. This key envelope

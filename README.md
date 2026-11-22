@@ -42,7 +42,9 @@ normal-session integration is still pending. See [development status](docs/priva
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
 Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrapped
-vault key and existing-only unlock backend; its TTY/CLI/session wiring remains unselected.
+vault key and existing-only unlock backend. An unselected
+[owned password popup and private bootstrap](docs/privacy-bootstrap.md) compose
+those owners with a pinned detector and fresh conversation; normal activation remains unavailable.
 A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
 [views of sources](docs/privacy-provenance.md) are in development on top of
@@ -157,6 +159,7 @@ documents and folders containing several projects are supported too.
 [Failure controls](docs/failure-controls.md) ·
 [Privacy hook development](docs/privacy-hooks.md) ·
 [Private send guard](docs/privacy-send.md) ·
+[Private key and bootstrap](docs/privacy-bootstrap.md) ·
 [Private admission core](docs/privacy-admission.md) ·
 [Privacy provenance](docs/privacy-provenance.md) ·
 [Development and native validation](docs/production-readiness.md)

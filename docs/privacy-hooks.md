@@ -3,11 +3,15 @@
 Private Step A now provides [real key and trusted policy ownership](privacy-key.md):
 a password-wrapped random vault key, strict user-source policy before project
 merges, create-only initialization and existing-only opening. Enabled policy
-still refuses as unavailable; no frontend/CLI/popup selects these owners.
+still refuses as unavailable in normal frontends. An unselected
+[owned password popup and private composition](privacy-bootstrap.md) now read
+the retained non-echoing terminal directly and bind key/policy owners to a
+pinned detector and fresh conversation. No normal command selects them.
 The corrected design retains exact accepted input/results/history/checkpoints
 and builds a separate masked model view. This is no at-rest history or complete
-privacy claim. Actual conversation binding, producer/native/resume seams,
-non-echoing terminal ownership, activation and native validation remain pending.
+privacy claim. Full expected-set Agent construction, producer/native/HITL/
+display/file adapters, activation and native validation remain pending;
+reopen/transfer are explicitly unsupported.
 
 Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under
@@ -21,13 +25,15 @@ A private [detector contract and admission core](privacy-admission.md) now
 exists as a local, unmerged slice: a source-pinned detector call on the gadget
 engine and an owner that turns one actual raw capture into an admitted node
 only after the vault's commit and the send guard's admission. It is not
-connected to any display, file, key source or policy.
+connected to any normal display or file path. The private bootstrap now
+composes its actual key/user-policy owners with this admission core.
 [Privacy provenance](privacy-provenance.md) records how sources and model views
 reach a request. A private path now exists for the Chat wire, from typed input
 and tool results through the framework agent and the shared session builder to
 the existing client and guard, with a limited set of parts. Nothing selects it,
-native wires are refused, and restoration, key handling and activation are not
-built. The target diagram
+native wires are refused, and the full expected feature set and restoration
+adapters are not built. The new owned key popup does not select that reduced
+fixture path or grant user policy with its bare permission. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 

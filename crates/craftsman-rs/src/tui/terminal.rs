@@ -63,6 +63,25 @@ impl UnixTerminalMode {
 }
 
 impl TerminalGuard {
+    /// Secret input uses the descriptor retained before raw-mode entry. It is
+    /// consumed only before the normal event reader starts, never by a second
+    /// reader racing the composer or approval UI.
+    #[cfg(unix)]
+    pub(super) fn retained_secret_input(&self) -> io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::AsRawFd;
+        if self.owner.restored.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let mut actual = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(self.owner.original.descriptor.as_raw_fd(), &mut actual) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if actual.c_lflag & (libc::ECHO | libc::ECHONL | libc::ICANON) != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        self.owner.original.descriptor.try_clone()
+    }
+
     pub(super) fn enter(mouse: bool) -> anyhow::Result<Self> {
         #[cfg(unix)]
         let original = UnixTerminalMode::capture()?;

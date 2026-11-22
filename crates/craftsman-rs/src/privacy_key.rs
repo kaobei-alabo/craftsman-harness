@@ -33,6 +33,8 @@ pub enum KeyError {
     Changed,
     #[error("The private key operation did not complete its IO.")]
     Io,
+    #[error("The private password operation requires its owned non-echoing terminal.")]
+    Terminal,
     #[error("The private key operation exceeds its byte bounds.")]
     Bounds,
     #[error("The private key operation is closed.")]

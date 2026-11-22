@@ -45,6 +45,8 @@ mod platform_os;
 mod plugins;
 // Private key/policy owners; no init/unlock/enable CLI or frontend selector.
 #[doc(hidden)]
+pub mod privacy_bootstrap;
+#[doc(hidden)]
 pub mod privacy_cli;
 #[doc(hidden)]
 pub mod privacy_key;

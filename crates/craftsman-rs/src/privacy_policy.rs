@@ -74,6 +74,12 @@ impl CapturedPolicy {
     pub fn capture_actual() -> Result<Self> {
         Self::capture(ConfigRoot::capture_actual().map_err(|_| PolicyError::Source)?)
     }
+    pub(crate) fn capture_from_root(root: ConfigRoot) -> Result<Self> {
+        Self::capture(root)
+    }
+    pub(crate) fn root(&self) -> &ConfigRoot {
+        &self.root
+    }
     fn capture(root: ConfigRoot) -> Result<Self> {
         let read = root.read_user_config().map_err(|_| PolicyError::Source)?;
         let (policy, source) = match read {
