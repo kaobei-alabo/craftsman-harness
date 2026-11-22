@@ -25,6 +25,7 @@
 //! its own owner and is not changed here. A node's model view is a separate
 //! projection of it.
 
+mod control;
 #[cfg(test)]
 mod deadline_tests;
 mod file_view;
@@ -38,6 +39,7 @@ mod view_tests;
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
+pub(crate) use control::{SelectedControls, SelectedVerification};
 pub use file_view::{
     DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, RestoredFileTool,
     ReviewedFile,

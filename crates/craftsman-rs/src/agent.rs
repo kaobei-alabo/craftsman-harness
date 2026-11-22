@@ -1744,6 +1744,10 @@ async fn build_session_with_capture_profile(
     // a separate guard or a caller's thread id is refused, and so is every
     // requested part that has no source-preserving path and must not simply
     // be left out. All of this is decided before config, stores or providers.
+    // Declared verification, context compilation and failure controls are
+    // not refused here: their controllers are installed below behind the
+    // conversation's own adapters, and the build is refused there if one of
+    // them cannot be.
     let privacy_view = match &extras.privacy_view {
         None => None,
         Some(selection) => {
@@ -1763,11 +1767,7 @@ async fn build_session_with_capture_profile(
                 || send_guard.is_some()
             {
                 Some(BuildRefusal::NotFresh)
-            } else if extras.verification
-                || extras.context_compilation
-                || extras.failure_controls
-                || gadgets_requested
-            {
+            } else if gadgets_requested {
                 Some(BuildRefusal::RequestedPart)
             } else {
                 None
@@ -3116,11 +3116,43 @@ async fn build_session_with_capture_profile(
     if let Some(rounds) = terminal_max_rounds {
         builder = builder.max_rounds(rounds).finish_on_round_limit(true);
     }
-    if let Some(controller) = &verification {
-        builder = builder.completion_check(controller.clone());
+    // In a privacy conversation the configured controllers are installed
+    // behind the conversation's own adapters, which keep and call the
+    // original objects. The conversation accepts its agent only with exactly
+    // these installed. A controller that cannot be adapted is never left
+    // out: the build is refused.
+    let (selected_verification, selected_controls) = match &privacy_boundary {
+        None => (None, None),
+        Some(boundary) => {
+            let completion = verification.as_ref().map(|controller| {
+                crate::privacy_session::SelectedVerification::install(boundary, controller.clone())
+            });
+            let policy = controls.as_ref().map(|controls| {
+                crate::privacy_session::SelectedControls::install(boundary, controls.clone())
+            });
+            if matches!(completion, Some(None)) || matches!(policy, Some(None)) {
+                if let Some(selection) = &extras.privacy_view {
+                    selection
+                        .report()
+                        .refuse(crate::privacy_session::BuildRefusal::RequestedPart);
+                }
+                if let Some(sink) = &extras.activity_sink {
+                    sink("The private conversation view is not available for this session.");
+                }
+                return None;
+            }
+            (completion.flatten(), policy.flatten())
+        }
+    };
+    match (&selected_verification, &verification) {
+        (Some(adapter), _) => builder = builder.completion_check(adapter.clone()),
+        (None, Some(controller)) => builder = builder.completion_check(controller.clone()),
+        (None, None) => {}
     }
-    if let Some(controls) = &controls {
-        builder = builder.boundary_policy(controls.clone());
+    match (&selected_controls, &controls) {
+        (Some(adapter), _) => builder = builder.boundary_policy(adapter.clone()),
+        (None, Some(controls)) => builder = builder.boundary_policy(controls.clone()),
+        (None, None) => {}
     }
     if let Some(boundary) = &privacy_boundary {
         builder = builder.model_view_boundary(Some(boundary.clone()));
@@ -3143,7 +3175,23 @@ async fn build_session_with_capture_profile(
             .checkpointer(cp.clone() as Arc<dyn craftsman_harness::Checkpointer>)
             .journal(Arc::new(JsonlJournal::new()));
     }
-    for tool in with_restored_files(shared_tools.clone(), file_review.as_ref()) {
+    let registered_tools = with_restored_files(shared_tools.clone(), file_review.as_ref());
+    // In a privacy conversation a builtin file tool is registered behind the
+    // conversation's own file wrapper. The controls trust a registered tool
+    // by being the same object, so a trusted builtin is named to them as the
+    // wrapper this builder itself put in its place, and as nothing else.
+    let trusted_file_tools: Vec<Arc<dyn Tool>> = trusted_file_tools
+        .iter()
+        .map(|trusted| {
+            shared_tools
+                .iter()
+                .position(|shared| Arc::ptr_eq(shared, trusted))
+                .and_then(|place| registered_tools.get(place))
+                .unwrap_or(trusted)
+                .clone()
+        })
+        .collect();
+    for tool in registered_tools {
         builder = builder.tool(tool);
     }
     if let Some(controller) = &verification {
