@@ -77,6 +77,13 @@ pub struct Session {
     pub workspace_checkpoints: Option<Arc<WorkspaceCheckpointManager>>,
     pub(crate) verification: Option<Arc<crate::verification::VerificationController>>,
     pub(crate) controls: Option<Arc<crate::agent_controls::AppControls>>,
+    /// The explicitly selected private final-send guard shared by this
+    /// session's main, delegated and compaction model clients. Absent in every
+    /// frontend; reopening or transferring a bound conversation is refused.
+    /// `set_thread_id` has no error path and is NOT refused: on a bound
+    /// session it still rebinds the agent, checkpoint, verification and
+    /// control state while the clients stay guarded. That use is unsupported.
+    pub(crate) send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
     /// The durable long-term-memory store, when it opened — the SAME `Arc` routed
     /// into the composite backend. Kept here so `/memories` can list the files
     /// without reaching into the agent's backend. `None` when the store failed to
@@ -174,6 +181,9 @@ impl Session {
         previous: &Self,
         thread_id: Option<&str>,
     ) -> Result<(), AgentError> {
+        if self.send_guard.is_some() || previous.send_guard.is_some() {
+            return Err(send_guard_continuation_refusal());
+        }
         #[cfg(feature = "gadgets")]
         {
             previous.revoke_script_capture();
@@ -203,6 +213,9 @@ impl Session {
     }
 
     pub async fn load_thread(&mut self, thread_id: &str) -> Result<bool, AgentError> {
+        if self.send_guard.is_some() {
+            return Err(send_guard_continuation_refusal());
+        }
         #[cfg(feature = "gadgets")]
         self.invalidate_script_capture();
         let loaded = self.agent.load_thread(thread_id).await?;
@@ -220,6 +233,15 @@ impl Session {
         }
         Ok(loaded)
     }
+}
+
+/// Reopen and model transfer are not implemented for a conversation bound to a
+/// private send guard. Refused before any state, hook or checkpoint is touched.
+fn send_guard_continuation_refusal() -> AgentError {
+    AgentError::State(
+        "This conversation is bound to a private send guard. Reopening or transferring it is not available."
+            .into(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -847,6 +869,9 @@ pub struct SessionExtras {
     /// No public route mints one; marked native fixtures exercise this foundation.
     #[cfg(feature = "gadgets")]
     pub(crate) script_capture: Option<FrontendCaptureSelection>,
+    /// Private final-send guard, minted only from an actual live vault session
+    /// and its own records. No frontend, configuration or CLI route sets this.
+    pub(crate) send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
     /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
@@ -1470,6 +1495,21 @@ async fn build_session_with_capture_profile(
         (SessionConstruction::Frontend(_), None) => {}
         _ => return None,
     }
+    // An explicitly selected private send guard is frontend-only, starts a
+    // fresh conversation and must be live. Refused before config, stores,
+    // providers or discovery; an absent selection retains the old path.
+    let send_guard = match &extras.send_guard {
+        None => None,
+        Some(guard) => {
+            if construction.prepared().is_some() || thread_id.is_some() || guard.check().is_err() {
+                if let Some(sink) = &extras.activity_sink {
+                    sink("The private send guard is not available for this session.");
+                }
+                return None;
+            }
+            Some(guard.clone())
+        }
+    };
     let cfg = construction.config();
     if construction.prepared().is_some() && (extras.context_compilation || extras.failure_controls)
     {
@@ -1729,7 +1769,7 @@ async fn build_session_with_capture_profile(
     }
     let usage = Arc::new(Mutex::new((0u64, 0u64)));
     let mut native_history = None;
-    let make_client = || {
+    let make_unguarded_client = || {
         if !configured_provider {
             return Some(LlmClient::new_with_options(
                 &route.base_url,
@@ -1752,6 +1792,18 @@ async fn build_session_with_capture_profile(
             }
         })
         .ok()
+    };
+    // Main, delegated and compaction clients all come from this one closure,
+    // so an explicit selection binds every one of them to the SAME guard. Each
+    // client is moved into its provider at once and is never mutated again;
+    // replacing a bound client or its native transport later would need the
+    // same binding and a new review.
+    let make_client = || {
+        let client = make_unguarded_client()?;
+        match &send_guard {
+            None => Some(client),
+            Some(guard) => client.with_send_guard(guard.clone()).ok(),
+        }
     };
     let provider: Arc<dyn ModelProvider> = match construction.provider_scope(
         &model,
@@ -2574,6 +2626,7 @@ async fn build_session_with_capture_profile(
         workspace_checkpoints,
         verification,
         controls,
+        send_guard,
         memories,
         compaction,
         mcp: mcp_summary,
@@ -2807,3 +2860,7 @@ mod failure_control_tests;
 #[cfg(test)]
 #[path = "agent_context_control_tests.rs"]
 mod context_control_tests;
+
+#[cfg(test)]
+#[path = "agent_privacy_send_tests.rs"]
+mod privacy_send_tests;

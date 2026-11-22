@@ -418,4 +418,20 @@ against the unchanged 16, and the same operands are not inferred for the
 source-built parent. macOS core failed one closed-stdout observer case with an
 unsuccessful helper status. The required post steps were skipped. Which vault
 phase ran out of time and why, and how and why the observer's helper failed,
-remain unknown. No full PE, Prepared, Cargo or WASM pass exists yet.
+remain unknown. No full PE, Prepared, Cargo or WASM pass existed at that head.
+
+Run [44973387679](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44973387679)
+at 7fca, which is this fixture source plus documents, passed all four contexts,
+every mandatory step and both native modes. Both original Windows parents
+passed with the eleven arguments: the unchanged validator accepted the linked
+image, Prepared returned, the offline locked source Cargo build produced the
+WASM and the approved Wasmtime guest assertions completed. The image is
+validated and cleaned; it is never loaded or executed. The two Windows
+restoration cases and the macOS observer case also passed; why they failed at
+61ac is still unknown. The pass covers that run's selected tools and this exact
+operation only: which tool wrote the block, what its second value means and any
+general effect of the switch remain not established. PR #32 is merged as
+`dffddeae` with the same tree. The separate run on main, 44976215399, passed its
+independent audit at `dffddeae`: all four contexts, every mandatory step and
+both native modes, with both original Windows parents passing again. It covers
+this foundation only. Normal privacy remains off.

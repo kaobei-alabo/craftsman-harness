@@ -46,6 +46,9 @@ mod plugins;
 // App-binary host views only; no tool, transport, renderer or hook selects them.
 #[doc(hidden)]
 pub mod privacy_restore;
+// Private final-send guard; no CLI, configuration, frontend or hook selects it.
+#[doc(hidden)]
+pub mod privacy_send;
 // Host-supplied private primitives only; no CLI, agent or hook selects them.
 // Public reachability within this binary keeps the unwired APIs typechecked.
 #[doc(hidden)]
