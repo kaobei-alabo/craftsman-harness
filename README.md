@@ -50,12 +50,20 @@ its own checkpoint and diagnostics around such a write, and the terminal's
 bridge draws a committed reply once through its safe backend. The local file
 consumer now requires typed full-image data and retained-parent grants from
 its selected policy; ordinary activity keeps model arguments and decoded
-previews remain in the private UI. Real user-policy/UI integration and native
-proof are still pending. Nothing selects
-any of it yet: the user's policy has no owner outside test fixtures and the
-terminal has no entry for a privacy turn.
+previews remain in the private UI. The local private union includes the
+captured user policy/key owner and an owned terminal entry; combined-source
+review and native validation are still pending. Nothing selects it in normal
+sessions, and normal activation remains unavailable.
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
+Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrapped
+vault key and existing-only unlock backend. An unselected
+[owned password popup and private bootstrap](docs/privacy-bootstrap.md) compose
+those owners with a pinned detector and fresh conversation. The actual private
+receiver carries opaque approvals and human questions, and refuses active
+settings saves and in-place clear; normal activation remains unavailable.
+The local key/UI union still has a retained macOS test-binary unwind warning;
+warning and native integration gates remain open.
 A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
 [views of sources](docs/privacy-provenance.md), for all four model wires, are
@@ -188,6 +196,7 @@ documents and folders containing several projects are supported too.
 [Failure controls](docs/failure-controls.md) ·
 [Privacy hook development](docs/privacy-hooks.md) ·
 [Private send guard](docs/privacy-send.md) ·
+[Private key and bootstrap](docs/privacy-bootstrap.md) ·
 [Private admission core](docs/privacy-admission.md) ·
 [Privacy provenance](docs/privacy-provenance.md) ·
 [Privacy restoration](docs/privacy-restore.md) ·

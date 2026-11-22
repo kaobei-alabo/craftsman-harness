@@ -1,18 +1,35 @@
 # Privacy hooks — masked model data, restored replies and file edits
 
+Private Step A now provides [real key and trusted policy ownership](privacy-key.md):
+a password-wrapped random vault key, strict user-source policy before project
+merges, create-only initialization and existing-only opening. Enabled policy
+still refuses as unavailable in normal frontends. An unselected
+[owned password popup and private composition](privacy-bootstrap.md) now read
+the retained non-echoing terminal directly and bind key/policy owners to a
+pinned detector and fresh conversation. No normal command selects them.
+The corrected design retains exact accepted input/results/history/checkpoints
+and builds a separate masked model view. This is no at-rest history or complete
+privacy claim. Full expected-set Agent construction, producer/native/HITL/
+display/file adapters, activation and native validation remain pending;
+reopen/transfer are explicitly unsupported.
+The local key/UI A+B340 test binary has a retained macOS unwind encoding
+warning. Source reductions keep the original limits and ownership behavior;
+that warning remains a validation blocker, not evidence for another union.
+
 Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under
 PR #32. The PR head and the separate run on the merged main each passed all
 four hosted contexts in both native modes.
-Normal Craftsman sessions do not select this hook yet. Actual key ownership,
-required-hook policy and model/file integration remain open. Existing gadget
+Normal Craftsman sessions do not select this hook yet. Public key selection,
+required-hook enforcement and display/file integration remain open. Existing gadget
 grants and permissions remain in force.
 
 A private [detector contract and admission core](privacy-admission.md) now
 exists as a local, unmerged slice: a source-pinned detector call on the gadget
 engine and an owner that turns one actual raw capture into an admitted node
 only after the vault's commit and the send guard's admission. It is not
-connected to any display, file, key source or policy.
+connected to any normal display or file path. The private bootstrap now
+composes its actual key/user-policy owners with this admission core.
 [Privacy provenance](privacy-provenance.md) records how sources and model views
 reach a request. A private path now exists for all four model wires, from typed
 input and tool results through the framework agent and the shared session
@@ -24,7 +41,8 @@ summary as model text in an explicit source-derived request. Kept native items
 remain bound to their original replies after movement; changed native replies
 refuse normal replay. Delegated tasks, messages and notification envelopes now
 have actual agent/parent/commit witnesses in the private combined source.
-Nothing selects it: actual user policy and frontend adapters are absent, and
+Nothing selects it in a normal session: actual captured key/user-policy ownership
+now exists privately in A, while full frontend adapters remain incomplete, and
 configured controls and inline human adapters still refuse or
 remain unwired.
 Sealed parked-call decisions retain test-only registered-input primitives and
@@ -44,10 +62,11 @@ see [privacy-restore.md](privacy-restore.md). The core now supplies real
 pre-review/parked/terminal events and carriage of the source-bound shown digest;
 the restoration candidate consumes the real pre-review source and digest,
 and the local correction adds independently registered inline human and
-automatic-policy issuers. The UI returns the original opaque decision for the
-actual request/presentation; its operation-owned decision or an ordinary
-approval callback is not sufficient authority. Terminal input for a privacy turn, restoration for other
-tools, the owner of the user's policy, key handling and activation remain
+automatic-policy issuers. The real private UI must return the original opaque
+decision for that actual request/presentation; an operation-owned decision or
+ordinary approval callback grants no such authority. Captured key/user-policy
+ownership now exists privately in A. The owned terminal consumer, restoration
+for other tools, fresh-unlock clear and normal activation remain
 unselected or unfinished. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.

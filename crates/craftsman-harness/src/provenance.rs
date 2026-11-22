@@ -998,24 +998,36 @@ pub trait ModelViewBoundary: Send + Sync {
     /// The agent itself appended `committed` at `event`, and it is recorded.
     /// Returns the source to keep beside it. The default refuses: a boundary
     /// that does not know such a message has no view of it.
-    async fn observe_framework_commit(
-        &self,
+    fn observe_framework_commit<'a, 'b, 'f>(
+        &'a self,
         event: FrameworkCommit,
-        committed: &Msg,
-    ) -> Result<SourceRef, AgentError> {
-        let _ = (event, committed);
-        Err(AgentError::State(
-            "This conversation has no source for a message its agent appended.".into(),
-        ))
+        committed: &'b Msg,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<SourceRef, AgentError>> + Send + 'f>,
+    >
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        refused_framework_source(event, committed)
     }
 
     /// Called immediately before a call runs: before the dispatch chain for
     /// an ordinary call, and before the tool itself for a call that a human
     /// approved (`approved`). `call` is exactly what will run. An error means
     /// nothing ran, and the call is left without a result.
-    async fn before_dispatch(&self, call: &ToolCall, approved: bool) -> Result<(), AgentError> {
-        let _ = (call, approved);
-        Ok(())
+    fn before_dispatch<'a, 'b, 'f>(
+        &'a self,
+        call: &'b ToolCall,
+        approved: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + 'f>>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        default_before_dispatch(call, approved)
     }
 
     /// The host's own evidence of which conversation this boundary is for.
@@ -1086,17 +1098,55 @@ pub trait ModelViewBoundary: Send + Sync {
     /// A human decided the parked `call`. `action` is what is about to be
     /// applied and `decision` is the host's own evidence of that decision.
     /// Called before any effect of the decision. The default refuses.
-    async fn accept_decision(
-        &self,
-        call: &ToolCall,
-        action: &HitlAction,
-        decision: &SourceRef,
-    ) -> Result<(), AgentError> {
+    fn accept_decision<'a, 'b, 'c, 'd, 'f>(
+        &'a self,
+        call: &'b ToolCall,
+        action: &'c HitlAction,
+        decision: &'d SourceRef,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + 'f>>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        'd: 'f,
+        Self: 'f,
+    {
+        refused_human_decision(call, action, decision)
+    }
+}
+
+fn refused_framework_source<'a>(
+    event: FrameworkCommit,
+    committed: &'a Msg,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SourceRef, AgentError>> + Send + 'a>>
+{
+    Box::pin(async move {
+        let _ = (event, committed);
+        Err(AgentError::State(
+            "This conversation has no source for a message its agent appended.".into(),
+        ))
+    })
+}
+fn default_before_dispatch<'a>(
+    call: &'a ToolCall,
+    approved: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + 'a>> {
+    Box::pin(async move {
+        let _ = (call, approved);
+        Ok(())
+    })
+}
+fn refused_human_decision<'a>(
+    call: &'a ToolCall,
+    action: &'a HitlAction,
+    decision: &'a SourceRef,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + 'a>> {
+    Box::pin(async move {
         let _ = (call, action, decision);
         Err(AgentError::State(
             "This conversation cannot check a human decision.".into(),
         ))
-    }
+    })
 }
 
 /// The recorded request together with the source of every part. It is

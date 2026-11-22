@@ -60,7 +60,7 @@ not detection of everything a model writes or of opaque provider content.
 | Drawing replies in the terminal | implemented, private: the root boundary tells a frontend's display when the agent has retained a reply, and the terminal's bridge and application draw its human view once through the safe backend. The stream is held and never drawn; see [privacy-restore.md](privacy-restore.md) |
 | Reopening, transferring or rebinding a privacy conversation | refused |
 | Restoration into what a person reads and into the content of `write_file` and `edit_file` | implemented, private, for the root agent and for delegated agents in their own lanes. The file operation is the source the boundary returns from `before_review` for the agent's plan, its digest is what `reviewed_operation_digest` gives, and the independently registered gate input/policy decision travels as a non-authoritative annotation and is validated against its actual issuer, plan, preview and final invocation at the file tool; the file tool runs its own checkpoint and diagnostics around the derived write; see [privacy-restore.md](privacy-restore.md). Every other tool argument, memory files, delete and rename are not restored |
-| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
+| Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is unselected by normal routes; data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
 | Secret input, frontend selector, activation | not implemented |
 
 ## Framework boundary
@@ -485,8 +485,9 @@ implements for the policy it captured from the user's own configuration before
 any project file was merged. It answers two questions: whether the policy
 enables privacy for the conversation's workspace, and whether everything a
 provider is sent must be inspectable. A flag, a label or a digest is not a
-policy. Nothing in this branch implements the trait outside tests, and no
-frontend, configuration key or command makes a selection.
+policy. The private captured key/user-root owner implements this trait and
+its owned terminal entry uses the selection. No normal frontend, configuration
+key or command makes it, and data-file proposals remain inert.
 
 Making the selection is refused when the policy does not enable privacy for
 the workspace or the conversation has ended. The builder's own result has no
@@ -545,8 +546,9 @@ statement were installed
 some other way, for the root agent or for a delegated agent, the build would
 be refused and would name it.
 
-The policy itself is still a trait with no implementation outside tests in
-this branch, so nothing can make a selection here.
+The local union implements the policy through its actual captured user-root/
+key owner. Its private owned terminal can make that full selection; normal
+activation and supported data-file authority remain unavailable.
 
 The session keeps the view. `Session::set_thread_id` on such a session closes
 the privacy owner and changes nothing else; reopening and transfer are refused

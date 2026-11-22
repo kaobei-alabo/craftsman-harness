@@ -1,0 +1,192 @@
+# Private owned password input and conversation bootstrap
+
+This slice implements real owned-terminal init/unlock and key/user-policy/
+pinned-detector/conversation composition. It remains private and unselected.
+There is no public `privacy init`, `status`, `enable`, `/privacy`, ACP, `-m` or
+service route. Normal enabled privacy policy still refuses before frontend,
+store or provider effects. The existing absent/disabled path is unchanged.
+
+## Password input
+
+`OwnedSecretTerminal` installs the existing Shutdown signal owner, captures
+terminal authority/modes through TerminalGuard before raw entry, and installs
+its fixed-text panic hook. It reads directly from a clone of the retained
+input descriptor before an ordinary EventStream exists. It creates no
+background input task, crossterm event queue, UiEvent, composer/history entry,
+clipboard/editor/voice draft, model/tool/agent value or journal/checkpoint
+containing a password.
+
+SafeBackend renders only bullets and fixed popup messages. The directly owned
+UTF-8/paste/field buffers are zeroizing and bounded; the field reserves its
+1024-byte capacity before typing and zeroes removed scalar bytes before
+backspace truncation. Bracketed paste is admitted as a whole or refused, with
+no trimming, lossy conversion or partial paste append. Each popup consumes at
+most 16 KiB of terminal bytes, including control framing. The original and
+NFC passphrase independently require 12–1024 bytes under the unchanged
+[112-byte password envelope](privacy-key.md). The floor is policy, not strength
+evidence. Multiline/control-bearing input is unsupported; Escape and an
+unsupported escape sequence cancel rather than submit another draft.
+
+The owner checks that its retained terminal is noncanonical and has ECHO and
+ECHONL disabled before reading. It never shells out to stty/read/password
+helpers. Input waiting is interactive, with no promised scheduling latency or
+absolute user-input deadline. The popup requires sole input ownership; it is
+not safe to start it beside a normal EventStream or during an active turn.
+Unrelated TUI drafts and the existing active-turn cancellation paths are not
+modified or routed through it.
+
+Escape, Ctrl-C or an owned shutdown signal closes the operation explicitly;
+none is an empty model answer, approval, Always choice or privacy opt-out.
+Initialization requires real confirmation and exclusive absence of both
+primary names and all sidecars. Unlock reads the envelope and opens only an
+existing authenticated vault. The key manager's finite attempt allowance,
+single directly owned KDF admission and original vault limits stay unchanged.
+Cancellation drops the waiter, closes new admission, and awaits every started
+handle before returning. Started blocking work may already have effects; it
+is not interrupted or rolled back and partial files are never automatically
+deleted or adopted. An actual key error remains an error; successful key work
+cannot conceal failed cleanup.
+
+The retained guard restores captured modes on normal release and uses the
+existing best-effort signal/panic restoration. Owned PTY checks retain raw mode
+observations; only macOS's kernel-transient PENDIN bit is excluded in their new
+comparison. This proves behavior of those fixtures, not resistance to the OS,
+malware, keylogging, crash dumps or foreign copies. Windows secure-key storage
+still refuses explicitly without reviewed owner/DACL support; Unix mode bits
+or read-only attributes do not substitute for it.
+
+## Captured ownership and the private composition
+
+`PrivateBootstrap` consumes a real ConfigRoot. It duplicates the already held
+no-follow ancestor descriptors for independent key and policy owners, captures
+the actual user config source before any project merge, and retains it for
+the conversation. It accepts no merged Config.extra, project/model/gadget
+label, caller string/hash/status or host Boolean as that authority. It captures
+the canonical workspace and a directory handle, rechecks its sampled identity,
+and reserves FreshConversationBinding from the application's own allocator.
+No independent or constant conversation id is used.
+
+After owned existing-only unlock, the private composition creates the detector
+from the actual user policy's id, function and both pins, under the same
+captured user root and workspace. Runtime construction executes no guest. On
+each actual admitted input, the pinned call checks the owned source bytes,
+both hashes, empty declared capabilities and the real stored exact source
+approval before compile/describe/call. Key acquisition and policy capture have
+already succeeded; a pin is a selector, not approval. The composition writes
+no grant, builds no user gadget and calls no help program. Source authoring,
+explicit build and human source/capability approval remain separate.
+
+`PrivacySession::open` binds the reserved id and workspace to its actual vault
+scope and send guard. `PrivateConversation` retains CapturedPolicy,
+UnlockedVault, workspace and session together and closes the session/key on
+release. Actual typed admission uses the original terminal draft, real detector
+reply and authenticated vault commit before the separate model view is
+released. Source/key/root liveness is sampled before and after admission;
+this is not a continuous external-writer lease or an OS race-proof guarantee.
+Only pre-build clear rotates a scope while retaining its live unlock. Failed
+or abandoned rotation closes the key too. A built clear needs a fresh exclusive
+unlock and remains refused. No path raises the 128-scope ceiling, prunes,
+reopens, transfers or replays.
+
+The current admission interface masks with DeclaredIdentifiers::none(). A
+nonempty actual user identifier policy therefore refuses before unlock; it is
+never quietly narrowed. The feature-off composition also refuses a detector
+selection; standalone private key initialization/unlock remains typechecked
+and available only through the owned private operation.
+
+## Private terminal construction and truthful limits
+
+The captured real key/user-policy owner makes the full-set selection; no
+fixture permission, merged Config.extra or ready Boolean substitutes for it.
+`OwnedSecretTerminal::run_private` consumes the fresh popup, finishes secret
+input/started-key cleanup, retains the original guard/panic/signal owners,
+flushes the sole-reader descriptor, and starts one ordinary EventStream.
+The actual UiBridge receiver is pumped through the entire build and loop;
+no successful path leaves an undrained channel in the popup. The unattached
+historical request method still refuses before bridge/build effects.
+
+Every original terminal extra remains requested. The shared builder now has
+actual controller adapters in the imported core. It verifies the same thread,
+view and guard and keeps the key/policy owner with the real Session. Typed
+turn/steer/decision tasks retain the SAME four-Arc view and actual agent while
+the UI continuously drains its actual mutable notification receiver. Original
+accepted text is passed without trimming or expansion; host catalog messages
+remain their separate actual records. No shell/reopen/transfer route is silently
+substituted for a typed private entry. Unsupported commands remain explicit.
+
+The receiver presents core's original opaque approval request, keeps that
+exact presentation in the modal, displays the complete bounded derived call,
+and returns core's original decision after a real human choice. Raw feedback
+and Edit JSON are retained before core parsing/projection. Positive choices
+require the real review frame to be drawn; denial/cancellation stays available
+at small sizes. The raw review cap is 1 MiB, unsafe controls/backslashes are
+shown escaped before wrapping (up to six times the raw width), and full text
+is scrollable. This is a conservative display bound, not a promise that every
+real request will fit. The new private event batch is 32; ordinary 4096-event
+batching is unchanged, and no global queue-byte cap is claimed.
+
+Cancellation stops the actual agent before releasing prompt waiters. An absent
+reply is not a synthetic denial/approval/model answer. Always effects remain
+core's accepted-decision effects. Actual end/save errors and returned results
+stay errors; closing revokes session/key even when a task retains their Arcs.
+Owned shutdown awaits actual tasks/background joins/LSP under the original
+30-second error bound and reports failure honestly; dropped async waiters do
+not establish interruption or quiescence of native/blocking work.
+
+The entry intercepts settings actions BEFORE configuration/permission/model
+mutation and displays `SettingsSaveRefused`, preserving the live configuration
+and conversation. Actually changed/unavailable captured source closes both
+session and key with its separate fixed line. In-place built `/clear` requires
+fresh exclusive password acquisition and remains refused; the current owner
+is retained. Pre-build scope rotation is distinct, and its failed/abandoned
+paths close both. There is no reopen, transfer, replay or source-receipt renewal.
+
+Voice has no reviewed private input adapter: v1 requires an actual explicit
+`voice.enabled:false` and refuses other settings. The captured policy grants
+no opaque-provider exemption. Native wires that require one refuse, without
+being called inspectable or downgraded to Chat. These are current restrictions,
+not normal feature activation.
+
+Captured plain-text/JSON data-file declarations remain INERT for restoration.
+They retain actual source and no-follow parent capture, but name/format/
+operation labels cannot establish supported containing-object/schema/
+application/data-field authority or a retained final effect. Canonical JSON
+before/after/range/value-only/duplicate-key and semantic exclusions plus the
+opaque retained-directory effect API must be installed before any grant.
+The current actual terminal fixture writes an ordinary constant without
+restoring secrets; the separate restoration assertion is preserved and held.
+Normal selectors and activation, active-turn secret reacquisition, supported
+data grants, platform/full17/hosted/native/security review remain open.
+
+The new fixtures use exact argv-marked native PTYs, private temporary roots,
+synthetic passwords, real KDF/envelope/vault IO, and an approved source-built
+WASM detector. A separate full ordinary builder/loopback/checkpoint control
+after successful popup acquisition checks password isolation with privacy
+unselected; it is not full-set selected-bootstrap coverage. The current safe owned entry exercises actual question/review/constant-file/
+settings-refusal/follow-up/checkpoint behavior using the captured user owner,
+with no file-restoration grant. The old first responder and missing-field
+failures, partial captures and original client retry remain failed evidence. Unmarked/unknown/
+duplicate helper startup returns before environment/config/stdin. Restricted
+private MAIN callback/budget/interleaving probes remain uninspected/unexecuted.
+
+The new fixture runtime wrappers and reader tasks use erased types to avoid
+duplicating generic runtime code in the large native test binary. The private
+key admission lock now ends in a lexical scope at the same point before its
+waiter and receiver await. Its checks, three-attempt ceiling, owned handles,
+KDF and file work stay identical. The modal still runs on its owning thread;
+the erased future's Send bound starts no extra task. No existing assertion,
+deadline, compiler flag, dependency, warning setting or bound changes.
+First fixture/interface/format failures, the failed Send attempt and compiler
+incremental error, and linker warnings are retained. The exact larger consumer
+also warns against the unchanged 16 MiB unwind threshold; historical A erasures
+or another worker's byte counts cannot certify this union. Canonical reductions
+remain separately coordinated and final warning acceptance is still blocked.
+
+This key/B union has no hosted or Linux/Windows validation. The independently
+validated installed guard main a903 and its separate main run cover that
+earlier source only. Local verification records its exact head in the new
+ignored report; source/native review, all four hosted jobs and a separate
+merged-main proof remain required
+before public delivery. The same $24.285934/$25 ledger with 40 unknowns, SDK/WIT,
+dependencies/pins/lock, SQL/schema/frames/goldens, native permissions/limits and
+binary/container publication hold remain unchanged.

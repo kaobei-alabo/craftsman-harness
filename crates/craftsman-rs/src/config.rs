@@ -270,6 +270,11 @@ impl Config {
                 e.column()
             )
         })?;
+        // This is the actual user-file parse, before project merges. Merged
+        // Config.extra never mints privacy authority; enabled remains refused.
+        if cfg.extra.contains_key("privacy") {
+            crate::privacy_policy::reject_unavailable_user_source(raw.as_bytes())?;
+        }
         Ok(Some(cfg))
     }
 

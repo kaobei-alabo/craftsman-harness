@@ -529,7 +529,7 @@ impl App {
         self.push_kind(TranscriptKind::System, text);
     }
 
-    fn push_user(&mut self, text: impl Into<String>) {
+    pub(super) fn push_user(&mut self, text: impl Into<String>) {
         self.push_kind(TranscriptKind::User, text);
     }
 
@@ -1189,7 +1189,7 @@ impl App {
             return Status::Stopping;
         }
         match self.modal.as_ref() {
-            Some(Modal::Approval(_)) => Status::Permission,
+            Some(Modal::Approval(_) | Modal::PrivacyApproval(_)) => Status::Permission,
             Some(Modal::Ask(_)) => Status::Question,
             _ if self.running || initializing => Status::Working,
             _ => self.program_status,

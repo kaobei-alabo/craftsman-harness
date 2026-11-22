@@ -610,6 +610,19 @@ pub(super) fn draw(
     slot: &AgentSlot,
     approval: &Arc<Mutex<ApprovalState>>,
 ) -> anyhow::Result<()> {
+    draw_session(terminal, app, cfg, slot.peek(), slot.is_pending(), approval)
+}
+
+/// The same frame renderer for an already owned private session. The ordinary
+/// slot wrapper above keeps its exact defaults and rendering inputs.
+pub(super) fn draw_session(
+    terminal: &mut Terminal<TuiBackend>,
+    app: &mut App,
+    cfg: &Config,
+    session: Option<&Session>,
+    pending: bool,
+    approval: &Arc<Mutex<ApprovalState>>,
+) -> anyhow::Result<()> {
     let selection = app.screen_selection;
     let mut rendered_transcript_area = Rect::default();
     let mut rendered_max_scroll = 0usize;
@@ -631,8 +644,7 @@ pub(super) fn draw(
         );
         let visible_input_rows = input_layout.rows.clamp(1, 5);
         let input_height = visible_input_rows as u16 + 2;
-        let running_tasks = slot
-            .peek()
+        let running_tasks = session
             .map(|session| running_subagent_tasks(&session.registry))
             .unwrap_or_default();
         let max_task_rows = area.height.saturating_sub(input_height + 1 + 3) as usize;
@@ -714,7 +726,7 @@ pub(super) fn draw(
                 tasks_area,
             );
         }
-        let subagent = slot.peek().and_then(|session| subagent_activity(&session.registry));
+        let subagent = session.and_then(|session| subagent_activity(&session.registry));
         let title = if app.selection_copied {
             " selection copied to clipboard · drag again to replace ".to_string()
         } else if app.voice.active() {
@@ -779,9 +791,9 @@ pub(super) fn draw(
 
         let mut footer = footer(
             cfg,
-            slot.peek(),
+            session,
             approval,
-            slot.is_pending(),
+            pending,
             app.transcript_scroll,
             area.width as usize,
         );

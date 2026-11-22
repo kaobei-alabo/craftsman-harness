@@ -204,8 +204,9 @@ impl FreshConversationBinding {
 /// it. The application's policy owner implements this for the policy it
 /// captured from the user's own configuration, before any project file was
 /// merged. A flag, a label, a digest or a statement in a test is not a
-/// policy. Outside tests nothing in this crate implements the trait yet, so
-/// no selection can be made.
+/// policy. The private captured key/user-root owner implements this trait;
+/// its owned terminal entry is unselected by normal routes. Data-file format
+/// proposals remain inert until the supported-field/effect guard exists.
 pub trait CapturedUserPolicy: Send + Sync {
     /// Actual supported whole-object/schema/application/field validator record.
     /// A format/path proposal alone remains inert; absence is refusal.
@@ -401,6 +402,17 @@ impl PrivacyView {
             boundary,
             human_source: None,
             policy: None,
+        }
+    }
+
+    /// Same actual view/lane/input owner for the owned terminal's task.
+    /// This clones only existing owners; it mints no source, policy or agent.
+    pub(crate) fn clone_for_terminal(&self) -> Self {
+        Self {
+            session: self.session.clone(),
+            human_source: self.human_source.clone(),
+            boundary: self.boundary.clone(),
+            policy: self.policy.clone(),
         }
     }
 
