@@ -3,10 +3,11 @@
 Status, November 22, 2026: a private core exists that can ask one approved,
 source-pinned detector for spans, check them, commit them in an open vault,
 admit them to the send guard and only then publish an admitted node with a
-model view. Nothing selects it. There is no configuration key, command,
-frontend option, key source, provider, tool, approval, display or file path
-that uses it, and normal sessions behave exactly as before. Privacy remains
-inactive.
+model view. Private builder, provider, tool and restoration candidates now use
+these primitives in owned fixtures. No normal configuration, command, frontend
+or key/policy owner selects them, and normal sessions behave exactly as before.
+The restoration candidate still needs the actual pre-review and decision
+consumers; its failed full-suite evidence is retained. Privacy remains inactive.
 
 This is one slice of the work described in [privacy hooks](privacy-hooks.md).
 It builds on the [private vault](privacy-vault.md) and the
@@ -28,7 +29,7 @@ It is local, unmerged and not installed.
 | Compaction summaries, with the summarizer's text kept as model text | implemented, private; see provenance |
 | Mixed text from delegated agents: task descriptions, results, notifications and inbox messages, as parts | implemented, private; see provenance |
 | The gadget catalog update as a host note of parts; instruction files, skills and extensions as separate pieces of the system prompt; host tool outcomes that repeat an argument | implemented, private; see provenance |
-| Mixed text from verification, context and failure controls | not implemented |
+| Mixed text from verification, context and failure controls | actual immutable carrier/controller/source helpers exist; selected controls remain refused until their concrete app adapters exist |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |

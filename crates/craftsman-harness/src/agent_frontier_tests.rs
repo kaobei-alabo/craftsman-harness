@@ -376,6 +376,10 @@ async fn selected_queue_cancellation_keeps_each_accepted_source_and_real_save() 
     assert!(agent.steer_with_view("first", first.clone()));
     assert!(agent.steer_with_view("second", second.clone()));
     assert!(agent.request_cancel());
+    assert!(matches!(
+        model_view::invocation_turn_live(&agent.turn_input.lock().unwrap()),
+        Err(AgentError::Cancelled)
+    ));
     assert!(!agent.steer_with_view("late", source("late")));
     assert_eq!(agent.turn_input.lock().unwrap().pending.len(), 2);
     agent.finish_cancelled().await.unwrap();
@@ -442,4 +446,127 @@ async fn typed_task_rejects_active_ownership_before_seeding_or_plumbing_reset() 
     assert!(agent.is_turn_active());
     assert!(agent.actual_provider_returns().unwrap().is_empty());
     // Direct ownership/queue primitive; no model, callback or budget fault runs.
+}
+
+struct EndObservation(Arc<AtomicU64>);
+#[async_trait::async_trait]
+impl AgentMiddleware for EndObservation {
+    fn name(&self) -> &str {
+        "fixture actual end observation"
+    }
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
+    }
+    async fn turn_end(&self, _: &mut AgentState) -> Result<(), AgentError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn direct_selected_failure_finalization_retains_inputs_runs_end_and_saves_once() {
+    let boundary = Arc::new(Boundary::default());
+    let saves = Arc::new(MemCheckpointer::default());
+    let ends = Arc::new(AtomicU64::new(0));
+    let agent = Agent::builder(Arc::new(Model(Mutex::new(0))))
+        .model_view_boundary(Some(boundary))
+        .middleware(Arc::new(EndObservation(ends.clone())))
+        .checkpointer(saves.clone())
+        .durable_turn_checkpoints(true)
+        .build();
+    let _activity = agent.begin_turn().unwrap();
+    let input = source("actual accepted queue source");
+    assert!(agent.steer_with_view("actual original", input.clone()));
+    let view = agent.model_view.as_ref().unwrap();
+    let result: Result<(), AgentError> = agent
+        .view_failed_turn(view, AgentError::State("direct source refusal".into()))
+        .await;
+    assert!(matches!(result, Err(AgentError::State(ref text)) if text == "direct source refusal"));
+    assert_eq!(
+        agent.state.lock().unwrap().messages,
+        [Msg::user("actual original")]
+    );
+    assert!(
+        agent.recorded_sources().unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .is(&input)
+    );
+    assert_eq!(ends.load(Ordering::SeqCst), 1);
+    let saved = saves.saves.lock().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].2.messages, [Msg::user("actual original")]);
+    assert_eq!(saved[0].2.custom[RECOVERY_KEY]["in_progress"], false);
+    assert!(view.end_attempted.load(Ordering::Acquire));
+    assert!(view.end_returned.load(Ordering::Acquire));
+    assert!(view.final_saved.load(Ordering::Acquire));
+    assert_eq!(
+        agent.actual_entry_failures().unwrap(),
+        ["state error: direct source refusal"]
+    );
+    assert!(agent.actual_provider_returns().unwrap().is_empty());
+    assert!(agent.actual_terminal_outcomes().unwrap().is_empty());
+    assert!(agent.is_turn_active());
+    assert!(!agent.steer_with_view("late", source("late")));
+    assert!(!agent.request_cancel());
+    assert!(model_view::invocation_turn_live(&agent.turn_input.lock().unwrap()).is_err());
+    // Direct ownership/final-handler primitive; no model, effect, adverse
+    // callback or budget-boundary scenario is started or injected.
+}
+
+#[derive(Default)]
+struct InputObservation(Mutex<Vec<ActualBoundaryInput>>);
+impl crate::AgentBoundaryPolicy for InputObservation {
+    fn user_input_with_view(
+        &self,
+        state: &mut AgentState,
+        event: &ActualBoundaryInput,
+    ) -> Result<(), AgentError> {
+        assert!(event.in_callback());
+        assert_eq!(
+            state.messages.get(event.index()),
+            Some(event.input().commit().message())
+        );
+        assert_eq!(event.kind(), crate::HumanInputKind::Steering);
+        self.0.lock().unwrap().push(event.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn direct_input_callback_has_the_real_commit_and_closes_before_return() {
+    let boundary = Arc::new(Boundary::default());
+    let observer = Arc::new(InputObservation::default());
+    let controller: Arc<dyn crate::AgentBoundaryPolicy> = observer.clone();
+    let agent = Agent::builder(Arc::new(Model(Mutex::new(0))))
+        .model_view_boundary(Some(boundary))
+        .boundary_policy(controller.clone())
+        .build();
+    // The helper does not select an unsupported whole-controller adapter.
+    assert!(
+        agent
+            .run_turn_with_view("unselected", source("unselected"))
+            .await
+            .is_err()
+    );
+    assert!(agent.state.lock().unwrap().messages.is_empty());
+    let _activity = agent.begin_turn().unwrap();
+    let original = source("actual queued fixture producer");
+    assert!(agent.steer_with_view("actual input", original.clone()));
+    agent.drain_steering_into_state().unwrap();
+    assert_eq!(
+        agent.state.lock().unwrap().messages,
+        [Msg::user("actual input")]
+    );
+    let observed = observer.0.lock().unwrap();
+    assert_eq!(observed.len(), 1);
+    assert!(!observed[0].in_callback());
+    assert!(observed[0].same_controller(&controller));
+    assert_eq!(observed[0].input().commit().event(), RetainedEvent::Input);
+    assert!(observed[0].input().source().is(&original));
+    assert!(agent.actual_boundary_inputs().unwrap()[0].same_input_event(&observed[0]));
+    assert!(agent.actual_provider_returns().unwrap().is_empty());
+    assert!(agent.actual_terminal_outcomes().unwrap().is_empty());
+    // Ordinary direct input-owner primitive: no model, tool, adverse callback
+    // or budget-boundary scenario is executed; no app/human authority is granted.
 }

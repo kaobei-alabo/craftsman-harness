@@ -39,10 +39,11 @@ Also in development: **privacy hooks** that mask supported personal data before
 model requests and restore it in local replies and file edits. The encrypted
 vault, WASM detector and restoration views are implemented privately;
 normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
-A private [restoration path](docs/privacy-restore.md) now gives a person the
-values in a committed reply and puts them into the content of a file write or
-edit that was derived, shown and approved with the real content, for the main
-agent and for delegated agents behind their own gate. The file tool still runs
+A private [restoration candidate](docs/privacy-restore.md) supplies a separate
+human view of a committed reply and derived content for file writes or edits,
+for the main agent and delegated agents behind their own gate. Its actual
+pre-review and human/automatic decision consumers are still incomplete; a
+digest or gate-owned approval is insufficient. The file tool still runs
 its own checkpoint and diagnostics around such a write, and the terminal's
 bridge draws a committed reply once through its safe backend. Nothing selects
 any of it yet: the user's policy has no owner outside test fixtures and the
@@ -55,9 +56,11 @@ and a private way to compose model requests from
 in development on top of them. No frontend, configuration or command selects
 either. The local core correction retains actual input/reply/tool facts and
 sealed human decisions, with a separate sourced model view and actual child/
-notification owners. Kept native items remain exact through compaction; changed
+notification owners. It adds actual pre-review/terminal events, retained end/save
+failures and stop checks for new selected invocations. Kept native items remain exact through compaction; changed
 native replies refuse replay. Real policy/frontend/restore adapters and
-independent validation remain required before activation.
+independent validation remain required before activation. Failed local checks
+and the unresolved native linker warning remain recorded.
 
 ## Planned WASM enhancement
 

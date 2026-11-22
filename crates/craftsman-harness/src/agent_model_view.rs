@@ -338,6 +338,12 @@ pub(super) struct ModelView {
     todos: Mutex<Option<Vec<PartFrom>>>,
     parent: Option<ActualToolInvocation>,
     task_started: AtomicBool,
+    // Actual final-handler observations only, private and per activity. They
+    // are not serialized sources and cannot be supplied by a caller.
+    pub(super) end_attempted: AtomicBool,
+    pub(super) end_returned: AtomicBool,
+    pub(super) final_saved: AtomicBool,
+    pub(super) cancel_returned: AtomicBool,
 }
 
 impl ModelView {
@@ -366,6 +372,10 @@ impl ModelView {
             todos: Mutex::new(Some(Vec::new())),
             parent,
             task_started: AtomicBool::new(false),
+            end_attempted: AtomicBool::new(false),
+            end_returned: AtomicBool::new(false),
+            final_saved: AtomicBool::new(false),
+            cancel_returned: AtomicBool::new(false),
         }
     }
 
@@ -576,6 +586,26 @@ fn unsourced() -> AgentError {
     AgentError::State(
         "A recorded message of this conversation has no source. No request was composed.".into(),
     )
+}
+
+/// Checks the framework's actual activity owner; caller labels, source notes
+/// and a cancellation proxy cannot supply these flags. No running tool is
+/// dropped here. This is only the frontier before a new selected invocation.
+pub(super) fn invocation_turn_live(input: &TurnInputState) -> Result<(), AgentError> {
+    if input.cancel_requested
+        || input
+            .cancellation
+            .as_ref()
+            .is_some_and(|turn| turn.is_cancelled())
+    {
+        return Err(AgentError::Cancelled);
+    }
+    if !input.active || input.idle_operation || input.finishing || input.control_settled {
+        return Err(AgentError::State(
+            "This selected invocation has no live turn.".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// One real selected provider terminal. Return data is kept here before
@@ -819,6 +849,71 @@ impl Agent {
         self.model_view.as_ref()?.parked.lock().unwrap().clone()
     }
 
+    /// Private-memory observations of actual entry/final-handler/save errors.
+    /// The text is retained data and supplies no source or success authority.
+    pub fn actual_entry_failures(&self) -> Option<Vec<String>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .entry_failures
+                .clone(),
+        )
+    }
+
+    pub fn actual_boundary_inputs(&self) -> Option<Vec<crate::provenance::ActualBoundaryInput>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .control_inputs
+                .clone(),
+        )
+    }
+
+    pub(super) fn retained_boundary_input(
+        &self,
+        view: &ModelView,
+        controller: &Arc<dyn crate::AgentBoundaryPolicy>,
+        state: &mut AgentState,
+        index: usize,
+        kind: crate::HumanInputKind,
+    ) -> Result<(), AgentError> {
+        let input = {
+            let slots = view.sources.lock().unwrap();
+            match slots.get(index) {
+                Some(Slot::Bound(source, commit))
+                    if commit.event() == RetainedEvent::Input
+                        && commit.owner().same_agent(&view.owner)
+                        && state.messages.get(index) == Some(commit.message()) =>
+                {
+                    crate::provenance::ActualSourcedMessage::issued(commit.clone(), source.clone())
+                }
+                _ => return Err(unsourced()),
+            }
+        };
+        let event = crate::provenance::ActualBoundaryInput::issued(
+            &view.owner,
+            controller.clone(),
+            input,
+            index,
+            kind,
+        );
+        let _callback = event.own_callback();
+        view.facts
+            .lock()
+            .unwrap()
+            .control_inputs
+            .push(event.clone());
+        // Secondary guards are released before the real callback. The host
+        // still validates its actual input producer and own custom-key changes.
+        controller.user_input_with_view(state, &event)
+    }
+
     /// Adds typed input to the active turn of a selected agent, like
     /// [`steer`](Agent::steer). The text is recorded at the next safe round
     /// boundary and `source` is kept beside it. Returns `false` when no turn
@@ -909,6 +1004,19 @@ impl Agent {
             let Some((index, commit)) = next else {
                 return Ok(());
             };
+            if commit.event() == RetainedEvent::Framework(FrameworkCommit::CompletionCheck) {
+                let scheduled = view
+                    .facts
+                    .lock()
+                    .unwrap()
+                    .host_calls
+                    .iter()
+                    .find(|scheduled| scheduled.commit().same_commit(&commit))
+                    .cloned()
+                    .ok_or_else(unsourced)?;
+                self.record_host_schedule_source(view, &scheduled).await?;
+                continue;
+            }
             let source = if commit.event() == RetainedEvent::Summary {
                 view.boundary.observe_retained_summary(&commit).await?
             } else {
@@ -921,6 +1029,36 @@ impl Agent {
         }
     }
 
+    pub(super) async fn record_host_schedule_source(
+        &self,
+        view: &ModelView,
+        scheduled: &crate::provenance::ActualHostScheduledCall,
+    ) -> Result<(), AgentError> {
+        if !scheduled.owner().same_agent(&view.owner)
+            || scheduled.commit().event()
+                != RetainedEvent::Framework(FrameworkCommit::CompletionCheck)
+        {
+            return Err(unsourced());
+        }
+        let source = view.boundary.observe_host_scheduled(scheduled).await?;
+        // Bind only the real event's complete immutable carrier. Equal
+        // text/call ids or a caller's mutable state never locate an event.
+        let state = self.state.lock().unwrap();
+        let mut slots = view.sources.lock().unwrap();
+        let index = slots
+            .iter()
+            .position(|slot| {
+                matches!(slot,
+            Slot::Pending(commit) if commit.same_commit(scheduled.commit()))
+            })
+            .ok_or_else(unsourced)?;
+        if state.messages.get(index) != Some(scheduled.commit().message()) {
+            return Err(unsourced());
+        }
+        slots[index] = Slot::Bound(source, scheduled.commit().clone());
+        Ok(())
+    }
+
     /// The end of a typed entry. Whatever the turn appended itself is already
     /// recorded and saved; this asks for its sources. The turn's own error
     /// comes first.
@@ -929,12 +1067,85 @@ impl Agent {
         view: &ModelView,
         result: Result<TurnResult, AgentError>,
     ) -> Result<TurnResult, AgentError> {
-        let result = match result {
+        let mut result = match result {
             Ok(result) => result,
-            Err(error) => return self.view_failed(view, error).await,
+            Err(error) => return self.view_failed_turn(view, error).await,
         };
+        if self.checkpoint_failed() {
+            return self.view_failed_turn(view, checkpoint_save_error()).await;
+        }
+        let pending: Vec<QueuedInput> = {
+            let mut input = self.turn_input.lock().unwrap();
+            input.idle_operation = true;
+            input.pending.drain(..).collect()
+        };
+        if !pending.is_empty() {
+            if let Err(error) = self.append_human_steering_messages(pending) {
+                return self.view_failed_turn(view, error).await;
+            }
+            let suspension = match &result {
+                TurnResult::Suspended(suspension) => Some(suspension),
+                _ => None,
+            };
+            if let Err(error) = self.save_checkpoint(suspension).await {
+                return self.view_failed_turn(view, error).await;
+            }
+        }
         if let Err(error) = self.settle_sources(view).await {
-            return self.view_failed(view, error).await;
+            return self.view_failed_turn(view, error).await;
+        }
+        if self.checkpoint_failed() {
+            return self.view_failed_turn(view, checkpoint_save_error()).await;
+        }
+        let late_cancel = {
+            let mut input = self.turn_input.lock().unwrap();
+            input.idle_operation = true;
+            let cancelled = input.cancel_requested
+                || input
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(|turn| turn.is_cancelled());
+            // Stop admission and sample the actual stop flag in one guard.
+            // An unfinished cancellation still owns its real ending below.
+            if !cancelled
+                || view.cancel_returned.load(Ordering::Acquire)
+                || view.end_attempted.load(Ordering::Acquire)
+            {
+                input.control_settled = true;
+            }
+            cancelled
+        };
+        if late_cancel && !view.cancel_returned.load(Ordering::Acquire) {
+            if view.end_attempted.load(Ordering::Acquire) {
+                // Real end/save already ran. Keep its actual reply/data and
+                // report the actual late stop; never replay end or invent text.
+                view.facts
+                    .lock()
+                    .unwrap()
+                    .entry_failures
+                    .push(AgentError::Cancelled.to_string());
+                self.turn_input.lock().unwrap().control_settled = true;
+                return Err(AgentError::Cancelled);
+            }
+            // A suspension can be cancelled while its sources/save return.
+            // Retain any partial facts, balance its actual parked/remaining
+            // calls without execution, and run the original cancellation end.
+            let pending = { self.pending.lock().unwrap().take() };
+            if let Some(pending) = pending {
+                let mut calls = vec![pending.call];
+                calls.extend(pending.remaining);
+                self.append_cancelled_calls(&calls);
+            }
+            *self.parked_suspension.lock().unwrap() = None;
+            *view.parked.lock().unwrap() = None;
+            self.take_cancel_request();
+            result = match self.finish_cancelled().await {
+                Ok(result) => result,
+                Err(error) => return self.view_failed_turn(view, error).await,
+            };
+            if let Err(error) = self.settle_sources(view).await {
+                return self.view_failed_turn(view, error).await;
+            }
         }
         {
             let mut input = self.turn_input.lock().unwrap();
@@ -945,23 +1156,73 @@ impl Agent {
     }
 
     async fn view_failed<T>(&self, view: &ModelView, error: AgentError) -> Result<T, AgentError> {
-        let pending = {
+        self.view_failed_inner(view, error, false).await
+    }
+
+    pub(super) async fn view_failed_turn<T>(
+        &self,
+        view: &ModelView,
+        error: AgentError,
+    ) -> Result<T, AgentError> {
+        self.view_failed_inner(view, error, true).await
+    }
+
+    async fn view_failed_inner<T>(
+        &self,
+        view: &ModelView,
+        error: AgentError,
+        finish_turn: bool,
+    ) -> Result<T, AgentError> {
+        view.facts
+            .lock()
+            .unwrap()
+            .entry_failures
+            .push(error.to_string());
+        let pending: Vec<QueuedInput> = {
             let mut input = self.turn_input.lock().unwrap();
             input.idle_operation = true;
             input.pending.drain(..).collect()
         };
+        let had_pending = !pending.is_empty();
+        let before_messages = self.state.lock().unwrap().messages.len();
         // Retain originals without invoking a failed source callback again.
         self.append_steering_messages(pending);
         self.drain_agent_notifications_into_state();
+        self.drain_view_inbox_into_state();
+        let had_input = had_pending || self.state.lock().unwrap().messages.len() != before_messages;
         view.close();
         // A failed save is retained as failure, never retried as proof.
         if self.checkpoint_failed() {
             return Err(checkpoint_save_error());
         }
-        self.save_checkpoint(None).await?;
+        let ending_here = finish_turn && !view.end_attempted.load(Ordering::Acquire);
+        if ending_here {
+            // Source closure does not fabricate a turn ending. The original
+            // actual handler and final save run once over retained originals.
+            let ended = self.finish_state().await;
+            if let Err(end_error) = &ended {
+                view.facts
+                    .lock()
+                    .unwrap()
+                    .entry_failures
+                    .push(end_error.to_string());
+            }
+            if self.checkpoint_failed() {
+                return Err(checkpoint_save_error());
+            }
+        }
+        if !view.final_saved.load(Ordering::Acquire) || !ending_here && had_input {
+            // An end-hook refusal cannot discard accepted data. Save the
+            // original canonical state, never the hook's uncommitted clone.
+            // A failed save above was already returned and is not replayed.
+            self.save_checkpoint(None).await?;
+        }
         if self.checkpoint_failed() {
             return Err(checkpoint_save_error());
         }
+        self.turn_input.lock().unwrap().control_settled = true;
+        // The original entry error retains precedence after cleanup; actual
+        // handler errors are separately retained, and failed saves win above.
         Err(error)
     }
 

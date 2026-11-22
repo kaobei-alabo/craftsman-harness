@@ -25,11 +25,11 @@ use std::sync::Arc;
 #[path = "provenance_facts.rs"]
 mod facts;
 pub use facts::{
-    ActualAgentOwner, ActualBoundaryController, ActualHostScheduledCall, ActualModelInput,
-    ActualParkedCall, ActualPlannedInvocation, ActualProviderReturn, ActualReceivedReply,
-    ActualRequestInput, ActualRetainedCommit, ActualSourcedMessage, ActualStagedHostMessage,
-    ActualStagedSummary, ActualTaskReturn, ActualTerminalOutcome, ActualToolFact,
-    ActualToolInvocation, RetainedEvent,
+    ActualAgentOwner, ActualBoundaryController, ActualBoundaryInput, ActualHostScheduledCall,
+    ActualModelInput, ActualParkedCall, ActualPlannedInvocation, ActualProviderReturn,
+    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualSourcedMessage,
+    ActualStagedHostMessage, ActualStagedSummary, ActualTaskReturn, ActualTerminalOutcome,
+    ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
@@ -136,6 +136,9 @@ pub enum FrameworkCommit {
     /// data the host found at run time, inside the host's own framing. It
     /// is appended with the parts it is made of.
     HostNote,
+    /// The real completion controller scheduled the exact retained carrier
+    /// and call. This source-only event is not a protocol or result variant.
+    CompletionCheck,
 }
 
 /// What a middleware's author states about it for an agent that selected a
@@ -580,6 +583,22 @@ fn refused<'f, T: Send + 'f>(why: &'static str) -> BoxedBoundaryFuture<'f, T> {
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// Source of a call the actual installed completion controller scheduled.
+    /// It has an immutable retained carrier, not model or permission origin.
+    /// The default refuses; selected control adapters remain required.
+    fn observe_host_scheduled<'a, 'b, 'f>(
+        &'a self,
+        scheduled: &'b ActualHostScheduledCall,
+    ) -> BoxedBoundaryFuture<'f, SourceRef>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        let _ = scheduled;
+        refused("This conversation has no source for its scheduled completion check.")
+    }
+
     /// Issued by the agent before this actual proposal enters its review and
     /// approval chain. Returning a source grants no tool permission. Written
     /// with the existing boxed convention so the default adds one ready future.

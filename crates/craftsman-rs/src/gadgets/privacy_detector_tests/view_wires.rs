@@ -800,87 +800,78 @@ async fn view_wires_native_fixture() {
             "{wire}"
         );
         assert!(owner.check().is_ok(), "{wire}");
-        // Compaction is additive to the original four-wire proof above.
-        // Chat preserves the supported summary projection. Native history
-        // currently refuses rather than erasing original provider items.
+        // This is a second compaction of the same conversation. The first
+        // one above already retained a summary, then two real turns followed.
+        // The old added expectation of eight messages and native refusal did
+        // not describe this source: all four wires use the explicit projection.
         view.turn(&session.agent, "and then?").await.unwrap();
         let before = session.agent.state.lock().unwrap().messages.clone();
-        assert_eq!(before.len(), 8, "{wire}");
-        if wire == "chat" {
-            let counts = view
-                .compact(&session.agent, &session.compaction)
-                .await
-                .unwrap_or_else(|error| panic!("{wire}: {error}"));
-            assert_eq!(counts, Some((8, 5)), "{wire}");
-            let after = session.agent.state.lock().unwrap().messages.clone();
-            assert_eq!(
-                after[0],
-                Msg::user("<conversation_summary>\nsecond answer\n</conversation_summary>"),
-                "{wire}"
-            );
-            assert_eq!(after[1..], before[4..], "{wire}");
-            let requests = server.received_requests().await.unwrap();
-            assert_eq!(requests.len(), 5, "{wire}");
-            let asked = String::from_utf8(requests[4].body.clone()).unwrap();
-            // The summarizer saw views, and the first reply as its call without
-            // the provider's item: its own client never received that reply.
-            assert!(!asked.contains(EMAIL) && !asked.contains(PHONE), "{wire}");
-            assert!(
-                asked.contains("You are compacting an ongoing agent conversation"),
-                "{wire}"
-            );
-            assert!(
-                asked.contains("read_file") && asked.contains("Their number is "),
-                "{wire}"
-            );
-            assert!(!asked.contains("wire-original-"), "{wire}: {asked}");
-            // The Chat conversation goes on from the supported summary.
-            let TurnResult::Done(output) = view.turn(&session.agent, "go on").await.unwrap() else {
-                panic!("{wire}: the conversation continues after compaction");
-            };
-            assert_eq!(output.final_text(), "second answer", "{wire}");
-            let requests = server.received_requests().await.unwrap();
-            let next = String::from_utf8(requests[5].body.clone()).unwrap();
-            assert!(next.contains("<conversation_summary>"), "{wire}");
-            assert!(!next.contains(EMAIL) && !next.contains(PHONE), "{wire}");
-            assert!(!next.contains("wire-original-"), "{wire}");
-            assert!(
-                session
-                    .agent
-                    .recorded_sources()
-                    .unwrap()
-                    .iter()
-                    .all(Option::is_some),
-                "{wire}"
-            );
-        } else {
-            let usage = *session.usage.lock().unwrap();
-            assert!(
-                view.compact(&session.agent, &session.compaction)
-                    .await
-                    .is_err(),
-                "{wire}"
-            );
-            assert_eq!(
-                session.agent.state.lock().unwrap().messages,
-                before,
-                "{wire}"
-            );
-            assert_eq!(*session.usage.lock().unwrap(), usage, "{wire}");
-            assert_eq!(server.received_requests().await.unwrap().len(), 4, "{wire}");
-            assert!(
-                session
-                    .agent
-                    .actual_retained_commits()
-                    .unwrap()
-                    .iter()
-                    .all(|commit| commit.event()
-                        != craftsman_harness::provenance::RetainedEvent::Summary),
-                "{wire}"
-            );
-            assert!(owner.check().is_err(), "{wire}");
+        assert_eq!(before.len(), 9, "{wire}");
+        let held = session.agent.actual_sourced_messages().unwrap();
+        assert_eq!(held.len(), before.len(), "{wire}");
+        for (message, source) in before.iter().zip(&held) {
+            assert_eq!(source.commit().message(), message, "{wire}");
         }
-
+        let usage = *session.usage.lock().unwrap();
+        let requests_before = server.received_requests().await.unwrap().len();
+        assert_eq!(requests_before, 7, "{wire}");
+        let counts = view
+            .compact(&session.agent, &session.compaction)
+            .await
+            .unwrap_or_else(|error| panic!("{wire}: {error}"));
+        assert_eq!(counts, Some((9, 5)), "{wire}");
+        let after = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(
+            after[0],
+            Msg::user("<conversation_summary>\nsecond answer\n</conversation_summary>"),
+            "{wire}"
+        );
+        assert_eq!(after[1..], before[5..], "{wire}");
+        assert_eq!(*session.usage.lock().unwrap(), usage, "{wire}");
+        let sources = session.agent.actual_sourced_messages().unwrap();
+        assert_eq!(sources.len(), after.len(), "{wire}");
+        assert_eq!(
+            sources[0].commit().event(),
+            craftsman_harness::provenance::RetainedEvent::Summary,
+            "{wire}"
+        );
+        for (retained, original) in sources[1..].iter().zip(&held[5..]) {
+            assert!(retained.commit().same_commit(original.commit()), "{wire}");
+            assert!(retained.source().is(original.source()), "{wire}");
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), requests_before + 1, "{wire}");
+        let asked = String::from_utf8(requests[requests_before].body.clone()).unwrap();
+        assert!(!asked.contains(EMAIL) && !asked.contains(PHONE), "{wire}");
+        assert!(
+            asked.contains("You are compacting an ongoing agent conversation"),
+            "{wire}"
+        );
+        // Its first input is the actual previously retained summary. The
+        // original read_file call was summarized during the earlier pass.
+        assert!(asked.contains("<conversation_summary>"), "{wire}");
+        assert!(asked.contains("and then?"), "{wire}");
+        assert!(!asked.contains("wire-original-"), "{wire}: {asked}");
+        let TurnResult::Done(output) = view.turn(&session.agent, "go on").await.unwrap() else {
+            panic!("{wire}: the conversation continues after the second compaction");
+        };
+        assert_eq!(output.final_text(), "second answer", "{wire}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), requests_before + 2, "{wire}");
+        let next = String::from_utf8(requests[requests_before + 1].body.clone()).unwrap();
+        assert!(next.contains("<conversation_summary>"), "{wire}");
+        assert!(!next.contains(EMAIL) && !next.contains(PHONE), "{wire}");
+        assert!(!next.contains("wire-original-"), "{wire}");
+        assert!(
+            session
+                .agent
+                .recorded_sources()
+                .unwrap()
+                .iter()
+                .all(Option::is_some),
+            "{wire}"
+        );
+        assert!(owner.check().is_ok(), "{wire}");
         session.lsp.shutdown().await;
     }
     println!(

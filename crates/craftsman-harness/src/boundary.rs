@@ -19,6 +19,20 @@ pub enum HumanInputKind {
 /// Frontend-selected, bounded local bookkeeping and sampling admission.
 /// Default builders have no policy; all existing loop behavior stays unchanged.
 pub trait AgentBoundaryPolicy: Send + Sync {
+    /// An actual accepted input/source event of this installed controller.
+    /// A selected adapter must validate its private producer and restrict
+    /// mutation to its own bookkeeping before invoking the original callback.
+    /// The default refuses; installation, role, text or custom JSON is no source.
+    fn user_input_with_view(
+        &self,
+        _state: &mut AgentState,
+        _event: &crate::provenance::ActualBoundaryInput,
+    ) -> Result<(), AgentError> {
+        Err(AgentError::State(
+            "This controller has no source for its accepted input.".into(),
+        ))
+    }
+
     /// The actual human input has been appended. Its ordinary checkpoint follows
     /// this callback, so derived context is saved together with that input.
     /// Runtime notifications and conversation transfer do not call this method.

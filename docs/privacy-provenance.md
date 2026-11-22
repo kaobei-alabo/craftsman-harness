@@ -1,8 +1,9 @@
 # Privacy provenance: source receipts and a separate model view
 
 Status, November 22, 2026: this page records the contract the private privacy
-work follows for getting text to a model. Most of it is not built. Nothing
-selects any of it, normal sessions are unchanged and privacy remains inactive.
+work follows for getting text to a model. Private source, model-view and
+restoration candidates exist, with the open consumers and validation gates below.
+Nothing normally selects them, sessions are unchanged and privacy remains inactive.
 
 It replaces an earlier idea of rewriting conversation history into
 placeholders and deciding what was already masked from a role, a tool name or a
@@ -101,6 +102,23 @@ terminal outcomes are retained before middleware can project or fail them.
 Source approval grants no execution permission. A refusal never invents effects
 or results for a tool that did not run.
 
+The final frontier also checks the real turn owner after fallible source work
+and immediately before a new selected tool is polled. Cancellation seals new
+invocations and steering; a running tool keeps its existing cleanup ownership.
+Already accepted input is retained before the typed entry returns, including a
+parked return, and late cancellation is sampled under the same guard that seals
+further admission. A completed cancellation uses the actual cancellation
+handler's return; a stop after an already completed end/save remains an error
+without inventing another answer or replaying the end handler.
+
+A selected entry/source failure that has not started its end handler runs the
+original handler and final save over retained canonical facts. An already
+attempted handler or failed save is not retried. Idle compaction keeps its own
+lifecycle. Actual entry, handler and save errors remain in private memory and
+in a child's actual task return as data; the initial entry error and original
+save-error precedence remain, and none of these observations is a provenance
+or completion certificate.
+
 The framework also issues an `ActualPlannedInvocation` before the real review
 chain. Its source and the host's source-bound preview digest stay with a parked
 call and with each terminal that follows that review. Equal arguments or a reused
@@ -111,6 +129,19 @@ and retains it with the actual decision variant. A middleware can carry a
 host-owned decision source to the terminal, but the annotation is no permission
 certificate: an application verifier must require its private actual human or
 policy producer. File and inline approval adapters remain separate pending work.
+
+Control helpers keep real input/source events and host-scheduled checks distinct
+from model-origin requests. An `ActualBoundaryInput` is issued only after the
+actual accepted input append, with its immutable commit/source and installed
+controller, before that input's checkpoint. Its callback entry closes at actual
+return/drop. The kind and index are locators, not human or policy authority; an
+application adapter must require its own private input producer and consume the
+event once. `AgentBoundaryPolicy::user_input_with_view` defaults to refusal. A
+host-scheduled completion check similarly holds its real carrier commit and
+installed controller, and the plan carries that actual scheduling event. Its
+source hook also defaults to refusal. These helpers do not lift the current
+startup refusal for selected boundary/completion policies, and add no app
+dependencies, checkpoint fields or default request changes.
 
 **Approvals.** A parked call is resumed only through
 `resume_with_view(action, deny_default, decision)`. The boundary checks the

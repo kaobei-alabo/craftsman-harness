@@ -36,13 +36,23 @@ agent at the approval gate and for each delegated agent in its own lane behind
 its own gate; the file tool keeps its workspace checkpoint, diagnostics and
 result around the derived write. The terminal's bridge registers a reply sink,
 and its application draws a committed reply once through the safe backend;
-see [privacy-restore.md](privacy-restore.md). A sealed decision that carries
-what a person was shown, a framework event for a planned call before its
-review, terminal input for a privacy turn, restoration for other tools, the
-owner of the user's policy, key handling and activation are not built. The
-target diagram
+see [privacy-restore.md](privacy-restore.md). The core now supplies real
+pre-review/parked/terminal events and carriage of the source-bound shown digest;
+the restoration candidate has not yet consumed them to replace its gate-owned
+approval fallback. Terminal input for a privacy turn, restoration for other
+tools, the owner of the user's policy, key handling and activation remain
+unselected or unfinished. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
+
+Accepted-input/controller and host-check helpers retain actual events rather
+than inferring origin from text, role, index or custom JSON. Actual stop-owner
+checks precede new selected invocations. An unfinished selected failure runs
+the original end handler and final save; an already attempted handler or failed
+save is not replayed. Entry/end/save errors and real child return data remain
+in private memory. These helpers grant no app origin or permission, and
+selected controls still refuse without their concrete adapters. Failed
+verification and the native linker warning remain open evidence.
 
 The intended enabled behavior is to replace supported personal data before a model
 request and restore known replacements in **displayed replies and file edits**.

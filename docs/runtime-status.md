@@ -554,6 +554,23 @@ generic annotation and digest grant no authority. Concrete derived-file and
 automatic-policy adapters must still validate their private real producers,
 exact preview, final call, source and destination before effects.
 
+Selected returns seal new input, retain accepted originals before yielding,
+and sample the real stop owner under the admission guard. A new selected tool
+gets a stop check immediately before its first poll; no running native owner is
+force-dropped. Source failures run the actual unfinished turn-end handler and
+final save, with no replay of an already attempted handler or failed save.
+Idle compaction keeps its separate ending. Private error observations retain
+the real entry/handler/save failures, including in actual child task returns;
+they do not serialize a provenance certificate or claim success. The restricted
+adverse callback/budget scenarios are still unexecuted and uninspected.
+
+Completion helpers now retain the exact actual host-scheduled carrier commit
+and link it into the planned and final invocation. The source hook defaults to
+refusal; completion and boundary policies and the configured control adapters
+remain unsupported on the selected path. A host event is neither model origin
+nor tool permission, and the installed original controller still owns its real
+callbacks, commands and results.
+
 The one 45-second admission-entry clock is checked after actual vault return,
 after guard work and immediately before node release. Completed map facts
 survive late refusal. The 16-slot admission bound, vault five-second/native busy

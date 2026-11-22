@@ -333,13 +333,21 @@ impl Agent {
                 view.note_inputs(&[message], vec![Some(source)]);
             }
             self.boundary_policy.as_ref().and_then(|policy| {
-                policy
-                    .user_input(
+                match &self.model_view {
+                    Some(view) => self.retained_boundary_input(
+                        view,
+                        policy,
                         &mut committed,
                         message_index,
                         crate::HumanInputKind::Initial,
-                    )
-                    .err()
+                    ),
+                    None => policy.user_input(
+                        &mut committed,
+                        message_index,
+                        crate::HumanInputKind::Initial,
+                    ),
+                }
+                .err()
             })
         };
         if let Some(error) = input_error {
@@ -853,7 +861,7 @@ impl Agent {
     /// chain is skipped it cannot re-suspend, so it only ever appends a tool
     /// result (or propagates a non-suspension error).
     async fn dispatch_approved(&self, call: ToolCall) -> Result<(), AgentError> {
-        self.dispatch_call_inner(call, true).await
+        self.dispatch_call_inner(call, true, None).await
     }
 
     async fn finish_model(
@@ -900,17 +908,33 @@ impl Agent {
                     tool_calls: vec![call.clone()],
                 };
                 self.state.lock().unwrap().messages.push(assistant.clone());
-                if let Some(view) = &self.model_view {
+                let scheduled = if let Some(view) = &self.model_view {
                     // Issued at the real host-scheduling event, not from a
                     // caller message, model reply, label or permission flag.
+                    let commit = view.retained(
+                        RetainedEvent::Framework(FrameworkCommit::CompletionCheck),
+                        &assistant,
+                        None,
+                    );
+                    view.sources
+                        .lock()
+                        .unwrap()
+                        .push(model_view::Slot::Pending(commit.clone()));
                     let scheduled = crate::provenance::ActualHostScheduledCall::issued(
                         &view.owner,
                         policy.clone(),
                         call.clone(),
-                        assistant.clone(),
+                        commit,
                     );
-                    view.facts.lock().unwrap().host_calls.push(scheduled);
-                }
+                    view.facts
+                        .lock()
+                        .unwrap()
+                        .host_calls
+                        .push(scheduled.clone());
+                    Some(scheduled)
+                } else {
+                    None
+                };
                 self.journal(
                     "assistant",
                     serde_json::to_value(&assistant).unwrap_or_default(),
@@ -922,7 +946,17 @@ impl Agent {
                     self.append_cancelled_tool_results(&assistant);
                     return self.finish_cancelled().await.map(Some);
                 }
-                match self.dispatch_call(call.clone()).await {
+                if let (Some(view), Some(scheduled)) = (&self.model_view, &scheduled) {
+                    self.record_host_schedule_source(view, scheduled).await?;
+                }
+                let dispatched = match scheduled {
+                    Some(scheduled) => {
+                        self.dispatch_call_inner(call.clone(), false, Some(scheduled))
+                            .await
+                    }
+                    None => self.dispatch_call(call.clone()).await,
+                };
+                match dispatched {
                     Ok(()) => {}
                     Err(AgentError::Suspended(suspension)) => {
                         *self.pending.lock().unwrap() = Some(PendingResume {
@@ -1031,12 +1065,22 @@ impl Agent {
 
     async fn finish_state(&self) -> Result<(), AgentError> {
         self.turn_input.lock().unwrap().finishing = true;
+        if let Some(view) = &self.model_view {
+            view.end_attempted.store(true, Ordering::Release);
+        }
         let mut working = self.snapshot();
         let kept = self.view_phase_start(&working);
         self.chain.turn_end(&mut working).await?;
         self.view_phase_end(kept, &working)?;
         self.commit(working);
+        if let Some(view) = &self.model_view {
+            view.end_returned.store(true, Ordering::Release);
+        }
         self.save_checkpoint(None).await?;
+        if let Some(view) = &self.model_view {
+            view.final_saved
+                .store(!self.checkpoint_failed(), Ordering::Release);
+        }
         Ok(())
     }
 
@@ -1066,6 +1110,10 @@ impl Agent {
         let result = self.finish(message).await?;
         if self.boundary_policy.is_some() && self.checkpoint_failed() {
             return Err(checkpoint_save_error());
+        }
+        if let Some(view) = &self.model_view {
+            view.cancel_returned
+                .store(!self.checkpoint_failed(), Ordering::Release);
         }
         Ok(result)
     }
@@ -1106,7 +1154,7 @@ impl Agent {
     /// [`AgentError::Suspended`] is instead propagated so the caller can pause
     /// the turn (no tool message is appended for it).
     async fn dispatch_call(&self, call: ToolCall) -> Result<(), AgentError> {
-        self.dispatch_call_inner(call, false).await
+        self.dispatch_call_inner(call, false, None).await
     }
 
     /// Core dispatch. When `bypass_chain` is true the middleware onion is
@@ -1117,6 +1165,7 @@ impl Agent {
         &self,
         call: ToolCall,
         bypass_chain: bool,
+        hosted: Option<crate::provenance::ActualHostScheduledCall>,
     ) -> Result<(), AgentError> {
         let proposed_call = self.model_view.as_ref().map(|_| call.clone());
         let decision = self.model_view.as_ref().and_then(|view| {
@@ -1128,6 +1177,7 @@ impl Agent {
         });
         let planned_review = if let Some(view) = &self.model_view {
             view.live()?;
+            model_view::invocation_turn_live(&self.turn_input.lock().unwrap())?;
             let review = if let Some(decision) = &decision {
                 (
                     decision.parked.planned().clone(),
@@ -1135,9 +1185,20 @@ impl Agent {
                     decision.parked.shown(),
                 )
             } else {
-                let planned =
-                    crate::provenance::ActualPlannedInvocation::issued(&view.owner, call.clone());
+                let planned = match hosted {
+                    Some(scheduled) => {
+                        if !scheduled.owner().same_agent(&view.owner) || scheduled.call() != &call {
+                            return Err(model_view::state_changed());
+                        }
+                        crate::provenance::ActualPlannedInvocation::host_issued(scheduled)
+                    }
+                    None => crate::provenance::ActualPlannedInvocation::issued(
+                        &view.owner,
+                        call.clone(),
+                    ),
+                };
                 let source = view.boundary.before_review(&planned).await?;
+                model_view::invocation_turn_live(&self.turn_input.lock().unwrap())?;
                 let shown = source.as_ref().map_or(Ok(None), |source| {
                     view.boundary.reviewed_operation_digest(&planned, source)
                 })?;
@@ -1191,6 +1252,7 @@ impl Agent {
             let record = reached.clone();
             let terminal_watch = dispatch_watch.clone();
             let terminal_review = planned_review.clone();
+            let terminal_input = self.turn_input.clone();
             let terminal = as_tool_handler(move |call: ToolCall, ctx: &mut ToolCtx<'_>| {
                 let found = tools.get(&call.name).cloned();
                 let names = names.clone();
@@ -1198,6 +1260,7 @@ impl Agent {
                 let view = terminal_view.clone();
                 let decision = decision.clone();
                 let review = terminal_review.clone();
+                let turn_input = terminal_input.clone();
                 let watch = terminal_watch.clone();
                 let reply = origin_reply.clone();
                 Box::pin(async move {
@@ -1214,6 +1277,7 @@ impl Agent {
                                 let view =
                                     view.as_ref().expect("selected terminal has its view owner");
                                 view.live()?;
+                                model_view::invocation_turn_live(&turn_input.lock().unwrap())?;
                                 let mut tracked = watch
                                     .as_ref()
                                     .expect("selected invocation has its watch")
@@ -1264,6 +1328,7 @@ impl Agent {
                                     view.close();
                                     return Err(error);
                                 }
+                                model_view::invocation_turn_live(&turn_input.lock().unwrap())?;
                                 let result = tool.call_with_view(call.args, ctx, &tracked).await;
                                 invocation.seal_decision();
                                 let actual = ActualTerminalOutcome::issued(
@@ -1528,6 +1593,12 @@ impl Agent {
         input.cancel_requested = false;
         input.cancellation = cancellation;
         input.finishing = false;
+        if let Some(view) = &self.model_view {
+            view.end_attempted.store(false, Ordering::Release);
+            view.end_returned.store(false, Ordering::Release);
+            view.final_saved.store(false, Ordering::Release);
+            view.cancel_returned.store(false, Ordering::Release);
+        }
         input.control_settled = false;
         drop(input);
         Ok(TurnActivityGuard {
@@ -1669,9 +1740,17 @@ impl Agent {
                 break;
             }
             if let Some(policy) = &self.boundary_policy {
-                if let Err(error) =
-                    policy.user_input(&mut state, index, crate::HumanInputKind::Steering)
-                {
+                let observed = match &self.model_view {
+                    Some(view) => self.retained_boundary_input(
+                        view,
+                        policy,
+                        &mut state,
+                        index,
+                        crate::HumanInputKind::Steering,
+                    ),
+                    None => policy.user_input(&mut state, index, crate::HumanInputKind::Steering),
+                };
+                if let Err(error) = observed {
                     first_error = Some(error);
                     break;
                 }
@@ -1876,6 +1955,13 @@ impl Agent {
 
     async fn save_checkpoint(&self, suspension: Option<&Suspension>) -> Result<(), AgentError> {
         let result = self.try_save_checkpoint(suspension).await;
+        if let (Some(view), Err(error)) = (&self.model_view, &result) {
+            view.facts
+                .lock()
+                .unwrap()
+                .entry_failures
+                .push(error.to_string());
+        }
         self.checkpoint_failed
             .store(result.is_err(), Ordering::SeqCst);
         if self.durable_turn_checkpoints && result.is_err() {

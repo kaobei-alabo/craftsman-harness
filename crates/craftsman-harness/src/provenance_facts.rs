@@ -18,12 +18,14 @@ pub struct ActualPlannedInvocation(Arc<PlannedInvocation>);
 struct PlannedInvocation {
     owner: ActualAgentOwner,
     call: ToolCall,
+    host: Option<ActualHostScheduledCall>,
 }
 impl ActualPlannedInvocation {
     pub(crate) fn issued(owner: &ActualAgentOwner, call: ToolCall) -> Self {
         Self(Arc::new(PlannedInvocation {
             owner: owner.clone(),
             call,
+            host: None,
         }))
     }
     pub fn owner(&self) -> &ActualAgentOwner {
@@ -34,6 +36,16 @@ impl ActualPlannedInvocation {
     }
     pub fn same_plan(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+    pub(crate) fn host_issued(scheduled: ActualHostScheduledCall) -> Self {
+        Self(Arc::new(PlannedInvocation {
+            owner: scheduled.owner().clone(),
+            call: scheduled.call().clone(),
+            host: Some(scheduled),
+        }))
+    }
+    pub fn host_scheduled(&self) -> Option<&ActualHostScheduledCall> {
+        self.0.host.as_ref()
     }
 }
 
@@ -395,11 +407,12 @@ impl ActualSourcedMessage {
 /// its directive returned and the carrier message was appended. Neither a
 /// model reply nor user permission is inferred from it. No public issuer.
 #[derive(Clone)]
-pub struct ActualHostScheduledCall {
+pub struct ActualHostScheduledCall(Arc<HostScheduled>);
+struct HostScheduled {
     owner: ActualAgentOwner,
     controller: Arc<dyn crate::CompletionCheck>,
     call: ToolCall,
-    message: Msg,
+    commit: ActualRetainedCommit,
     source: Option<SourceRef>,
 }
 impl ActualHostScheduledCall {
@@ -407,31 +420,37 @@ impl ActualHostScheduledCall {
         owner: &ActualAgentOwner,
         controller: Arc<dyn crate::CompletionCheck>,
         call: ToolCall,
-        message: Msg,
+        commit: ActualRetainedCommit,
     ) -> Self {
         let source = controller.source_for_view();
-        Self {
+        Self(Arc::new(HostScheduled {
             owner: owner.clone(),
             controller,
             call,
-            message,
+            commit,
             source,
-        }
+        }))
     }
     pub fn owner(&self) -> &ActualAgentOwner {
-        &self.owner
+        &self.0.owner
     }
     pub fn call(&self) -> &ToolCall {
-        &self.call
+        &self.0.call
     }
     pub fn message(&self) -> &Msg {
-        &self.message
+        self.0.commit.message()
+    }
+    pub fn commit(&self) -> &ActualRetainedCommit {
+        &self.0.commit
+    }
+    pub fn same_schedule(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
     pub fn source(&self) -> Option<&SourceRef> {
-        self.source.as_ref()
+        self.0.source.as_ref()
     }
     pub fn same_controller(&self, controller: &Arc<dyn crate::CompletionCheck>) -> bool {
-        Arc::ptr_eq(&self.controller, controller)
+        Arc::ptr_eq(&self.0.controller, controller)
     }
 }
 
@@ -465,6 +484,70 @@ impl ActualBoundaryController {
     }
     pub fn same_controller(&self, controller: &Arc<dyn crate::AgentBoundaryPolicy>) -> bool {
         Arc::ptr_eq(&self.controller, controller)
+    }
+}
+
+/// The real accepted-input callback of this installed controller,
+/// minted after the exact input/source append and before its checkpoint.
+/// Kind and index locate the actual event; they grant no application origin.
+#[derive(Clone)]
+pub struct ActualBoundaryInput(Arc<BoundaryInput>);
+struct BoundaryInput {
+    owner: ActualAgentOwner,
+    controller: Arc<dyn crate::AgentBoundaryPolicy>,
+    input: ActualSourcedMessage,
+    index: usize,
+    kind: crate::HumanInputKind,
+    live: Mutex<bool>,
+}
+impl ActualBoundaryInput {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        controller: Arc<dyn crate::AgentBoundaryPolicy>,
+        input: ActualSourcedMessage,
+        index: usize,
+        kind: crate::HumanInputKind,
+    ) -> Self {
+        Self(Arc::new(BoundaryInput {
+            owner: owner.clone(),
+            controller,
+            input,
+            index,
+            kind,
+            live: Mutex::new(true),
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn input(&self) -> &ActualSourcedMessage {
+        &self.0.input
+    }
+    pub fn index(&self) -> usize {
+        self.0.index
+    }
+    pub fn kind(&self) -> crate::HumanInputKind {
+        self.0.kind
+    }
+    pub fn same_controller(&self, controller: &Arc<dyn crate::AgentBoundaryPolicy>) -> bool {
+        Arc::ptr_eq(&self.0.controller, controller)
+    }
+    pub fn same_input_event(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// Actual callback liveness only. A host must still validate its private
+    /// producer and consume this event once; this is no human/permission grant.
+    pub fn in_callback(&self) -> bool {
+        *self.0.live.lock().unwrap()
+    }
+    pub(crate) fn own_callback(&self) -> BoundaryInputOwnership {
+        BoundaryInputOwnership(self.clone())
+    }
+}
+pub(crate) struct BoundaryInputOwnership(ActualBoundaryInput);
+impl Drop for BoundaryInputOwnership {
+    fn drop(&mut self) {
+        *self.0.0.live.lock().unwrap() = false;
     }
 }
 
@@ -510,6 +593,8 @@ pub(crate) struct ActualFacts {
     pub(crate) host_calls: Vec<ActualHostScheduledCall>,
     pub(crate) provider_returns: Vec<ActualProviderReturn>,
     pub(crate) tasks: Vec<ActualTaskReturn>,
+    pub(crate) entry_failures: Vec<String>,
+    pub(crate) control_inputs: Vec<ActualBoundaryInput>,
 }
 
 /// The real return of an owned selected child task, including failures and
@@ -527,6 +612,8 @@ struct TaskReturn {
     terminals: Vec<ActualTerminalOutcome>,
     chains: Vec<ActualToolFact>,
     retained: Vec<ActualRetainedCommit>,
+    entry_failures: Vec<String>,
+    control_inputs: Vec<ActualBoundaryInput>,
 }
 impl ActualTaskReturn {
     pub(crate) fn issued(
@@ -556,6 +643,8 @@ impl ActualTaskReturn {
             terminals: facts.terminals.clone(),
             chains: facts.chains.clone(),
             retained: facts.retained.clone(),
+            entry_failures: facts.entry_failures.clone(),
+            control_inputs: facts.control_inputs.clone(),
         }))
     }
     pub fn owner(&self) -> &ActualAgentOwner {
@@ -572,6 +661,14 @@ impl ActualTaskReturn {
     }
     pub fn failure(&self) -> Option<&str> {
         self.0.failure.as_deref()
+    }
+    /// Actual entry/final-handler/save errors retained before fallible
+    /// projection. Data only, not a source or completion certificate.
+    pub fn entry_failures(&self) -> &[String] {
+        &self.0.entry_failures
+    }
+    pub fn control_inputs(&self) -> &[ActualBoundaryInput] {
+        &self.0.control_inputs
     }
     pub fn state(&self) -> &AgentState {
         &self.0.state
@@ -912,6 +1009,7 @@ opaque_debug!(
     ActualSourcedMessage,
     ActualHostScheduledCall,
     ActualBoundaryController,
+    ActualBoundaryInput,
     ActualModelInput,
     ActualProviderReturn,
     ActualTaskReturn,
