@@ -49,14 +49,41 @@ pub trait ModelProvider: Send + Sync {
     /// model view boundary. An agent without one never calls this. A provider
     /// that does not implement it refuses: the request is not passed to
     /// `complete`, because that would send the recorded text instead of views.
-    async fn complete_with_view(
-        &self,
-        _req: crate::provenance::TrackedModelRequest,
-    ) -> Result<crate::provenance::ModelDelivery, AgentError> {
+    fn complete_with_view<'a, 'f>(
+        &'a self,
+        req: crate::provenance::TrackedModelRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<crate::provenance::ModelDelivery, AgentError>>
+                + Send
+                + 'f,
+        >,
+    >
+    where
+        'a: 'f,
+        Self: 'f,
+    {
+        refused_source_request(req)
+    }
+}
+
+fn refused_source_request<'a>(
+    req: crate::provenance::TrackedModelRequest,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<crate::provenance::ModelDelivery, AgentError>>
+            + Send
+            + 'a,
+    >,
+> {
+    // One shared future, independent of the provider's Self type. Retain the
+    // actual owned request until first poll/drop, as the old async default did.
+    Box::pin(async move {
+        drop(req);
         Err(AgentError::Model(
             "This provider cannot deliver a source-bound request.".into(),
         ))
-    }
+    })
 }
 
 /// Estimates token counts for a slice of messages. Implemented by the

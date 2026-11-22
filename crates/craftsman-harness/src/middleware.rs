@@ -162,20 +162,31 @@ pub trait AgentMiddleware: Send + Sync {
     /// The review of a received reply on an agent that selected a source
     /// view boundary, for a middleware that stated
     /// [`ViewSupport::TrackedReply`]. Its `review_model` is not called there.
-    async fn review_model_with_view(
-        &self,
-        _reply: &mut TrackedReply<'_>,
-    ) -> Result<Flow, AgentError> {
-        Ok(Flow::Proceed)
+    fn review_model_with_view<'a, 'b, 'c, 'f>(
+        &'a self,
+        _reply: &'b mut TrackedReply<'c>,
+    ) -> Pin<Box<dyn Future<Output = Result<Flow, AgentError>> + Send + 'f>>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        Self: 'f,
+    {
+        Box::pin(std::future::ready(Ok(Flow::Proceed)))
     }
     /// The model-call wrap on an agent that selected a source view boundary,
     /// where `around_model` is never called.
-    async fn around_model_with_view(
-        &self,
+    fn around_model_with_view<'a, 'b, 'f>(
+        &'a self,
         req: TrackedModelRequest,
-        next: ViewNext<'_>,
-    ) -> Result<ModelDelivery, AgentError> {
-        next.run(req).await
+        next: ViewNext<'b>,
+    ) -> BoxedViewFuture<'f>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        Box::pin(next.run(req))
     }
 }
 

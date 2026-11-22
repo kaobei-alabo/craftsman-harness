@@ -508,7 +508,8 @@ struct Pty {
     child: tokio::process::Child,
     stream: Arc<AsyncFd<std::fs::File>>,
     slave: Option<std::fs::File>,
-    reader: Option<tokio::task::JoinHandle<i32>>,
+    reader: Option<tokio::task::JoinHandle<()>>,
+    reader_end: Arc<Mutex<Option<i32>>>,
     output: Arc<Mutex<Vec<u8>>>,
     changed: Arc<Notify>,
     seen: usize,
@@ -592,48 +593,54 @@ impl Pty {
         let read_stream = stream.clone();
         let read_output = output.clone();
         let read_changed = changed.clone();
-        let reader = tokio::spawn(async move {
-            let mut buffer = [0; 4096];
-            loop {
-                let mut ready = read_stream.readable().await.unwrap();
-                let read = ready.try_io(|fd| {
-                    let count = unsafe {
-                        libc::read(
-                            fd.get_ref().as_raw_fd(),
-                            buffer.as_mut_ptr().cast(),
-                            buffer.len(),
-                        )
-                    };
-                    if count < 0 {
-                        Err(io::Error::last_os_error())
-                    } else {
-                        Ok(count as usize)
+        let reader_end = Arc::new(Mutex::new(None));
+        let returned = reader_end.clone();
+        let read: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            Box::pin(async move {
+                let mut buffer = [0; 4096];
+                let end = loop {
+                    let mut ready = read_stream.readable().await.unwrap();
+                    let read = ready.try_io(|fd| {
+                        let count = unsafe {
+                            libc::read(
+                                fd.get_ref().as_raw_fd(),
+                                buffer.as_mut_ptr().cast(),
+                                buffer.len(),
+                            )
+                        };
+                        if count < 0 {
+                            Err(io::Error::last_os_error())
+                        } else {
+                            Ok(count as usize)
+                        }
+                    });
+                    match read {
+                        Ok(Ok(0)) => break 0,
+                        Ok(Err(error)) => break error.raw_os_error().unwrap_or(-1),
+                        Ok(Ok(count)) => {
+                            let mut output = read_output.lock().unwrap();
+                            assert!(
+                                output
+                                    .len()
+                                    .checked_add(count)
+                                    .is_some_and(|n| n <= CAPTURE)
+                            );
+                            output.extend_from_slice(&buffer[..count]);
+                            drop(output);
+                            read_changed.notify_one();
+                        }
+                        Err(_) => {}
                     }
-                });
-                match read {
-                    Ok(Ok(0)) => return 0,
-                    Ok(Err(error)) => return error.raw_os_error().unwrap_or(-1),
-                    Ok(Ok(count)) => {
-                        let mut output = read_output.lock().unwrap();
-                        assert!(
-                            output
-                                .len()
-                                .checked_add(count)
-                                .is_some_and(|n| n <= CAPTURE)
-                        );
-                        output.extend_from_slice(&buffer[..count]);
-                        drop(output);
-                        read_changed.notify_one();
-                    }
-                    Err(_) => {}
-                }
-            }
-        });
+                };
+                *returned.lock().unwrap() = Some(end);
+            });
+        let reader = tokio::spawn(read);
         Self {
             child,
             stream,
             slave: Some(slave),
             reader: Some(reader),
+            reader_end,
             output,
             changed,
             seen: 0,
@@ -733,10 +740,15 @@ impl Pty {
         // The child captured/asserted ALL fields before last close. Retain that
         // actual record and the parent's independent entry/echo observations.
         drop(self.slave.take());
-        let end = tokio::time::timeout(Duration::from_secs(5), self.reader.take().unwrap())
+        tokio::time::timeout(Duration::from_secs(5), self.reader.take().unwrap())
             .await
             .unwrap()
             .unwrap();
+        let end = self
+            .reader_end
+            .lock()
+            .unwrap()
+            .expect("actual terminal read completion");
         let bytes = self.output.lock().unwrap().clone();
         assert_absent(&bytes);
         if !status.success()
@@ -955,16 +967,24 @@ fn unmarked_unknown_and_duplicate_markers_return_before_poisoned_config_or_stdin
             let _stdin = child.stdin.take().unwrap();
             let out = child.stdout.take().unwrap();
             let err = child.stderr.take().unwrap();
-            let stdout = tokio::spawn(async move {
-                let mut b = Vec::new();
-                out.take(65537).read_to_end(&mut b).await.unwrap();
-                b
-            });
-            let stderr = tokio::spawn(async move {
-                let mut b = Vec::new();
-                err.take(65537).read_to_end(&mut b).await.unwrap();
-                b
-            });
+            let stdout_bytes = Arc::new(Mutex::new(Vec::new()));
+            let stderr_bytes = Arc::new(Mutex::new(Vec::new()));
+            let captured = stdout_bytes.clone();
+            let read_out: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                Box::pin(async move {
+                    let mut b = Vec::new();
+                    out.take(65537).read_to_end(&mut b).await.unwrap();
+                    *captured.lock().unwrap() = b;
+                });
+            let captured = stderr_bytes.clone();
+            let read_err: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                Box::pin(async move {
+                    let mut b = Vec::new();
+                    err.take(65537).read_to_end(&mut b).await.unwrap();
+                    *captured.lock().unwrap() = b;
+                });
+            let stdout = tokio::spawn(read_out);
+            let stderr = tokio::spawn(read_err);
             assert!(
                 tokio::time::timeout(Duration::from_secs(10), child.wait())
                     .await
@@ -972,7 +992,13 @@ fn unmarked_unknown_and_duplicate_markers_return_before_poisoned_config_or_stdin
                     .unwrap()
                     .success()
             );
-            let bytes = [stdout.await.unwrap(), stderr.await.unwrap()].concat();
+            stdout.await.unwrap();
+            stderr.await.unwrap();
+            let bytes = [
+                stdout_bytes.lock().unwrap().clone(),
+                stderr_bytes.lock().unwrap().clone(),
+            ]
+            .concat();
             assert!(
                 !bytes
                     .windows(COMPLETE.len())
