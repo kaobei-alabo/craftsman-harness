@@ -1436,11 +1436,22 @@ async fn a_statement_does_not_cover_changes_to_todos_files_custom_state_or_a_rep
         assert_eq!(state.messages, vec![Msg::user("go")], "{what}");
         assert!(state.custom.is_empty() && state.todos.is_empty() && state.files.is_empty());
     }
-    // An untracked change of the received reply stops the turn before the
-    // reply is committed or any call runs.
+    // An untracked review change stops further work, but the actual reply
+    // and usage remain retained. No call runs and no replacement is invented.
     let (result, agent, _) = run("reply").await;
     assert!(matches!(result, Err(AgentError::State(_))));
-    assert_eq!(recorded(&agent), vec![Msg::user("go")]);
+    assert_eq!(recorded(&agent), vec![Msg::user("go"), script()[0].clone()]);
+    assert_eq!(
+        agent.actual_provider_returns().unwrap()[0].message(),
+        &script()[0]
+    );
+    assert_eq!(
+        agent.actual_received_replies().unwrap()[0]
+            .usage()
+            .input_tokens,
+        7
+    );
+    assert!(agent.actual_terminal_outcomes().unwrap().is_empty());
     // A change around the tool: the tool ran, so its result and its own
     // effect are kept, and the turn stops there.
     for what in ["before tool", "after tool"] {
