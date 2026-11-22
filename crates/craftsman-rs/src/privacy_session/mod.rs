@@ -30,6 +30,8 @@ mod control;
 mod deadline_tests;
 mod file_view;
 mod human;
+// Lexical facts about a JSON document's strings; nothing selects them.
+pub mod json_ranges;
 #[cfg(test)]
 mod tests;
 mod transport;
