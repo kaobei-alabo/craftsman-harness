@@ -9,6 +9,7 @@ fn pass(value: &str) -> Passphrase {
 #[cfg(unix)]
 #[tokio::test]
 async fn closing_a_poisoned_real_unlocked_owner_clears_its_owned_key() {
+    let _serial = envelope::test_serial();
     let (_directory, path) = owned_root();
     let manager = KeyManager::from_root(ConfigRoot::capture_owned_test_root(&path).unwrap());
     let unlocked = manager
