@@ -68,7 +68,11 @@ impl Frontend {
             }
             // Voice has no reviewed private acquisition adapter. Refuse the
             // configured feature; never turn it off to get a smaller session.
-            if cfg.voice.enabled {
+            if cfg
+                .voice_setting("enabled")
+                .and_then(serde_json::Value::as_bool)
+                != Some(false)
+            {
                 return Err(PrivateTerminalError::Build(
                     crate::privacy_bootstrap::PrivateBuildError::Refused(
                         crate::privacy_session::BuildRefusal::RequestedPart,

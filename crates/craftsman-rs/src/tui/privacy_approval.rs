@@ -122,7 +122,7 @@ impl PrivacyApprovalModal {
         ui: Arc<PrivacyApprovalUi>,
         response: mpsc::Sender<Option<PrivacyApprovalDecision>>,
     ) -> Result<Self, ()> {
-        let view = presentation.review();
+        let view: crate::privacy_entry::PrivacyApprovalView<'_> = presentation.review();
         // Display the actual derived call's complete argument representation;
         // this is never used as the raw source of a human Edit decision.
         let arguments = match serde_json::to_string_pretty(&view.call.args) {

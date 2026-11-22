@@ -529,7 +529,7 @@ impl App {
         self.push_kind(TranscriptKind::System, text);
     }
 
-    fn push_user(&mut self, text: impl Into<String>) {
+    pub(super) fn push_user(&mut self, text: impl Into<String>) {
         self.push_kind(TranscriptKind::User, text);
     }
 
