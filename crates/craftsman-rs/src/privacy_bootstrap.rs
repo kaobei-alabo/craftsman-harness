@@ -447,15 +447,16 @@ impl CapturedUserPolicy for PrivateConversation {
     fn restorable_file_data(
         &self,
         workspace_sha256: &str,
-        destination: &Path,
+        _destination: &Path,
     ) -> Option<crate::privacy_restore::FileDataFormat> {
         if workspace_sha256 != self.session.workspace_sha256() || self.check_sources().is_err() {
             return None;
         }
-        self.policy
-            .proposed_detector()
-            .ok()??
-            .file_data_format(&self.workspace.canonical, destination)
+        // DATA-01/02/03 safety hold: path/format/operation proposals remain
+        // captured for review but grant NO restoration. The canonical opaque
+        // supported-object/field and retained-effect provider must be installed
+        // before this actual owner can authorize any data image.
+        None
     }
 }
 

@@ -15,12 +15,22 @@ struct ConversationReplies(AtomicUsize);
 impl Respond for ConversationReplies {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let value: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        assert_absent(&request.body);
+        eprintln!(
+            "PRIVATE-ENTRY-ACTUAL-WIRE:{}",
+            base64::engine::general_purpose::STANDARD.encode(&request.body)
+        );
         let user = value["messages"]
             .as_array()
             .unwrap()
             .iter()
             .rev()
-            .find(|message| message["role"] == "user")
+            .find(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("@privacy.invalid"))
+            })
             .unwrap()["content"]
             .as_str()
             .unwrap();
