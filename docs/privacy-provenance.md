@@ -1008,3 +1008,29 @@ M1 refusal before bridge/build remains required until actual receiver/modal,
 accepted input and shutdown ownership reach the same final union. No ready flag
 or ordinary callback can substitute. Full17, warning clearance, independent
 source review and native/hosted proof remain pending.
+
+
+The next canonical data slice exposes default-refusing `CapturedUserPolicy`
+methods `supported_file_data(&FileDataRequest)` and
+`retained_file_effect(&FileEffectRequest)`. Requests have no caller constructor.
+`FileDataRequest` carries the actual planned source/operation, bound workspace
+and destination, full before/after images and selector/replacement ranges. Its
+`validate_application(ContactLinesV1 | ContactJsonV1)` runs concrete local
+contact-data decoders, destination exclusions, duplicate-key and value-position
+checks; a format/purpose/path/pointer/Boolean alone supplies no record. These
+profiles are narrow local data representations, not a universal non-executable
+classifier or a source/permission grant. No remote schema is retrieved.
+
+A's captured-user provider must verify its actual current root/source/owner,
+explicit operation/application declaration and exact bound location before
+returning a validator record. For an actual final effect request,
+`bind_retained_parent(&File)` validates the retained no-follow directory against
+the operation's original parent identity. The final consumer must retain and
+use that grant for relative exclusive/no-follow creation; updates keep their
+verified held file. No fresh ambient path lookup is authorized by the grant.
+
+This is the interface stage: no production provider is installed and the whole
+range/effect consumer is not yet wired. DATA-01/02/03 remain open until those
+consumers and A's real captured provider pass independent source/native proof.
+Actual A's live-None hold remains required; this API, direct parser checks and
+metadata do not authorize live restoration, activation or publication.

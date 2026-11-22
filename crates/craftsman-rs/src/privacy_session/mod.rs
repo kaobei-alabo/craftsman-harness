@@ -28,6 +28,7 @@
 mod control;
 #[cfg(test)]
 mod deadline_tests;
+mod file_data;
 mod file_view;
 mod human;
 #[cfg(test)]
@@ -40,6 +41,10 @@ mod view_tests;
 pub(crate) mod wire_fixtures;
 
 pub(crate) use control::{SelectedControls, SelectedVerification};
+pub use file_data::{
+    FileDataRequest, FileEffectRequest, RetainedFileEffect, SupportedDataApplication,
+    SupportedFileData,
+};
 pub use file_view::{
     DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, RestoredFileTool,
     ReviewedFile,
@@ -197,6 +202,16 @@ impl FreshConversationBinding {
 /// policy. Outside tests nothing in this crate implements the trait yet, so
 /// no selection can be made.
 pub trait CapturedUserPolicy: Send + Sync {
+    /// Actual supported whole-object/schema/application/field validator record.
+    /// A format/path proposal alone remains inert; absence is refusal.
+    fn supported_file_data(&self, _request: &FileDataRequest) -> Option<SupportedFileData> {
+        None
+    }
+    /// Actual retained user/root/destination provider; no ambient path or
+    /// caller label grants a final effect. Absence remains refusal.
+    fn retained_file_effect(&self, _request: &FileEffectRequest) -> Option<RetainedFileEffect> {
+        None
+    }
     /// Whether the user's policy enables privacy for a conversation in the
     /// workspace with this digest, which is the one
     /// [`PrivacySession::workspace_sha256`] gives.
