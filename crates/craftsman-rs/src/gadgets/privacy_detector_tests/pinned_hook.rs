@@ -606,15 +606,36 @@ async fn run_helper(
     marker: Option<&str>,
     home: &Path,
 ) -> (std::process::ExitStatus, String, String) {
+    run_marked_helper(
+        HELPER,
+        marker.map(|marker| format!("{MARKER}{marker}")),
+        home,
+        "pinned detector fixture",
+        |_| {},
+    )
+    .await
+}
+
+/// Runs one marked native helper of this module tree as a child process in
+/// the isolated supervisor environment, bounded, and returns its status and
+/// captured output. `configure` may set the child's directory and add to its
+/// environment.
+pub(super) async fn run_marked_helper(
+    helper: &str,
+    marker: Option<String>,
+    home: &Path,
+    what: &str,
+    configure: impl FnOnce(&mut tokio::process::Command),
+) -> (std::process::ExitStatus, String, String) {
     let cargo_home = std::env::var_os("CARGO_HOME")
         .or_else(|| {
             std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo").into_os_string())
         })
         .expect("explicit readonly Cargo source cache for trusted fixture build");
     let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
-    command.args(["--ignored", "--exact", HELPER, "--nocapture"]);
+    command.args(["--ignored", "--exact", helper, "--nocapture"]);
     if let Some(marker) = marker {
-        command.arg(format!("{MARKER}{marker}"));
+        command.arg(marker);
     }
     command
         .stdin(std::process::Stdio::null())
@@ -629,6 +650,7 @@ async fn run_helper(
         compiler_environment::system_root(),
         compiler_environment::host_discovery(),
     );
+    configure(&mut command);
     let mut child = command.spawn().unwrap();
     let mut stdout_reader = child.stdout.take().unwrap().take(65537);
     let mut stderr_reader = child.stderr.take().unwrap().take(65537);
@@ -648,9 +670,9 @@ async fn run_helper(
             child.start_kill().unwrap();
             tokio::time::timeout(Duration::from_secs(5), child.wait())
                 .await
-                .expect("pinned fixture cleanup did not return")
+                .unwrap_or_else(|_| panic!("{what} cleanup did not return"))
                 .unwrap();
-            panic!("pinned detector fixture exceeded its setup and call bound");
+            panic!("{what} exceeded its setup and call bound");
         }
     };
     out_read.unwrap();

@@ -2,10 +2,10 @@
 //! or a caller's mutable state. They describe retention and invocation only;
 //! the host still validates its own source, transport and permission owners.
 
-use crate::{Msg, ToolCall, ToolOutcome, Usage};
+use crate::{HitlAction, Msg, ToolCall, ToolOutcome, Usage};
 use std::sync::Arc;
 
-use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourceRef};
+use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourcePart, SourceRef};
 
 #[derive(Clone)]
 pub struct ActualAgentOwner(Arc<()>);
@@ -170,6 +170,7 @@ struct Invocation {
     call: ToolCall,
     resumed: bool,
     decision: Option<SourceRef>,
+    action: Option<HitlAction>,
 }
 
 impl ActualToolInvocation {
@@ -178,12 +179,14 @@ impl ActualToolInvocation {
         call: ToolCall,
         resumed: bool,
         decision: Option<SourceRef>,
+        action: Option<HitlAction>,
     ) -> Self {
         Self(Arc::new(Invocation {
             owner: owner.clone(),
             call,
             resumed,
             decision,
+            action,
         }))
     }
 
@@ -199,6 +202,13 @@ impl ActualToolInvocation {
     pub fn decision_source(&self) -> Option<&SourceRef> {
         self.0.decision.as_ref()
     }
+    pub fn decision_action(&self) -> Option<&HitlAction> {
+        self.0.action.as_ref()
+    }
+    pub fn human_edited(&self) -> bool {
+        matches!(self.0.action, Some(HitlAction::ApproveEdited { .. }))
+    }
+
     pub fn same_invocation(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -247,6 +257,8 @@ struct ToolFact {
     terminals: Vec<ActualTerminalOutcome>,
     returned: Option<ToolOutcome>,
     failure: Option<String>,
+    appended: Vec<SourcePart>,
+    parts: Vec<SourcePart>,
 }
 
 impl ActualToolFact {
@@ -264,6 +276,21 @@ impl ActualToolFact {
             terminals,
             returned,
             failure,
+            appended: Vec::new(),
+            parts: Vec::new(),
+        }))
+    }
+
+    pub(crate) fn with_parts(&self, appended: Vec<SourcePart>, parts: Vec<SourcePart>) -> Self {
+        Self(Arc::new(ToolFact {
+            owner: self.0.owner.clone(),
+            proposed_call: self.0.proposed_call.clone(),
+            commit: self.0.commit.clone(),
+            terminals: self.0.terminals.clone(),
+            returned: self.0.returned.clone(),
+            failure: self.0.failure.clone(),
+            appended,
+            parts,
         }))
     }
 
@@ -275,6 +302,8 @@ impl ActualToolFact {
             terminals: self.0.terminals.clone(),
             returned: self.0.returned.clone(),
             failure: self.0.failure.clone(),
+            appended: self.0.appended.clone(),
+            parts: self.0.parts.clone(),
         }))
     }
 
@@ -295,6 +324,12 @@ impl ActualToolFact {
     }
     pub fn failure(&self) -> Option<&str> {
         self.0.failure.as_deref()
+    }
+    pub fn appended(&self) -> &[SourcePart] {
+        &self.0.appended
+    }
+    pub fn parts(&self) -> &[SourcePart] {
+        &self.0.parts
     }
 }
 

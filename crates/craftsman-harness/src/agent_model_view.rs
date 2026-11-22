@@ -22,8 +22,8 @@ use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
     ActualAgentOwner, ActualParkedCall, ActualReceivedReply, ActualRetainedCommit,
     ActualTerminalOutcome, ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary,
-    ReachedTool, ReplyEdit, RetainedEvent, SourceRef, TrackedModelRequest, TrackedReply,
-    ViewSupport,
+    OutcomePart, PartFrom, ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef,
+    TrackedDispatch, TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -53,13 +53,88 @@ impl Kept {
     }
 
     fn is(&self, state: &AgentState) -> bool {
+        self.is_except(state, &[])
+    }
+
+    /// As [`is`](Self::is), leaving out the custom-state keys a middleware
+    /// announced as its own bookkeeping.
+    fn is_except(&self, state: &AgentState, custom_keys: &[String]) -> bool {
+        let custom = custom_keys.is_empty() && self.custom == state.custom
+            || !custom_keys.is_empty() && {
+                let without = |map: &serde_json::Map<String, serde_json::Value>| {
+                    let mut map = map.clone();
+                    for key in custom_keys {
+                        map.remove(key);
+                    }
+                    map
+                };
+                without(&self.custom) == without(&state.custom)
+            };
         self.messages == state.messages
             && self.todos == state.todos
             && self.files == state.files
-            && self.custom == state.custom
+            && custom
             && self.system_extras == state.system_extras
             && self.last_usage == state.last_usage
             && self.last_usage_msg_count == state.last_usage_msg_count
+    }
+}
+
+/// What one dispatch on a selected agent left behind for the agent.
+#[derive(Default)]
+pub(super) struct Dispatched {
+    pub(super) reached: Vec<ReachedTool>,
+    /// Whether anything other than the tool changed recorded state without
+    /// announcing it.
+    pub(super) changed: bool,
+    pub(super) appended: Vec<SourcePart>,
+    /// The argument places the tool stored as the todo list, if it said so.
+    pub(super) todos: Option<Vec<String>>,
+    /// Whether the stored todo list differs from the one before the dispatch.
+    pub(super) todos_changed: bool,
+    /// The pieces the tool said its own outcome is made of.
+    pub(super) outcome: Option<Vec<OutcomePart>>,
+}
+
+impl Dispatched {
+    /// The tool's own content as parts, if the tool said what it is made of
+    /// and the recorded content is exactly those pieces followed by what
+    /// middleware announced it appended. Anything else gives no parts.
+    pub(super) fn outcome_parts(
+        &self,
+        recorded: &str,
+        reply: Option<&SourceRef>,
+        call_id: &str,
+    ) -> Vec<SourcePart> {
+        let (Some(outcome), Some(reply)) = (&self.outcome, reply) else {
+            return Vec::new();
+        };
+        let own: String = outcome
+            .iter()
+            .map(|part| match part {
+                OutcomePart::Fixed(text) | OutcomePart::ArgumentJson { text, .. } => &**text,
+            })
+            .collect();
+        let appended: String = self.appended.iter().map(|part| &*part.text).collect();
+        let returned = matches!(self.reached.last().map(|run| &run.result),
+            Some(Ok(returned)) if returned.content == own);
+        if !returned || recorded != format!("{own}{appended}") {
+            return Vec::new();
+        }
+        outcome
+            .iter()
+            .map(|part| match part {
+                OutcomePart::Fixed(text) => SourcePart::fixed(text.clone()),
+                OutcomePart::ArgumentJson { pointer, text } => SourcePart {
+                    text: text.clone(),
+                    from: PartFrom::CallJson {
+                        reply: reply.clone(),
+                        call_id: call_id.to_owned(),
+                        pointer: pointer.clone(),
+                    },
+                },
+            })
+            .collect()
     }
 }
 
@@ -71,6 +146,9 @@ pub(super) struct DispatchWatch {
     /// The state as the agent, and then each run of the tool, left it.
     last: Kept,
     changed: bool,
+    todos_before: Vec<crate::state::Todo>,
+    /// What the tool and the middleware announce during this dispatch.
+    pub(super) tracked: TrackedDispatch,
 }
 
 impl DispatchWatch {
@@ -79,12 +157,19 @@ impl DispatchWatch {
             reached: Vec::new(),
             last: Kept::of(state),
             changed: false,
+            todos_before: state.todos.clone(),
+            tracked: TrackedDispatch::default(),
         }
+    }
+
+    fn announced_keys(&self) -> Vec<String> {
+        self.tracked.notes.lock().unwrap().custom_keys.clone()
     }
 
     /// The tool is about to run.
     pub(super) fn entering(&mut self, state: &AgentState) {
-        self.changed |= !self.last.is(state);
+        let keys = self.announced_keys();
+        self.changed |= !self.last.is_except(state, &keys);
     }
 
     /// The tool has run: its exact call and outcome, before any middleware
@@ -100,9 +185,18 @@ impl DispatchWatch {
     }
 
     /// The dispatch chain has returned.
-    pub(super) fn finish(&mut self, state: &AgentState) -> (Vec<ReachedTool>, bool) {
-        self.changed |= !self.last.is(state);
-        (std::mem::take(&mut self.reached), self.changed)
+    pub(super) fn finish(&mut self, state: &AgentState) -> Dispatched {
+        let keys = self.announced_keys();
+        self.changed |= !self.last.is_except(state, &keys);
+        let mut notes = self.tracked.notes.lock().unwrap();
+        Dispatched {
+            reached: std::mem::take(&mut self.reached),
+            changed: self.changed,
+            appended: std::mem::take(&mut notes.appended),
+            todos: notes.todos.take(),
+            todos_changed: self.todos_before != state.todos,
+            outcome: notes.outcome.take(),
+        }
     }
 }
 
@@ -132,6 +226,11 @@ impl QueuedInput {
     }
 }
 
+pub(super) struct AppliedDecision {
+    pub(super) source: SourceRef,
+    pub(super) action: crate::HitlAction,
+}
+
 pub(super) struct ModelView {
     pub(super) boundary: Arc<dyn ModelViewBoundary>,
     /// One slot per recorded message, in the order the messages were
@@ -139,9 +238,10 @@ pub(super) struct ModelView {
     pub(super) sources: Mutex<Vec<Slot>>,
     pub(super) owner: ActualAgentOwner,
     closed: AtomicBool,
-    pub(super) decision: Mutex<Option<SourceRef>>,
+    pub(super) decision: Mutex<Option<AppliedDecision>>,
     pub(super) parked: Mutex<Option<ActualParkedCall>>,
     facts: Mutex<Facts>,
+    todos: Mutex<Option<Vec<PartFrom>>>,
 }
 
 #[derive(Default)]
@@ -164,6 +264,7 @@ impl ModelView {
             decision: Mutex::new(None),
             parked: Mutex::new(None),
             facts: Mutex::new(Facts::default()),
+            todos: Mutex::new(Some(Vec::new())),
         }
     }
 
@@ -239,6 +340,33 @@ impl ModelView {
                 };
                 commit.owner().same_agent(&self.owner) && commit.message() == message
             })
+    }
+
+    /// After a dispatch: the stored todo list keeps its origins only if the
+    /// tool that replaced it said which of its arguments it stored.
+    pub(super) fn note_todos(
+        &self,
+        dispatched: &Dispatched,
+        reply: Option<SourceRef>,
+        call_id: &str,
+        stored: usize,
+    ) {
+        if !dispatched.todos_changed && dispatched.todos.is_none() {
+            return;
+        }
+        *self.todos.lock().unwrap() = match (&dispatched.todos, reply) {
+            (Some(pointers), Some(reply)) if pointers.len() == stored => Some(
+                pointers
+                    .iter()
+                    .map(|pointer| PartFrom::Call {
+                        reply: reply.clone(),
+                        call_id: call_id.to_owned(),
+                        pointer: pointer.clone(),
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        };
     }
 
     /// Slots for inputs that were just appended, in the same order. An input
@@ -344,7 +472,7 @@ impl Agent {
         let adapted = self.chain.middlewares().iter().all(|entry| {
             matches!(
                 entry.view_support(),
-                ViewSupport::Preserving | ViewSupport::TrackedReply
+                ViewSupport::Preserving | ViewSupport::Tracked
             )
         });
         if !adapted
@@ -518,7 +646,10 @@ impl Agent {
         view.boundary
             .accept_parked_decision(&parked, &action, &decision)
             .await?;
-        *view.decision.lock().unwrap() = Some(decision);
+        *view.decision.lock().unwrap() = Some(AppliedDecision {
+            source: decision,
+            action: action.clone(),
+        });
         let future: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<TurnResult, AgentError>> + Send + '_>,
         > = Box::pin(self.resume_inner(action, deny_default));
@@ -624,6 +755,61 @@ impl Agent {
         }
     }
 
+    /// The per-round preparation on a selected agent, in the order of the
+    /// ordinary one. A middleware with a tracked prepare sees the state
+    /// read-only and adds system text as parts. Every other middleware must
+    /// leave the state alone. Returns this round's sections.
+    pub(super) async fn prepare_with_view(
+        &self,
+        view: &ModelView,
+        working: &mut AgentState,
+    ) -> Result<Vec<Vec<SourcePart>>, AgentError> {
+        let mut additions = Vec::new();
+        // The stored todos have origins only while there is one per todo.
+        let todos = view
+            .todos
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|origins| origins.len() == working.todos.len());
+        for entry in self.chain.middlewares() {
+            if entry.view_support() == ViewSupport::Tracked {
+                let mut prepare = TrackedPrepare {
+                    state: working,
+                    todos: todos.as_deref(),
+                    additions: &mut additions,
+                };
+                entry.prepare_model_with_view(&mut prepare).await?;
+            } else {
+                let kept = Kept::of(working);
+                entry.prepare_model(working).await?;
+                if !kept.is(working) {
+                    return Err(state_changed());
+                }
+            }
+        }
+        Ok(additions)
+    }
+
+    /// The source of the committed reply that asked for the call `call_id`:
+    /// the slot beside the last recorded reply that holds that call.
+    pub(super) fn reply_source(&self, view: &ModelView, call_id: &str) -> Option<SourceRef> {
+        let index = self
+            .state
+            .lock()
+            .unwrap()
+            .messages
+            .iter()
+            .rposition(|message| {
+                matches!(message, Msg::Assistant { tool_calls, .. }
+                if tool_calls.iter().any(|call| call.id == call_id))
+            })?;
+        match view.sources.lock().unwrap().get(index) {
+            Some(Slot::Bound(source, _)) => Some(source.clone()),
+            _ => None,
+        }
+    }
+
     /// The review of a received reply on a selected agent, in the order and
     /// with the verdict rule of the ordinary review. A middleware with a
     /// tracked review changes the reply only through recorded operations and
@@ -636,7 +822,7 @@ impl Agent {
     ) -> Result<Flow, AgentError> {
         let mut decision = Flow::Proceed;
         for entry in self.chain.middlewares().iter().rev() {
-            let verdict = if entry.view_support() == ViewSupport::TrackedReply {
+            let verdict = if entry.view_support() == ViewSupport::Tracked {
                 let message = working.messages.get_mut(reply).ok_or_else(unsourced)?;
                 let mut tracked = TrackedReply {
                     message,
@@ -665,6 +851,7 @@ impl Agent {
         &self,
         view: &ModelView,
         working: &AgentState,
+        additions: Vec<Vec<SourcePart>>,
     ) -> Result<Option<ModelDelivery>, AgentError> {
         if !working.system_extras.is_empty() {
             return Err(unavailable());
@@ -693,8 +880,12 @@ impl Agent {
         for definition in &definitions {
             tools.push(view.boundary.tool_source(definition).await?);
         }
+        let mut system = view.boundary.system_sources().await?;
+        for parts in &additions {
+            system.push(view.boundary.system_addition(parts).await?);
+        }
         let request = TrackedModelRequest {
-            system: view.boundary.system_sources().await?,
+            system,
             request: ModelRequest {
                 system: String::new(),
                 messages: working.messages.clone(),

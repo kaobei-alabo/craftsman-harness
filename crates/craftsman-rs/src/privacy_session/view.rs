@@ -23,8 +23,8 @@
 use super::*;
 use craftsman_harness::provenance::{
     ActualAgentOwner, ActualRetainedCommit, ActualToolFact, ActualToolInvocation, FrameworkCommit,
-    ModelViewBoundary, ObservedToolResult, ReachedTool, ReplyEdit, RetainedEvent, SourceRef,
-    TrackedModelRequest,
+    ModelViewBoundary, ObservedToolResult, PartFrom, ReachedTool, ReplyEdit, RetainedEvent,
+    SourcePart, SourceRef, TrackedModelRequest,
 };
 use craftsman_harness::{
     AgentError, HitlAction, ModelRequest, Msg, ToolCall, ToolDef, ToolOutcome,
@@ -40,7 +40,7 @@ enum ViewSource {
         parameters: AdmittedNode,
     },
     Result {
-        node: AdmittedNode,
+        view: ResultView,
         actual: Arc<ActualToolResult>,
         commit: ActualRetainedCommit,
     },
@@ -49,7 +49,35 @@ enum ViewSource {
         event: FrameworkCommit,
         commit: ActualRetainedCommit,
     },
+    /// One section a middleware added to the system text, part by part.
+    Addition(Vec<AdditionPart>),
 }
+
+/// How a recorded tool result is seen by a model.
+enum ResultView {
+    /// The whole recorded content, captured and admitted as raw text.
+    Whole(AdmittedNode),
+    /// The content piece by piece, as the tool and the middleware said it
+    /// was made: host text as its view, and text of the call's own arguments
+    /// as the model wrote it.
+    Parts(Vec<AdditionPart>),
+}
+
+/// One part of a system addition or of a tool result, as this conversation
+/// holds it.
+enum AdditionPart {
+    /// Host text, fixed or read, that was captured and admitted.
+    Admitted(AdmittedNode),
+    /// Text the model wrote in the arguments of a call of a committed reply.
+    /// It is model-origin text and is sent as the model wrote it.
+    Model {
+        node: CommittedModelNode,
+        text: Arc<str>,
+    },
+}
+
+/// The most owned host parts one conversation keeps admitted at a time.
+const OWNED_PARTS: usize = 512;
 
 /// A reply as this conversation's own transport actually received it. Only
 /// that transport creates one, at the moment of receipt.
@@ -301,14 +329,22 @@ impl ApprovedOperation {
 
 /// What actually happened for one recorded tool result.
 pub struct ActualToolResult {
+    owner: Arc<Inner>,
     call_id: String,
     tool: String,
     operation: Option<Arc<ApprovedOperation>>,
     reached: Vec<ReachedTool>,
     returned: Option<ToolOutcome>,
+    appended: Vec<SourcePart>,
 }
 
 impl ActualToolResult {
+    /// Fixed text that middleware announced it appended to the outcome,
+    /// after the tool's own content, in order.
+    pub fn appended(&self) -> &[SourcePart] {
+        &self.appended
+    }
+
     pub fn call_id(&self) -> &str {
         &self.call_id
     }
@@ -355,6 +391,10 @@ fn refused(error: AdmitError) -> AgentError {
 }
 
 impl AdmittedNode {
+    fn captured_len(&self) -> usize {
+        self.inner.raw.inner.text.len()
+    }
+
     pub(crate) fn captured_text_is(&self, text: &str) -> bool {
         self.inner.raw.inner.text.as_str() == text
     }
@@ -520,7 +560,10 @@ impl PrivacySession {
     pub fn admitted(&self, source: &SourceRef) -> Option<AdmittedNode> {
         match &*source.downcast::<ViewSource>()? {
             ViewSource::Admitted(node)
-            | ViewSource::Result { node, .. }
+            | ViewSource::Result {
+                view: ResultView::Whole(node),
+                ..
+            }
             | ViewSource::Framework { node, .. }
                 if node.admitted_by(self) =>
             {
@@ -534,7 +577,7 @@ impl PrivacySession {
     /// if it is one of this session's.
     pub fn actual_result(&self, source: &SourceRef) -> Option<Arc<ActualToolResult>> {
         match &*source.downcast::<ViewSource>()? {
-            ViewSource::Result { node, actual, .. } if node.admitted_by(self) => {
+            ViewSource::Result { actual, .. } if Arc::ptr_eq(&actual.owner, &self.inner) => {
                 Some(actual.clone())
             }
             _ => None,
@@ -590,17 +633,36 @@ impl PrivacySession {
         };
         let composed = (|| {
             let mut system = String::new();
-            for source in request.system_sources() {
-                let ViewSource::Admitted(node) = &*own(source)? else {
-                    return Err(SessionStop::Unbound);
-                };
+            let host = |node: &AdmittedNode| -> Result<String, SessionStop> {
                 if !node.admitted_by(self) || !node.is_accepted_fact() {
                     return Err(SessionStop::Unbound);
                 }
-                if !system.is_empty() {
+                node.model_view().map(str::to_owned)
+            };
+            for (index, source) in request.system_sources().iter().enumerate() {
+                if index > 0 {
                     system.push_str("\n\n");
                 }
-                system.push_str(node.model_view()?);
+                match &*own(source)? {
+                    ViewSource::Admitted(node) => system.push_str(&host(node)?),
+                    // A section keeps its parts: host text goes out as its
+                    // view, and text a committed call wrote goes out as the
+                    // model wrote it.
+                    ViewSource::Addition(parts) => {
+                        for part in parts {
+                            match part {
+                                AdditionPart::Admitted(node) => system.push_str(&host(node)?),
+                                AdditionPart::Model { node, text } => {
+                                    if !node.committed_by(self) {
+                                        return Err(SessionStop::Unbound);
+                                    }
+                                    system.push_str(text);
+                                }
+                            }
+                        }
+                    }
+                    _ => return Err(SessionStop::Unbound),
+                }
             }
             let mut messages = Vec::with_capacity(recorded.messages.len());
             for (message, source) in recorded.messages.iter().zip(request.message_sources()) {
@@ -615,14 +677,55 @@ impl PrivacySession {
                             is_error,
                         },
                         ViewSource::Result {
-                            node,
+                            view: result,
                             actual,
                             commit,
                         },
                     ) if actual.call_id == *tool_call_id && commit.message() == message => {
                         Msg::Tool {
                             tool_call_id: tool_call_id.clone(),
-                            content: view(node, content)?,
+                            content: match result {
+                                ResultView::Whole(node) => view(node, content)?,
+                                ResultView::Parts(parts) => {
+                                    // The parts, in order, must be exactly the
+                                    // recorded content.
+                                    let mut at = 0;
+                                    let mut seen = String::new();
+                                    for part in parts {
+                                        let (length, piece) = match part {
+                                            AdditionPart::Admitted(node) => {
+                                                (node.captured_len(), host(node)?)
+                                            }
+                                            AdditionPart::Model { node, text } => {
+                                                if !node.committed_by(self) {
+                                                    return Err(SessionStop::Unbound);
+                                                }
+                                                (text.len(), text.to_string())
+                                            }
+                                        };
+                                        let fits =
+                                            content.get(at..at + length).is_some_and(|recorded| {
+                                                match part {
+                                                    AdditionPart::Admitted(node) => {
+                                                        node.captured_text_is(recorded)
+                                                    }
+                                                    AdditionPart::Model { text, .. } => {
+                                                        **text == *recorded
+                                                    }
+                                                }
+                                            });
+                                        if !fits {
+                                            return Err(SessionStop::Unbound);
+                                        }
+                                        at += length;
+                                        seen.push_str(&piece);
+                                    }
+                                    if at != content.len() {
+                                        return Err(SessionStop::Unbound);
+                                    }
+                                    seen
+                                }
+                            },
                             is_error: *is_error,
                         }
                     }
@@ -734,6 +837,7 @@ impl PrivacySession {
             session: self.clone(),
             system: sources,
             definitions: tokio::sync::Mutex::new(Vec::new()),
+            owned_parts: tokio::sync::Mutex::new(Vec::new()),
             dispatch: std::sync::Mutex::new(Dispatch::default()),
             agent: std::sync::Mutex::new(None),
         }))
@@ -763,6 +867,10 @@ pub struct ConversationBoundary {
     /// The admitted text of each tool definition seen so far, by name. An
     /// entry is reused only while the definition's text is the captured text.
     definitions: tokio::sync::Mutex<Vec<(String, SourceRef)>>,
+    /// Host parts that were admitted, each with the owned piece it was
+    /// admitted for. A piece is found again only as the same owned object;
+    /// equal text in another piece is admitted on its own.
+    owned_parts: tokio::sync::Mutex<Vec<(Arc<str>, AdmittedNode)>>,
     dispatch: std::sync::Mutex<Dispatch>,
     agent: std::sync::Mutex<Option<ActualAgentOwner>>,
 }
@@ -799,6 +907,89 @@ impl ConversationBoundary {
     async fn admit(&self, origin: RawOrigin, text: &str) -> Result<AdmittedNode, AgentError> {
         let raw = CapturedRaw::from_producer(origin, text);
         self.session.admit_raw(&raw).await.map_err(refused)
+    }
+
+    /// The admitted node of one owned host part. The same owned piece is
+    /// admitted once; it is recognized by being the same object.
+    async fn owned_part(
+        &self,
+        origin: RawOrigin,
+        piece: &Arc<str>,
+    ) -> Result<AdmittedNode, AgentError> {
+        let mut owned = self.owned_parts.lock().await;
+        if let Some((_, node)) = owned.iter().find(|(known, _)| Arc::ptr_eq(known, piece)) {
+            return Ok(node.clone());
+        }
+        let node = self.admit(origin, piece).await?;
+        if owned.len() >= OWNED_PARTS {
+            owned.drain(..OWNED_PARTS / 2);
+        }
+        owned.push((piece.clone(), node.clone()));
+        Ok(node)
+    }
+
+    /// The parts of a system addition or of a tool result, as this
+    /// conversation holds them. Host text is admitted. Text a part says a
+    /// call of a committed reply wrote is checked against that reply.
+    async fn held_parts(&self, parts: &[SourcePart]) -> Result<Vec<AdditionPart>, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        let mut composed = Vec::with_capacity(parts.len());
+        for part in parts {
+            composed.push(match &part.from {
+                PartFrom::Fixed => AdditionPart::Admitted(
+                    self.owned_part(RawOrigin::HostStatic, &part.text).await?,
+                ),
+                PartFrom::Read { .. } => {
+                    AdditionPart::Admitted(self.owned_part(RawOrigin::HostFile, &part.text).await?)
+                }
+                // The part says a call of a committed reply wrote this text
+                // at this place of its arguments. That is checked against the
+                // committed reply itself.
+                PartFrom::Call {
+                    reply,
+                    call_id,
+                    pointer,
+                }
+                | PartFrom::CallJson {
+                    reply,
+                    call_id,
+                    pointer,
+                } => {
+                    let node = self
+                        .session
+                        .committed_model(reply)
+                        .ok_or_else(|| fault(unbound(inner)))?;
+                    let value = match &node.inner.message {
+                        Msg::Assistant { tool_calls, .. } => tool_calls
+                            .iter()
+                            .find(|call| call.id == *call_id)
+                            .and_then(|call| call.args.pointer(pointer)),
+                        _ => None,
+                    };
+                    // Either the string itself, or its JSON encoding, as the
+                    // part says.
+                    let written = match (&part.from, value) {
+                        (PartFrom::Call { .. }, Some(serde_json::Value::String(text))) => {
+                            Some(text.clone())
+                        }
+                        (PartFrom::CallJson { .. }, Some(value)) => {
+                            serde_json::to_string(value).ok()
+                        }
+                        _ => None,
+                    };
+                    if written.as_deref() != Some(&*part.text) {
+                        return Err(fault(unbound(inner)));
+                    }
+                    AdditionPart::Model {
+                        node,
+                        text: part.text.clone(),
+                    }
+                }
+                _ => return Err(fault(unbound(inner))),
+            });
+        }
+        Ok(composed)
     }
 }
 
@@ -861,6 +1052,11 @@ impl ModelViewBoundary for ConversationBoundary {
         definitions.retain(|(name, _)| *name != definition.name);
         definitions.push((definition.name.clone(), source.clone()));
         Ok(source)
+    }
+
+    async fn system_addition(&self, parts: &[SourcePart]) -> Result<SourceRef, AgentError> {
+        let composed = self.held_parts(parts).await?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Addition(composed))))
     }
 
     async fn commit_model(&self, _: SourceRef, _: &Msg) -> Result<SourceRef, AgentError> {
@@ -996,6 +1192,7 @@ impl ModelViewBoundary for ConversationBoundary {
             operations.push(operation);
         }
         let actual = Arc::new(ActualToolResult {
+            owner: self.session.inner.clone(),
             call_id: tool_call_id.clone(),
             tool: fact.proposed_call().name.clone(),
             operation: operations.first().cloned(),
@@ -1005,6 +1202,7 @@ impl ModelViewBoundary for ConversationBoundary {
                 .map(|terminal| terminal.reached().clone())
                 .collect(),
             returned: fact.returned().cloned(),
+            appended: fact.appended().to_vec(),
         });
         // This label records that a checked actual terminal also returned this
         // value. It grants no source/restore authority; the immutable invocation,
@@ -1018,7 +1216,13 @@ impl ModelViewBoundary for ConversationBoundary {
         } else {
             RawOrigin::ChainResult
         };
-        let node = self.admit(origin, content).await?;
+        let view = if fact.parts().is_empty() {
+            ResultView::Whole(self.admit(origin, content).await?)
+        } else {
+            let mut parts = self.held_parts(fact.parts()).await?;
+            parts.extend(self.held_parts(fact.appended()).await?);
+            ResultView::Parts(parts)
+        };
         let mut dispatch = self.dispatch.lock().unwrap();
         if dispatch.in_flight.as_ref().is_some_and(|pending| {
             operations
@@ -1028,7 +1232,7 @@ impl ModelViewBoundary for ConversationBoundary {
             dispatch.in_flight = None;
         }
         Ok(SourceRef::new(Arc::new(ViewSource::Result {
-            node,
+            view,
             actual,
             commit: commit.clone(),
         })))

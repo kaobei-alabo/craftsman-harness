@@ -43,13 +43,14 @@ not detection of everything a model writes or of opaque provider content.
 | Part | State |
 | --- | --- |
 | Raw captures, admitted nodes, conversation binding ([admission](privacy-admission.md)) | implemented, private |
-| Framework boundary: sources, typed turn, steering and approval entries, dispatch check, the agent's own messages, middleware statements, tracked review of a reply | implemented, private; see below |
+| Framework boundary: sources, typed turn, steering and approval entries, dispatch check, the agent's own messages, middleware statements, tracked review, tracked system additions and tool outcomes as source parts | implemented, private; see below |
 | Conversation boundary: sources, composition, result records, checked operations and fields | implemented, private; see below |
 | Providers for all four wires (Chat, Responses, Claude Messages, Gemini) through the existing clients and guard, with receipts | implemented, private; see below |
 | Protected repair of tool calls (`patch_tool_calls`) as a recorded change of the received reply | implemented, private; see below |
+| Todo list, memory section, todo reminders, task workflow notes, workspace checkpoints, and the system prompt as sections | implemented, private; see "Normal parts" below |
 | Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path, which today is never the case outside test fixtures; see below |
-| Parts kept apart inside the system text; memory, todos, context notes, reminders | not implemented; the middleware that add them have no source path, so the build is refused |
-| Compaction, delegated agents, notifications and inbox with sources | not implemented; refused |
+| Compaction (automatic, manual and idle), delegated agents with notifications and inbox | not implemented; these two are installed in every ordinary session and have no source path, so the build is refused |
+| Verification, context and failure controls, gadget catalog | not implemented; a selection that asks for one is refused |
 | Receipts for approval decisions taken inside the approval gate; `ask_user` answers as drafts | not implemented |
 | Terminal ingress, `/clear`, display of replies | not implemented |
 | Verification, context and failure controls, local gadgets | not implemented; a selection that asks for one is refused |
@@ -137,6 +138,36 @@ The protected `patch_tool_calls` middleware is the one tracked reviewer. On a
 selected agent it repairs string-encoded or malformed call arguments exactly as
 it always does, and the record is the same as an unselected agent's.
 
+**Source parts.** A `SourcePart` is one piece of text with where it came from:
+fixed application text, text read from a store or file, or text that a tool
+call carried in its arguments. Pieces stay apart until the host composes the
+request. A piece is owned by its producer: handing over the same owned piece
+again is the same source, while equal text in another piece is not.
+
+- *Tracked prepare.* A tracked middleware's `prepare_model` is not called.
+  `prepare_model_with_view` is, with the state read-only and one operation:
+  add a section of system text as parts. Each section is given to the boundary
+  and becomes one more source of the system channel. Bounds: 64 sections a
+  round, 1024 parts and 1 MiB a section.
+- *Tracked dispatch.* During a tool call, a middleware reaches a handle through
+  `ToolNext::tracked` and a tool through `Tool::call_with_view`. A middleware
+  announces a bookkeeping key of its own in the custom state, or fixed text it
+  appended to the outcome. A tool announces that it stored strings of its own
+  arguments as the todo list, or what its own outcome is made of. Anything
+  changed without an announcement stops the turn, as before.
+- *Stored todos.* The agent keeps, beside the stored list, the reply, the call
+  and the argument place each todo's text came from. A list changed by
+  something that did not say so has no origin, and the next request is
+  refused.
+- *Outcome parts.* When a tool says what its own outcome is made of, the agent
+  uses the statement only if the pieces join to exactly what the tool returned
+  and the recorded content is exactly that plus what middleware appended.
+
+The defaults of the `_with_view` hooks are written without `async`, so that an
+implementation that does not override them gets one small function instead of
+a state machine. The test binary of the application is close to a linker limit
+on macOS that these state machines exceeded.
+
 Still refused on a selected agent because no source-preserving path exists: the
 untyped turn, steering and resume entries, reopening a thread, transferring a
 conversation, idle compaction, a boundary policy, a completion check, system
@@ -170,6 +201,21 @@ that reply with its calls removed because the round ended without running
 them. Anything else stops the session.
 
 A conversation has one agent. Its boundary is handed out once.
+
+**System additions.** For each section a middleware adds, the conversation
+holds its parts. Fixed and read text is captured and admitted, once per owned
+piece, and sent as its view. Text a part says a call wrote is checked against
+the committed reply: the string at that place of that call's arguments, or its
+JSON encoding, must be exactly the part's text. It is model-origin text and is
+sent as the model wrote it; a placeholder in it is neither replaced by the
+original nor masked again. A part that fails the check stops the session.
+
+**Results in parts.** When a tool said what its own outcome is made of, the
+result is held piece by piece the same way, followed by what middleware
+appended. Otherwise the whole content is captured and admitted as raw text.
+This matters for a tool that repeats its arguments: the todo tool's outcome
+repeats the list, and a todo in which the model wrote a placeholder would end
+the conversation if the outcome were admitted whole.
 
 **Composition.** `PrivacySession::model_view` turns a tracked request into the
 request a model may see. Each recorded text is replaced by the view of its own
@@ -328,15 +374,18 @@ Then it:
   store, and the conversation's own guard for every model client it makes;
 - builds the provider for the configured wire, and refuses a native wire when
   the policy requires inspectable provider items;
-- captures the complete system text it built as one host capture, admits it
-  and gives the agent no system text of its own;
+- takes the sections of the system prompt from their producer while they are
+  still apart, admits each as its own capture, and gives the agent no system
+  text of its own. Joined, the sections must be exactly the text an ordinary
+  session is given, or the build is refused;
 - requires a statement from every middleware it would install. If one has
   none, the build is refused and the frontend is told which.
 
-Today the statement exists for the approval gate, the result size limit and
-the protected call repair. Todos, memory, compaction and system reminders are
-installed in every ordinary session and have none. **So no privacy session can
-be built outside tests yet**: a selection made from a real policy is refused
+Today the statement exists for the approval gate, the result size limit, the
+protected call repair, the todo list, memory, the todo reminders, the task
+workflow notes and workspace checkpoints. Compaction and the delegated-agent
+middleware are installed in every ordinary session and have none. **So no
+privacy session can be built outside tests yet**: a selection made from a real policy is refused
 with the list of those parts. Test fixtures alone use a fixture policy and a
 second constructor, both compiled only into test builds, that leave those
 parts out and name them in one line. Neither is a user policy and neither
@@ -353,11 +402,30 @@ it is accepted, so a draft that cannot be admitted is turned away unchanged and
 the conversation continues. A reason typed with a denial is checked the same
 way. Nothing calls these entries yet.
 
-**In the fixtures.** A fixture session has no todo list, memory text, system
-reminders, compaction, workspace checkpoints, delegated agents or task workflow
-notes. The system text is one capture, not parts. Reading the checkpoint back
+**In the fixtures.** A fixture session has no compaction and no delegated
+agents, so it also lacks the section the delegated-agent middleware adds to
+the system text and its `task` tool. A long conversation is not compacted. Reading the checkpoint back
 with an ordinary session returns the real record: nothing in it is redacted or
 encrypted by this work.
+
+## Normal parts
+
+How each normal component runs on a selected agent today.
+
+| Component | Path |
+| --- | --- |
+| System prompt | sections from the producer: fixed text, the profile's text, instruction files, discovered skills, extensions and the frontend's addition, each admitted on its own. The global and project instruction files are one section, as the producer joins them |
+| `patch_tool_calls` | tracked review; each repair recorded |
+| Todo list | the section is fixed prompt, heading, status labels and line ends from the application, and each todo's text from the call that stored it. The tool states which arguments it stored and what its outcome repeats |
+| Memory | the turn-start load is unchanged. The section is the application's tags, paths and guidance, with each file's content as one read part per load |
+| Todo reminders | announces its round counters in the custom state and the fixed reminder it appends to a tool outcome |
+| Task workflow notes | the two fixed notes as parts; its observation of outcomes stays in its own memory |
+| Workspace checkpoints | reads recorded messages and writes its own store; changes nothing the agent records, which is checked |
+| Approval gate, result size limit | leave the record alone, which is checked |
+| Compaction | **no path.** Needs the summarizer request composed from views, the summary received with a receipt, and the replaced prefix given one source |
+| Delegated agents, notifications, inbox | **no path.** Children need the conversation's scope, their own boundary and envelopes for what they return |
+| Verification, context and failure controls, gadget catalog | **no path** |
+| Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |
 
 ## Limits that will remain
 

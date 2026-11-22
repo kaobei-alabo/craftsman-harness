@@ -24,7 +24,8 @@ It is local, unmerged and not installed.
 | Session builder use of the reserved thread id | implemented, private; selected by nothing, and buildable only in test fixtures until every part has a source path |
 | Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
 | Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
-| Mixed text from memory, todos, context, tasks and compaction | not implemented |
+| Mixed text from the system prompt, todos, memory, reminders and task workflow notes, as parts | implemented, private; see provenance |
+| Mixed text from compaction, delegated agents and context controls | not implemented |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
@@ -262,8 +263,8 @@ call was made. Runs are recorded with their own head under
 - Only tests drive a conversation through this core to a model request. No
   frontend builds a session with it, and nothing reaches a display or a file
   through it.
-- The system text is admitted as one capture. Files, memory and configuration
-  are not captured as parts of their own.
+- The system prompt is admitted section by section. The global and project
+  instruction files are one section together.
 - `CapturedRaw::from_producer` can be called by any code in the binary. The
   origin it records describes the producer; it is not authority.
 - Detection is the detector's plus the narrow floor. Everything else is not

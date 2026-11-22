@@ -437,9 +437,13 @@ impl Agent {
 
             // Rebuild the per-turn system additions from scratch each round.
             working.system_extras.clear();
-            let kept = self.view_phase_start(&working);
-            self.chain.prepare_model(&mut working).await?;
-            self.view_phase_end(kept, &working)?;
+            let additions = match &self.model_view {
+                Some(view) => self.prepare_with_view(view, &mut working).await?,
+                None => {
+                    self.chain.prepare_model(&mut working).await?;
+                    Vec::new()
+                }
+            };
 
             let mut system = self.system_prompt.clone();
             for extra in &working.system_extras {
@@ -461,7 +465,8 @@ impl Agent {
             };
             let mut view_received = None;
             let response = if let Some(view) = &self.model_view {
-                let Some(delivery) = self.deliver_with_view(view, &working).await? else {
+                let Some(delivery) = self.deliver_with_view(view, &working, additions).await?
+                else {
                     return self.finish_cancelled().await;
                 };
                 view_received = Some(view.received(&delivery.response, delivery.receipt));
@@ -1137,14 +1142,19 @@ impl Agent {
             // return an `is_error` outcome for an unknown tool. Bound through
             // `as_tool_handler` so the higher-ranked return-lifetime resolves.
             let record = reached.clone();
-            let dispatch_watch = dispatch_watch.clone();
+            let terminal_watch = dispatch_watch.clone();
             let terminal = as_tool_handler(move |call: ToolCall, ctx: &mut ToolCtx<'_>| {
                 let found = tools.get(&call.name).cloned();
                 let names = names.clone();
                 let record = record.clone();
                 let view = terminal_view.clone();
-                let decision = decision.clone();
-                let watch = dispatch_watch.clone();
+                let decision = decision
+                    .as_ref()
+                    .map(|decision| model_view::AppliedDecision {
+                        source: decision.source.clone(),
+                        action: decision.action.clone(),
+                    });
+                let watch = terminal_watch.clone();
                 Box::pin(async move {
                     match found {
                         Some(tool) => match record {
@@ -1163,7 +1173,8 @@ impl Agent {
                                     &view.owner,
                                     call.clone(),
                                     bypass_chain,
-                                    decision,
+                                    decision.as_ref().map(|decision| decision.source.clone()),
+                                    decision.as_ref().map(|decision| decision.action.clone()),
                                 );
                                 let source = match view.boundary.before_terminal(&invocation).await
                                 {
@@ -1180,7 +1191,14 @@ impl Agent {
                                     view.close();
                                     return Err(error);
                                 }
-                                let result = tool.call(call.args, ctx).await;
+                                let tracked = watch
+                                    .as_ref()
+                                    .expect("selected invocation has its watch")
+                                    .lock()
+                                    .unwrap()
+                                    .tracked
+                                    .clone();
+                                let result = tool.call_with_view(call.args, ctx, &tracked).await;
                                 let actual = ActualTerminalOutcome::issued(
                                     invocation,
                                     source,
@@ -1207,8 +1225,15 @@ impl Agent {
                     }
                 })
             });
+            let tracked = dispatch_watch
+                .as_ref()
+                .map(|record| record.lock().unwrap().tracked.clone());
             if bypass_chain {
                 terminal(call, &mut ctx).await
+            } else if let Some(tracked) = &tracked {
+                self.chain
+                    .around_tool_with_view(call, &mut ctx, &terminal, tracked)
+                    .await
             } else {
                 self.chain.around_tool(call, &mut ctx, &terminal).await
             }
@@ -1244,6 +1269,28 @@ impl Agent {
                     returned.clone(),
                     result.as_ref().err().map(ToString::to_string),
                 );
+                let fact = match (&watched, returned.as_ref()) {
+                    (Some(dispatched), Some(returned)) => {
+                        let reply = if fact
+                            .terminals()
+                            .iter()
+                            .any(|terminal| terminal.invocation().human_edited())
+                        {
+                            None
+                        } else {
+                            self.reply_source(view, &fact.proposed_call().id)
+                        };
+                        let parts = dispatched.outcome_parts(
+                            &returned.content,
+                            reply.as_ref(),
+                            &fact.proposed_call().id,
+                        );
+                        let stored = self.state.lock().unwrap().todos.len();
+                        view.note_todos(dispatched, reply, &fact.proposed_call().id, stored);
+                        fact.with_parts(dispatched.appended.clone(), parts)
+                    }
+                    _ => fact,
+                };
                 view.chain(fact.clone());
                 Some(fact)
             }
@@ -1285,7 +1332,10 @@ impl Agent {
             // The actual result is journaled and committed above, and saved
             // there when durable turn checkpoints are selected.
             view.live()?;
-            if watched.as_ref().is_some_and(|(_, changed)| *changed) {
+            if watched
+                .as_ref()
+                .is_some_and(|dispatched| dispatched.changed)
+            {
                 return Err(model_view::state_changed());
             }
             self.record_tool_source(view, &fact).await?;

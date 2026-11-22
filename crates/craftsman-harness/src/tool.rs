@@ -117,6 +117,32 @@ pub trait Tool: Send + Sync {
         args: serde_json::Value,
         ctx: &mut ToolCtx<'_>,
     ) -> Result<ToolOutcome, AgentError>;
+
+    /// The call on an agent that selected a source view boundary. A tool
+    /// that stores text of its own arguments where a later request reads it
+    /// announces that through `tracked`. The default is `call`.
+    ///
+    /// The default is written without `async`, in the shape `async_trait`
+    /// gives an `async fn`, so that the many tools that do not override it
+    /// hand back the future of `call` itself.
+    fn call_with_view<'a, 'b, 'c, 'd, 'f>(
+        &'a self,
+        args: serde_json::Value,
+        ctx: &'b mut ToolCtx<'c>,
+        tracked: &'d crate::provenance::TrackedDispatch,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ToolOutcome, AgentError>> + Send + 'f>,
+    >
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        'd: 'f,
+        Self: 'f,
+    {
+        let _ = tracked;
+        self.call(args, ctx)
+    }
 }
 
 #[cfg(test)]

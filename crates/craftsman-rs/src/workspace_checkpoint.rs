@@ -831,6 +831,13 @@ impl AgentMiddleware for WorkspaceCheckpointManager {
         "workspace_checkpoint"
     }
 
+    /// It reads the recorded messages at the start of a turn and writes its
+    /// own store at the end. It changes nothing the agent records, which the
+    /// agent with a source view checks after both hooks.
+    fn view_support(&self) -> craftsman_harness::provenance::ViewSupport {
+        craftsman_harness::provenance::ViewSupport::Preserving
+    }
+
     async fn turn_start(&self, state: &mut AgentState) -> Result<(), AgentError> {
         let summary = state
             .messages

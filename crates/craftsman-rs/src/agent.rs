@@ -2037,18 +2037,47 @@ async fn build_session_with_capture_profile(
     #[cfg(feature = "gadgets")]
     let system = format!("{system}{gadget_system_suffix}");
     // A privacy conversation has no system text outside its sources. The
-    // text built above is captured here as host text and admitted once,
-    // before any request exists.
+    // sections of the system prompt are taken from their producer while they
+    // are still apart, and each is captured and admitted on its own, before
+    // any request exists. Joined, they must be exactly the text built above.
     let (system, privacy_boundary) = match &privacy_view {
         None => (system, None),
         Some(session) => {
-            let raw = crate::privacy_session::CapturedRaw::from_producer(
-                crate::privacy_session::RawOrigin::HostConfig,
-                &system,
+            use crate::privacy_session::{CapturedRaw, RawOrigin};
+            let chunks = crate::prompt::system_prompt_chunks(
+                cfg,
+                &harness_profile,
+                extra_system,
+                &cwd,
+                &extensions,
             );
-            let boundary = match session.admit_raw(&raw).await {
-                Ok(node) => session.boundary(&[node]).ok(),
-                Err(_) => None,
+            let joined = chunks
+                .iter()
+                .map(|chunk| chunk.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let mut nodes = Vec::with_capacity(chunks.len());
+            if joined == system {
+                for chunk in &chunks {
+                    let origin = match chunk.read {
+                        Some(_) => RawOrigin::HostConfig,
+                        None => RawOrigin::HostStatic,
+                    };
+                    match session
+                        .admit_raw(&CapturedRaw::from_producer(origin, &chunk.text))
+                        .await
+                    {
+                        Ok(node) => nodes.push(node),
+                        Err(_) => {
+                            nodes.clear();
+                            break;
+                        }
+                    }
+                }
+            }
+            let boundary = match nodes.is_empty() {
+                true => None,
+                false => session.boundary(&nodes).ok(),
             };
             let Some(boundary) = boundary else {
                 if let Some(selection) = &extras.privacy_view {
@@ -2695,7 +2724,7 @@ async fn build_session_with_capture_profile(
             let (kept, unadapted): (Vec<_>, Vec<_>) = middleware.into_iter().partition(|entry| {
                 matches!(
                     entry.view_support(),
-                    ViewSupport::Preserving | ViewSupport::TrackedReply
+                    ViewSupport::Preserving | ViewSupport::Tracked
                 )
             });
             if !unadapted.is_empty() {
