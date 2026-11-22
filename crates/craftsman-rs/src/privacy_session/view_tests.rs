@@ -4,7 +4,6 @@
 //! and the guard are real; the detector is fixed host reply rules.
 
 use super::tests::{draft, vault};
-use super::view::received_chat_reply;
 use super::*;
 use crate::llm::LlmClient;
 use crate::privacy_hook::tests::{EMAIL, LiteralSource, PHONE};
@@ -372,9 +371,7 @@ async fn a_source_that_is_not_this_conversations_or_does_not_fit_is_refused() {
 
     // A reply received by another conversation cannot be committed here.
     let reply = Msg::assistant("a reply");
-    let receipt = SourceRef::new(Arc::new(
-        received_chat_reply(&other.session, &reply, 0, [0; 32]).unwrap(),
-    ));
+    let receipt = super::view::receipt_for_test(&other.boundary.conversation().unwrap(), &reply);
     assert!(c.boundary.commit_model(receipt, &reply).await.is_err());
     assert_eq!(c.session.check(), Err(SessionStop::Closed));
 
@@ -1577,3 +1574,6 @@ async fn compaction_asks_the_summarizer_with_views_and_keeps_its_text_as_model_t
     assert!(c.session.committed_model(summary_source).is_none());
     assert!(c.session.check().is_ok());
 }
+
+#[path = "delegation_tests.rs"]
+mod delegation;

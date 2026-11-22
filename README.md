@@ -44,8 +44,9 @@ containing already-mapped values is also implemented; nothing selects it yet.
 A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
 [views of sources](docs/privacy-provenance.md), for all four model wires, are
-in development on top of them. No frontend, configuration or command selects
-either, and a session cannot be built with them outside tests yet.
+in development on top of them, now including delegated agents. No frontend,
+configuration or command selects either, and the user policy that would make
+the selection is not part of this branch.
 
 ## Planned WASM enhancement
 

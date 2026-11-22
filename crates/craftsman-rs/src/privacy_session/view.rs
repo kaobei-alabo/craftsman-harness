@@ -12,7 +12,16 @@
 //!   transport actually received and the agent then committed;
 //! - a tool definition, whose description and schema text were admitted;
 //! - a recorded tool result, with what actually ran and returned;
-//! - a message the agent appended itself, with the event that produced it.
+//! - a message the agent appended itself, with the event that produced it;
+//! - text of a call's arguments that a tool handed to a delegated agent;
+//! - a message the agent appended from parts: its own framing around what
+//!   another agent of the conversation sent.
+//!
+//! A conversation has one root agent and the agents it delegates tasks to.
+//! Each has a lane of its own: its replies and results are its own, and a
+//! request carries only those of the lane it was composed for. All lanes
+//! share the session, its vault and its placeholders. Text crosses from one
+//! lane to another only as a part that names the source it came from.
 //!
 //! A committed model node is model-origin text. It is not an admitted node
 //! and gives no right to restore anything. Nothing here decides an origin
@@ -56,6 +65,45 @@ enum ViewSource {
         text: String,
         close: AdmittedNode,
     },
+    /// Text that a call of a committed reply carried in its arguments and
+    /// that a tool handed to another agent. It is model-origin text.
+    Argument {
+        node: CommittedModelNode,
+        text: Arc<str>,
+    },
+    /// A message the agent appended from parts, part by part.
+    Envelope(Vec<AdditionPart>),
+}
+
+/// One agent's side of a conversation: the root agent's, or that of an
+/// agent the conversation delegated a task to. It is this session's own
+/// object, made where the agent's boundary is made.
+struct Lane {
+    owner: Arc<Inner>,
+    /// The lane of the agent that delegated the task. `None` for the root.
+    parent: Option<Arc<Lane>>,
+}
+
+impl Lane {
+    /// Whether `other` is this lane, the lane that delegated to it, or a
+    /// lane it delegated to. Text crosses only between such lanes.
+    fn related(self: &Arc<Self>, other: &Arc<Lane>) -> bool {
+        let parent_of = |child: &Arc<Lane>, parent: &Arc<Lane>| {
+            child
+                .parent
+                .as_ref()
+                .is_some_and(|own| Arc::ptr_eq(own, parent))
+        };
+        Arc::ptr_eq(self, other) || parent_of(self, other) || parent_of(other, self)
+    }
+}
+
+/// The lane a request was composed for, if it is one of `inner`'s.
+fn lane_of(inner: &Arc<Inner>, request: &TrackedModelRequest) -> Option<Arc<Lane>> {
+    request
+        .conversation()?
+        .downcast::<Lane>()
+        .filter(|lane| Arc::ptr_eq(&lane.owner, inner))
 }
 
 /// How a recorded tool result is seen by a model.
@@ -88,6 +136,8 @@ const OWNED_PARTS: usize = 512;
 /// that transport creates one, at the moment of receipt.
 pub struct ReceivedModel {
     owner: Arc<Inner>,
+    /// The lane the answered request was composed for.
+    lane: Arc<Lane>,
     message: Msg,
     request: RequestContext,
     native: Option<NativeReceipt>,
@@ -119,13 +169,16 @@ struct NativeReceipt {
 /// Called only by that transport, with the request it actually sent.
 pub(super) fn received_chat_reply(
     session: &PrivacySession,
+    request: &TrackedModelRequest,
     message: &Msg,
     index: usize,
     request_sha256: [u8; 32],
 ) -> Result<ReceivedModel, SessionStop> {
     session.inner.live()?;
+    let lane = lane_of(&session.inner, request).ok_or(SessionStop::Unbound)?;
     Ok(ReceivedModel {
         owner: session.inner.clone(),
+        lane,
         message: message.clone(),
         request: RequestContext {
             index,
@@ -141,13 +194,14 @@ pub(super) fn received_chat_reply(
 /// Called only by that transport, with the request it actually sent.
 pub(super) fn received_native_reply(
     session: &PrivacySession,
+    request: &TrackedModelRequest,
     message: &Msg,
     identity: &str,
     index: usize,
     request_sha256: [u8; 32],
     items: Vec<serde_json::Value>,
 ) -> Result<ReceivedModel, SessionStop> {
-    let mut received = received_chat_reply(session, message, index, request_sha256)?;
+    let mut received = received_chat_reply(session, request, message, index, request_sha256)?;
     received.native = Some(NativeReceipt {
         identity: identity.to_owned(),
         items,
@@ -157,6 +211,8 @@ pub(super) fn received_native_reply(
 
 struct ModelInner {
     owner: Arc<Inner>,
+    /// The lane of the agent that committed the reply.
+    lane: Arc<Lane>,
     /// The reply as the agent committed it.
     message: Msg,
     /// The reply as it was received.
@@ -226,6 +282,14 @@ impl CommittedModelNode {
     pub fn request_sha256(&self) -> Result<[u8; 32], SessionStop> {
         self.inner.owner.live()?;
         Ok(self.inner.request.sha256)
+    }
+
+    /// The position the reply was received for: the number of messages in
+    /// the request it answered. A compaction may leave the reply at another
+    /// position; what it was received for does not change.
+    pub fn request_position(&self) -> Result<usize, SessionStop> {
+        self.inner.owner.live()?;
+        Ok(self.inner.request.index)
     }
 
     /// Whether a native transport received the reply, with provider items.
@@ -333,6 +397,8 @@ impl ApprovedOperation {
 /// What actually happened for one recorded tool result.
 pub struct ActualToolResult {
     owner: Arc<Inner>,
+    /// The lane of the agent that recorded the result.
+    lane: Arc<Lane>,
     call_id: String,
     tool: String,
     operation: Option<Arc<ApprovedOperation>>,
@@ -528,20 +594,31 @@ impl PrivacySession {
 
     /// The request a model may see on a native wire, with the provider items
     /// to send back. `identity` is the sending client's. Every reply of the
-    /// conversation must have been received by a client of exactly that
+    /// request's lane must have been received by a client of exactly that
     /// identity. A reply without such a receipt, or with another client's,
-    /// stops the session before a request exists. Items are sent back only
-    /// for a reply that was committed as received and still stands at the
-    /// position it was received for. A reply that a compaction moved is sent
-    /// as its text and calls, as the native history does.
+    /// stops the session before a request exists.
+    ///
+    /// The items of a reply are the provider's own account of that reply,
+    /// received by this same client and kept with the reply's node. They are
+    /// sent back unchanged with every reply that was committed as it was
+    /// received, wherever it stands: a compaction that moved the reply does
+    /// not take them away. A reply that was committed without the calls it
+    /// was received with is sent as its committed text, because its items
+    /// describe calls that never ran.
+    ///
+    /// A request the agent composed for a summarizer is refused here. It is
+    /// not a continuation of the conversation and has its own view.
     pub fn native_view(
         &self,
         request: &TrackedModelRequest,
         identity: &str,
     ) -> Result<(ModelRequest, NativeReplay), SessionStop> {
+        if request.is_summary() {
+            return Err(unbound(&self.inner));
+        }
         let view = self.model_view(request)?;
         let mut items = Vec::with_capacity(view.messages.len());
-        for (index, source) in request.message_sources().iter().enumerate() {
+        for source in request.message_sources() {
             let own = source.downcast::<ViewSource>();
             let Some(ViewSource::Model(node)) = own.as_deref() else {
                 items.push(None);
@@ -555,11 +632,25 @@ impl PrivacySession {
             else {
                 return Err(unbound(&self.inner));
             };
-            let stands =
-                node.inner.request.index == index && node.inner.received == node.inner.message;
+            let stands = node.inner.received == node.inner.message;
             items.push(stands.then(|| receipt.items.clone()));
         }
         Ok((view, NativeReplay { items }))
+    }
+
+    /// The request a summarizer of this conversation may see. Only a request
+    /// the agent itself composed for a summarizer is accepted: the messages
+    /// it is about to replace, each with its own source, and the
+    /// application's instruction. It is a new request made from those
+    /// sources. Each reply in it is the text and the calls the agent
+    /// committed, and nothing else: the provider items of a reply answer the
+    /// request that reply was received for, and stay with the reply's node.
+    /// Any other request is refused, and the session stopped.
+    pub fn summary_view(&self, request: &TrackedModelRequest) -> Result<ModelRequest, SessionStop> {
+        if !request.is_summary() {
+            return Err(unbound(&self.inner));
+        }
+        self.model_view(request)
     }
 
     /// Called by the interface that actually showed `call` to a person and
@@ -632,6 +723,11 @@ impl PrivacySession {
         {
             return Err(unbound(inner));
         }
+        // The lane the agent composed this request for. Replies and results
+        // are a request's own only if that lane's agent committed them.
+        let Some(lane) = lane_of(inner, request) else {
+            return Err(unbound(inner));
+        };
         let own = |source: &SourceRef| source.downcast::<ViewSource>().ok_or(SessionStop::Unbound);
         let view = |node: &AdmittedNode, text: &str| -> Result<String, SessionStop> {
             if !node.admitted_by(self) || !node.captured_text_is(text) {
@@ -647,6 +743,43 @@ impl PrivacySession {
                 }
                 node.model_view().map(str::to_owned)
             };
+            // Model text inside a part is a reply's of this lane, of the
+            // lane that delegated to it, or of a lane it delegated to.
+            let written = |node: &CommittedModelNode| {
+                node.committed_by(self) && lane.related(&node.inner.lane)
+            };
+            // Parts that are, in order, exactly `content`: host text goes
+            // out as its view, and model text goes out as the model wrote it.
+            let pieces = |parts: &[AdditionPart], content: &str| -> Result<String, SessionStop> {
+                let mut at = 0;
+                let mut seen = String::new();
+                for part in parts {
+                    let (length, piece) = match part {
+                        AdditionPart::Admitted(node) => (node.captured_len(), host(node)?),
+                        AdditionPart::Model { node, text } => {
+                            if !written(node) {
+                                return Err(SessionStop::Unbound);
+                            }
+                            (text.len(), text.to_string())
+                        }
+                    };
+                    let fits = content
+                        .get(at..at + length)
+                        .is_some_and(|recorded| match part {
+                            AdditionPart::Admitted(node) => node.captured_text_is(recorded),
+                            AdditionPart::Model { text, .. } => **text == *recorded,
+                        });
+                    if !fits {
+                        return Err(SessionStop::Unbound);
+                    }
+                    at += length;
+                    seen.push_str(&piece);
+                }
+                if at != content.len() {
+                    return Err(SessionStop::Unbound);
+                }
+                Ok(seen)
+            };
             for (index, source) in request.system_sources().iter().enumerate() {
                 if index > 0 {
                     system.push_str("\n\n");
@@ -661,7 +794,7 @@ impl PrivacySession {
                             match part {
                                 AdditionPart::Admitted(node) => system.push_str(&host(node)?),
                                 AdditionPart::Model { node, text } => {
-                                    if !node.committed_by(self) {
+                                    if !written(node) {
                                         return Err(SessionStop::Unbound);
                                     }
                                     system.push_str(text);
@@ -688,52 +821,38 @@ impl PrivacySession {
                             view: result,
                             actual,
                         },
-                    ) if actual.call_id == *tool_call_id => Msg::Tool {
-                        tool_call_id: tool_call_id.clone(),
-                        content: match result {
-                            ResultView::Whole(node) => view(node, content)?,
-                            ResultView::Parts(parts) => {
+                    ) if actual.call_id == *tool_call_id && Arc::ptr_eq(&actual.lane, &lane) => {
+                        Msg::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: match result {
+                                ResultView::Whole(node) => view(node, content)?,
                                 // The parts, in order, must be exactly the
                                 // recorded content.
-                                let mut at = 0;
-                                let mut seen = String::new();
-                                for part in parts {
-                                    let (length, piece) = match part {
-                                        AdditionPart::Admitted(node) => {
-                                            (node.captured_len(), host(node)?)
-                                        }
-                                        AdditionPart::Model { node, text } => {
-                                            if !node.committed_by(self) {
-                                                return Err(SessionStop::Unbound);
-                                            }
-                                            (text.len(), text.to_string())
-                                        }
-                                    };
-                                    let fits =
-                                        content.get(at..at + length).is_some_and(|recorded| {
-                                            match part {
-                                                AdditionPart::Admitted(node) => {
-                                                    node.captured_text_is(recorded)
-                                                }
-                                                AdditionPart::Model { text, .. } => {
-                                                    **text == *recorded
-                                                }
-                                            }
-                                        });
-                                    if !fits {
-                                        return Err(SessionStop::Unbound);
-                                    }
-                                    at += length;
-                                    seen.push_str(&piece);
-                                }
-                                if at != content.len() {
-                                    return Err(SessionStop::Unbound);
-                                }
-                                seen
-                            }
-                        },
-                        is_error: *is_error,
+                                ResultView::Parts(parts) => pieces(parts, content)?,
+                            },
+                            is_error: *is_error,
+                        }
+                    }
+                    // What the agent appended from parts: its own framing
+                    // around what another agent of the conversation sent.
+                    (Msg::User { content }, ViewSource::Envelope(parts)) => Msg::User {
+                        content: pieces(parts, content)?,
                     },
+                    // The input of a delegated agent: text that a call of the
+                    // delegating agent's committed reply wrote. It goes out
+                    // as the model wrote it.
+                    (Msg::User { content }, ViewSource::Argument { node, text })
+                        if node.committed_by(self)
+                            && lane
+                                .parent
+                                .as_ref()
+                                .is_some_and(|parent| Arc::ptr_eq(parent, &node.inner.lane))
+                            && **text == **content =>
+                    {
+                        Msg::User {
+                            content: content.clone(),
+                        }
+                    }
                     (
                         Msg::Tool {
                             tool_call_id,
@@ -769,7 +888,9 @@ impl PrivacySession {
                         tool_calls: Vec::new(),
                     },
                     (Msg::Assistant { .. }, ViewSource::Model(node))
-                        if node.committed_by(self) && node.inner.message == *message =>
+                        if node.committed_by(self)
+                            && Arc::ptr_eq(&node.inner.lane, &lane)
+                            && node.inner.message == *message =>
                     {
                         message.clone()
                     }
@@ -851,13 +972,21 @@ impl PrivacySession {
         }
         Ok(Arc::new(ConversationBoundary {
             session: self.clone(),
+            lane: Arc::new(Lane {
+                owner: self.inner.clone(),
+                parent: None,
+            }),
             system: sources,
             definitions: tokio::sync::Mutex::new(Vec::new()),
-            owned_parts: tokio::sync::Mutex::new(Vec::new()),
+            owned_parts: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             dispatch: std::sync::Mutex::new(Dispatch::default()),
+            lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }))
     }
 }
+
+/// The most agents one conversation delegates tasks to over its life.
+const MAX_LANES: usize = 4096;
 
 /// What the boundary remembers between a reply and the calls it asked for.
 #[derive(Default)]
@@ -870,9 +999,13 @@ struct Dispatch {
     in_flight: Option<Arc<ApprovedOperation>>,
 }
 
-/// The framework's boundary for one privacy conversation.
+/// The framework's boundary for one agent of a privacy conversation: the
+/// root agent's, which the session hands out once, or one that a boundary of
+/// the conversation made for an agent it delegated a task to.
 pub struct ConversationBoundary {
     session: Arc<PrivacySession>,
+    /// This agent's lane.
+    lane: Arc<Lane>,
     system: Vec<SourceRef>,
     /// The admitted text of each tool definition seen so far, by name. An
     /// entry is reused only while the definition's text is the captured text.
@@ -880,8 +1013,12 @@ pub struct ConversationBoundary {
     /// Host parts that were admitted, each with the owned piece it was
     /// admitted for. A piece is found again only as the same owned object;
     /// equal text in another piece is admitted on its own.
-    owned_parts: tokio::sync::Mutex<Vec<(Arc<str>, AdmittedNode)>>,
+    /// Shared by every boundary of the conversation, so that a piece is
+    /// admitted once whichever agent hands it over.
+    owned_parts: Arc<tokio::sync::Mutex<Vec<(Arc<str>, AdmittedNode)>>>,
     dispatch: std::sync::Mutex<Dispatch>,
+    /// How many lanes the conversation has made for delegated agents.
+    lanes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ConversationBoundary {
@@ -954,6 +1091,7 @@ impl ConversationBoundary {
                     let node = self
                         .session
                         .committed_model(reply)
+                        .filter(|node| self.lane.related(&node.inner.lane))
                         .ok_or_else(|| fault(unbound(inner)))?;
                     let value = match &node.inner.message {
                         Msg::Assistant { tool_calls, .. } => tool_calls
@@ -979,6 +1117,45 @@ impl ConversationBoundary {
                     AdditionPart::Model {
                         node,
                         text: part.text.clone(),
+                    }
+                }
+                // The part says its text is the whole text of something this
+                // conversation already holds a source for. That source is
+                // checked itself: it is this session's, it belongs to this
+                // agent or to one it delegates to or was delegated by, and
+                // its text is exactly the part's.
+                PartFrom::Source { source } => {
+                    let held = source.downcast::<ViewSource>();
+                    let near = |node: &CommittedModelNode| {
+                        node.committed_by(&self.session) && self.lane.related(&node.inner.lane)
+                    };
+                    match held.as_deref() {
+                        Some(ViewSource::Model(node))
+                            if near(node)
+                                && matches!(&node.inner.message,
+                                    Msg::Assistant { content, .. } if **content == *part.text) =>
+                        {
+                            AdditionPart::Model {
+                                node: node.clone(),
+                                text: part.text.clone(),
+                            }
+                        }
+                        Some(ViewSource::Argument { node, text })
+                            if near(node) && **text == *part.text =>
+                        {
+                            AdditionPart::Model {
+                                node: node.clone(),
+                                text: part.text.clone(),
+                            }
+                        }
+                        Some(ViewSource::Admitted(node) | ViewSource::Framework { node, .. })
+                            if node.admitted_by(&self.session)
+                                && node.is_accepted_fact()
+                                && node.captured_text_is(&part.text) =>
+                        {
+                            AdditionPart::Admitted(node.clone())
+                        }
+                        _ => return Err(fault(unbound(inner))),
                     }
                 }
                 _ => return Err(fault(unbound(inner))),
@@ -1048,6 +1225,118 @@ impl ModelViewBoundary for ConversationBoundary {
         Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node))))
     }
 
+    fn conversation(&self) -> Option<SourceRef> {
+        Some(SourceRef::new(self.lane.clone()))
+    }
+
+    async fn argument_source(&self, part: &SourcePart) -> Result<SourceRef, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        let PartFrom::Call {
+            reply,
+            call_id,
+            pointer,
+        } = &part.from
+        else {
+            return Err(fault(unbound(inner)));
+        };
+        // The call that is running now, exactly as it was checked before it
+        // ran, carries this text at this place of its arguments.
+        let operation = self
+            .operation_in_flight()
+            .filter(|operation| operation.call.id == *call_id)
+            .ok_or_else(|| fault(unbound(inner)))?;
+        let carried = matches!(operation.call.args.pointer(pointer),
+            Some(serde_json::Value::String(text)) if **text == *part.text);
+        if !carried {
+            return Err(fault(unbound(inner)));
+        }
+        if operation.edited {
+            // A person replaced the arguments. The text is raw text from
+            // that person, and is admitted like any other.
+            let node = self.admit(RawOrigin::HumanReply, &part.text).await?;
+            return Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node))));
+        }
+        // The reply the part names is the committed reply of this agent that
+        // asked for the call.
+        let node = self
+            .session
+            .committed_model(reply)
+            .filter(|node| {
+                Arc::ptr_eq(&node.inner, &operation.model.inner)
+                    && Arc::ptr_eq(&node.inner.lane, &self.lane)
+            })
+            .ok_or_else(|| fault(unbound(inner)))?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Argument {
+            node,
+            text: part.text.clone(),
+        })))
+    }
+
+    async fn child_boundary(
+        &self,
+        system: &[SourcePart],
+    ) -> Result<Arc<dyn ModelViewBoundary>, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        if self.lanes.fetch_add(1, Ordering::AcqRel) >= MAX_LANES {
+            return Err(AgentError::State(
+                "This conversation has delegated as many tasks as it can.".into(),
+            ));
+        }
+        // The delegated agent's system text is host text, kept apart from
+        // this agent's: each part is admitted, and they are held as one
+        // section.
+        let host = system
+            .iter()
+            .all(|part| matches!(part.from, PartFrom::Fixed | PartFrom::Read { .. }));
+        if !host {
+            return Err(fault(unbound(inner)));
+        }
+        let sources = match system.is_empty() {
+            true => Vec::new(),
+            false => vec![SourceRef::new(Arc::new(ViewSource::Addition(
+                self.held_parts(system).await?,
+            )))],
+        };
+        // The same session, vault and placeholders, and a lane of its own.
+        Ok(Arc::new(ConversationBoundary {
+            session: self.session.clone(),
+            lane: Arc::new(Lane {
+                owner: inner.clone(),
+                parent: Some(self.lane.clone()),
+            }),
+            system: sources,
+            definitions: tokio::sync::Mutex::new(Vec::new()),
+            owned_parts: self.owned_parts.clone(),
+            dispatch: std::sync::Mutex::new(Dispatch::default()),
+            lanes: self.lanes.clone(),
+        }))
+    }
+
+    async fn observe_envelope(
+        &self,
+        event: FrameworkCommit,
+        parts: &[SourcePart],
+        committed: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        // What another agent of the conversation sent, inside this agent's
+        // own framing. The parts are exactly the recorded message.
+        let joined = craftsman_harness::provenance::joined(parts);
+        let fits = matches!(
+            event,
+            FrameworkCommit::Notification | FrameworkCommit::InboxMessage
+        ) && matches!(committed, Msg::User { content } if *content == joined);
+        if !fits {
+            return Err(fault(unbound(inner)));
+        }
+        Ok(SourceRef::new(Arc::new(ViewSource::Envelope(
+            self.held_parts(parts).await?,
+        ))))
+    }
+
     async fn summary_source(
         &self,
         receipt: SourceRef,
@@ -1063,6 +1352,7 @@ impl ModelViewBoundary for ConversationBoundary {
         let Some(received) = receipt
             .downcast::<ReceivedModel>()
             .filter(|received| Arc::ptr_eq(&received.owner, inner))
+            .filter(|received| Arc::ptr_eq(&received.lane, &self.lane))
         else {
             return Err(fault(unbound(inner)));
         };
@@ -1108,9 +1398,11 @@ impl ModelViewBoundary for ConversationBoundary {
         // reply with its calls removed because the round ended without
         // running them. The changes are the agent's own record of what a
         // tracked review did; nothing is worked out from a comparison.
+        // The request it answered was composed for this agent's lane.
         let Some(received) = receipt
             .downcast::<ReceivedModel>()
             .filter(|received| Arc::ptr_eq(&received.owner, inner))
+            .filter(|received| Arc::ptr_eq(&received.lane, &self.lane))
         else {
             return Err(fault(unbound(inner)));
         };
@@ -1153,6 +1445,7 @@ impl ModelViewBoundary for ConversationBoundary {
         let node = CommittedModelNode {
             inner: Arc::new(ModelInner {
                 owner: inner.clone(),
+                lane: self.lane.clone(),
                 message: committed.clone(),
                 received: received.message.clone(),
                 edits: edits.to_vec(),
@@ -1202,6 +1495,7 @@ impl ModelViewBoundary for ConversationBoundary {
         };
         let actual = Arc::new(ActualToolResult {
             owner: self.session.inner.clone(),
+            lane: self.lane.clone(),
             call_id: result.call_id.to_owned(),
             tool: result.tool.to_owned(),
             operation,
@@ -1315,6 +1609,26 @@ impl ModelViewBoundary for ConversationBoundary {
         self.dispatch.lock().unwrap().decided = run;
         Ok(())
     }
+}
+
+/// A receipt for `message` as an agent's own transport would make it, for
+/// the agent whose boundary gave `conversation`. For tests of what a
+/// boundary accepts.
+#[cfg(test)]
+pub(super) fn receipt_for_test(conversation: &SourceRef, message: &Msg) -> SourceRef {
+    let lane = conversation
+        .downcast::<Lane>()
+        .expect("a lane of a session");
+    SourceRef::new(Arc::new(ReceivedModel {
+        owner: lane.owner.clone(),
+        lane,
+        message: message.clone(),
+        request: RequestContext {
+            index: 0,
+            sha256: [0; 32],
+        },
+        native: None,
+    }))
 }
 
 impl std::fmt::Debug for ConversationBoundary {

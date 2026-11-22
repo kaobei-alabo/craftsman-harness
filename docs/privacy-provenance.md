@@ -49,12 +49,11 @@ not detection of everything a model writes or of opaque provider content.
 | Protected repair of tool calls (`patch_tool_calls`) as a recorded change of the received reply | implemented, private; see below |
 | Todo list, memory section, todo reminders, task workflow notes, workspace checkpoints, and the system prompt as sections | implemented, private; see "Normal parts" below |
 | Compaction: automatic, and manual or idle through a typed entry | implemented, private; see "Compaction" below |
-| Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path, which today is never the case outside test fixtures; see below |
-| Delegated agents with `task`, notifications and inbox | not implemented; the middleware is installed in every ordinary session and has no source path, so the build is refused |
-| Verification, context and failure controls, gadget catalog | not implemented; a selection that asks for one is refused |
+| Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path. With the ordinary configuration every installed part has one; see below |
+| Delegated agents with `task`, `send_message`, notifications and inbox | implemented, private; see "Delegated agents" below |
+| Verification, context and failure controls, the model-visible gadget runtime with its catalog | not implemented; a selection that asks for one is refused |
 | Receipts for approval decisions taken inside the approval gate; `ask_user` answers as drafts | not implemented |
 | Terminal ingress, `/clear`, display of replies | not implemented |
-| Verification, context and failure controls, local gadgets | not implemented; a selection that asks for one is refused |
 | Reopening, transferring or rebinding a privacy conversation | refused |
 | Restoration into replies, files and tool arguments | not implemented; separate work |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
@@ -112,6 +111,15 @@ appended, and the boundary is asked for its source afterwards, at the end of
 the entry or before the next request. An ordinary cancellation therefore no
 longer ends a conversation. A boundary that does not know such a message
 refuses, and no later request is composed.
+
+**Messages that arrive with parts.** A notification can be posted with the
+parts its text is made of (`NotificationQueue::push_with_parts`), and a
+delegated agent's inbox takes parts. The receiving agent records the same text
+as always and keeps the parts beside it: for a notification, its own fixed
+framing and the sender's name around what the sender said. The boundary is
+asked through `observe_envelope(event, parts, committed)`. A notification that
+was posted without parts still has no source. Every other receiver of the
+queue sees the notification exactly as before.
 
 **Middleware.** A middleware runs on a selected agent only if its author made a
 statement through `AgentMiddleware::view_support`. Without one, the typed
@@ -179,10 +187,37 @@ implementation that does not override them gets one small function instead of
 a state machine. The test binary of the application is close to a linker limit
 on macOS that these state machines exceeded.
 
+**Delegation.** The framework's side of it is described under "Delegated
+agents". What it adds here:
+
+- `TrackedDispatch::boundary()` and `argument(pointer, text)` give a tool the
+  boundary of the conversation and a part that names the committed reply
+  that asked for the running call. A call that a person changed before it ran
+  is not a call of that reply: the agent gives the tool's outcome no parts
+  that name the call's arguments, and the stored todo list no origins.
+- `ModelViewBoundary::argument_source(part)` resolves such a part while the
+  call runs, `child_boundary(system)` makes a boundary for one delegated
+  agent, and `conversation()` is the boundary's own evidence of which agent
+  it is for. The agent keeps that evidence with every request it composes
+  (`TrackedModelRequest::conversation`), together with whether the request
+  is one it composed for a summarizer (`is_summary`).
+- `PartFrom::Source` and `OutcomePart::Source` name the whole text of
+  something the host already holds a source for. `OutcomePart::Argument` and
+  `OutcomePart::Read` name a string of the call's own arguments and text the
+  tool read from configuration.
+- `Agent::run_task_with_view` runs one delegated task on a selected agent and
+  returns, beside the ordinary result, the source kept beside the message
+  the task ended with.
+
+The three new boundary methods that take the place of an `async fn` are
+written as plain functions that return one shared ready future, like the
+other new defaults.
+
 Still refused on a selected agent because no source-preserving path exists: the
 untyped turn, steering and resume entries, reopening a thread, transferring a
-conversation, idle compaction, a boundary policy, a completion check, system
-text set on the agent, per-round system additions and an inbox.
+conversation, idle compaction through the untyped entry, a boundary policy, a
+completion check, system text set on the agent, per-round system additions and
+the ordinary inbox.
 
 Durable reconciliation of calls whose completion was not recorded keeps every
 slot beside its message.
@@ -192,9 +227,10 @@ slot beside its message.
 The application has the other side of that boundary for one privacy
 conversation, and one provider that uses it.
 
-**Sources.** `PrivacySession::boundary(system)` returns the boundary for the one
-agent of a conversation. A source it hands to the framework is one of these
-private objects:
+**Sources.** `PrivacySession::boundary(system)` returns the boundary for the
+root agent of a conversation, once. A boundary for a delegated agent is made
+only by a boundary of the same conversation. A source it hands to the
+framework is one of these private objects:
 
 | Source | Minted when | Sent as |
 | --- | --- | --- |
@@ -203,6 +239,8 @@ private objects:
 | Tool definition | a tool's description and schema text were captured and admitted | the description's view; the schema as recorded |
 | Tool result | the agent recorded a result; its content was captured and admitted | the content's view |
 | The agent's own message | the agent appended it at a named event; its text was captured and admitted | the text's view |
+| Argument text | a tool handed a string of the running call's arguments to a delegated agent; the string was checked against the committed reply that asked for the call | the text, as the model wrote it |
+| Message with parts | the agent appended a notification or an inbox message that came with parts; each part was checked or admitted | host parts as their views, model parts as the model wrote them |
 
 A committed model node is model-origin text. It is not an admitted node and
 gives no right to restore anything. It keeps the reply as it was received, the
@@ -251,8 +289,12 @@ call and own outcome, the chain's outcome, and the checked operation.
 
 **The agent's own messages.** The fixed results and the closing note are
 captured as host text. A recorded denial is captured as a person's reply,
-because it carries their words. A notification from another agent has no
-source of its own and stops the session.
+because it carries their words. A notification or an inbox message that came
+with parts is held part by part: the framing and the sender's name are host
+text and are admitted, and what a part says is the text of a committed reply
+or of a call's arguments is checked against that reply and kept as model
+text. A notification that came without parts has no source of its own and
+stops the session.
 
 **Checked operations.** Before a call runs, the boundary requires that the last
 committed reply asked for exactly that call, or that a checked decision allowed
@@ -324,12 +366,21 @@ another wire, as before. What differs:
   protocol and credential, as one digest) and the provider's items exactly as
   received, signed and opaque ones included. The items are validated against the reply with the native
   transport's own check and size bound before the receipt exists.
-- Items are sent back only for the reply they were received with, at its
-  position, by a client of the same identity, and only if that reply was
-  committed as received. Then they are sent back exactly; nothing is stripped
-  or reformatted. A reply with no receipt, or with another client's, stops the
-  session before a request exists. A native reply that a review changed is
-  refused with the native transport's own message, as on the ordinary path.
+- Items are sent back only with the reply they were received with, by a
+  client of the same identity, and only if that reply was committed as
+  received. Then they are sent back exactly; nothing is stripped or
+  reformatted. They stay with the reply's node, together with the position
+  and the digest of the request the reply answered, and go back with the
+  reply wherever it stands: a compaction that moves a kept reply does not
+  take its items away. A reply that was committed without the calls it was
+  received with, because the round ended without running them, is sent as
+  its committed text: its items describe calls that never ran. A reply with
+  no receipt, or with another client's, stops the session before a request
+  exists. A native reply that a review changed is refused with the native
+  transport's own message, as on the ordinary path.
+- A request the agent composed for a summarizer is refused by every provider
+  except the summarizer's, and the summarizer's provider refuses every other
+  request; see "Compaction".
 - At most 256 replies with provider items are kept, the native history's bound.
 
 **What a client adds by itself.** The model id, the fixed fields of its wire and
@@ -394,13 +445,22 @@ Then it:
 
 Today the statement exists for the approval gate, the result size limit, the
 protected call repair, the todo list, memory, the todo reminders, compaction,
-the task workflow notes and workspace checkpoints. The delegated-agent
-middleware is installed in every ordinary session and has none. **So no
-privacy session can be built outside tests yet**: a selection made from a real policy is refused
-with the list of those parts. Test fixtures alone use a fixture policy and a
-second constructor, both compiled only into test builds, that leave those
-parts out and name them in one line. Neither is a user policy and neither
-gives a production path.
+the task workflow notes, workspace checkpoints and the delegated agents. With
+the ordinary configuration that is every installed part, so a selection made
+from a policy builds the session with all of them: the same tools, the same
+system text and the same delegated agents as an ordinary session. The builder
+has no way to leave a part out. The earlier test-only selection that left
+parts out and named them is gone.
+
+The model-visible gadget runtime and its catalog still have no source path.
+A frontend asks for them explicitly, and a selection that does is refused
+before anything is built, like one that asks for verification, context or
+failure controls. If a middleware without a statement were installed some
+other way, for the root agent or for a delegated agent, the build would be
+refused and would name it.
+
+The policy itself is still a trait with no implementation outside tests in
+this branch, so nothing can make a selection here.
 
 The session keeps the view. `Session::set_thread_id` on such a session closes
 the privacy owner and changes nothing else; reopening and transfer are refused
@@ -414,11 +474,11 @@ it is accepted, so a draft that cannot be admitted is turned away unchanged and
 the conversation continues. A reason typed with a denial is checked the same
 way. Nothing calls these entries yet.
 
-**In the fixtures.** A fixture session has no delegated agents, so it lacks
-the section the delegated-agent middleware adds to the system text and its
-`task` tool. Reading the checkpoint back
-with an ordinary session returns the real record: nothing in it is redacted or
-encrypted by this work.
+**In the fixtures.** A fixture session is built from a fixture policy through
+the same selection a user's policy would make. Its system text is the ordinary
+session's, byte for byte, the delegated-agent section included. Reading the
+checkpoint back with an ordinary session returns the real record: nothing in
+it is redacted or encrypted by this work.
 
 ## Compaction
 
@@ -433,19 +493,29 @@ anchor. What differs is where the text comes from.
   sources. It has no tools.
 - **The summarizer** is a second provider of the same conversation: the same
   owner and guard, its own usage counter, built by the session builder from
-  the same route. On a native wire it sends earlier replies as their text and
-  calls, never with provider items, as the ordinary summarizer does: its own
-  client never received those replies.
+  the same route.
+- **A summarizer's request is its own kind of request.** The agent marks the
+  request it composes for a summarizer, and only that request reaches the
+  summarizer's view (`PrivacySession::summary_view`). It is a new request
+  made from the sources of the messages to summarize: each reply in it is
+  the text and the calls the agent committed. Provider items are not part of
+  it. They answer the request their reply was received for, and they stay
+  with the reply's node; nothing drops them from the conversation. On a
+  native wire the conversation's own provider refuses a summarizer's request,
+  and the summarizer's provider refuses any other, so a reply is never sent
+  without its items by a provider that would otherwise send them.
 - **The summary** is received with a receipt like any reply. The recorded
   summary message is the application's opening text, the summarizer's text
   and the application's closing text, and its source holds those three apart.
   The summarizer's text is model-origin whatever role the message has: it is
   sent as the summarizer wrote it, and a placeholder in it is neither replaced
   by the original nor masked again.
-- **The kept messages keep their sources.** A reply that a compaction moved to
-  another position is sent as its text and calls from then on, not with its
-  provider items, which is what the native history does with a record whose
-  position no longer matches.
+- **The kept messages keep their sources.** A kept reply keeps its node, and
+  with it the items it was received with, the position it was received for
+  and the digest of the request it answered. On a native wire its items go
+  back with it unchanged at its new position. The ordinary native history
+  drops a record whose position no longer matches; this conversation does
+  not, because the items belong to the reply and not to a position.
 - **Manual and idle compaction** use `Agent::compact_idle_with_view`, reached
   through `PrivacyView::compact`. The conditions are those of the ordinary
   idle compaction: durable checkpoints, no pending approval, exclusive
@@ -454,6 +524,75 @@ anchor. What differs is where the text comes from.
   refused.
 
 Usage of the two lanes stays separate, and nothing is replayed.
+
+## Delegated agents
+
+Delegation on a selected agent does what the ordinary delegation does: the
+same `task` and `send_message` tools with the same definitions, the same
+registry entries, ids, statuses and progress labels, the same limit on
+running agents, the same foreground and background runs, the same
+notification texts, the same file merge and the same recorded conversation.
+What differs is that no text goes from one agent to another as recorded
+text. Where the conversation has no source for a piece, the task is not
+started; nothing falls back to the ordinary path.
+
+- **A lane per agent.** Every agent of a conversation has a boundary of its
+  own: the root agent's, handed out once by the session, and one per
+  delegated task, made by the delegating agent's boundary
+  (`child_boundary`). All of them are the same session: one vault, one set
+  of placeholders, one guard. Each has a lane. A reply is received for the
+  lane of the request it answered and can be committed only by that lane's
+  boundary. A request carries, as its own replies and results, only those of
+  the lane it was composed for. A delegated agent's request never carries a
+  reply of the root agent, or its provider items, and the other way round.
+- **The delegated agent's system text** is its definition's prompt, admitted
+  as host text and kept apart from the root agent's. The agent has no system
+  text of its own.
+- **The task description** is text the model wrote in the `task` call. The
+  tool asks the boundary for its source while the call runs
+  (`argument_source`): the boundary checks it against the committed reply
+  that asked for the call, and it becomes the delegated agent's input as the
+  model wrote it. If a person replaced the arguments at an approval, the
+  description is that person's raw text and is admitted like any other. A
+  call without a description starts the task with an empty input, as always.
+- **The provider.** The session builder gives delegated agents a provider of
+  the same conversation on the configured wire: the same owner and guard,
+  its own usage counter. The progress wrapper around it and around each tool
+  passes the view path through.
+- **What a task ends with.** A foreground task's result is the text of the
+  message the delegated agent ended with. The tool states that with the
+  source its boundary keeps beside that message, and the root agent's
+  boundary checks it: a committed reply of a lane it delegated to, with
+  exactly that text. It is then sent as the model wrote it. A task that ends
+  with its agent's own closing note comes back with that note's source. The
+  tool's other outcomes are host text and are admitted as results: a
+  refusal, the limit, a failure, a suspension. A name the call wrote that
+  the tool repeats, for an unknown agent type or for the recipient of a
+  message, stays text of the call.
+- **Background tasks** post their completion with parts: the reply's source
+  for a finished task, the host's own text for a failure, and for a
+  suspended task the gate's summary, which is the tool's name and the JSON of
+  the parked call's arguments as text of the reply that asked for it. The
+  root agent records the notification inside its own framing, as parts.
+- **Messages.** `send_message` resolves the message like a description and
+  delivers it, as a part, to the inbox of a running delegated agent of this
+  conversation. That agent records it where an ordinary one reads its inbox,
+  before a round's request. A recipient without such an inbox gets nothing,
+  and the tool says so as it always did.
+- **A delegated agent's parts.** Every middleware a delegated agent would get
+  must have made its own statement: the middleware the host installs in each
+  delegated agent, the ones its profile adds, and the policy gate for its
+  listed tools, which has one. If one has none, the delegation middleware
+  makes no statement either and the session is not built.
+- **Bounds.** A message with parts has at most 64 parts and 1 MiB. A
+  conversation makes at most 4096 lanes. The inbox and the notification
+  queue are the existing unbounded channels, drained where they always were.
+  A background task runs as two spawned tasks of one erased type, as the
+  ordinary one runs as two.
+
+What a delegated agent's tools ask a person inline, through the existing
+gate around each delegated tool, is decided as before and recorded as that
+tool's result. There is no decision witness for it yet.
 
 ## Normal parts
 
@@ -470,8 +609,9 @@ How each normal component runs on a selected agent today.
 | Workspace checkpoints | reads recorded messages and writes its own store; changes nothing the agent records, which is checked |
 | Approval gate, result size limit | leave the record alone, which is checked |
 | Compaction | tracked: same trigger, split and record as the ordinary compaction; see "Compaction" |
-| Delegated agents, notifications, inbox | **no path.** Children need the conversation's scope, their own boundary and envelopes for what they return |
-| Verification, context and failure controls, gadget catalog | **no path** |
+| Delegated agents, notifications, inbox | tracked: a lane per agent, the description and messages as text of the call, results and notifications with the source of what the agent ended with; see "Delegated agents" |
+| Verification, context and failure controls | **no path**; a selection that asks for one is refused |
+| Gadget runtime and catalog | **no path**; a selection that asks for it is refused. The catalog records its updates as messages of its own and keeps a key in the custom state; it needs a tracked way to append a host message |
 | Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |
 
 ## Limits that will remain
@@ -482,5 +622,23 @@ How each normal component runs on a selected agent today.
   sent back exactly. If a policy needs to inspect one that cannot be
   inspected, that wire is refused; nothing is stripped or rewritten.
 - A model node is not an admitted node and gives no right to restore anything.
+- A lane is this conversation's own record of which agent a request, a reply
+  or a result belongs to. It is checked where a request is composed and
+  where a reply is committed. It is not the framework's witness of the agent
+  that ran, of what was retained or of how a task ended; those are being
+  added on a separate correction branch, and a delegated agent's task ending
+  is still what the task tool observed.
+- A call a person changed before it ran has no text of its reply. Its result
+  is admitted whole as raw text, and a task description or a message from it
+  is that person's raw text.
+- What a delegated agent's tool asks a person inline is recorded as that
+  tool's result, without a decision witness.
+- A reply committed without the calls it was received with is sent as its
+  committed text on a native wire. Its items stay in its node and are not
+  sent, because they describe calls that never ran.
+- A summarizer on a native wire is asked with the committed text and calls
+  of the replies it summarizes, by design of that request. Whether a
+  provider would accept those replies' items in a request of that shape was
+  not tried here.
 - Vault capacity is fixed at 128 conversations that hold a value, 512 values
   each and 4096 in total, with no retention.

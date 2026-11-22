@@ -21,12 +21,13 @@ It is local, unmerged and not installed.
 | Detector request and reply checks, with a host floor (`privacy_hook`) | implemented, private |
 | Source-pinned detector call on the gadget engine | implemented, private |
 | Admission owner for one conversation (`privacy_session`) | implemented, private |
-| Session builder use of the reserved thread id | implemented, private; selected by nothing, and buildable only in test fixtures until every part has a source path |
+| Session builder use of the reserved thread id | implemented, private; selected by nothing. With the ordinary configuration every installed part has a source path |
 | Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
 | Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
 | Mixed text from the system prompt, todos, memory, reminders and task workflow notes, as parts | implemented, private; see provenance |
 | Compaction summaries, with the summarizer's text kept as model text | implemented, private; see provenance |
-| Mixed text from delegated agents and context controls | not implemented |
+| Mixed text from delegated agents: task descriptions, results, notifications and inbox messages, as parts | implemented, private; see provenance |
+| Mixed text from context controls | not implemented |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |

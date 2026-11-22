@@ -34,7 +34,7 @@ mod view_tests;
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
-pub use transport::{ViewChatProvider, ViewNativeProvider};
+pub use transport::{ViewChatProvider, ViewNativeProvider, delegated_provider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
     NativeReplay, ReceivedModel, SourceField,
@@ -243,8 +243,6 @@ pub struct PrivacyViewSelection {
     policy: Arc<dyn CapturedUserPolicy>,
     session: Arc<PrivacySession>,
     report: Arc<SelectionReport>,
-    #[cfg(test)]
-    fixture_limited_set: bool,
 }
 
 impl PrivacyViewSelection {
@@ -264,8 +262,6 @@ impl PrivacyViewSelection {
             policy,
             session,
             report: Arc::new(SelectionReport::default()),
-            #[cfg(test)]
-            fixture_limited_set: false,
         })
     }
 
@@ -273,18 +269,6 @@ impl PrivacyViewSelection {
     /// selection.
     pub fn report(&self) -> Arc<SelectionReport> {
         self.report.clone()
-    }
-
-    /// Test fixtures only: a selection under a fixture policy that builds
-    /// with the parts that have a source-preserving path and names the
-    /// others to the frontend. Neither exists outside tests.
-    #[cfg(test)]
-    pub(crate) fn fixture_limited_set(session: Arc<PrivacySession>) -> Self {
-        Self {
-            fixture_limited_set: true,
-            ..Self::from_user_policy(Arc::new(FixturePolicy::default()), session)
-                .expect("a live fixture conversation")
-        }
     }
 
     pub(crate) fn session(&self) -> &Arc<PrivacySession> {
@@ -299,19 +283,6 @@ impl PrivacyViewSelection {
 
     pub(crate) fn requires_inspectable_items(&self) -> bool {
         self.policy.requires_inspectable_provider_items()
-    }
-
-    /// Whether parts without a source-preserving path are left out and named
-    /// instead of refusing the build. Never outside tests.
-    pub(crate) fn leaves_out_unadapted_parts(&self) -> bool {
-        #[cfg(test)]
-        {
-            self.fixture_limited_set
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
     }
 }
 

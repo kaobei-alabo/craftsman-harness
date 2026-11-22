@@ -186,6 +186,9 @@ pub struct Agent {
     /// `send_message` delivery lands in-transcript; `None` for a plain
     /// foreground turn.
     inbox: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    /// The inbox of a delegated agent with a source view: what other agents
+    /// of the conversation send it while its task runs, as parts.
+    view_inbox: Arc<Mutex<Option<crate::subagent::ViewInbox>>>,
     /// User messages steering the currently active foreground turn. Messages
     /// are drained at model-round boundaries; a pending steer forces another
     /// model sample even when the previous sample looked final.
@@ -370,6 +373,8 @@ impl Agent {
                 return self.save_boundary_input_error(error).await;
             }
             self.drain_agent_notifications_into_state();
+            // An agent with a source view reads its inbox here, as parts.
+            self.drain_view_inbox_into_state();
             self.save_progress_checkpoint(None).await?;
             let mut working = self.snapshot();
 
@@ -1062,10 +1067,15 @@ impl Agent {
         // `merge_dispatch_result` and the two-channel note atop this module).
         let t0 = self.snapshot();
         let mut working = t0.clone();
-        let reached = self
-            .model_view
-            .as_ref()
-            .map(|_| Arc::new(Mutex::new(DispatchWatch::new(&t0))));
+        // Whether the call runs exactly as its recorded reply wrote it. Text
+        // of the arguments has that reply as its source only then.
+        let written = self.model_view.is_some() && self.asked_as_written(&call);
+        let reached = self.model_view.as_ref().map(|_| {
+            Arc::new(Mutex::new(DispatchWatch::new(
+                &t0,
+                self.dispatch_origin(&call.id),
+            )))
+        });
         let backend = self.backend.clone();
         let tools = self.tools.clone();
         let names = self.tool_names();
@@ -1161,7 +1171,7 @@ impl Agent {
             let dispatched = watched.unwrap_or_default();
             // The stored todo list keeps its origins only when the tool said
             // which of its own arguments it stored.
-            let reply = self.reply_source(view, &call_id);
+            let reply = self.reply_source(view, &call_id).filter(|_| written);
             let stored = self.state.lock().unwrap().todos.len();
             let parts = match &observed {
                 Msg::Tool { content, .. } => {
@@ -1478,7 +1488,10 @@ impl Agent {
         }
         let (user_messages, sources): (Vec<_>, Vec<_>) = messages
             .into_iter()
-            .map(|input| (Msg::user(input.text), input.source))
+            .map(|input| {
+                let slot = input.slot();
+                (Msg::user(input.text), slot)
+            })
             .unzip();
         for message in &user_messages {
             self.journal("user", serde_json::to_value(message).unwrap_or_default());
@@ -1488,7 +1501,7 @@ impl Agent {
         let count = user_messages.len();
         state.messages.extend(user_messages);
         if let Some(view) = &self.model_view {
-            view.note_inputs(sources);
+            view.note_slots(sources);
         }
         (start, count)
     }
@@ -1499,32 +1512,50 @@ impl Agent {
     fn drain_agent_notifications_into_state(&self) -> bool {
         use crate::subagent::NotificationKind;
 
-        let notifications = self.notification_inbox.lock().unwrap().drain();
+        let notifications = self.notification_inbox.lock().unwrap().drain_posted();
         let messages = notifications
             .into_iter()
-            .filter(|notification| notification.to == self.name)
-            .map(|notification| match notification.kind {
-                NotificationKind::Completed(text) => format!(
-                    "[background agent '{}' completed]
+            .filter(|(notification, _)| notification.to == self.name)
+            .map(|(notification, parts)| {
+                // On an agent with a source view, a notification that came
+                // with parts is recorded with them around the same text.
+                let envelope = match (&self.model_view, parts) {
+                    (Some(_), Some(parts)) => {
+                        Some(model_view::notification_envelope(&notification, &parts))
+                    }
+                    _ => None,
+                };
+                let text = match notification.kind {
+                    NotificationKind::Completed(text) => format!(
+                        "[background agent '{}' completed]
 {}",
-                    notification.from, text
-                ),
-                NotificationKind::Message(message) => format!(
-                    "[message from agent '{}']
+                        notification.from, text
+                    ),
+                    NotificationKind::Message(message) => format!(
+                        "[message from agent '{}']
 {}",
-                    notification.from, message
-                ),
-                NotificationKind::NeedsApproval(suspension) => format!(
-                    "[background agent '{}' is waiting for approval]
+                        notification.from, message
+                    ),
+                    NotificationKind::NeedsApproval(suspension) => format!(
+                        "[background agent '{}' is waiting for approval]
 {}",
-                    notification.from, suspension.request.summary
-                ),
+                        notification.from, suspension.request.summary
+                    ),
+                };
+                match envelope {
+                    Some(parts) => QueuedInput::enveloped(
+                        text,
+                        crate::provenance::FrameworkCommit::Notification,
+                        parts,
+                    ),
+                    None => QueuedInput::plain(text),
+                }
             })
             .collect::<Vec<_>>();
         if messages.is_empty() {
             return false;
         }
-        self.append_steering_messages(messages.into_iter().map(QueuedInput::plain).collect());
+        self.append_steering_messages(messages);
         if let Some(policy) = &self.boundary_policy {
             policy.runtime_input();
         }
@@ -2196,6 +2227,7 @@ impl AgentBuilder {
             pending: Arc::new(Mutex::new(None)),
             parked_suspension: Arc::new(Mutex::new(None)),
             inbox: Arc::new(Mutex::new(None)),
+            view_inbox: Arc::new(Mutex::new(None)),
             turn_input: Arc::new(Mutex::new(TurnInputState::default())),
             model_cancel: Arc::new(tokio::sync::Notify::new()),
             checkpointer: self.checkpointer,
@@ -2215,11 +2247,16 @@ mod idle_compaction;
 #[path = "agent_model_view.rs"]
 mod model_view;
 use crate::provenance::FrameworkCommit;
+pub use model_view::TrackedTask;
 use model_view::{DispatchWatch, ModelView, QueuedInput};
 
 #[cfg(test)]
 #[path = "agent_model_view_tests.rs"]
 mod model_view_tests;
+
+#[cfg(test)]
+#[path = "agent_model_view_delegation_tests.rs"]
+mod model_view_delegation_tests;
 
 #[cfg(test)]
 #[path = "agent_boundary_tests.rs"]
