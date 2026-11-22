@@ -128,7 +128,7 @@ impl CaptureBuildOwner {
     }
 }
 
-struct CancelPrompt(tokio::task::JoinHandle<()>);
+pub(super) struct CancelPrompt(tokio::task::JoinHandle<()>);
 impl Drop for CancelPrompt {
     fn drop(&mut self) {
         self.0.abort();

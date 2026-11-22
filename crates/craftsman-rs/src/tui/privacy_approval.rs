@@ -15,7 +15,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 use std::cell::Cell;
 use std::sync::{Arc, mpsc};
@@ -110,6 +110,7 @@ pub(super) struct PrivacyApprovalModal {
     feedback: String,
     edit: String,
     input_refused: bool,
+    review_drawn: Cell<bool>,
 }
 impl std::fmt::Debug for PrivacyApprovalModal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -163,6 +164,7 @@ impl PrivacyApprovalModal {
             feedback: String::new(),
             edit: String::new(),
             input_refused: false,
+            review_drawn: Cell::new(false),
         })
     }
     pub(super) fn cancel(&self) {
@@ -206,7 +208,21 @@ impl PrivacyApprovalModal {
         input.push_str(text);
         self.input_refused = false;
     }
-    pub(super) fn render(&self, frame: &mut Frame<'_>, area: Rect) {
+    pub(super) fn render(&self, frame: &mut Frame<'_>, _area: Rect) {
+        let outer = frame.area();
+        let area = Rect::new(
+            outer.x.saturating_add(1),
+            outer.y.saturating_add(1),
+            outer.width.saturating_sub(2),
+            outer.height.saturating_sub(2),
+        );
+        frame.render_widget(Clear, area);
+        if area.height < 12 || area.width < 24 {
+            self.review_drawn.set(false);
+            frame.render_widget(Paragraph::new("Enlarge the terminal to review this operation. Escape or Ctrl-C still refuses it."), area);
+            return;
+        }
+        self.review_drawn.set(true);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(3), Constraint::Length(7)])
@@ -363,6 +379,17 @@ pub(super) fn key(app: &mut App, key: KeyEvent) {
         _ => {}
     }
     if let Some(choice) = choice {
+        if matches!(
+            choice,
+            HumanChoice::Approve | HumanChoice::ApproveAlways | HumanChoice::Edit(_)
+        ) && !modal.review_drawn.get()
+        {
+            // An already queued Enter/F2 is not a positive decision on a
+            // review that this actual receiver has not drawn. Denial/cancel
+            // remains available; no caller readiness flag is consulted.
+            app.dirty = true;
+            return;
+        }
         if let Some(Modal::PrivacyApproval(modal)) = app.modal.take() {
             if !modal.answer(choice) {
                 app.push_error("The private approval answer was not accepted; this operation was not approved.");
