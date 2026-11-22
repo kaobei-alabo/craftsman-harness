@@ -398,35 +398,7 @@ impl Frontend {
 
     pub(super) async fn run(&mut self) -> Result<i32, PrivateTerminalError> {
         let result = self.loop_inner().await;
-        // Close real sampling/dispatch owners BEFORE any queued prompt wakes.
-        self.owner.close();
-        self.cancellation.cancel();
-        if let Some(session) = self.session() {
-            session.agent.request_cancel();
-        }
-        self.app.closing = true;
-        self.receiver.close();
-        self.app.cancel_pending_prompts();
-        while let Ok(event) = self.receiver.try_recv() {
-            self.events(event);
-        }
-        let cleanup = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut failed = false;
-            while let Some(returned) = self.work.join_next().await {
-                match returned {
-                    Ok(returned) => self.returned(returned),
-                    Err(_) => failed = true,
-                }
-            }
-            if let Some(session) = self.session() {
-                for join in session.registry.take_background_joins() {
-                    failed |= join.await.is_err();
-                }
-                session.lsp.shutdown().await;
-            }
-            !failed
-        })
-        .await;
+        let cleanup = self.retire_owners().await;
         if !matches!(cleanup, Ok(true)) {
             return Err(match result {
                 Err(primary) => PrivateTerminalError::CleanupAfter(Box::new(primary)),
@@ -447,6 +419,39 @@ impl Frontend {
                 Ok(code)
             }
         }
+    }
+    /// Actual cleanup half shared by exit and the pending fresh-clear path.
+    /// No reader relinquishment or unlock is implied by its return.
+    async fn retire_owners(&mut self) -> Result<bool, tokio::time::error::Elapsed> {
+        // Close real sampling/dispatch owners BEFORE any queued prompt wakes.
+        self.owner.close();
+        self.cancellation.cancel();
+        if let Some(session) = self.session() {
+            session.agent.request_cancel();
+        }
+        self.app.closing = true;
+        self.receiver.close();
+        self.app.cancel_pending_prompts();
+        while let Ok(event) = self.receiver.try_recv() {
+            self.events(event);
+        }
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut failed = false;
+            while let Some(returned) = self.work.join_next().await {
+                match returned {
+                    Ok(returned) => self.returned(returned),
+                    Err(_) => failed = true,
+                }
+            }
+            if let Some(session) = self.session() {
+                for join in session.registry.take_background_joins() {
+                    failed |= join.await.is_err();
+                }
+                session.lsp.shutdown().await;
+            }
+            !failed
+        })
+        .await
     }
     async fn loop_inner(&mut self) -> Result<i32, PrivateTerminalError> {
         let mut tick = tokio::time::interval(Duration::from_millis(16));
