@@ -387,6 +387,9 @@ pub(super) fn key(app: &mut App, key: KeyEvent) {
             // An already queued Enter/F2 is not a positive decision on a
             // review that this actual receiver has not drawn. Denial/cancel
             // remains available; no caller readiness flag is consulted.
+            if let HumanChoice::Edit(raw) = choice {
+                modal.edit = raw;
+            }
             app.dirty = true;
             return;
         }

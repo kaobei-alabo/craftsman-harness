@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::Notify;
+#[cfg(feature = "gadgets")]
+mod entry_tests;
 
 const HELPER: &str = "tui::privacy_unlock::native::private_key_ui_fixture";
 const MARKER: &str = "craftsman-private-key-ui=";
@@ -66,6 +68,8 @@ enum Case {
     Conversation,
     #[cfg(feature = "gadgets")]
     Unapproved,
+    #[cfg(feature = "gadgets")]
+    FullEntry,
 }
 impl Case {
     fn name(self) -> &'static str {
@@ -89,6 +93,8 @@ impl Case {
             Self::Conversation => "conversation",
             #[cfg(feature = "gadgets")]
             Self::Unapproved => "unapproved",
+            #[cfg(feature = "gadgets")]
+            Self::FullEntry => "full-entry",
         }
     }
     fn selected(arguments: impl Iterator<Item = std::ffi::OsString>) -> Option<Self> {
@@ -129,6 +135,8 @@ impl Case {
             "conversation" => Self::Conversation,
             #[cfg(feature = "gadgets")]
             "unapproved" => Self::Unapproved,
+            #[cfg(feature = "gadgets")]
+            "full-entry" => Self::FullEntry,
             _ => return None,
         })
     }
@@ -144,6 +152,11 @@ fn private_key_ui_fixture() {
 }
 
 async fn private_key_ui_child(case: Case) {
+    #[cfg(feature = "gadgets")]
+    if matches!(case, Case::FullEntry) {
+        entry_tests::run_child().await;
+        return;
+    }
     // Every environment, path, configuration and terminal access is AFTER the
     // complete marker decision. Unmarked/unknown/duplicate startup is inert.
     let config = crate::config::config_dir();
@@ -161,6 +174,8 @@ async fn private_key_ui_child(case: Case) {
     let presence = operations.status().unwrap();
     let mut terminal = OwnedSecretTerminal::enter().unwrap();
     match case {
+        #[cfg(feature = "gadgets")]
+        Case::FullEntry => unreachable!("full entry dispatched before ordinary popup fixture"),
         Case::Init | Case::TailInit => {
             assert_eq!(presence, FilePresence::Missing);
             let unlocked = terminal.initialize(&operations).await.unwrap();
