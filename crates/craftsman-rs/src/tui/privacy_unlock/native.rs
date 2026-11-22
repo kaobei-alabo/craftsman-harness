@@ -29,12 +29,20 @@ const CAPTURE: usize = 1024 * 1024;
 // avoids duplicating its generic runtime scaffolding in the app test binary;
 // it changes no existing test, deadline, compiler option or limit.
 fn run_owned(future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .expect("owned secret fixture runtime")
-        .block_on(future);
+        .expect("owned secret fixture runtime");
+    // Match the erased type the locked Tokio test macro gives block_on.
+    // Each invocation still owns its independent two-thread runtime. Keep
+    // its context through future Drop, including unwind, and drop the pinned
+    // adapter before this runtime; no reader or key work is detached.
+    let _context = runtime.enter();
+    let body = async move { future.await };
+    tokio::pin!(body);
+    let body: std::pin::Pin<&mut dyn std::future::Future<Output = ()>> = body;
+    runtime.block_on(body);
 }
 
 #[derive(Clone, Copy)]
