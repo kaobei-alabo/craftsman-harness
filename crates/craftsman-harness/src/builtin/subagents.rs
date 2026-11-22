@@ -38,11 +38,28 @@
 //! spliced into the current one. Two background `task`s of the same
 //! `subagent_type` are registered under distinct ids (`type#N`).
 
+//!
+//! ## On an agent with a source view
+//!
+//! Both tools have a view call and the middleware adds its section as parts.
+//! A task then runs on an agent with a boundary of the same conversation,
+//! made by the delegating agent's boundary. The description and a message
+//! reach the other agent as text of the call with its source, a task's
+//! result and a background notification carry the source of the message the
+//! task ended with, and the inbox takes parts. Registry entries, ids,
+//! statuses, progress labels, the limit and every recorded text are the
+//! same. Nothing is handed over as recorded text: where the conversation has
+//! no source for a piece, the task is not started.
+
 use crate::Agent;
 use crate::builtin::HitlPolicyMiddleware;
 use crate::error::AgentError;
 use crate::middleware::AgentMiddleware;
 use crate::model::{ModelProvider, ModelRequest, ModelResponse, ToolDef};
+use crate::provenance::{
+    ModelDelivery, ModelViewBoundary, OutcomePart, PartFrom, SourcePart, SourceRef,
+    TrackedDispatch, TrackedModelRequest, TrackedPrepare, ViewSupport,
+};
 use crate::state::AgentState;
 use crate::subagent::{
     AgentEntry, AgentHandle, AgentStatus, Notification, NotificationKind, SubAgentSpec, TaskResult,
@@ -50,8 +67,8 @@ use crate::subagent::{
 use crate::tool::{Tool, ToolCtx, ToolOutcome};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Default cap on concurrently-running delegated agents (foreground or background).
 const DEFAULT_MAX_BACKGROUND: usize = 5;
@@ -103,7 +120,21 @@ struct SubAgentInner {
     /// two background `task`s of the same `subagent_type` don't collide on one
     /// registry key.
     spawn_seq: AtomicUsize,
+    /// Each spec's system text as one owned piece, for a delegated agent
+    /// with a source view.
+    prompts: Vec<(String, Arc<str>)>,
+    /// The section this middleware adds to the system text, as parts. It is
+    /// built once, so that every round hands over the same owned pieces.
+    section: OnceLock<Vec<SourcePart>>,
 }
+
+/// A fixed piece of this module's own text, as one owned object.
+fn piece(cell: &'static OnceLock<Arc<str>>, text: &'static str) -> Arc<str> {
+    cell.get_or_init(|| Arc::from(text)).clone()
+}
+
+/// What a spawned task runs as: one type for every such task.
+type ErasedTask = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 impl SubAgentInner {
     /// Backtick-wrapped, comma-joined, sorted subagent names — for prompts and
@@ -140,6 +171,17 @@ impl ModelProvider for ProgressModel {
             .set_progress(&self.task_id, format!("thinking · round {round}"));
         self.inner.complete(req).await
     }
+
+    /// The same label, and the provider's own view path.
+    async fn complete_with_view(
+        &self,
+        req: TrackedModelRequest,
+    ) -> Result<ModelDelivery, AgentError> {
+        let round = self.round.fetch_add(1, Ordering::Relaxed) + 1;
+        self.registry
+            .set_progress(&self.task_id, format!("thinking · round {round}"));
+        self.inner.complete_with_view(req).await
+    }
 }
 
 struct ProgressTool {
@@ -163,6 +205,22 @@ impl Tool for ProgressTool {
         self.registry
             .set_progress(&self.task_id, format!("using {name}"));
         let outcome = self.inner.call(args, ctx).await;
+        self.registry
+            .set_progress(&self.task_id, format!("reviewing {name} result"));
+        outcome
+    }
+
+    /// The same labels, and the tool's own view call.
+    async fn call_with_view(
+        &self,
+        args: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        let name = self.inner.def().name;
+        self.registry
+            .set_progress(&self.task_id, format!("using {name}"));
+        let outcome = self.inner.call_with_view(args, ctx, tracked).await;
         self.registry
             .set_progress(&self.task_id, format!("reviewing {name} result"));
         outcome
@@ -193,6 +251,20 @@ fn compile(
     registry: Arc<crate::subagent::AgentRegistry>,
     child_middleware: &[Arc<dyn AgentMiddleware>],
 ) -> Arc<dyn AgentHandle> {
+    Arc::new(child(spec, task_id, registry, child_middleware, None, None))
+}
+
+/// The agent of one task. With `view`, it is an agent with that source view
+/// boundary: its system text is the boundary's, and it has none of its own.
+/// Everything else is the same.
+fn child(
+    spec: &SubAgentSpec,
+    task_id: &str,
+    registry: Arc<crate::subagent::AgentRegistry>,
+    child_middleware: &[Arc<dyn AgentMiddleware>],
+    view: Option<Arc<dyn ModelViewBoundary>>,
+    parent: Option<crate::provenance::ActualToolInvocation>,
+) -> Agent {
     let model = spec
         .model
         .clone()
@@ -205,8 +277,17 @@ fn compile(
     });
     let mut builder = Agent::builder(model)
         .name(spec.name.clone())
-        .system_prompt(spec.system_prompt.clone())
         .registry(registry.clone());
+    builder = match view {
+        Some(boundary) => {
+            let builder = builder.model_view_boundary(Some(boundary));
+            match parent {
+                Some(parent) => builder.task_parent(parent),
+                None => builder,
+            }
+        }
+        None => builder.system_prompt(spec.system_prompt.clone()),
+    };
     if let Some(turn) = crate::TurnCancellation::current() {
         builder = builder
             .interrupt_model_on_cancel(true)
@@ -242,7 +323,7 @@ fn compile(
             spec.name.clone(),
         )));
     }
-    Arc::new(builder.build())
+    builder.build()
 }
 
 impl SubAgentMiddleware {
@@ -255,6 +336,10 @@ impl SubAgentMiddleware {
             .into_iter()
             .map(|s| (s.name.clone(), Arc::new(s)))
             .collect();
+        let mut prompts = Vec::with_capacity(specs.len());
+        for (name, spec) in &specs {
+            prompts.push((name.clone(), Arc::from(spec.system_prompt.as_str())));
+        }
         Self {
             inner: Arc::new(SubAgentInner {
                 child_middleware: Vec::new(),
@@ -262,6 +347,8 @@ impl SubAgentMiddleware {
                 agent_name: "agent".into(),
                 max_background: DEFAULT_MAX_BACKGROUND,
                 spawn_seq: AtomicUsize::new(0),
+                prompts,
+                section: OnceLock::new(),
             }),
         }
     }
@@ -333,6 +420,82 @@ impl AgentMiddleware for SubAgentMiddleware {
         ));
         st.system_extras.push(section);
         Ok(())
+    }
+
+    /// On an agent with a source view the same section is added as parts,
+    /// and both tools take their view calls. A task runs on an agent with a
+    /// boundary of the same conversation, so every middleware a delegated
+    /// agent would get must have made its own statement: without that, this
+    /// middleware makes none.
+    fn view_support(&self) -> ViewSupport {
+        let stated = |middleware: &Arc<dyn AgentMiddleware>| {
+            matches!(
+                middleware.view_support(),
+                ViewSupport::Preserving | ViewSupport::Tracked
+            )
+        };
+        for middleware in &self.inner.child_middleware {
+            if !stated(middleware) {
+                return ViewSupport::Unadapted;
+            }
+        }
+        for spec in self.inner.specs.values() {
+            let Some(profile) = &spec.harness_profile else {
+                continue;
+            };
+            for middleware in profile.materialize_extra_middleware() {
+                if !profile
+                    .config
+                    .excluded_middleware
+                    .contains(middleware.name())
+                    && !stated(&middleware)
+                {
+                    return ViewSupport::Unadapted;
+                }
+            }
+        }
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        if self.inner.specs.is_empty() {
+            return Ok(());
+        }
+        let section = self.inner.section.get_or_init(|| {
+            // The text of `prepare_model`, piece by piece: the application's
+            // own words, and what the configuration says about each agent
+            // and about the limit.
+            let mut listing: Vec<(&str, &str)> = self
+                .inner
+                .specs
+                .iter()
+                .map(|(name, spec)| (name.as_str(), spec.description.as_str()))
+                .collect();
+            listing.sort_by(|a, b| a.0.cmp(b.0));
+            let mut available = String::new();
+            for (name, desc) in listing {
+                available.push_str(&format!("- {name}: {desc}\n"));
+            }
+            let (before, after) = TASK_TOOL_DESCRIPTION
+                .split_once("{available_agents}")
+                .unwrap_or((TASK_TOOL_DESCRIPTION, ""));
+            vec![
+                SourcePart::fixed(Arc::from(before)),
+                SourcePart::read("delegated agents", Arc::from(available.trim_end())),
+                SourcePart::fixed(Arc::from(format!("{after}\n6. No more than "))),
+                SourcePart::read(
+                    "delegated agent limit",
+                    Arc::from(self.inner.max_background.to_string()),
+                ),
+                SourcePart::fixed(Arc::from(
+                    " delegated agents may run concurrently; wait for a running task to finish before launching another.",
+                )),
+            ]
+        });
+        prepare.add_system(section.clone())
     }
 }
 
@@ -457,6 +620,312 @@ impl Tool for TaskTool {
             )
             .await)
     }
+
+    /// The same task on an agent with a source view. The delegated agent
+    /// gets a boundary of the same conversation, the description goes to it
+    /// as the text the call wrote, and what it ends with comes back with its
+    /// source. Nothing is passed on as recorded text: where the conversation
+    /// has no source for a piece, the task is not started.
+    async fn call_with_view(
+        &self,
+        args: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        let Some(boundary) = tracked.boundary() else {
+            return Ok(ToolOutcome::err(
+                "This conversation has no source for the reply that asked for this task.",
+            ));
+        };
+        if crate::TurnCancellation::current().is_some_and(|turn| turn.is_cancelled()) {
+            let mut meta = crate::ToolMeta::new();
+            meta.error_kind = Some(crate::ToolErrorKind::Cancelled);
+            return Ok(ToolOutcome::err("Task cancelled before startup.").with_meta(meta));
+        }
+        let described = args.get("description").and_then(|v| v.as_str());
+        let description = described.unwrap_or("").to_string();
+        let named = args.get("subagent_type").and_then(|v| v.as_str());
+        let subagent_type = named.unwrap_or("").to_string();
+        let run_in_background = args
+            .get("run_in_background")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let Some(spec) = self.inner.specs.get(&subagent_type) else {
+            static OPEN: OnceLock<Arc<str>> = OnceLock::new();
+            static CLOSE: OnceLock<Arc<str>> = OnceLock::new();
+            let allowed = self.inner.allowed();
+            let outcome = ToolOutcome::ok(format!(
+                "We cannot invoke subagent {subagent_type} because it does not exist, the only allowed types are {allowed}"
+            ));
+            // The name is the call's own text; the rest is the tool's.
+            let mut parts = vec![OutcomePart::Fixed(piece(
+                &OPEN,
+                "We cannot invoke subagent ",
+            ))];
+            if named.is_some() {
+                parts.push(OutcomePart::Argument {
+                    pointer: "/subagent_type".into(),
+                    text: Arc::from(subagent_type.as_str()),
+                });
+            }
+            parts.push(OutcomePart::Fixed(piece(
+                &CLOSE,
+                " because it does not exist, the only allowed types are ",
+            )));
+            parts.push(OutcomePart::Read {
+                what: "delegated agents".into(),
+                text: Arc::from(allowed),
+            });
+            tracked.outcome_is(parts);
+            return Ok(outcome);
+        };
+        let running = ctx
+            .registry
+            .list()
+            .iter()
+            .filter(|(_, status)| *status == AgentStatus::Running)
+            .count();
+        if running >= self.inner.max_background {
+            return Ok(ToolOutcome::err(format!(
+                "delegated-agent capacity reached ({running}/{} running); wait for an existing task to finish before starting another",
+                self.inner.max_background
+            )));
+        }
+
+        let n = self.inner.spawn_seq.fetch_add(1, Ordering::Relaxed);
+        let unique_id = format!("{subagent_type}#{n}");
+        // The description is the text this call wrote. A call without one
+        // starts the task with an empty input, as it always did.
+        static EMPTY: OnceLock<Arc<str>> = OnceLock::new();
+        let input = match described.and_then(|text| tracked.argument("/description", text.into())) {
+            Some(part) => {
+                boundary
+                    .argument_source_for(
+                        tracked.invocation().ok_or_else(|| {
+                            AgentError::State(
+                                "A delegated operation has no actual terminal invocation.".into(),
+                            )
+                        })?,
+                        &part,
+                    )
+                    .await?
+            }
+            None => {
+                boundary
+                    .host_message(&SourcePart::fixed(piece(&EMPTY, "")))
+                    .await?
+            }
+        };
+        // The delegated agent's own system text, kept apart from this
+        // agent's, as host text read from its definition.
+        let mut system = Vec::new();
+        for (name, prompt) in &self.inner.prompts {
+            if *name == subagent_type && !prompt.is_empty() {
+                system.push(SourcePart::read("delegated agent prompt", prompt.clone()));
+            }
+        }
+        let invocation = tracked.invocation().ok_or_else(|| {
+            AgentError::State("A delegated operation has no actual terminal invocation.".into())
+        })?;
+        let view = boundary.child_boundary_for(invocation, &system).await?;
+        let agent = Arc::new(child(
+            spec,
+            &unique_id,
+            ctx.registry.clone(),
+            &self.inner.child_middleware,
+            Some(view),
+            Some(invocation.clone()),
+        ));
+        let inherited = ctx.state.clone();
+
+        if run_in_background {
+            return Ok(self.spawn_background_with_view(
+                &subagent_type,
+                TaskWithView {
+                    unique_id,
+                    description,
+                    input,
+                    inherited,
+                    agent,
+                    tracked: tracked.clone(),
+                },
+                ctx,
+            ));
+        }
+
+        ctx.registry.insert(&unique_id, AgentStatus::Running);
+        ctx.registry
+            .set_progress(&unique_id, task_preview(&description));
+        let returned = agent
+            .run_task_with_view(&description, input, inherited, None)
+            .await;
+        if let Some(actual) = agent
+            .actual_task_returns()
+            .and_then(|facts| facts.last().cloned())
+        {
+            tracked.retain_task_return(&actual);
+        }
+        let (result, reply) = match returned {
+            Ok(task) => (Ok(task.result), task.reply),
+            Err(error) => (Err(error), None),
+        };
+        if let (Ok(TaskResult::Done(outcome)), Some(reply)) = (&result, reply) {
+            // The final text is the text of the message the delegated agent
+            // ended with, and comes back as that.
+            tracked.outcome_is(vec![OutcomePart::Source {
+                source: reply,
+                text: Arc::from(outcome.final_text.as_str()),
+            }]);
+        }
+        Ok(foreground_end(&subagent_type, &unique_id, result, ctx))
+    }
+}
+
+/// One task that is about to run on an agent with a source view.
+struct TaskWithView {
+    unique_id: String,
+    description: String,
+    /// The source of the description, which is the agent's input.
+    input: SourceRef,
+    inherited: AgentState,
+    agent: Arc<Agent>,
+    tracked: TrackedDispatch,
+}
+
+/// What a foreground task of an agent with a source view comes back as:
+/// the bookkeeping and the outcome of `run_foreground`.
+fn foreground_end(
+    subagent_type: &str,
+    task_id: &str,
+    result: Result<TaskResult, AgentError>,
+    ctx: &mut ToolCtx<'_>,
+) -> ToolOutcome {
+    match result {
+        Ok(TaskResult::Done(outcome)) => {
+            let cancelled =
+                crate::TurnCancellation::current().is_some_and(|turn| turn.is_cancelled());
+            ctx.registry
+                .set_progress(task_id, if cancelled { "cancelled" } else { "completed" });
+            ctx.registry.set_status(
+                task_id,
+                if cancelled {
+                    AgentStatus::Failed
+                } else {
+                    AgentStatus::Done
+                },
+            );
+            for (k, v) in outcome.state_updates.files {
+                ctx.state.files.insert(k, v);
+            }
+            if cancelled {
+                let mut meta = crate::ToolMeta::new();
+                meta.error_kind = Some(crate::ToolErrorKind::Cancelled);
+                ToolOutcome::err(outcome.final_text).with_meta(meta)
+            } else {
+                ToolOutcome::ok(outcome.final_text)
+            }
+        }
+        Ok(TaskResult::Suspended(_)) => {
+            ctx.registry.set_progress(task_id, "waiting for approval");
+            ctx.registry.set_status(task_id, AgentStatus::Suspended);
+            ToolOutcome::err(format!(
+                "subagent {subagent_type} requires approval for a gated tool; \
+                 run it in the background (run_in_background=true) so the approval \
+                 can be surfaced, or approve interactively (not yet supported foreground)"
+            ))
+        }
+        Err(e) => {
+            ctx.registry.set_progress(task_id, format!("failed · {e}"));
+            ctx.registry.set_status(task_id, AgentStatus::Failed);
+            ToolOutcome::err(format!("subagent {subagent_type} failed: {e}"))
+        }
+    }
+}
+
+/// How a background task of an agent with a source view ended: the kind of
+/// its notification, the registry status, and the parts the notification's
+/// text is made of. `joined` is `Err(panicked)` when the task did not return.
+fn background_end(
+    joined: Result<Result<crate::agent::TrackedTask, AgentError>, bool>,
+    cancelled: bool,
+    spawn_name: &str,
+) -> (NotificationKind, AgentStatus, Option<Vec<SourcePart>>) {
+    let failed = |text: String| {
+        // The host's own account of a failure.
+        let parts = vec![SourcePart::read(
+            "delegated agent failure",
+            Arc::from(text.as_str()),
+        )];
+        (
+            NotificationKind::Completed(text),
+            AgentStatus::Failed,
+            Some(parts),
+        )
+    };
+    match joined {
+        Ok(Ok(task)) => match task.result {
+            TaskResult::Done(outcome) => {
+                // The text of the message the agent ended with, as that.
+                let parts = task.reply.map(|source| {
+                    vec![SourcePart::of_source(
+                        source,
+                        Arc::from(outcome.final_text.as_str()),
+                    )]
+                });
+                let status = if cancelled {
+                    AgentStatus::Failed
+                } else {
+                    AgentStatus::Done
+                };
+                (
+                    NotificationKind::Completed(outcome.final_text),
+                    status,
+                    parts,
+                )
+            }
+            TaskResult::Suspended(suspension) => {
+                let call = &suspension.request.tool_call;
+                let summary = &suspension.request.summary;
+                let arguments = call.args.to_string();
+                // The policy gate's summary is the tool's name and the JSON
+                // of the call's arguments. Those arguments are text of the
+                // reply that asked for the call. Any other summary is the
+                // host's own text.
+                let parts = match task.reply {
+                    Some(reply) if *summary == format!("{} {arguments}", call.name) => {
+                        static BETWEEN: OnceLock<Arc<str>> = OnceLock::new();
+                        vec![
+                            SourcePart::read("tool name", Arc::from(call.name.as_str())),
+                            SourcePart::fixed(piece(&BETWEEN, " ")),
+                            SourcePart {
+                                text: Arc::from(arguments),
+                                from: PartFrom::CallJson {
+                                    reply,
+                                    call_id: call.id.clone(),
+                                    pointer: String::new(),
+                                },
+                            },
+                        ]
+                    }
+                    _ => vec![SourcePart::read(
+                        "approval request",
+                        Arc::from(summary.as_str()),
+                    )],
+                };
+                (
+                    NotificationKind::NeedsApproval(suspension),
+                    AgentStatus::Suspended,
+                    Some(parts),
+                )
+            }
+        },
+        Ok(Err(e)) => failed(format!("subagent {spawn_name} failed: {e}")),
+        Err(panicked) => failed(format!(
+            "subagent {spawn_name} failed: {}",
+            if panicked { "panicked" } else { "cancelled" }
+        )),
+    }
 }
 
 impl TaskTool {
@@ -563,16 +1032,28 @@ impl TaskTool {
         // cancel a running background agent. The child runs on an INNER task
         // whose JoinHandle the outer task awaits: a panic anywhere in the child
         // still surfaces as a join error and finalizes the registry entry.
-        let join = tokio::spawn(async move {
+        //
+        // Both tasks are spawned as the one erased type every background
+        // task of this module uses, so the inner task leaves its result in a
+        // slot instead of returning it.
+        let outer: ErasedTask = Box::pin(async move {
             let child_cancellation = cancellation.clone();
-            let mut child = AbortOnDrop::new(tokio::spawn(async move {
+            let finished = Arc::new(Mutex::new(None));
+            let slot = finished.clone();
+            let inner: ErasedTask = Box::pin(async move {
                 let work = handle.run_task_with_inbox(&description, inherited, Some(inbox_rx));
-                match child_cancellation {
+                let result = match child_cancellation {
                     Some(turn) => turn.scope(work).await,
                     None => work.await,
-                }
-            }));
-            let (kind, status) = match child.join().await {
+                };
+                *slot.lock().unwrap() = Some(result);
+            });
+            let mut child = AbortOnDrop::new(tokio::spawn(inner));
+            let joined = child.join().await.map(|()| {
+                let result = finished.lock().unwrap().take();
+                result.expect("a task that returned left its result")
+            });
+            let (kind, status) = match joined {
                 Ok(Ok(TaskResult::Done(outcome)))
                     if cancellation
                         .as_ref()
@@ -630,6 +1111,103 @@ impl TaskTool {
                 kind,
             });
         });
+        let join = tokio::spawn(outer);
+        ctx.registry.set_join(&unique_id, join);
+
+        ToolOutcome::ok(format!(
+            "Started background agent '{unique_id}' (type: {subagent_type}). \
+             You will be notified when it completes."
+        ))
+    }
+}
+
+impl TaskTool {
+    /// [`spawn_background`](Self::spawn_background) for an agent with a
+    /// source view: the same registration before the spawn, the same two
+    /// tasks, the same statuses and the same notification. The inbox takes
+    /// parts, and the notification carries the parts its text is made of.
+    fn spawn_background_with_view(
+        &self,
+        subagent_type: &str,
+        task: TaskWithView,
+        ctx: &mut ToolCtx<'_>,
+    ) -> ToolOutcome {
+        let TaskWithView {
+            unique_id,
+            description,
+            input,
+            inherited,
+            agent,
+            tracked,
+        } = task;
+        let registry = ctx.registry.clone();
+        let notifications = ctx.notifications.clone();
+        let inbox = crate::subagent::ViewInbox::default();
+        let cancellation = crate::TurnCancellation::current().map(|turn| turn.background());
+        ctx.registry.insert_cancellable_entry(
+            unique_id.clone(),
+            AgentEntry {
+                status: AgentStatus::Running,
+                progress: task_preview(&description),
+                join: None,
+                inbox: None,
+            },
+            cancellation.clone(),
+        );
+        ctx.registry.set_view_inbox(&unique_id, inbox.clone());
+
+        let spawn_name = unique_id.clone();
+        let parent_name = self.inner.agent_name.clone();
+        // The task's result travels in a slot, so that both tasks are of the
+        // one erased type.
+        let finished = Arc::new(Mutex::new(None));
+        let slot = finished.clone();
+        let child_cancellation = cancellation.clone();
+        let work: ErasedTask = Box::pin(async move {
+            let work = agent.run_task_with_view(&description, input, inherited, Some(inbox));
+            let result = match child_cancellation {
+                Some(turn) => turn.scope(work).await,
+                None => work.await,
+            };
+            if let Some(actual) = agent
+                .actual_task_returns()
+                .and_then(|facts| facts.last().cloned())
+            {
+                tracked.retain_task_return(&actual);
+            }
+            *slot.lock().unwrap() = Some(result);
+        });
+        let outer: ErasedTask = Box::pin(async move {
+            let mut child = AbortOnDrop::new(tokio::spawn(work));
+            let joined = match child.join().await {
+                // A task that returned left its result in the slot.
+                Ok(()) => finished.lock().unwrap().take().ok_or(false),
+                Err(e) => Err(e.is_panic()),
+            };
+            let cancelled = cancellation
+                .as_ref()
+                .is_some_and(|turn| turn.is_cancelled());
+            let (kind, status, parts) = background_end(joined, cancelled, &spawn_name);
+            let progress = match status {
+                AgentStatus::Failed if cancelled => "cancelled",
+                AgentStatus::Done => "completed",
+                AgentStatus::Failed => "failed",
+                AgentStatus::Suspended => "waiting for approval",
+                AgentStatus::Running => "running",
+            };
+            registry.set_progress(&spawn_name, progress);
+            registry.set_status(&spawn_name, status);
+            let notification = Notification {
+                from: spawn_name.clone(),
+                to: parent_name,
+                kind,
+            };
+            match parts {
+                Some(parts) => notifications.push_with_parts(notification, parts),
+                None => notifications.push(notification),
+            }
+        });
+        let join = tokio::spawn(outer);
         ctx.registry.set_join(&unique_id, join);
 
         ToolOutcome::ok(format!(
@@ -694,6 +1272,82 @@ impl Tool for SendMessageTool {
         } else {
             Ok(ToolOutcome::ok(format!("message sent to {to}")))
         }
+    }
+
+    /// The same message on an agent with a source view. It is posted and
+    /// delivered as the text this call wrote, with its source, and only to
+    /// an inbox that takes parts: the recorded text alone goes nowhere.
+    async fn call_with_view(
+        &self,
+        args: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        let Some(boundary) = tracked.boundary() else {
+            return Ok(ToolOutcome::err(
+                "This conversation has no source for the reply that asked for this message.",
+            ));
+        };
+        let named = args.get("to").and_then(|v| v.as_str());
+        let to = named.unwrap_or("").to_string();
+        let written = args.get("message").and_then(|v| v.as_str());
+        let message = written.unwrap_or("").to_string();
+        static EMPTY: OnceLock<Arc<str>> = OnceLock::new();
+        let part = match written {
+            Some(text) => {
+                let text: Arc<str> = Arc::from(text);
+                match tracked.argument("/message", text.clone()) {
+                    Some(part) => SourcePart::of_source(
+                        boundary
+                            .argument_source_for(
+                                tracked.invocation().ok_or_else(|| {
+                                    AgentError::State(
+                                        "A delegated operation has no actual terminal invocation."
+                                            .into(),
+                                    )
+                                })?,
+                                &part,
+                            )
+                            .await?,
+                        text,
+                    ),
+                    None => SourcePart::fixed(piece(&EMPTY, "")),
+                }
+            }
+            None => SourcePart::fixed(piece(&EMPTY, "")),
+        };
+        ctx.notifications.push_with_parts(
+            Notification {
+                from: self.inner.agent_name.clone(),
+                to: to.clone(),
+                kind: NotificationKind::Message(message),
+            },
+            vec![part.clone()],
+        );
+        let delivered = ctx.registry.deliver_parts(&to, vec![part]);
+
+        // The recipient's name is the call's own text; the rest is the
+        // tool's.
+        static SENT: OnceLock<Arc<str>> = OnceLock::new();
+        static DELIVERED: OnceLock<Arc<str>> = OnceLock::new();
+        let mut parts = vec![OutcomePart::Fixed(piece(&SENT, "message sent to "))];
+        if named.is_some() {
+            parts.push(OutcomePart::Argument {
+                pointer: "/to".into(),
+                text: Arc::from(to.as_str()),
+            });
+        }
+        let outcome = if delivered {
+            parts.push(OutcomePart::Fixed(piece(
+                &DELIVERED,
+                " (delivered to inbox)",
+            )));
+            ToolOutcome::ok(format!("message sent to {to} (delivered to inbox)"))
+        } else {
+            ToolOutcome::ok(format!("message sent to {to}"))
+        };
+        tracked.outcome_is(parts);
+        Ok(outcome)
     }
 }
 

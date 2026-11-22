@@ -165,7 +165,18 @@ pub struct AgentEntry {
 pub struct AgentRegistry {
     inner: Mutex<HashMap<String, AgentEntry>>,
     cancellations: Mutex<HashMap<String, crate::TurnCancellation>>,
+    /// The inboxes of running delegated agents with a source view, by name.
+    /// What is sent there is sent as parts. There are at most as many as
+    /// agents run at a time, so a list is enough.
+    view_inboxes: Mutex<Vec<(String, ViewInbox)>>,
 }
+
+/// The inbox of one delegated agent with a source view: the messages that
+/// wait for its next round, each as its parts, oldest first.
+pub(crate) type ViewInbox = Arc<Mutex<Vec<Vec<crate::provenance::SourcePart>>>>;
+
+/// The most messages that wait in one such inbox.
+const MAX_WAITING_MESSAGES: usize = 256;
 
 impl AgentRegistry {
     /// Insert (or replace) a status-only entry with no join handle or inbox.
@@ -173,6 +184,7 @@ impl AgentRegistry {
         let name = name.into();
         let mut entries = self.inner.lock().unwrap();
         self.cancellations.lock().unwrap().remove(&name);
+        self.drop_view_inbox(&name);
         entries.insert(
             name,
             AgentEntry {
@@ -190,6 +202,7 @@ impl AgentRegistry {
         let name = name.into();
         let mut entries = self.inner.lock().unwrap();
         self.cancellations.lock().unwrap().remove(&name);
+        self.drop_view_inbox(&name);
         entries.insert(name, entry);
     }
 
@@ -201,6 +214,7 @@ impl AgentRegistry {
     ) {
         let mut entries = self.inner.lock().unwrap();
         self.cancellations.lock().unwrap().remove(&name);
+        self.drop_view_inbox(&name);
         if let Some(turn) = cancellation {
             self.cancellations
                 .lock()
@@ -208,6 +222,50 @@ impl AgentRegistry {
                 .insert(name.clone(), turn);
         }
         entries.insert(name, entry);
+    }
+
+    /// Gives the running agent `name` an inbox that takes parts. Called after
+    /// its entry was inserted.
+    pub(crate) fn set_view_inbox(&self, name: &str, inbox: ViewInbox) {
+        let entries = self.inner.lock().unwrap();
+        if matches!(entries.get(name), Some(entry) if entry.status == AgentStatus::Running) {
+            self.drop_view_inbox(name);
+            self.view_inboxes
+                .lock()
+                .unwrap()
+                .push((name.to_owned(), inbox));
+        }
+    }
+
+    fn drop_view_inbox(&self, name: &str) {
+        let mut inboxes = self.view_inboxes.lock().unwrap();
+        if let Some(at) = inboxes.iter().position(|(known, _)| known == name) {
+            inboxes.swap_remove(at);
+        }
+    }
+
+    /// Delivers a message, as the parts it is made of, to the inbox of a
+    /// named agent with a source view. Returns `true` only if that agent is
+    /// still `Running`, has such an inbox, and the inbox is not full.
+    pub(crate) fn deliver_parts(
+        &self,
+        name: &str,
+        parts: Vec<crate::provenance::SourcePart>,
+    ) -> bool {
+        let entries = self.inner.lock().unwrap();
+        if !matches!(entries.get(name), Some(entry) if entry.status == AgentStatus::Running) {
+            return false;
+        }
+        let inboxes = self.view_inboxes.lock().unwrap();
+        let Some((_, inbox)) = inboxes.iter().find(|(known, _)| known == name) else {
+            return false;
+        };
+        let mut waiting = inbox.lock().unwrap();
+        if waiting.len() >= MAX_WAITING_MESSAGES {
+            return false;
+        }
+        waiting.push(parts);
+        true
     }
 
     /// Transfer actual background joins to the terminal shutdown owner. Entries
@@ -246,6 +304,7 @@ impl AgentRegistry {
             e.status = status;
             if status != AgentStatus::Running {
                 self.cancellations.lock().unwrap().remove(name);
+                self.drop_view_inbox(name);
                 e.join = None;
                 e.inbox = None;
             }
@@ -318,6 +377,7 @@ impl AgentRegistry {
         entry.status = AgentStatus::Failed;
         entry.progress = "cancelled by user".to_string();
         entry.inbox = None;
+        self.drop_view_inbox(name);
         true
     }
 
@@ -375,18 +435,34 @@ pub enum NotificationKind {
 /// background agents.
 #[derive(Clone, Default)]
 pub struct NotificationQueue {
-    subscribers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Notification>>>>,
+    subscribers: Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Posted>>>>,
 }
+
+/// A notification as it travels: with the parts its text is made of, when
+/// its sender said so.
+type Posted = (Notification, Option<Arc<[crate::provenance::SourcePart]>>);
 
 impl NotificationQueue {
     /// Enqueue a notification for every subscriber. Closed subscribers are
     /// removed lazily; one dropped UI/agent receiver never prevents delivery to
     /// the others.
     pub fn push(&self, n: Notification) {
+        self.post((n, None));
+    }
+
+    /// As [`push`](Self::push), for a sender that knows what the text of the
+    /// notification is made of: `parts` join to that text. A receiving agent
+    /// with a source view records the notification with them. Every other
+    /// receiver sees the notification as it always did.
+    pub fn push_with_parts(&self, n: Notification, parts: Vec<crate::provenance::SourcePart>) {
+        self.post((n, Some(parts.into())));
+    }
+
+    fn post(&self, posted: Posted) {
         self.subscribers
             .lock()
             .unwrap()
-            .retain(|tx| tx.send(n.clone()).is_ok());
+            .retain(|tx| tx.send(posted.clone()).is_ok());
     }
 
     /// Add an independent receiver. The main agent and the UI both subscribe so
@@ -401,15 +477,24 @@ impl NotificationQueue {
 /// Receiver half of the notification channel; the parent drains it to surface
 /// child updates.
 pub struct NotificationReceiver {
-    rx: tokio::sync::mpsc::UnboundedReceiver<Notification>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Posted>,
 }
 
 impl NotificationReceiver {
     /// Drain all currently-queued notifications without blocking.
     pub fn drain(&mut self) -> Vec<Notification> {
         let mut out = vec![];
-        while let Ok(n) = self.rx.try_recv() {
+        while let Ok((n, _)) = self.rx.try_recv() {
             out.push(n);
+        }
+        out
+    }
+
+    /// As [`drain`](Self::drain), each with the parts it was posted with.
+    pub(crate) fn drain_posted(&mut self) -> Vec<Posted> {
+        let mut out = vec![];
+        while let Ok(posted) = self.rx.try_recv() {
+            out.push(posted);
         }
         out
     }

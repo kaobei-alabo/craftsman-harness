@@ -81,6 +81,22 @@ fn defaults_hold(
     defaults.model_view().map(|_| ()).map_err(fault)
 }
 
+/// The provider for the delegated agents of a conversation, on the wire
+/// `client` speaks. It is bound to the conversation's own guard like the
+/// root agent's provider. Each request it serves was composed for the lane
+/// of the agent that sent it, and a reply's receipt names that lane.
+pub async fn delegated_provider(
+    client: LlmClient,
+    session: Arc<PrivacySession>,
+    usage: Arc<Mutex<(u64, u64)>>,
+    sink: TokenSink,
+) -> Result<Arc<dyn ModelProvider>, SessionStop> {
+    Ok(match client.native.is_none() {
+        true => Arc::new(ViewChatProvider::new(client, session, usage, sink).await?),
+        false => Arc::new(ViewNativeProvider::new(client, session, usage, sink).await?),
+    })
+}
+
 pub struct ViewChatProvider {
     client: LlmClient,
     session: Arc<PrivacySession>,
@@ -184,6 +200,7 @@ impl ModelProvider for ViewChatProvider {
         // the request it answered, before the agent reviews or commits it.
         let receipt = received_chat_reply(
             &self.session,
+            &req,
             &response.message,
             view.messages.len(),
             request_sha256,
@@ -239,9 +256,11 @@ impl ViewNativeProvider {
         })
     }
 
-    /// For the summarizer of the conversation. Its requests carry earlier
-    /// replies as their text and calls, never with provider items, as the
-    /// ordinary summarizer's do: its own client never received those replies.
+    /// For the summarizer of the conversation. It serves only requests the
+    /// agent composed for a summarizer: a new request made from the sources
+    /// of the messages to summarize, each reply as the text and calls that
+    /// were committed. Provider items answer the request their reply was
+    /// received for, and are not part of a summarizer's request.
     pub fn for_summaries(mut self) -> Self {
         self.summaries = true;
         self
@@ -279,7 +298,9 @@ impl ModelProvider for ViewNativeProvider {
             .map_err(|error| AgentError::Model(error.to_string()))?;
         defaults_hold(&self.session, &self.defaults, &current)?;
         // The view, and the provider items this conversation itself received
-        // from a client of exactly this identity. The summarizer sends none.
+        // from a client of exactly this identity. The summarizer serves only
+        // requests the agent composed for a summarizer, through their own
+        // view; every other provider refuses such a request.
         let (view, replay) = if self.summaries {
             (self.session.summary_view(&req).map_err(fault)?, None)
         } else {
@@ -323,6 +344,7 @@ impl ModelProvider for ViewNativeProvider {
         // before the agent reviews or commits the reply.
         let receipt = received_native_reply(
             &self.session,
+            &req,
             &exchange.response.message,
             native.identity(),
             view.messages.len(),

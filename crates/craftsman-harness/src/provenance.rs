@@ -27,7 +27,7 @@ mod facts;
 pub use facts::{
     ActualAgentOwner, ActualModelInput, ActualParkedCall, ActualProviderReturn,
     ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualStagedSummary,
-    ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
+    ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
@@ -125,8 +125,11 @@ pub enum FrameworkCommit {
     /// an interruption.
     UnrecordedCall,
     /// Text from another agent, framed by this one. It has no source of its
-    /// own here.
+    /// own here, unless it arrived with parts.
     Notification,
+    /// A message another agent of the conversation sent to this one's inbox,
+    /// recorded as it arrived.
+    InboxMessage,
 }
 
 /// What a middleware's author states about it for an agent that selected a
@@ -197,6 +200,10 @@ pub enum PartFrom {
         call_id: String,
         pointer: String,
     },
+    /// The whole text of something the host already holds a source for: a
+    /// reply that an agent of the conversation committed, or an argument
+    /// source its boundary issued. The host checks the source itself.
+    Source { source: SourceRef },
 }
 
 /// One piece of a tool's own outcome, as the tool says it made it.
@@ -208,6 +215,25 @@ pub enum OutcomePart {
     /// The JSON encoding of the value at `pointer` of the call's own
     /// arguments.
     ArgumentJson { pointer: String, text: Arc<str> },
+    /// The string at `pointer` of the call's own arguments, as it is.
+    Argument { pointer: String, text: Arc<str> },
+    /// Text the tool read from configuration or a store. `what` names what
+    /// was read.
+    Read { what: String, text: Arc<str> },
+    /// The whole text of something the host already holds a source for.
+    Source { source: SourceRef, text: Arc<str> },
+}
+
+impl OutcomePart {
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            OutcomePart::Fixed(text)
+            | OutcomePart::ArgumentJson { text, .. }
+            | OutcomePart::Argument { text, .. }
+            | OutcomePart::Read { text, .. }
+            | OutcomePart::Source { text, .. } => text,
+        }
+    }
 }
 
 impl SourcePart {
@@ -224,6 +250,23 @@ impl SourcePart {
             from: PartFrom::Read { what: what.into() },
         }
     }
+
+    /// The whole text of something the host already holds `source` for.
+    pub fn of_source(source: SourceRef, text: Arc<str>) -> Self {
+        Self {
+            text,
+            from: PartFrom::Source { source },
+        }
+    }
+}
+
+/// The text `parts` join to.
+pub fn joined(parts: &[SourcePart]) -> String {
+    let mut text = String::new();
+    for part in parts {
+        text.push_str(&part.text);
+    }
+    text
 }
 
 impl fmt::Debug for SourcePart {
@@ -247,6 +290,10 @@ pub struct SummaryText {
     pub open: SourcePart,
     pub close: SourcePart,
 }
+
+/// The most parts and bytes of one message that arrives with parts.
+pub const MAX_ENVELOPE_PARTS: usize = 64;
+pub const MAX_ENVELOPE_BYTES: usize = 1_048_576;
 
 /// What the agent keeps beside one recorded message.
 #[derive(Clone)]
@@ -322,6 +369,17 @@ impl TrackedPrepare<'_> {
 #[derive(Clone, Default)]
 pub struct TrackedDispatch {
     pub(crate) notes: Arc<std::sync::Mutex<DispatchNotes>>,
+    pub(crate) origin: Option<Arc<DispatchOrigin>>,
+}
+
+/// Where the running call came from, as the agent recorded it.
+pub(crate) struct DispatchOrigin {
+    pub(crate) boundary: Arc<dyn ModelViewBoundary>,
+    /// The source beside the committed reply that asked for the call.
+    pub(crate) reply: SourceRef,
+    pub(crate) call_id: String,
+    pub(crate) invocation: ActualToolInvocation,
+    pub(crate) facts: Arc<std::sync::Mutex<ActualFacts>>,
 }
 
 #[derive(Default)]
@@ -333,6 +391,19 @@ pub(crate) struct DispatchNotes {
 }
 
 impl TrackedDispatch {
+    /// Keeps a genuine child return before formatting, source or result
+    /// projection. Its parent witness is retained, never guessed from a task
+    /// name, call id, registry entry or equal text. This is data, not a grant.
+    pub fn retain_task_return(&self, returned: &ActualTaskReturn) {
+        if let Some(origin) = &self.origin {
+            origin.facts.lock().unwrap().tasks.push(returned.clone());
+        }
+    }
+    /// The actual post-chain invocation of the registered tool, when this
+    /// handle was issued at its terminal. No caller call-id can issue one.
+    pub fn invocation(&self) -> Option<&ActualToolInvocation> {
+        self.origin.as_ref().map(|origin| &origin.invocation)
+    }
     /// A middleware keeps bookkeeping of its own under `key` of the custom
     /// state and changes it during this dispatch.
     pub fn owns_custom_key(&self, key: &str) {
@@ -365,6 +436,29 @@ impl TrackedDispatch {
         if parts.len() <= MAX_ADDITION_PARTS {
             self.notes.lock().unwrap().outcome = Some(parts);
         }
+    }
+
+    /// The boundary of the conversation the call runs in. `None` when the
+    /// agent holds no source for the reply that asked for the call.
+    pub fn boundary(&self) -> Option<Arc<dyn ModelViewBoundary>> {
+        self.origin.as_ref().map(|origin| origin.boundary.clone())
+    }
+
+    /// `text` as the string the running call carries at `pointer` of its
+    /// arguments: a part that names the committed reply that asked for the
+    /// call. A tool that hands such text to another agent resolves the part
+    /// with [`ModelViewBoundary::argument_source`] while the call runs.
+    /// `None` when the agent holds no source for that reply.
+    pub fn argument(&self, pointer: &str, text: Arc<str>) -> Option<SourcePart> {
+        let origin = self.origin.as_ref()?;
+        Some(SourcePart {
+            text,
+            from: PartFrom::Call {
+                reply: origin.reply.clone(),
+                call_id: origin.call_id.clone(),
+                pointer: pointer.to_owned(),
+            },
+        })
     }
 }
 
@@ -430,10 +524,57 @@ impl fmt::Debug for TrackedReply<'_> {
     }
 }
 
+/// What a boundary method written without `async` returns.
+pub type BoxedBoundaryFuture<'f, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, AgentError>> + Send + 'f>>;
+
+fn refused<'f, T: Send + 'f>(why: &'static str) -> BoxedBoundaryFuture<'f, T> {
+    Box::pin(std::future::ready(Err(AgentError::State(why.into()))))
+}
+
 /// Implemented by the host for one conversation. Every method is called by
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// The child builder carries the actual delegating terminal witness.
+    /// A host must match it to the private parent that created the boundary.
+    fn bind_task_parent(&self, _parent: &ActualToolInvocation) -> Result<(), AgentError> {
+        Ok(())
+    }
+    /// Exact terminal source for a task/message argument. The compatibility
+    /// bridge grants no application authority; app boundaries check the
+    /// immutable invocation against their actual live operation.
+    fn argument_source_for<'a, 'b, 'c, 'f>(
+        &'a self,
+        invocation: &'b ActualToolInvocation,
+        part: &'c SourcePart,
+    ) -> BoxedBoundaryFuture<'f, SourceRef>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        Self: 'f,
+    {
+        let _ = invocation;
+        self.argument_source(part)
+    }
+
+    /// Creates one child boundary only at its actual delegating invocation.
+    fn child_boundary_for<'a, 'b, 'c, 'f>(
+        &'a self,
+        invocation: &'b ActualToolInvocation,
+        system: &'c [SourcePart],
+    ) -> BoxedBoundaryFuture<'f, Arc<dyn ModelViewBoundary>>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        Self: 'f,
+    {
+        let _ = invocation;
+        self.child_boundary(system)
+    }
+
     /// A real working-state summary stage, before canonical retention. The
     /// default bridge is for boundaries that supply no application authority.
     async fn staged_summary_source(
@@ -542,7 +683,10 @@ pub trait ModelViewBoundary: Send + Sync {
                 "The retained event is not a framework message.".into(),
             ));
         };
-        self.observe_framework_commit(event, commit.message()).await
+        match commit.parts() {
+            Some(parts) => self.observe_envelope(event, parts, commit.message()).await,
+            None => self.observe_framework_commit(event, commit.message()).await,
+        }
     }
 
     /// Exact post-chain invocation, before any tool effect. Returning a source
@@ -660,6 +804,71 @@ pub trait ModelViewBoundary: Send + Sync {
         Ok(())
     }
 
+    /// The host's own evidence of which conversation this boundary is for.
+    /// The agent keeps it with every request it composes through the
+    /// boundary. The default has none.
+    fn conversation(&self) -> Option<SourceRef> {
+        None
+    }
+
+    /// The source of text that the call running now carries in its
+    /// arguments, for a tool that hands that text to another agent. `part`
+    /// is what [`TrackedDispatch::argument`] returned for it. Called while
+    /// that call runs. The default refuses.
+    ///
+    /// This default and the two after it are written without `async`, in the
+    /// shape `async_trait` gives an `async fn`, so that a boundary that does
+    /// not override them shares one ready future.
+    fn argument_source<'a, 'b, 'f>(
+        &'a self,
+        part: &'b SourcePart,
+    ) -> BoxedBoundaryFuture<'f, SourceRef>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        let _ = part;
+        refused("This conversation has no source for text of a call's arguments.")
+    }
+
+    /// A boundary for one agent that this conversation's agent delegates a
+    /// task to. `system` is that agent's system text, as parts in order. The
+    /// new boundary belongs to the same conversation: what one of them holds
+    /// a source for, the other can be given as a part. The default refuses.
+    fn child_boundary<'a, 'b, 'f>(
+        &'a self,
+        system: &'b [SourcePart],
+    ) -> BoxedBoundaryFuture<'f, Arc<dyn ModelViewBoundary>>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        let _ = system;
+        refused("This conversation has no source view for a delegated agent.")
+    }
+
+    /// The agent itself appended `committed` at `event` from `parts`, which
+    /// join to the message's text: the application's own framing around what
+    /// another agent of the conversation sent. It is recorded. Returns the
+    /// source to keep beside it. The default refuses.
+    fn observe_envelope<'a, 'b, 'c, 'f>(
+        &'a self,
+        event: FrameworkCommit,
+        parts: &'b [SourcePart],
+        committed: &'c Msg,
+    ) -> BoxedBoundaryFuture<'f, SourceRef>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        Self: 'f,
+    {
+        let _ = (event, parts, committed);
+        refused("This conversation has no source for a message that arrived with parts.")
+    }
+
     /// A human decided the parked `call`. `action` is what is about to be
     /// applied and `decision` is the host's own evidence of that decision.
     /// Called before any effect of the decision. The default refuses.
@@ -686,9 +895,20 @@ pub struct TrackedModelRequest {
     pub(crate) retained: Vec<ActualRetainedCommit>,
     pub(crate) inputs: Vec<ActualModelInput>,
     pub(crate) returned: Option<Arc<ReturnRecorder>>,
+    /// What the boundary this request was composed through says its
+    /// conversation is.
+    pub(crate) conversation: Option<SourceRef>,
+    /// Whether the agent composed this request for a summarizer.
+    pub(crate) summary: bool,
+    pub(crate) owner: Option<ActualAgentOwner>,
 }
 
 impl TrackedModelRequest {
+    /// Issued by the actual selected agent that constructed this request.
+    /// Host conversation labels and SourceRef erasure cannot replace it.
+    pub fn agent_owner(&self) -> Option<&ActualAgentOwner> {
+        self.owner.as_ref()
+    }
     /// Retains the selected provider's actual returned data before its
     /// fallible receipt/projection work. Available only during the actual
     /// provider terminal call; not a source/HTTP/human/commit certificate.
@@ -728,6 +948,20 @@ impl TrackedModelRequest {
     /// One source per recorded tool definition, in the same order.
     pub fn tool_sources(&self) -> &[SourceRef] {
         &self.tools
+    }
+
+    /// The conversation's own evidence, as the boundary this request was
+    /// composed through gave it.
+    pub fn conversation(&self) -> Option<&SourceRef> {
+        self.conversation.as_ref()
+    }
+
+    /// Whether the agent composed this request for a summarizer: the
+    /// messages it is about to replace with a summary, and the instruction
+    /// to summarize them. It is a new request made from those sources, not a
+    /// continuation of the conversation.
+    pub fn is_summary(&self) -> bool {
+        self.summary
     }
 }
 

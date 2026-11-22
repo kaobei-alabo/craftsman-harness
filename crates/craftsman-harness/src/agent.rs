@@ -186,6 +186,9 @@ pub struct Agent {
     /// `send_message` delivery lands in-transcript; `None` for a plain
     /// foreground turn.
     inbox: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
+    /// The inbox of a delegated agent with a source view: what other agents
+    /// of the conversation send it while its task runs, as parts.
+    view_inbox: Arc<Mutex<Option<crate::subagent::ViewInbox>>>,
     /// User messages steering the currently active foreground turn. Messages
     /// are drained at model-round boundaries; a pending steer forces another
     /// model sample even when the previous sample looked final.
@@ -373,6 +376,8 @@ impl Agent {
                 return self.save_boundary_input_error(error).await;
             }
             self.drain_agent_notifications_into_state();
+            // An agent with a source view reads its inbox here, as parts.
+            self.drain_view_inbox_into_state();
             self.save_progress_checkpoint(None).await?;
             let mut working = self.snapshot();
 
@@ -1120,6 +1125,10 @@ impl Agent {
             .model_view
             .as_ref()
             .map(|_| Arc::new(Mutex::new(Vec::new())));
+        let origin_reply = self
+            .model_view
+            .as_ref()
+            .and_then(|view| self.reply_source(view, &call.id));
         let terminal_view = self.model_view.clone();
         let decision = self.model_view.as_ref().and_then(|view| {
             if bypass_chain {
@@ -1167,6 +1176,7 @@ impl Agent {
                         action: decision.action.clone(),
                     });
                 let watch = terminal_watch.clone();
+                let reply = origin_reply.clone();
                 Box::pin(async move {
                     match found {
                         Some(tool) => match record {
@@ -1196,13 +1206,23 @@ impl Agent {
                                         return Err(error);
                                     }
                                 };
-                                let tracked = watch
+                                let mut tracked = watch
                                     .as_ref()
                                     .expect("selected invocation has its watch")
                                     .lock()
                                     .unwrap()
                                     .tracked
                                     .clone();
+                                if let Some(reply) = reply {
+                                    tracked.origin =
+                                        Some(Arc::new(crate::provenance::DispatchOrigin {
+                                            boundary: view.boundary.clone(),
+                                            reply,
+                                            call_id: invocation.call().id.clone(),
+                                            invocation: invocation.clone(),
+                                            facts: view.facts.clone(),
+                                        }));
+                                }
                                 if let Err(error) = view
                                     .live()
                                     .and_then(|()| view.boundary.terminal_live(&invocation))
@@ -1645,7 +1665,7 @@ impl Agent {
         }
         let (user_messages, sources): (Vec<_>, Vec<_>) = messages
             .into_iter()
-            .map(|input| (Msg::user(input.text), input.source))
+            .map(|input| (Msg::user(input.text), (input.source, input.parts)))
             .unzip();
         for message in &user_messages {
             self.journal("user", serde_json::to_value(message).unwrap_or_default());
@@ -1656,7 +1676,7 @@ impl Agent {
         let observed = self.model_view.as_ref().map(|_| user_messages.clone());
         state.messages.extend(user_messages);
         if let Some(view) = &self.model_view {
-            view.note_inputs(observed.as_deref().unwrap_or_default(), sources);
+            view.note_queued_inputs(observed.as_deref().unwrap_or_default(), sources);
         }
         (start, count)
     }
@@ -1667,32 +1687,50 @@ impl Agent {
     fn drain_agent_notifications_into_state(&self) -> bool {
         use crate::subagent::NotificationKind;
 
-        let notifications = self.notification_inbox.lock().unwrap().drain();
+        let notifications = self.notification_inbox.lock().unwrap().drain_posted();
         let messages = notifications
             .into_iter()
-            .filter(|notification| notification.to == self.name)
-            .map(|notification| match notification.kind {
-                NotificationKind::Completed(text) => format!(
-                    "[background agent '{}' completed]
+            .filter(|(notification, _)| notification.to == self.name)
+            .map(|(notification, parts)| {
+                // On an agent with a source view, a notification that came
+                // with parts is recorded with them around the same text.
+                let envelope = match (&self.model_view, parts) {
+                    (Some(_), Some(parts)) => {
+                        Some(model_view::notification_envelope(&notification, &parts))
+                    }
+                    _ => None,
+                };
+                let text = match notification.kind {
+                    NotificationKind::Completed(text) => format!(
+                        "[background agent '{}' completed]
 {}",
-                    notification.from, text
-                ),
-                NotificationKind::Message(message) => format!(
-                    "[message from agent '{}']
+                        notification.from, text
+                    ),
+                    NotificationKind::Message(message) => format!(
+                        "[message from agent '{}']
 {}",
-                    notification.from, message
-                ),
-                NotificationKind::NeedsApproval(suspension) => format!(
-                    "[background agent '{}' is waiting for approval]
+                        notification.from, message
+                    ),
+                    NotificationKind::NeedsApproval(suspension) => format!(
+                        "[background agent '{}' is waiting for approval]
 {}",
-                    notification.from, suspension.request.summary
-                ),
+                        notification.from, suspension.request.summary
+                    ),
+                };
+                match envelope {
+                    Some(parts) => QueuedInput::enveloped(
+                        text,
+                        crate::provenance::FrameworkCommit::Notification,
+                        parts,
+                    ),
+                    None => QueuedInput::plain(text),
+                }
             })
             .collect::<Vec<_>>();
         if messages.is_empty() {
             return false;
         }
-        self.append_steering_messages(messages.into_iter().map(QueuedInput::plain).collect());
+        self.append_steering_messages(messages);
         if let Some(policy) = &self.boundary_policy {
             policy.runtime_input();
         }
@@ -2115,6 +2153,7 @@ pub struct AgentBuilder {
     completion_check: Option<Arc<dyn crate::CompletionCheck>>,
     boundary_policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
     model_view_boundary: Option<Arc<dyn crate::provenance::ModelViewBoundary>>,
+    task_parent: Option<ActualToolInvocation>,
     interrupt_model_on_cancel: bool,
     cancellation_session: Option<crate::SessionCancellation>,
     state: Option<Arc<Mutex<AgentState>>>,
@@ -2141,6 +2180,7 @@ impl AgentBuilder {
             completion_check: None,
             boundary_policy: None,
             model_view_boundary: None,
+            task_parent: None,
             interrupt_model_on_cancel: false,
             cancellation_session: None,
             state: None,
@@ -2225,6 +2265,12 @@ impl AgentBuilder {
         boundary: Option<Arc<dyn crate::provenance::ModelViewBoundary>>,
     ) -> Self {
         self.model_view_boundary = boundary;
+        self
+    }
+
+    /// Called only by the actual selected task terminal's child builder.
+    pub(crate) fn task_parent(mut self, parent: ActualToolInvocation) -> Self {
+        self.task_parent = Some(parent);
         self
     }
 
@@ -2354,7 +2400,7 @@ impl AgentBuilder {
             boundary_policy: self.boundary_policy,
             model_view: self
                 .model_view_boundary
-                .map(|boundary| Arc::new(ModelView::new(boundary))),
+                .map(|boundary| Arc::new(ModelView::with_parent(boundary, self.task_parent))),
             completion_sequence: Arc::new(AtomicU64::new(0)),
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,
@@ -2364,6 +2410,7 @@ impl AgentBuilder {
             pending: Arc::new(Mutex::new(None)),
             parked_suspension: Arc::new(Mutex::new(None)),
             inbox: Arc::new(Mutex::new(None)),
+            view_inbox: Arc::new(Mutex::new(None)),
             turn_input: Arc::new(Mutex::new(TurnInputState::default())),
             model_cancel: Arc::new(tokio::sync::Notify::new()),
             checkpointer: self.checkpointer,
@@ -2386,6 +2433,7 @@ use crate::provenance::{
     ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, FrameworkCommit, ReachedTool,
     RetainedEvent,
 };
+pub use model_view::TrackedTask;
 use model_view::{DispatchWatch, ModelView, QueuedInput};
 
 #[cfg(test)]
@@ -2395,6 +2443,9 @@ mod model_view_tests;
 #[cfg(test)]
 #[path = "agent_frontier_tests.rs"]
 mod frontier_tests;
+#[cfg(test)]
+#[path = "agent_model_view_delegation_tests.rs"]
+mod model_view_delegation_tests;
 
 #[cfg(test)]
 #[path = "agent_boundary_tests.rs"]

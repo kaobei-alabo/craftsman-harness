@@ -23,9 +23,10 @@ use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
     ActualAgentOwner, ActualFacts, ActualModelInput, ActualParkedCall, ActualProviderReturn,
     ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualStagedSummary,
-    ActualTerminalOutcome, ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary,
-    OutcomePart, PartFrom, ReachedTool, ReplyEdit, RetainedEvent, ReturnRecorder, SourcePart,
-    SourceRef, TrackedDispatch, TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
+    ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, FrameworkCommit, ModelDelivery,
+    ModelViewBoundary, OutcomePart, PartFrom, ReachedTool, ReplyEdit, RetainedEvent,
+    ReturnRecorder, SourcePart, SourceRef, TrackedDispatch, TrackedModelRequest, TrackedPrepare,
+    TrackedReply, ViewSupport,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -102,41 +103,67 @@ impl Dispatched {
     /// The tool's own content as parts, if the tool said what it is made of
     /// and the recorded content is exactly those pieces followed by what
     /// middleware announced it appended. Anything else gives no parts.
+    ///
+    /// `reply` is the source beside the committed reply that asked for the
+    /// call, when the call ran exactly as that reply wrote it. A piece that
+    /// names the call's arguments has no source without it.
     pub(super) fn outcome_parts(
         &self,
         recorded: &str,
         reply: Option<&SourceRef>,
         call_id: &str,
     ) -> Vec<SourcePart> {
-        let (Some(outcome), Some(reply)) = (&self.outcome, reply) else {
+        let Some(outcome) = &self.outcome else {
             return Vec::new();
         };
-        let own: String = outcome
-            .iter()
-            .map(|part| match part {
-                OutcomePart::Fixed(text) | OutcomePart::ArgumentJson { text, .. } => &**text,
-            })
-            .collect();
+        let own: String = outcome.iter().map(OutcomePart::text).collect();
         let appended: String = self.appended.iter().map(|part| &*part.text).collect();
         let returned = matches!(self.reached.last().map(|run| &run.result),
             Some(Ok(returned)) if returned.content == own);
         if !returned || recorded != format!("{own}{appended}") {
             return Vec::new();
         }
-        outcome
-            .iter()
-            .map(|part| match part {
-                OutcomePart::Fixed(text) => SourcePart::fixed(text.clone()),
-                OutcomePart::ArgumentJson { pointer, text } => SourcePart {
-                    text: text.clone(),
-                    from: PartFrom::CallJson {
-                        reply: reply.clone(),
-                        call_id: call_id.to_owned(),
-                        pointer: pointer.clone(),
+        let mut parts = Vec::with_capacity(outcome.len());
+        for part in outcome {
+            let (text, from) = match part {
+                OutcomePart::Fixed(text) => (text, PartFrom::Fixed),
+                OutcomePart::Read { what, text } => (text, PartFrom::Read { what: what.clone() }),
+                OutcomePart::Source { source, text } => (
+                    text,
+                    PartFrom::Source {
+                        source: source.clone(),
                     },
-                },
-            })
-            .collect()
+                ),
+                OutcomePart::ArgumentJson { pointer, text }
+                | OutcomePart::Argument { pointer, text } => {
+                    // Text of the call's arguments has a source only when
+                    // the call ran as its reply wrote it.
+                    let Some(reply) = reply else {
+                        return Vec::new();
+                    };
+                    let (reply, call_id, pointer) =
+                        (reply.clone(), call_id.to_owned(), pointer.clone());
+                    let from = match part {
+                        OutcomePart::ArgumentJson { .. } => PartFrom::CallJson {
+                            reply,
+                            call_id,
+                            pointer,
+                        },
+                        _ => PartFrom::Call {
+                            reply,
+                            call_id,
+                            pointer,
+                        },
+                    };
+                    (text, from)
+                }
+            };
+            parts.push(SourcePart {
+                text: text.clone(),
+                from,
+            });
+        }
+        parts
     }
 }
 
@@ -216,12 +243,78 @@ pub(super) use crate::provenance::Slot;
 pub(super) struct QueuedInput {
     pub(super) text: String,
     pub(super) source: Option<SourceRef>,
+    /// Set for text that arrived with parts, which join to the text.
+    pub(super) parts: Option<(FrameworkCommit, Arc<[SourcePart]>)>,
 }
 
 impl QueuedInput {
     pub(super) fn plain(text: String) -> Self {
-        Self { text, source: None }
+        Self {
+            text,
+            source: None,
+            parts: None,
+        }
     }
+
+    /// Text that arrived with the parts it is made of. Parts that do not
+    /// join to exactly the text, or exceed the bound, are dropped: the text
+    /// is then recorded without a source.
+    pub(super) fn enveloped(text: String, event: FrameworkCommit, parts: Vec<SourcePart>) -> Self {
+        let fits = parts.len() <= crate::provenance::MAX_ENVELOPE_PARTS
+            && text.len() <= crate::provenance::MAX_ENVELOPE_BYTES
+            && crate::provenance::joined(&parts) == text;
+        Self {
+            text,
+            source: None,
+            parts: match fits {
+                true => Some((event, parts.into())),
+                false => None,
+            },
+        }
+    }
+}
+
+fn fixed_piece(cell: &'static std::sync::OnceLock<Arc<str>>, text: &'static str) -> SourcePart {
+    SourcePart::fixed(cell.get_or_init(|| Arc::from(text)).clone())
+}
+
+/// The parts of the message a notification is recorded as: the agent's own
+/// framing around the sender's name and what the sender said its text is
+/// made of.
+pub(super) fn notification_envelope(
+    notification: &crate::subagent::Notification,
+    payload: &[SourcePart],
+) -> Vec<SourcePart> {
+    use crate::subagent::NotificationKind;
+    use std::sync::OnceLock;
+    static BACKGROUND: OnceLock<Arc<str>> = OnceLock::new();
+    static COMPLETED: OnceLock<Arc<str>> = OnceLock::new();
+    static MESSAGE: OnceLock<Arc<str>> = OnceLock::new();
+    static MESSAGE_END: OnceLock<Arc<str>> = OnceLock::new();
+    static WAITING: OnceLock<Arc<str>> = OnceLock::new();
+    let (open, close) = match notification.kind {
+        NotificationKind::Completed(_) => (
+            fixed_piece(&BACKGROUND, "[background agent '"),
+            fixed_piece(&COMPLETED, "' completed]\n"),
+        ),
+        NotificationKind::Message(_) => (
+            fixed_piece(&MESSAGE, "[message from agent '"),
+            fixed_piece(&MESSAGE_END, "']\n"),
+        ),
+        NotificationKind::NeedsApproval(_) => (
+            fixed_piece(&BACKGROUND, "[background agent '"),
+            fixed_piece(&WAITING, "' is waiting for approval]\n"),
+        ),
+    };
+    let mut parts = Vec::with_capacity(payload.len() + 3);
+    parts.push(open);
+    parts.push(SourcePart::read(
+        "agent name",
+        Arc::from(notification.from.as_str()),
+    ));
+    parts.push(close);
+    parts.extend(payload.iter().cloned());
+    parts
 }
 
 pub(super) struct AppliedDecision {
@@ -238,14 +331,27 @@ pub(super) struct ModelView {
     closed: AtomicBool,
     pub(super) decision: Mutex<Option<AppliedDecision>>,
     pub(super) parked: Mutex<Option<ActualParkedCall>>,
-    facts: Arc<Mutex<ActualFacts>>,
+    pub(super) facts: Arc<Mutex<ActualFacts>>,
     todos: Mutex<Option<Vec<PartFrom>>>,
+    parent: Option<ActualToolInvocation>,
+    task_started: AtomicBool,
 }
 
 impl ModelView {
+    #[cfg(test)]
     pub(super) fn new(boundary: Arc<dyn ModelViewBoundary>) -> Self {
+        Self::with_parent(boundary, None)
+    }
+
+    pub(super) fn with_parent(
+        boundary: Arc<dyn ModelViewBoundary>,
+        parent: Option<ActualToolInvocation>,
+    ) -> Self {
+        let parent_failed = parent
+            .as_ref()
+            .is_some_and(|parent| boundary.bind_task_parent(parent).is_err());
         let owner = ActualAgentOwner::issued();
-        let closed = boundary.bind_agent(&owner).is_err();
+        let closed = parent_failed || boundary.bind_agent(&owner).is_err();
         Self {
             boundary,
             sources: Mutex::new(Vec::new()),
@@ -255,6 +361,8 @@ impl ModelView {
             parked: Mutex::new(None),
             facts: Arc::new(Mutex::new(ActualFacts::default())),
             todos: Mutex::new(Some(Vec::new())),
+            parent,
+            task_started: AtomicBool::new(false),
         }
     }
 
@@ -360,14 +468,39 @@ impl ModelView {
         };
     }
 
-    /// Slots for inputs that were just appended, in the same order. An input
-    /// that came without a source is text from another agent.
+    /// Called only after the corresponding originals were actually appended.
     pub(super) fn note_inputs(&self, messages: &[Msg], sources: Vec<Option<SourceRef>>) {
+        self.note_queued_inputs(
+            messages,
+            sources.into_iter().map(|source| (source, None)).collect(),
+        );
+    }
+
+    pub(super) fn note_queued_inputs(
+        &self,
+        messages: &[Msg],
+        sources: Vec<(
+            Option<SourceRef>,
+            Option<(FrameworkCommit, Arc<[SourcePart]>)>,
+        )>,
+    ) {
         let slots = messages
             .iter()
             .zip(sources)
-            .map(|(message, source)| {
-                let commit = self.retained(RetainedEvent::Input, message, None);
+            .map(|(message, (source, parts))| {
+                let commit = match parts {
+                    Some((event, parts)) => {
+                        let commit = ActualRetainedCommit::envelope_issued(
+                            &self.owner,
+                            event,
+                            message.clone(),
+                            parts,
+                        );
+                        self.facts.lock().unwrap().retained.push(commit.clone());
+                        commit
+                    }
+                    None => self.retained(RetainedEvent::Input, message, None),
+                };
                 match source {
                     Some(source) => Slot::Bound(source, commit),
                     None => Slot::Pending(commit),
@@ -553,6 +686,18 @@ impl Agent {
     /// no token certifies transport, persistence, restoration or permission.
     /// Returned data of the selected provider call, including returns whose
     /// later receipt/projection checks failed. No record grants app origin.
+    pub fn actual_task_returns(&self) -> Option<Vec<ActualTaskReturn>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .tasks
+                .clone(),
+        )
+    }
+
     pub fn actual_provider_returns(&self) -> Option<Vec<ActualProviderReturn>> {
         Some(
             self.model_view
@@ -634,6 +779,7 @@ impl Agent {
         input.pending.push_back(QueuedInput {
             text: message,
             source: Some(source),
+            parts: None,
         });
         true
     }
@@ -899,6 +1045,136 @@ impl Agent {
         }
     }
 
+    /// Records what other agents sent to this one's inbox with parts, in
+    /// the order it arrived, where the ordinary inbox is read: before the
+    /// round's request. Returns whether anything was recorded.
+    pub(super) fn drain_view_inbox_into_state(&self) -> bool {
+        let inbox = self.view_inbox.lock().unwrap().clone();
+        let received = match inbox {
+            Some(inbox) => std::mem::take(&mut *inbox.lock().unwrap()),
+            None => return false,
+        };
+        if received.is_empty() || self.model_view.is_none() {
+            return false;
+        }
+        let mut messages = Vec::with_capacity(received.len());
+        for parts in received {
+            let text = crate::provenance::joined(&parts);
+            messages.push(QueuedInput::enveloped(
+                text,
+                FrameworkCommit::InboxMessage,
+                parts,
+            ));
+        }
+        self.append_steering_messages(messages);
+        true
+    }
+
+    /// Runs one delegated task on an agent that selected a source view
+    /// boundary: [`run_task_with_inbox`] with the typed turn. The agent is
+    /// seeded from `inherited` exactly as the ordinary task is, `prompt` is
+    /// recorded as its input and `source` is kept beside it. `inbox` carries
+    /// what other agents send while the task runs, as parts.
+    ///
+    /// [`run_task_with_inbox`]: crate::subagent::AgentHandle::run_task_with_inbox
+    pub async fn run_task_with_view(
+        &self,
+        prompt: &str,
+        source: SourceRef,
+        inherited: AgentState,
+        inbox: Option<crate::subagent::ViewInbox>,
+    ) -> Result<TrackedTask, AgentError> {
+        let view = self.supported_view()?;
+        let _activity = self.begin_turn()?;
+        let fresh = {
+            let state = self.state.lock().unwrap();
+            let sources = view.sources.lock().unwrap();
+            state.messages.is_empty() && sources.is_empty()
+        };
+        if view.task_started.swap(true, Ordering::AcqRel) || !fresh {
+            return Err(unavailable());
+        }
+        let mut seed = inherited;
+        seed.messages.clear();
+        seed.todos.clear();
+        seed.system_extras.clear();
+        *self.state.lock().unwrap() = seed;
+        view.sources.lock().unwrap().clear();
+        *view.todos.lock().unwrap() = Some(Vec::new());
+        // This is the first selected task, under actual activity ownership.
+        // Do not reset the turn-input owner: that would clear accepted input,
+        // active state and the cancellation captured by begin_turn.
+        *self.view_inbox.lock().unwrap() = inbox;
+        let future: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<TurnResult, AgentError>> + Send + '_>,
+        > = Box::pin(self.run_turn_inner(prompt.to_owned(), Some(source)));
+        let turn = self.in_turn_scope(future).await;
+        let result = self.settled(view, turn).await.map(|turn| match turn {
+            TurnResult::Done(out) => {
+                crate::subagent::TaskResult::Done(crate::subagent::AgentOutcome {
+                    final_text: out.final_text().to_string(),
+                    state_updates: self.state.lock().unwrap().clone(),
+                })
+            }
+            TurnResult::Suspended(suspension) => crate::subagent::TaskResult::Suspended(suspension),
+        });
+        let state = self.snapshot();
+        let actual = {
+            let mut facts = view.facts.lock().unwrap();
+            let actual =
+                ActualTaskReturn::issued(&view.owner, view.parent.clone(), &result, state, &facts);
+            facts.tasks.push(actual.clone());
+            actual
+        };
+        let result = result?;
+        let reply = match &result {
+            // The final text is the text of the last recorded message, a
+            // reply or the agent's own closing note; its slot is the source.
+            crate::subagent::TaskResult::Done(outcome) => {
+                let state = self.state.lock().unwrap();
+                let last = state.messages.len().checked_sub(1);
+                let is_reply = matches!(state.messages.last(),
+                    Some(Msg::Assistant { content, .. }) if *content == outcome.final_text);
+                drop(state);
+                match (is_reply, last) {
+                    (true, Some(last)) => match view.sources.lock().unwrap().get(last) {
+                        Some(Slot::Bound(source, _)) => Some(source.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            crate::subagent::TaskResult::Suspended(suspension) => {
+                self.reply_source(view, &suspension.request.tool_call.id)
+            }
+        };
+        Ok(TrackedTask {
+            result,
+            reply,
+            actual,
+        })
+    }
+}
+
+/// What a delegated task of an agent with a source view ended with.
+pub struct TrackedTask {
+    actual: ActualTaskReturn,
+    pub result: crate::subagent::TaskResult,
+    /// For a finished task, the source beside the message it ended with: a
+    /// committed reply, or the agent's own closing note. Its text is the
+    /// final text. For a suspended task, the source beside the committed
+    /// reply that asked for the parked call. `None` when the agent holds no
+    /// such source.
+    pub reply: Option<SourceRef>,
+}
+
+impl TrackedTask {
+    pub fn actual_return(&self) -> &ActualTaskReturn {
+        &self.actual
+    }
+}
+
+impl Agent {
     /// The review of a received reply on a selected agent, in the order and
     /// with the verdict rule of the ordinary review. A middleware with a
     /// tracked review changes the reply only through recorded operations and
@@ -995,6 +1271,9 @@ impl Agent {
                 .collect(),
             inputs,
             returned: None,
+            conversation: view.boundary.conversation(),
+            summary: false,
+            owner: Some(view.owner.clone()),
         };
         let model = self.model.clone();
         let owner = view.owner.clone();
@@ -1163,6 +1442,9 @@ impl TrackedPrepare<'_> {
             retained,
             inputs,
             returned: None,
+            conversation: self.boundary.conversation(),
+            summary: true,
+            owner: Some(self.owner.clone()),
         };
         self.boundary.validate_summary_inputs(&request)?;
         let delivery = match crate::TurnCancellation::current() {

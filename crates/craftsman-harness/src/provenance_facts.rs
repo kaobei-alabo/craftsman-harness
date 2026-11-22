@@ -2,7 +2,7 @@
 //! or a caller's mutable state. They describe retention and invocation only;
 //! the host still validates its own source, transport and permission owners.
 
-use crate::{HitlAction, ModelResponse, Msg, ToolCall, ToolOutcome, Usage};
+use crate::{AgentError, AgentState, HitlAction, ModelResponse, Msg, ToolCall, ToolOutcome, Usage};
 use std::sync::{Arc, Mutex};
 
 use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourcePart, SourceRef};
@@ -109,6 +109,7 @@ struct Retained {
     received: Option<ActualReceivedReply>,
     edits: Vec<ReplyEdit>,
     summary: Option<ActualStagedSummary>,
+    parts: Option<Arc<[SourcePart]>>,
 }
 
 impl ActualRetainedCommit {
@@ -125,6 +126,7 @@ impl ActualRetainedCommit {
             received,
             edits: Vec::new(),
             summary: None,
+            parts: None,
         }))
     }
 
@@ -141,6 +143,7 @@ impl ActualRetainedCommit {
             received: Some(received),
             edits,
             summary: None,
+            parts: None,
         }))
     }
 
@@ -152,6 +155,24 @@ impl ActualRetainedCommit {
             received: Some(stage.received().clone()),
             edits: Vec::new(),
             summary: Some(stage),
+            parts: None,
+        }))
+    }
+
+    pub(crate) fn envelope_issued(
+        owner: &ActualAgentOwner,
+        event: FrameworkCommit,
+        message: Msg,
+        parts: Arc<[SourcePart]>,
+    ) -> Self {
+        Self(Arc::new(Retained {
+            owner: owner.clone(),
+            event: RetainedEvent::Framework(event),
+            message,
+            received: None,
+            edits: Vec::new(),
+            summary: None,
+            parts: Some(parts),
         }))
     }
 
@@ -172,6 +193,9 @@ impl ActualRetainedCommit {
     }
     pub fn summary(&self) -> Option<&ActualStagedSummary> {
         self.0.summary.as_ref()
+    }
+    pub fn parts(&self) -> Option<&[SourcePart]> {
+        self.0.parts.as_deref()
     }
     pub fn same_commit(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -286,6 +310,85 @@ pub(crate) struct ActualFacts {
     pub(crate) request_inputs: Vec<ActualRequestInput>,
     pub(crate) staged_summaries: Vec<ActualStagedSummary>,
     pub(crate) provider_returns: Vec<ActualProviderReturn>,
+    pub(crate) tasks: Vec<ActualTaskReturn>,
+}
+
+/// The real return of an owned selected child task, including failures and
+/// its actual partial state. It is neither a registry status nor permission.
+#[derive(Clone)]
+pub struct ActualTaskReturn(Arc<TaskReturn>);
+struct TaskReturn {
+    owner: ActualAgentOwner,
+    parent: Option<ActualToolInvocation>,
+    final_text: Option<String>,
+    suspension: Option<crate::Suspension>,
+    failure: Option<String>,
+    state: AgentState,
+    provider_returns: Vec<ActualProviderReturn>,
+    terminals: Vec<ActualTerminalOutcome>,
+    chains: Vec<ActualToolFact>,
+    retained: Vec<ActualRetainedCommit>,
+}
+impl ActualTaskReturn {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        parent: Option<ActualToolInvocation>,
+        result: &Result<crate::subagent::TaskResult, AgentError>,
+        state: AgentState,
+        facts: &ActualFacts,
+    ) -> Self {
+        let (final_text, suspension, failure) = match result {
+            Ok(crate::subagent::TaskResult::Done(outcome)) => {
+                (Some(outcome.final_text.clone()), None, None)
+            }
+            Ok(crate::subagent::TaskResult::Suspended(suspension)) => {
+                (None, Some(suspension.clone()), None)
+            }
+            Err(error) => (None, None, Some(error.to_string())),
+        };
+        Self(Arc::new(TaskReturn {
+            owner: owner.clone(),
+            parent,
+            final_text,
+            suspension,
+            failure,
+            state,
+            provider_returns: facts.provider_returns.clone(),
+            terminals: facts.terminals.clone(),
+            chains: facts.chains.clone(),
+            retained: facts.retained.clone(),
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn parent_invocation(&self) -> Option<&ActualToolInvocation> {
+        self.0.parent.as_ref()
+    }
+    pub fn final_text(&self) -> Option<&str> {
+        self.0.final_text.as_deref()
+    }
+    pub fn suspension(&self) -> Option<&crate::Suspension> {
+        self.0.suspension.as_ref()
+    }
+    pub fn failure(&self) -> Option<&str> {
+        self.0.failure.as_deref()
+    }
+    pub fn state(&self) -> &AgentState {
+        &self.0.state
+    }
+    pub fn provider_returns(&self) -> &[ActualProviderReturn] {
+        &self.0.provider_returns
+    }
+    pub fn terminal_outcomes(&self) -> &[ActualTerminalOutcome] {
+        &self.0.terminals
+    }
+    pub fn tool_facts(&self) -> &[ActualToolFact] {
+        &self.0.chains
+    }
+    pub fn retained_commits(&self) -> &[ActualRetainedCommit] {
+        &self.0.retained
+    }
 }
 
 /// Data the selected provider handed back while its actual terminal call
@@ -550,6 +653,7 @@ opaque_debug!(
     ActualStagedSummary,
     ActualModelInput,
     ActualProviderReturn,
+    ActualTaskReturn,
     ActualToolInvocation,
     ActualTerminalOutcome,
     ActualToolFact

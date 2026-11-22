@@ -2382,6 +2382,32 @@ async fn build_session_with_capture_profile(
             crate::exec::meter::Role::Subagent,
             extras.output_closed.clone(),
         )?,
+        None if privacy_view.is_some() => {
+            // The delegated agents of a privacy conversation: the same owner
+            // and guard, their own usage, and requests composed from the
+            // sources of each agent's own lane.
+            let built = crate::privacy_session::delegated_provider(
+                make_unguarded_client()?,
+                privacy_view.clone()?,
+                sub_usage,
+                child_sink.clone(),
+            )
+            .await;
+            match built {
+                Ok(provider) => provider,
+                Err(_) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .refuse(crate::privacy_session::BuildRefusal::Provider);
+                    }
+                    if let Some(sink) = &extras.activity_sink {
+                        sink("The model connection of this session has no private view.");
+                    }
+                    return None;
+                }
+            }
+        }
         None => Arc::new(StreamingLlmProvider {
             client: make_client()?,
             usage: sub_usage,
@@ -2755,7 +2781,7 @@ async fn build_session_with_capture_profile(
     // source-preserving path. One whose author made no statement for the
     // source view refuses the build, and the frontend is told which. A
     // selection carries no permission to run with fewer parts than the user
-    // configured. Test fixtures alone may leave such parts out, by name.
+    // configured, and nothing here leaves a part out.
     let middleware = match &privacy_view {
         None => middleware,
         Some(_) => {
@@ -2768,33 +2794,20 @@ async fn build_session_with_capture_profile(
             });
             if !unadapted.is_empty() {
                 let names: Vec<&str> = unadapted.iter().map(|entry| entry.name()).collect();
-                let leave_out = extras
-                    .privacy_view
-                    .as_ref()
-                    .is_some_and(|selection| selection.leaves_out_unadapted_parts());
                 if let Some(sink) = &extras.activity_sink {
-                    sink(&if leave_out {
-                        format!(
-                            "This private conversation runs without: {}.",
-                            names.join(", ")
-                        )
-                    } else {
-                        format!(
-                            "This private conversation cannot be built. No source path exists for: {}.",
-                            names.join(", ")
-                        )
-                    });
+                    sink(&format!(
+                        "This private conversation cannot be built. No source path exists for: {}.",
+                        names.join(", ")
+                    ));
                 }
-                if !leave_out {
-                    if let Some(selection) = &extras.privacy_view {
-                        selection.report().refuse(
-                            crate::privacy_session::BuildRefusal::MissingSourcePaths(
-                                names.iter().map(|name| (*name).to_owned()).collect(),
-                            ),
-                        );
-                    }
-                    return None;
+                if let Some(selection) = &extras.privacy_view {
+                    selection.report().refuse(
+                        crate::privacy_session::BuildRefusal::MissingSourcePaths(
+                            names.iter().map(|name| (*name).to_owned()).collect(),
+                        ),
+                    );
                 }
+                return None;
             }
             kept
         }

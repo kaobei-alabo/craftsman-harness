@@ -194,6 +194,9 @@ async fn an_agent_without_a_boundary_keeps_its_paths_and_has_no_typed_entry() {
         retained: vec![],
         inputs: vec![],
         returned: None,
+        conversation: None,
+        summary: false,
+        owner: None,
     };
     drop(requests);
     assert!(matches!(
@@ -597,6 +600,7 @@ impl ModelViewBoundary for Frontiers {
                             call_id,
                             pointer,
                         } => format!("call json {} {call_id} {pointer}", tag(reply)),
+                        PartFrom::Source { source } => format!("source {}", tag(source)),
                     };
                     (from, part.text.to_string())
                 })

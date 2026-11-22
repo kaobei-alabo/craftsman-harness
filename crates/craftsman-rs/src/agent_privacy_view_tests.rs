@@ -41,6 +41,13 @@ async fn privacy(vault: &Vault, directory: &std::path::Path) -> Arc<PrivacySessi
     )
 }
 
+/// The selection a user's policy makes for a live conversation. It leaves
+/// nothing out: every part of the session must have a source path.
+fn selected_by_policy(session: &Arc<PrivacySession>) -> PrivacyViewSelection {
+    PrivacyViewSelection::from_user_policy(Arc::new(FixturePolicy::default()), session.clone())
+        .expect("a live fixture conversation")
+}
+
 async fn build(
     cfg: &Config,
     directory: &std::path::Path,
@@ -51,8 +58,7 @@ async fn build(
 ) -> Option<Session> {
     let activity = activity.clone();
     let mut extras = SessionExtras {
-        privacy_view: selected
-            .map(|session| PrivacyViewSelection::fixture_limited_set(session.clone())),
+        privacy_view: selected.map(selected_by_policy),
         workspace_root: Some(directory.to_path_buf()),
         token_sink: Some(Arc::new(|_| {})),
         activity_sink: Some(Arc::new(move |line: &str| {
@@ -114,6 +120,7 @@ async fn privacy_view_builder_fixture() {
     repair(&directory, &vault, &activity).await;
     normal_parts(&directory, &vault, &activity).await;
     compaction_lane(&directory, &vault, &activity).await;
+    delegation(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -157,16 +164,15 @@ async fn conversation(
         session.send_guard.as_ref().unwrap(),
         &owner.send_guard()
     ));
-    // The parts that have no source path are named, not dropped silently.
-    let named = activity
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|line| line.starts_with("This private conversation runs without: "))
-        .cloned()
-        .expect("the frontend is told what is left out");
-    // Only the delegated-agent middleware has no source path yet.
-    assert_eq!(named, "This private conversation runs without: subagents.");
+    // Every part of the configured session has a source path: nothing was
+    // left out and nothing was refused.
+    assert!(
+        !activity
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.starts_with("This private conversation "))
+    );
     // The untyped entry is refused before anything is recorded.
     assert!(session.agent.run_turn("untyped").await.is_err());
     assert!(session.agent.state.lock().unwrap().messages.is_empty());
@@ -197,13 +203,17 @@ async fn conversation(
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(body["messages"][0]["role"], "system");
         assert!(!body["messages"][0]["content"].as_str().unwrap().is_empty());
-        assert!(
-            body["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["function"]["name"] == "read_file")
-        );
+        // The delegation tools are among them, as in an ordinary session.
+        for name in ["read_file", "task", "send_message"] {
+            assert!(
+                body["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|tool| tool["function"]["name"] == name),
+                "{name}"
+            );
+        }
     }
     let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
     assert_eq!(second["messages"][2]["tool_calls"][0]["id"], "call-read");
@@ -444,16 +454,9 @@ async fn normal_parts(
     for (selected, ordinary) in [&first, &second].into_iter().zip(&plain_requests) {
         let (selected, ordinary) = (selected.replace(issued, CONTACT), system_of(ordinary));
         // Everything the selected session sends is the ordinary text, byte
-        // for byte. The ordinary session goes on with the section of the
-        // delegated-agent middleware, which the fixture leaves out because
-        // it has no source path yet.
-        let rest = ordinary
-            .strip_prefix(selected.as_str())
-            .unwrap_or_else(|| panic!("not the ordinary text: {selected}"));
-        assert!(
-            rest.starts_with("\n\nLaunch an ephemeral subagent"),
-            "{rest}"
-        );
+        // for byte, the section of the delegated-agent middleware included.
+        assert!(selected.contains("\n\nLaunch an ephemeral subagent"));
+        assert_eq!(selected, ordinary);
     }
     plain.lsp.shutdown().await;
     session.lsp.shutdown().await;
@@ -557,6 +560,317 @@ async fn compaction_lane(
     session.lsp.shutdown().await;
 }
 
+/// The text of the message at `index` of the request a server received.
+fn content_at(request: &wiremock::Request, index: usize) -> String {
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    body["messages"][index]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The root agent's reply to its first request: a task for the built-in
+/// delegated agent, whose description repeats what the request's input says.
+struct AsksForATask {
+    background: bool,
+}
+
+impl wiremock::Respond for AsksForATask {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let description = format!("Work on this: {}", content_at(request, 1));
+        reply(
+            "chat",
+            0,
+            Some((
+                "call-task",
+                "task",
+                &json!({
+                    "description": description,
+                    "subagent_type": "general-purpose",
+                    "run_in_background": self.background
+                }),
+            )),
+            "",
+        )
+    }
+}
+
+/// The delegated agent's final reply: it repeats its own input.
+struct Reports;
+
+impl wiremock::Respond for Reports {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        answer("chat", &[&format!("Report. {}", content_at(request, 1))])
+    }
+}
+
+/// Mounts `mock` for one request, at `priority` among the server's mocks.
+async fn mount_once(server: &MockServer, priority: u8, mock: Mock) {
+    mock.up_to_n_times(1)
+        .with_priority(priority)
+        .mount(server)
+        .await;
+}
+
+/// Whether a request is the root agent's: only it is offered the task tool.
+fn from_root(request: &wiremock::Request) -> bool {
+    String::from_utf8_lossy(&request.body).contains("\"name\":\"task\"")
+}
+
+/// Delegation in a built session: the builder's own delegated agent, its
+/// provider, its gated tools and the registry. A foreground task whose agent
+/// is refused a write and then reads a file, and a background task that
+/// reports back through a notification.
+async fn delegation(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let contact = directory.join("contact.txt");
+    std::fs::write(&contact, format!("Their number is {PHONE}.\n")).unwrap();
+    let refused = directory.join("refused.txt");
+    let typed = format!("Ask a helper who handles {EMAIL}.");
+    let tool_names = |body: &str| -> Vec<String> {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let message = |body: &str, index: usize| -> serde_json::Value {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["messages"][index].clone()
+    };
+
+    // In the foreground, one request after another.
+    let server = MockServer::start().await;
+    mount_once(
+        &server,
+        1,
+        Mock::given(method("POST")).respond_with(AsksForATask { background: false }),
+    )
+    .await;
+    mount_once(
+        &server,
+        2,
+        Mock::given(method("POST")).respond_with(reply(
+            "chat",
+            1,
+            Some((
+                "call-write",
+                "write_file",
+                &json!({"file_path": refused, "content": "x"}),
+            )),
+            "",
+        )),
+    )
+    .await;
+    mount_once(
+        &server,
+        3,
+        Mock::given(method("POST")).respond_with(asks_to_read(&contact)),
+    )
+    .await;
+    mount_once(
+        &server,
+        4,
+        Mock::given(method("POST")).respond_with(Reports),
+    )
+    .await;
+    mount_once(
+        &server,
+        5,
+        Mock::given(method("POST")).respond_with(answer("chat", &["fixture answer"])),
+    )
+    .await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let session = build(&cfg, directory, Some(&owner), None, activity, |_| {})
+        .await
+        .expect("a session with delegated agents is built");
+    let view = session.privacy_view.as_ref().unwrap();
+    let TurnResult::Done(output) = view.turn(&session.agent, &typed).await.unwrap() else {
+        panic!("the turn finishes");
+    };
+    assert_eq!(output.final_text(), "fixture answer");
+
+    // Five requests, each sent once, and no original in any of them.
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 5);
+    for body in &requests {
+        assert!(!body.contains(EMAIL) && !body.contains(PHONE));
+    }
+    // The delegated agent has its own system text and tools, without the
+    // delegation tools, and its input is the description as the model wrote
+    // it: the view the root agent was given, never the original.
+    let description = message(&requests[1], 1)["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(description.starts_with("Work on this: Ask a helper who handles "));
+    assert_ne!(
+        message(&requests[1], 0)["content"],
+        message(&requests[0], 0)["content"]
+    );
+    assert!(
+        !message(&requests[1], 0)["content"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    let delegated_tools = tool_names(&requests[1]);
+    assert!(delegated_tools.contains(&"read_file".to_owned()));
+    assert!(!delegated_tools.contains(&"task".to_owned()));
+    assert!(!delegated_tools.contains(&"send_message".to_owned()));
+    // The write was refused by the delegated agent's own gate and never ran;
+    // the refusal is what its model was told.
+    assert!(!refused.exists());
+    assert!(
+        message(&requests[2], 3)["content"]
+            .as_str()
+            .unwrap()
+            .contains(
+                "requires user approval, but this delegated run has no interactive approval channel"
+            )
+    );
+    // The file it read reached it as a view.
+    let read = message(&requests[3], 5)["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(read.contains("Their number is ") && !read.contains(PHONE));
+    // What it ended with is the task's result, in the record and on the
+    // wire, exactly as the model wrote it.
+    let report = format!("Report. {description}");
+    assert_eq!(message(&requests[4], 3)["content"], report.as_str());
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    assert!(
+        matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
+        if *content == report)
+    );
+    let sources = session.agent.recorded_sources().unwrap();
+    let result = owner
+        .actual_result(sources[2].as_ref().unwrap())
+        .expect("the result has its record");
+    assert_eq!(result.tool(), "task");
+    assert_eq!(result.reached().len(), 1);
+    assert_eq!(
+        session.registry.status("general-purpose#0"),
+        Some(craftsman_harness::AgentStatus::Done)
+    );
+    // The root agent's count holds its own two requests only.
+    assert_eq!(session.usage.lock().unwrap().0, 6);
+    assert!(owner.check().is_ok());
+    session.lsp.shutdown().await;
+
+    // In the background. Both agents ask the same server, so each reply is
+    // tied to the agent it is for.
+    let server = MockServer::start().await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let mut session = build(&cfg, directory, Some(&owner), None, activity, |_| {})
+        .await
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(from_root)
+        .respond_with(AsksForATask { background: true })
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(|request: &wiremock::Request| !from_root(request))
+        .respond_with(Reports)
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(from_root)
+        .respond_with(answer("chat", &["noted"]))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let view = session.privacy_view.as_ref().unwrap();
+    view.turn(&session.agent, &typed).await.unwrap();
+    // The task ends on its own. Whichever turn is active when its
+    // notification arrives records it; the next turn finds it recorded.
+    for _ in 0..30_000 {
+        if session.registry.status("general-purpose#0")
+            == Some(craftsman_harness::AgentStatus::Done)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        session.registry.status("general-purpose#0"),
+        Some(craftsman_harness::AgentStatus::Done)
+    );
+    view.turn(&session.agent, "And then?").await.unwrap();
+
+    let requests = sent(&server).await;
+    for body in &requests {
+        assert!(!body.contains(EMAIL) && !body.contains(PHONE));
+    }
+    // The delegated agent was asked once.
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|body| !body.contains("\"name\":\"task\""))
+            .count(),
+        1
+    );
+    // The notification is recorded once, as an ordinary session records it,
+    // and went out as the agent's framing around the delegated agent's
+    // reply, exactly as the model wrote it.
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    let framed: Vec<&String> = messages
+        .iter()
+        .filter_map(|message| match message {
+            Msg::User { content }
+                if content.starts_with("[background agent 'general-purpose#0' completed]\n") =>
+            {
+                Some(content)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(framed.len(), 1);
+    let framed = framed[0].clone();
+    assert!(framed.starts_with(
+        "[background agent 'general-purpose#0' completed]\nReport. Work on this: Ask a helper who handles "
+    ));
+    let last: serde_json::Value = serde_json::from_str(requests.last().unwrap()).unwrap();
+    assert!(
+        last["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|sent| sent["role"] == "user" && sent["content"] == framed.as_str())
+    );
+    assert!(
+        session
+            .agent
+            .recorded_sources()
+            .unwrap()
+            .iter()
+            .all(Option::is_some)
+    );
+    // The frontend's own receiver saw the same notification, as it always
+    // does.
+    let shown = session.notifications.drain();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        matches!(&shown[0].kind, craftsman_harness::NotificationKind::Completed(text)
+        if framed.ends_with(text.as_str()))
+    );
+    assert!(owner.check().is_ok());
+    session.lsp.shutdown().await;
+}
+
 /// Selections that are refused before a session exists, each with its
 /// typed reason for the host that made the selection.
 async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
@@ -586,7 +900,7 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
         Some(BuildRefusal::PolicyDisabled)
     );
     let ended = privacy(vault, directory).await;
-    let late = PrivacyViewSelection::fixture_limited_set(ended.clone());
+    let late = selected_by_policy(&ended);
     ended.stop();
     assert_eq!(
         PrivacyViewSelection::from_user_policy(policy(false, false), ended.clone()).err(),
@@ -626,11 +940,11 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
         ),
     ];
     for (thread, alter, expected) in cases {
-        let selection = PrivacyViewSelection::fixture_limited_set(owner.clone());
-        let report = selection.report();
+        let selected = selected_by_policy(&owner);
+        let report = selected.report();
         assert!(
             build(&cfg, directory, None, thread, activity, |extras| {
-                extras.privacy_view = Some(selection);
+                extras.privacy_view = Some(selected);
                 alter(extras)
             })
             .await
@@ -672,45 +986,40 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
         1
     );
 
-    // The selection a policy makes leaves nothing out. Every installed part
-    // must have a source path, and the ones that have none are named: to the
-    // frontend in one line, and to the host as a typed list. The protected
-    // call repair, the approval gate and the result size limit are not among
-    // them.
-    let selection =
-        PrivacyViewSelection::from_user_policy(policy(false, false), owner.clone()).unwrap();
-    let report = selection.report();
-    assert!(
-        build(&cfg, directory, None, None, activity, |extras| {
-            extras.privacy_view = Some(selection)
-        })
-        .await
-        .is_none()
-    );
-    let Some(BuildRefusal::MissingSourcePaths(missing)) = report.refusal() else {
-        panic!("the host is told which parts have no source path");
-    };
-    // The delegated-agent middleware is the one installed part without a
-    // source path. Compaction, the todo list, memory, the reminders, the
-    // call repair, the approval gate and the result size limit are kept.
-    assert_eq!(missing, ["subagents"]);
-    let line = activity
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|line| {
-            line.starts_with(
-                "This private conversation cannot be built. No source path exists for: ",
-            )
-        })
-        .cloned()
-        .expect("the frontend is told why");
-    assert!(
-        line.ends_with(&format!("{}.", missing.join(", "))),
-        "{line}"
-    );
+    // The selection a policy makes leaves nothing out. With the ordinary
+    // configuration every installed part has a source path, so the session
+    // is built with all of them and nothing is reported.
+    let selected = selected_by_policy(&owner);
+    let report = selected.report();
+    let built = build(&cfg, directory, None, None, activity, |extras| {
+        extras.privacy_view = Some(selected)
+    })
+    .await
+    .expect("the ordinary configuration is built");
+    assert_eq!(report.refusal(), None);
+    built.lsp.shutdown().await;
     assert!(owner.check().is_ok());
     assert!(server.received_requests().await.unwrap().is_empty());
+
+    // The model-visible gadget runtime has no source path. It is a part a
+    // frontend asks for, and a selection that asks for it is refused before
+    // anything is built.
+    #[cfg(feature = "gadgets")]
+    {
+        let selected = selected_by_policy(&owner);
+        let report = selected.report();
+        assert!(
+            build(&cfg, directory, None, None, activity, |extras| {
+                extras.privacy_view = Some(selected);
+                extras.local_gadgets = true
+            })
+            .await
+            .is_none()
+        );
+        assert_eq!(report.refusal(), Some(BuildRefusal::RequestedPart));
+        assert!(owner.check().is_ok());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
 }
 
 async fn run_fixture(

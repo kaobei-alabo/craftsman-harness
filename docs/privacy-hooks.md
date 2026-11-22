@@ -20,11 +20,13 @@ builder to the existing clients and guard, and the protected repair of tool
 calls runs on it as a recorded change. The system prompt, the todo list,
 memory, todo reminders and task workflow notes reach a request as parts with
 their own origins, and compaction asks its summarizer with views and keeps the
-summary as model text on the supported Chat path. Native history with opaque
-provider items refuses compaction before sending; no position mismatch strips
-those items. Nothing selects it, and it cannot be built outside test
-fixtures: delegated agents have no source path yet, and the builder refuses a
-session that would lose them.
+summary as model text in an explicit source-derived request. Kept native items
+remain bound to their original replies after movement; changed native replies
+refuse normal replay. Delegated tasks, messages and notification envelopes now
+have actual agent/parent/commit witnesses in the private combined source.
+Nothing selects it: actual user policy and frontend adapters are absent, and
+configured controls, runtime/catalog and inline human adapters still refuse or
+remain unwired.
 Sealed parked-call decisions have a private registered input producer and actual
 commit/invocation witnesses. Approval receipts inside the gate, terminal frontend
 input and display, restoration,
@@ -583,10 +585,14 @@ retained root. Same-user rename/race limits remain observations, not containment
 Compaction keeps a distinct actual working-state stage; its retained witness is
 issued only when that stage really becomes canonical state. The summarizer's
 unrecorded host instruction has a request-input witness, not a retained commit.
-Chat compaction preserves those sources. Native histories with provider items
-currently refuse compaction before sending; moved native items never silently
-become portable text. Full-set transport/producer adapters and actual frontend
-selection are still incomplete.
+Compaction uses an explicit source-derived summarizer request. Unchanged kept
+native replies retain their original items after movement, together with the
+original client/request context. The summarizer sees committed text/calls in its
+explicit projection; opaque originals stay in their private source receipts.
+A changed native reply refuses later replay instead of silently stripping items.
+A policy requiring opaque inspectability still refuses those wires at startup.
+Configured controls, runtime/catalog and real frontend/inline-human adapters
+remain incomplete.
 
 Validation belongs to its exact source head in
 `target/verification/privacy-core-frontier-corrections`. Independent source

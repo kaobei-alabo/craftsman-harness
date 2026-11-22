@@ -276,3 +276,30 @@ async fn typed_activity_rejects_another_entry_before_source_lock_access() {
     // This is an ownership primitive, not a concurrent main-loop fault probe.
     assert!(agent.is_turn_active());
 }
+
+#[tokio::test]
+async fn typed_task_rejects_active_ownership_before_seeding_or_plumbing_reset() {
+    let boundary = Arc::new(Boundary::default());
+    let agent = selected(&boundary);
+    let _activity = agent.begin_turn().unwrap();
+    let original = Msg::user("already retained original");
+    agent.state.lock().unwrap().messages.push(original.clone());
+    let input = source("accepted steering");
+    assert!(agent.steer_with_view("accepted steering", input));
+    let error = agent
+        .run_task_with_view(
+            "another task",
+            source("another"),
+            AgentState::default(),
+            None,
+        )
+        .await
+        .err()
+        .expect("active ownership must refuse");
+    assert!(matches!(error, AgentError::State(_)));
+    assert_eq!(agent.state.lock().unwrap().messages, [original]);
+    assert_eq!(agent.turn_input.lock().unwrap().pending.len(), 1);
+    assert!(agent.is_turn_active());
+    assert!(agent.actual_provider_returns().unwrap().is_empty());
+    // Direct ownership/queue primitive; no model, callback or budget fault runs.
+}

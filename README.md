@@ -45,11 +45,11 @@ A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
 [views of sources](docs/privacy-provenance.md), for all four model wires, are
 in development on top of them. No frontend, configuration or command selects
-either, and a session cannot be built with them outside tests yet. The local
-core correction retains actual input/reply/tool facts and sealed human decisions,
-with a separate sourced model view. Native compaction with opaque history refuses;
-complete producer/frontend/restore adapters and independent validation remain
-required before activation.
+either. The local core correction retains actual input/reply/tool facts and
+sealed human decisions, with a separate sourced model view and actual child/
+notification owners. Kept native items remain exact through compaction; changed
+native replies refuse replay. Real policy/frontend/restore adapters and
+independent validation remain required before activation.
 
 ## Planned WASM enhancement
 
