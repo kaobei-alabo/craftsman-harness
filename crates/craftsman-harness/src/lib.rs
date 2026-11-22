@@ -31,8 +31,8 @@ pub use boundary::{AgentBoundaryPolicy, HumanInputKind, ModelBoundaryAction};
 pub mod provenance;
 pub use provenance::{
     FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult, OutcomePart, PartFrom,
-    ReachedTool, ReplyEdit, SourcePart, SourceRef, TrackedDispatch, TrackedModelRequest,
-    TrackedPrepare, TrackedReply, ViewSupport,
+    ReachedTool, ReplyEdit, SourcePart, SourceRef, SummaryText, TrackedDispatch,
+    TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
 };
 
 pub mod interrupt;

@@ -23,8 +23,8 @@ passed its independent audit at `dffddeae`: all four contexts, 68 of 70 steps
 with the two skips being the Linux-only voice package step on Windows and
 macOS, all 156 test groups in both native modes, and the same two Windows
 parents. Windows keeps its 17 earlier Rust warnings and adds none. That main is
-now the locally installed source. The installed build contains the private
-foundations and selects none of them. Normal privacy remains inactive and
+was installed locally before PR #33. That build contained the private
+foundations and selected none of them. Normal privacy remains inactive and
 unselected. The private send guard was not part of that merge. It is merged
 separately under PR #33 as `a903af65`, after that PR's run
 [44981644431](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44981644431)
@@ -164,11 +164,11 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations merged under PR #32; normal sessions inactive | Merged as `dffddeae` with the tree of reviewed head 7fca. PR run44973387679 at 7fca passed all four contexts, every mandatory step and both native modes; both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents passed with the unchanged 16-byte check. That pass covers its selected tools and exact operation only; the producer of the earlier extra 24-byte header and any general effect of `/EMITVOLATILEMETADATA:NO` are not established. Separate main run44976215399 at `dffddeae` passed its independent audit: all four contexts, 68 of 70 steps with two Linux-only skips, all 156 groups, 17 retained Windows warnings and none new, both original Windows parents. It covers the foundation only. That main is installed locally; the installed build selects no privacy and contains no guard. Earlier failed runs are retained: ac17/44937824282 (`pe.align.section`), 56aa/44949456781 (VirtualSize 40) and 61ac/44957234452 (two Windows `Vault::open` Deadline unwraps, the 40-against-16 refusal, one macOS closed-stdout observer status, skipped post steps; causes unknown). Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
+| Privacy hooks | Private foundations merged under PR #32; normal sessions inactive | Merged as `dffddeae` with the tree of reviewed head 7fca. PR run44973387679 at 7fca passed all four contexts, every mandatory step and both native modes; both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents passed with the unchanged 16-byte check. That pass covers its selected tools and exact operation only; the producer of the earlier extra 24-byte header and any general effect of `/EMITVOLATILEMETADATA:NO` are not established. Separate main run44976215399 at `dffddeae` passed its independent audit: all four contexts, 68 of 70 steps with two Linux-only skips, all 156 groups, 17 retained Windows warnings and none new, both original Windows parents. It covers the foundation only. That foundation main was installed before PR #33; its build selected no privacy and contained no guard. Earlier failed runs are retained: ac17/44937824282 (`pe.align.section`), 56aa/44949456781 (VirtualSize 40) and 61ac/44957234452 (two Windows `Vault::open` Deadline unwraps, the 40-against-16 refusal, one macOS closed-stdout observer status, skipped post steps; causes unknown). Current Ubuntu compaction passes both modes; old cause unknown. The guard is separately merged and installed under PR #33 but unselected, as recorded below. Key ownership, policy/masking, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
 | Private send guard | Private, default-absent refusal seam at both model send sites; unselected | Refuses final request bytes that contain originals already held by real vault mapping records. No configuration, frontend, key source, detector, masking, restoration or activation. Not part of PR #32; merged under PR #33 as `a903af65` with the tree of `4bea365`. Guard source `70d4b0e` has a source-scoped independent acceptance. Merged with the earlier fixture foundation `ac17c4d` as `38da30b`, the unchanged `scripts/verify.sh` passed once on macOS: 17 of 17 checks, the default voice build build-checked only, and both no-default-feature test modes (core 2208 passed/36 ignored, gadgets 2527/48, 26 groups each, no compiler warnings). That run belongs to `38da30b`, not to later commits. A later local merge with the final foundation source 7fca changes no guard or foundation implementation file; any local run of that merge is recorded with its own head, and none is stated here. PR #33's hosted run 44981644431 at `4bea365` passed all four contexts, every mandatory step and both native modes with the guard's cases; the foundation's earlier runs ran trees without the guard. The separate run on the merged main, 44985966590, passed its independent audit at `a903af65` the same way, and that main is installed locally; nothing in it selects the guard. Concurrency, charge propagation and the copy bound remain source-only, and key, policy, hook, masking, restoration and activation remain separate work. See [privacy-send.md](privacy-send.md) |
 | Private admission core | Private detector contract with a narrow host floor, source-pinned detector call and one-conversation admission owner; unselected | Local, unmerged, not installed. The pinned call reaches a user-level source by handle without following a link, requires regular single-link files, both file hashes, no capability and a stored grant for the exact bytes before any compile, describe or run, and returns the reply bytes unchanged; ordinary gadget approval is unchanged. An admitted node exists only after the vault's commit of one actual raw capture, including a commit that found nothing, and the send guard's admission. Raw text with an issued placeholder is refused; every detector, vault or guard failure stops the session; stored history is not changed. The conversation binding reserves the application's own fresh thread id, but the session builder does not consume it yet. No producer, provider, tool, approval, display, file, key, policy or activation wiring; no Linux, Windows or hosted run. See [privacy-admission.md](privacy-admission.md) and [privacy-provenance.md](privacy-provenance.md) |
-| Source view boundary | Optional, default-absent framework boundary; unselected | Local, unmerged, not installed. An agent built without it runs its existing paths. With it, the agent takes turns, steering and approval decisions only through typed entries, keeps one opaque host source beside each recorded message, composes each request from sources through a provider method that defaults to refusal, asks the boundary before every call runs, and records the source of a reply, a tool result or a message it appended itself only after the real one is committed. A middleware runs only with its author's statement. A preserving one must leave messages, todos, files, custom state and system additions alone, which the agent checks after every hook phase and around every tool call. A tracked reviewer changes a received reply only through recorded operations; the protected `patch_tool_calls` repair runs that way. A tracked middleware adds system text only as source parts, and a tool or middleware announces what it stores, appends or repeats during a call; the todo list, memory, todo reminders and task workflow notes run that way. Recorded input, results, replies, usage, journal and checkpoints are unchanged. Boundary policies, completion checks, system text on the agent, per-round system additions, an inbox, reopening, transfer and idle compaction have no source path and are refused. See [privacy-provenance.md](privacy-provenance.md) |
-| Conversation view, four-wire providers and builder selection | Private application side of the boundary for one privacy conversation, providers for Chat, Responses, Claude Messages and Gemini, and a private selection in the shared session builder; selected by nothing | Local, unmerged, not installed. Sources are minted at an actual capture, receipt or commit. A request is composed by replacing each recorded text with the view of its own source; a source that is foreign or no longer fits stops the session before a request exists. A call runs only if the last committed reply asked for exactly it or a checked human decision allowed exactly it. The providers send the view through the existing clients, encoders, transport policies and send guard, and refuse recorded text. On native wires the provider items of a reply are kept in an in-memory receipt of the conversation and sent back exactly, only by a client of the same endpoint, model, protocol and credential; the history cache and its checkpoint copy are not used, and a user policy that requires inspectable provider items refuses those wires. The builder selection takes the user's captured policy through a trait that nothing in this branch implements outside tests, reports a typed reason when it refuses, uses the reserved thread id and the conversation's own guard, admits the system prompt section by section from its producer, and refuses the build when any installed middleware has no source path. Compaction and the delegated-agent middleware have none and are installed in every ordinary session, so no privacy session can be built outside test fixtures. The stored record is not redacted. No frontend, configuration or command makes the selection. See [privacy-provenance.md](privacy-provenance.md) |
+| Source view boundary | Optional, default-absent framework boundary; unselected | Local, unmerged, not installed. An agent built without it runs its existing paths. With it, the agent takes turns, steering and approval decisions only through typed entries, keeps one opaque host source beside each recorded message, composes each request from sources through a provider method that defaults to refusal, asks the boundary before every call runs, and records the source of a reply, a tool result or a message it appended itself only after the real one is committed. A middleware runs only with its author's statement. A preserving one must leave messages, todos, files, custom state and system additions alone, which the agent checks after every hook phase and around every tool call. A tracked reviewer changes a received reply only through recorded operations; the protected `patch_tool_calls` repair runs that way. A tracked middleware adds system text only as source parts, and a tool or middleware announces what it stores, appends or repeats during a call; the todo list, memory, todo reminders and task workflow notes run that way. A tracked preparation can also replace recorded messages with a summary made through the summarizer's view path; automatic compaction runs that way, and manual or idle compaction through a typed entry. Recorded input, results, replies, usage, journal and checkpoints are unchanged. Boundary policies, completion checks, system text on the agent, untracked system additions, an inbox, reopening and transfer have no source path and are refused. Typed Chat idle compaction is supported; native opaque history refuses summary projection. See [privacy-provenance.md](privacy-provenance.md) |
+| Conversation view, four-wire providers and builder selection | Private application side of the boundary for one privacy conversation, providers for Chat, Responses, Claude Messages and Gemini, and a private selection in the shared session builder; selected by nothing | Local, unmerged, not installed. Immutable framework commit/invocation witnesses and private transport/human producers bind sources; returned reply/usage/tool data survives later source failures. A request is composed by replacing each recorded text with the view of its own source; a source that is foreign or no longer fits stops the session before a request exists. A call runs only if the last committed reply asked for exactly it or a checked human decision allowed exactly it. The providers send the view through the existing clients, encoders, transport policies and send guard, and refuse recorded text. On native wires the provider items of a reply are kept in an in-memory receipt of the conversation and sent back exactly, only by a client of the same endpoint, model, protocol and credential; the history cache and its checkpoint copy are not used, and a user policy that requires inspectable provider items refuses those wires. The builder selection takes the user's captured policy through a trait that nothing in this branch implements outside tests, reports a typed reason when it refuses, uses the reserved thread id and the conversation's own guard, admits the system prompt section by section from its producer, and refuses the build when any installed middleware has no source path. The delegated-agent middleware has none and is installed in every ordinary session, so no privacy session can be built outside test fixtures. Supported Chat compaction has distinct actual stage/commit witnesses; native opaque history refuses compaction without a complete source projection. The stored record is not redacted. No frontend, configuration or command makes the selection. See [privacy-provenance.md](privacy-provenance.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -509,22 +509,61 @@ both native modes, with both original Windows parents passing again. It covers
 this foundation only. Normal privacy remains off.
 
 
-## Core event correction branch — November 22, 2026
+## Core event corrections — November 22, 2026
 
-A separate local correction branch now issues immutable retained-message and
-provider/terminal event witnesses at the actual framework event. They are
-private-memory history, with no caller constructor or serialized checkpoint
-certificate, and do not certify transport, saves, restoration or permission.
-The typed activity guard precedes the state/source check. Selected cancellation
-keeps already accepted inputs and sources through call balancing and final save.
-The one admission-entry clock is checked again after real vault work and before
-node release; the native vault bounds are unchanged and no worker quiescence is
-claimed. Final pinned-source observations require available timestamps and
-relative no-follow directory identities from the retained root.
+The local correction branch combines the immutable transport/source-part slices
+with framework-issued events. It remains unmerged, uninstalled and unselected;
+the installed `a903af65` guard is separate. No frontend, key/policy, restoration
+or normal privacy selection is enabled by this work.
 
-This branch is still under implementation and has not had its full local run or
-independent source review. Application consumption, actual human-input owners,
-transport integration and full-set source adapters remain pending here. The
-installed a903 guard is separate; no frontend, key/policy, restoration or normal
-privacy selection is enabled. The restricted private MAIN callback/budget and
-close-between-retry scenarios remain unexecuted and uninspected.
+Typed turn, resume and idle-compaction entries acquire activity before comparing
+state and source. Internal checks use explicit state-then-source guard scopes.
+Every retained witness binds the complete immutable message, including role,
+call id and error status, to its actual event. Public state, a caller message,
+equal content, a label, a digest or an ordinal cannot issue one.
+
+A private fact owner keeps actual provider returns, received replies and usage,
+terminal calls and outcomes, and final-chain outcomes before fallible source or
+review work. Returned data is not a transport, origin, save, permission or billing
+certificate. Selected failure closes future required privacy work, retains real
+facts and accepted input, and follows the actual journal/final-save path; a save
+failure remains a failure and is not retried as proof. Selected cancellation
+seals new steering and keeps already accepted originals and sources through real
+call balancing and final save. The unselected paths keep their existing behavior.
+
+A parked-call witness and a private registered human-input owner replace the
+caller action factory. The actual absent, denied, approved, Always or edited
+choice and raw edited bytes are retained. Every `ApproveEdited` remains human
+origin even when its JSON equals model bytes, and is admitted before effects.
+An issued alias in raw edited input refuses. An Always permission update happens
+only after the sealed decision passes its source/admission checks. Inline
+approval-gate and `ask_user` producer adapters remain separate, unfinished work.
+
+Each post-chain terminal invocation gets its own call, decision and source
+witness, with a synchronous live check immediately before the actual tool poll.
+That source check grants no tool permission. Completed tool and chain facts are
+kept independently of whether any model view can be published.
+
+The one 45-second admission-entry clock is checked after actual vault return,
+after guard work and immediately before node release. Completed map facts
+survive late refusal. The 16-slot admission bound, vault five-second/native busy
+limits and original terminal bounds remain; queued time does not prove blocking
+worker quiescence. Final pinned-source confirmation requires available before
+and after modified timestamps and relative no-follow identities from the
+retained root. Same-user rename/race limits remain observations, not containment.
+
+Compaction keeps a distinct actual working-state stage; its retained witness is
+issued only when that stage really becomes canonical state. The summarizer's
+unrecorded host instruction has a request-input witness, not a retained commit.
+Chat compaction preserves those sources. Native histories with provider items
+currently refuse compaction before sending; moved native items never silently
+become portable text. Full-set transport/producer adapters and actual frontend
+selection are still incomplete.
+
+Validation belongs to its exact source head in
+`target/verification/privacy-core-frontier-corrections`. Independent source
+review, combined-source native/hosted proof and separate merged-main validation
+remain gates before integration/install. The restricted private MAIN
+callback/budget-boundary, equivalent and close-between-retry scenarios remain
+UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
+The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.

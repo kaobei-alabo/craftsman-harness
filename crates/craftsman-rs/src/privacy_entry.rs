@@ -74,6 +74,19 @@ impl PrivacyView {
         Ok(agent.steer_with_view(typed, source))
     }
 
+    /// Manual compaction through this session's tracked summarizer path.
+    pub async fn compact(
+        &self,
+        agent: &Agent,
+        compaction: &craftsman_harness::builtin::CompactionMiddleware,
+    ) -> Result<Option<(usize, usize)>, PrivateEntryError> {
+        self.session().check().map_err(PrivateEntryError::Stopped)?;
+        agent
+            .compact_idle_with_view(compaction)
+            .await
+            .map_err(PrivateEntryError::Agent)
+    }
+
     /// Requests input through the source registered by the actual builder.
     /// No caller Msg/action/label can create a human decision receipt.
     pub async fn request_decision(
@@ -116,12 +129,14 @@ pub enum HumanChoice {
 }
 
 type HumanReader = Arc<dyn Fn(&ActualParkedCall) -> HumanChoice + Send + Sync>;
+type AcceptedHumanEffect = Arc<dyn Fn(&HumanChoice, &craftsman_harness::ToolCall) + Send + Sync>;
 
 /// Private registered input owner. Registration alone mints no receipt: only
 /// the actual read below, against a real parked-call witness, creates a fact.
 pub(crate) struct HumanDecisionProducer {
     session: Arc<PrivacySession>,
     read: HumanReader,
+    accepted_effect: Option<AcceptedHumanEffect>,
     received: Mutex<Vec<Arc<HumanDecisionInput>>>,
 }
 
@@ -131,6 +146,8 @@ pub struct HumanDecisionInput {
     choice: HumanChoice,
     action: Option<HitlAction>,
     edited_raw: Option<CapturedRaw>,
+    accepted_effect: Option<AcceptedHumanEffect>,
+    effect_applied: std::sync::atomic::AtomicBool,
 }
 
 impl HumanDecisionInput {
@@ -155,15 +172,45 @@ impl HumanDecisionInput {
     pub(crate) fn edited_raw(&self) -> Option<&CapturedRaw> {
         self.edited_raw.as_ref()
     }
+    /// Called only after this exact parked decision and its raw edit/feedback
+    /// have passed the boundary. The input read itself grants no permission.
+    pub(crate) fn apply_accepted_effect(&self) {
+        if !self
+            .effect_applied
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            if let Some(effect) = &self.accepted_effect {
+                effect(&self.choice, self.parked.call());
+            }
+        }
+    }
 }
 
 impl HumanDecisionProducer {
     /// Called only at the actual app input registration seam. The callback is
     /// kept as that owner; source text and project/model flags cannot make it.
+    #[cfg(test)]
     pub(crate) fn register(session: Arc<PrivacySession>, read: HumanReader) -> Arc<Self> {
+        Self::registered(session, read, None)
+    }
+
+    pub(crate) fn register_with_effect(
+        session: Arc<PrivacySession>,
+        read: HumanReader,
+        effect: AcceptedHumanEffect,
+    ) -> Arc<Self> {
+        Self::registered(session, read, Some(effect))
+    }
+
+    fn registered(
+        session: Arc<PrivacySession>,
+        read: HumanReader,
+        accepted_effect: Option<AcceptedHumanEffect>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             session,
             read,
+            accepted_effect,
             received: Mutex::new(Vec::new()),
         })
     }
@@ -202,6 +249,8 @@ impl HumanDecisionProducer {
             choice,
             action,
             edited_raw: raw,
+            accepted_effect: self.accepted_effect.clone(),
+            effect_applied: std::sync::atomic::AtomicBool::new(false),
         });
         self.received.lock().unwrap().push(input.clone());
         if matches!(input.choice, HumanChoice::Edit(_)) && input.action.is_none() {

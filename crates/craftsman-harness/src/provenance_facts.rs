@@ -2,8 +2,8 @@
 //! or a caller's mutable state. They describe retention and invocation only;
 //! the host still validates its own source, transport and permission owners.
 
-use crate::{HitlAction, Msg, ToolCall, ToolOutcome, Usage};
-use std::sync::Arc;
+use crate::{HitlAction, ModelResponse, Msg, ToolCall, ToolOutcome, Usage};
+use std::sync::{Arc, Mutex};
 
 use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourcePart, SourceRef};
 
@@ -91,6 +91,7 @@ impl ActualReceivedReply {
 pub enum RetainedEvent {
     Input,
     ModelReply,
+    Summary,
     ToolResult,
     Framework(FrameworkCommit),
 }
@@ -107,6 +108,7 @@ struct Retained {
     message: Msg,
     received: Option<ActualReceivedReply>,
     edits: Vec<ReplyEdit>,
+    summary: Option<ActualStagedSummary>,
 }
 
 impl ActualRetainedCommit {
@@ -122,6 +124,7 @@ impl ActualRetainedCommit {
             message,
             received,
             edits: Vec::new(),
+            summary: None,
         }))
     }
 
@@ -137,6 +140,18 @@ impl ActualRetainedCommit {
             message,
             received: Some(received),
             edits,
+            summary: None,
+        }))
+    }
+
+    pub(crate) fn summary_issued(stage: ActualStagedSummary) -> Self {
+        Self(Arc::new(Retained {
+            owner: stage.owner().clone(),
+            event: RetainedEvent::Summary,
+            message: stage.message().clone(),
+            received: Some(stage.received().clone()),
+            edits: Vec::new(),
+            summary: Some(stage),
         }))
     }
 
@@ -155,8 +170,191 @@ impl ActualRetainedCommit {
     pub fn edits(&self) -> &[ReplyEdit] {
         &self.0.edits
     }
+    pub fn summary(&self) -> Option<&ActualStagedSummary> {
+        self.0.summary.as_ref()
+    }
     pub fn same_commit(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// An instruction the framework actually put in a request, without appending
+/// it to the conversation. It is neither a human decision nor a retained
+/// conversation commit. Only the request construction event issues it.
+#[derive(Clone)]
+pub struct ActualRequestInput(Arc<RequestInput>);
+struct RequestInput {
+    owner: ActualAgentOwner,
+    message: Msg,
+}
+impl ActualRequestInput {
+    pub(crate) fn issued(owner: &ActualAgentOwner, message: Msg) -> Self {
+        Self(Arc::new(RequestInput {
+            owner: owner.clone(),
+            message,
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn message(&self) -> &Msg {
+        &self.0.message
+    }
+}
+
+/// A summary replacement actually staged in the round's working state. A
+/// later retained commit is issued only if that state really becomes the
+/// conversation. A failed or cancelled stage is not a saved summary.
+#[derive(Clone)]
+pub struct ActualStagedSummary(Arc<StagedSummary>);
+struct StagedSummary {
+    owner: ActualAgentOwner,
+    message: Msg,
+    received: ActualReceivedReply,
+    open: SourcePart,
+    close: SourcePart,
+}
+impl ActualStagedSummary {
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        message: Msg,
+        received: ActualReceivedReply,
+        open: SourcePart,
+        close: SourcePart,
+    ) -> Self {
+        Self(Arc::new(StagedSummary {
+            owner: owner.clone(),
+            message,
+            received,
+            open,
+            close,
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn message(&self) -> &Msg {
+        &self.0.message
+    }
+    pub fn received(&self) -> &ActualReceivedReply {
+        &self.0.received
+    }
+    pub fn open(&self) -> &SourcePart {
+        &self.0.open
+    }
+    pub fn close(&self) -> &SourcePart {
+        &self.0.close
+    }
+    pub fn same_stage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// The actual event behind an item in a model request. The host validates
+/// its own source against this immutable event; none of the variants grants
+/// transport, human, restoration or tool permission authority.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum ActualModelInput {
+    Retained(ActualRetainedCommit),
+    StagedSummary(ActualStagedSummary),
+    RequestInput(ActualRequestInput),
+}
+impl ActualModelInput {
+    pub fn owner(&self) -> &ActualAgentOwner {
+        match self {
+            Self::Retained(commit) => commit.owner(),
+            Self::StagedSummary(stage) => stage.owner(),
+            Self::RequestInput(input) => input.owner(),
+        }
+    }
+    pub fn message(&self) -> &Msg {
+        match self {
+            Self::Retained(commit) => commit.message(),
+            Self::StagedSummary(stage) => stage.message(),
+            Self::RequestInput(input) => input.message(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ActualFacts {
+    pub(crate) received: Vec<ActualReceivedReply>,
+    pub(crate) retained: Vec<ActualRetainedCommit>,
+    pub(crate) terminals: Vec<ActualTerminalOutcome>,
+    pub(crate) chains: Vec<ActualToolFact>,
+    pub(crate) request_inputs: Vec<ActualRequestInput>,
+    pub(crate) staged_summaries: Vec<ActualStagedSummary>,
+    pub(crate) provider_returns: Vec<ActualProviderReturn>,
+}
+
+/// Data the selected provider handed back while its actual terminal call
+/// was owned. Kept before its later receipt/projection checks. This is data
+/// retention only: a provider can be synthetic, and this record certifies
+/// neither HTTP receipt, committed origin, usage settlement nor authority.
+#[derive(Clone)]
+pub struct ActualProviderReturn {
+    owner: ActualAgentOwner,
+    response: ModelResponse,
+}
+impl ActualProviderReturn {
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.owner
+    }
+    pub fn message(&self) -> &Msg {
+        &self.response.message
+    }
+    pub fn usage(&self) -> &Usage {
+        &self.response.usage
+    }
+}
+
+/// Attached only at the framework's actual provider terminal, not given to
+/// middleware as a return factory. One owned call can retain one return.
+pub(crate) struct ReturnRecorder {
+    owner: ActualAgentOwner,
+    facts: Arc<Mutex<ActualFacts>>,
+    state: Mutex<ReturnState>,
+}
+struct ReturnState {
+    open: bool,
+    returned: bool,
+}
+impl ReturnRecorder {
+    pub(crate) fn new(owner: &ActualAgentOwner, facts: Arc<Mutex<ActualFacts>>) -> Arc<Self> {
+        Arc::new(Self {
+            owner: owner.clone(),
+            facts,
+            state: Mutex::new(ReturnState {
+                open: true,
+                returned: false,
+            }),
+        })
+    }
+    pub(crate) fn retain(&self, response: &ModelResponse) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if !state.open || state.returned {
+            return false;
+        }
+        self.facts
+            .lock()
+            .unwrap()
+            .provider_returns
+            .push(ActualProviderReturn {
+                owner: self.owner.clone(),
+                response: response.clone(),
+            });
+        state.returned = true;
+        true
+    }
+    pub(crate) fn owned(self: &Arc<Self>) -> ReturnOwnership {
+        ReturnOwnership(self.clone())
+    }
+}
+pub(crate) struct ReturnOwnership(Arc<ReturnRecorder>);
+impl Drop for ReturnOwnership {
+    fn drop(&mut self) {
+        self.0.state.lock().unwrap().open = false;
     }
 }
 
@@ -348,6 +546,10 @@ opaque_debug!(
     ActualParkedCall,
     ActualReceivedReply,
     ActualRetainedCommit,
+    ActualRequestInput,
+    ActualStagedSummary,
+    ActualModelInput,
+    ActualProviderReturn,
     ActualToolInvocation,
     ActualTerminalOutcome,
     ActualToolFact

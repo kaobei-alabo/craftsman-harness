@@ -1482,3 +1482,120 @@ async fn todos_memory_and_reminders_reach_the_wire_as_parts_of_their_own_origin(
     assert!(c.boundary.system_addition(&[forged]).await.is_err());
     assert_eq!(c.session.check(), Err(SessionStop::Closed));
 }
+
+// ---- compaction ---------------------------------------------------------------
+
+#[tokio::test]
+async fn compaction_asks_the_summarizer_with_views_and_keeps_its_text_as_model_text() {
+    use craftsman_harness::builtin::{CompactionMiddleware, CompactionTrigger};
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let c = conversation(&vault, &server, "unused").await;
+    let first = format!("who handles {EMAIL}?");
+    let node = c.session.admit_raw(&draft(&first)).await.unwrap();
+    let placeholder = issued(&node);
+    // Two replies, then the summarizer's reply, then the third reply. The
+    // summarizer repeats the placeholder it was shown.
+    let summary = format!("Earlier the user asked who handles {placeholder}.");
+    scripted(
+        &server,
+        vec![
+            answer("chat", &["one"]),
+            answer("chat", &["two"]),
+            answer("chat", &[&summary]),
+            answer("chat", &["three"]),
+        ],
+    )
+    .await;
+    let provider = |usage: Arc<Mutex<(u64, u64)>>| {
+        let session = c.session.clone();
+        let client = client(&server);
+        async move {
+            Arc::new(
+                ViewChatProvider::new(client, session, usage, Arc::new(|_: &str| {}))
+                    .await
+                    .unwrap(),
+            ) as Arc<dyn ModelProvider>
+        }
+    };
+    // The summarizer is another provider of the same conversation with its
+    // own usage, as the session builder makes it.
+    let summarizer_usage = Arc::new(Mutex::new((0, 0)));
+    let compaction = Arc::new(CompactionMiddleware::new(
+        provider(summarizer_usage.clone()).await,
+        CompactionTrigger::MessageCount {
+            threshold_msgs: 4,
+            keep_tail_msgs: 2,
+        },
+    ));
+    let agent = Agent::builder(provider(c.usage.clone()).await)
+        .middleware(compaction)
+        .model_view_boundary(Some(c.boundary.clone()))
+        .build();
+    agent
+        .run_turn_with_view(first.clone(), c.session.source(&node).unwrap())
+        .await
+        .unwrap();
+    for input in ["and then?", "go on"] {
+        let node = c.session.admit_raw(&draft(input)).await.unwrap();
+        agent
+            .run_turn_with_view(input, c.session.source(&node).unwrap())
+            .await
+            .unwrap();
+    }
+
+    // The record: the summary as the summarizer wrote it, the kept tail and
+    // the new reply.
+    let recorded_summary = format!("<conversation_summary>\n{summary}\n</conversation_summary>");
+    assert_eq!(
+        recorded(&agent),
+        vec![
+            Msg::user(recorded_summary.clone()),
+            Msg::assistant("two"),
+            Msg::user("go on"),
+            Msg::assistant("three"),
+        ]
+    );
+    // Each lane kept its own real usage.
+    assert_eq!(*c.usage.lock().unwrap(), (9, 6));
+    assert_eq!(*summarizer_usage.lock().unwrap(), (3, 2));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in &requests {
+        let raw = String::from_utf8(request.body.clone()).unwrap();
+        assert!(!raw.contains(EMAIL) && !raw.contains(OPERATOR));
+    }
+    let sent = bodies(&server).await;
+    // The summarizer was given its own instructions, the views of what it
+    // summarizes and the application's request, and no tools.
+    let asked = sent[2]["messages"].as_array().unwrap();
+    assert_eq!(asked.len(), 5);
+    assert!(
+        asked[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are compacting an ongoing agent conversation")
+    );
+    assert_eq!(asked[1]["content"], node.model_view().unwrap());
+    assert_eq!(asked[2], json!({"role": "assistant", "content": "one"}));
+    assert_eq!(asked[3], json!({"role": "user", "content": "and then?"}));
+    assert_eq!(
+        asked[4]["content"],
+        "Summarize the conversation above per your instructions, as a continuation summary."
+    );
+    assert!(sent[2].get("tools").is_none());
+    // The summary went back to the model as the summarizer wrote it. Its
+    // placeholder is neither replaced by the address nor masked again, and
+    // the user role does not make it raw input.
+    assert_eq!(
+        sent[3]["messages"][1],
+        json!({"role": "user", "content": recorded_summary})
+    );
+    let sources = agent.recorded_sources().unwrap();
+    let summary_source = sources[0].as_ref().unwrap();
+    assert!(c.session.admitted(summary_source).is_none());
+    assert!(c.session.committed_model(summary_source).is_none());
+    assert!(c.session.check().is_ok());
+}

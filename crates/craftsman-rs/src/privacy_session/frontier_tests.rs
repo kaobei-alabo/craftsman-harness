@@ -114,3 +114,41 @@ async fn absent_input_does_not_become_an_approval_or_default_answer() {
     assert!(g.tool.seen.lock().unwrap().args.is_empty());
     assert_eq!(producer.received().len(), 1);
 }
+
+#[tokio::test]
+async fn reading_always_does_not_apply_permission_until_its_real_decision_is_accepted() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let g = parked_fixture(&vault, &server).await;
+    let parked = g.agent.actual_parked_call().unwrap();
+    let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = effects.clone();
+    let actual_call = parked.call().clone();
+    let producer = HumanDecisionProducer::register_with_effect(
+        g.c.session.clone(),
+        Arc::new(|_| HumanChoice::ApproveAlways),
+        Arc::new(move |choice, call| {
+            assert!(matches!(choice, HumanChoice::ApproveAlways));
+            assert_eq!(call, &actual_call);
+            observed.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let input = producer.receive(&parked).unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    // Direct actual-human decision primitive: no tool effect or main-loop
+    // callback/budget failure is injected.
+    g.c.boundary
+        .accept_parked_decision(
+            &parked,
+            input.action().unwrap(),
+            &SourceRef::new(input.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    input.apply_accepted_effect();
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert!(g.tool.seen.lock().unwrap().args.is_empty());
+    assert_eq!(producer.received().len(), 1);
+}

@@ -158,6 +158,11 @@ async fn ordinary_view_retains_real_reply_commit_and_terminal_facts() {
     let received = agent.actual_received_replies().unwrap();
     assert_eq!(received.len(), 2);
     assert_eq!(received[0].usage().output_tokens, 3);
+    let provider_returns = agent.actual_provider_returns().unwrap();
+    assert_eq!(provider_returns.len(), received.len());
+    assert_eq!(provider_returns[0].message(), received[0].message());
+    assert_eq!(provider_returns[0].usage(), received[0].usage());
+    assert!(provider_returns[0].owner().same_agent(received[0].owner()));
     let commits = agent.actual_retained_commits().unwrap();
     assert_eq!(commits.len(), 4);
     let messages = agent.state.lock().unwrap().messages.clone();

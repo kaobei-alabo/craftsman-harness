@@ -13,17 +13,19 @@
 //! What a selected agent still refuses, because it has no source-preserving
 //! path: a middleware whose author made no statement for this boundary, a
 //! boundary policy, a completion check, system text outside the boundary,
-//! per-round system additions, an inbox, the untyped turn, steering and
-//! resume entries, reopening, transfer and idle compaction.
+//! untracked system additions, an inbox, the untyped turn, steering and
+//! resume entries, reopening and transfer. Tracked Chat compaction has its
+//! own actual stage/retention witnesses; unsupported native inputs refuse.
 
 use super::*;
 use crate::ModelResponse;
 use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
-    ActualAgentOwner, ActualParkedCall, ActualReceivedReply, ActualRetainedCommit,
+    ActualAgentOwner, ActualFacts, ActualModelInput, ActualParkedCall, ActualProviderReturn,
+    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualStagedSummary,
     ActualTerminalOutcome, ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary,
-    OutcomePart, PartFrom, ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef,
-    TrackedDispatch, TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
+    OutcomePart, PartFrom, ReachedTool, ReplyEdit, RetainedEvent, ReturnRecorder, SourcePart,
+    SourceRef, TrackedDispatch, TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
 };
 use std::sync::atomic::AtomicBool;
 
@@ -207,11 +209,7 @@ pub(super) fn state_changed() -> AgentError {
     )
 }
 
-pub(super) enum Slot {
-    Bound(SourceRef, ActualRetainedCommit),
-    /// Appended by the agent itself; the boundary has not been asked yet.
-    Pending(ActualRetainedCommit),
-}
+pub(super) use crate::provenance::Slot;
 
 /// One queued input of the active turn. `source` is set only by the typed
 /// steering entry of an agent with a source view.
@@ -240,16 +238,8 @@ pub(super) struct ModelView {
     closed: AtomicBool,
     pub(super) decision: Mutex<Option<AppliedDecision>>,
     pub(super) parked: Mutex<Option<ActualParkedCall>>,
-    facts: Mutex<Facts>,
+    facts: Arc<Mutex<ActualFacts>>,
     todos: Mutex<Option<Vec<PartFrom>>>,
-}
-
-#[derive(Default)]
-struct Facts {
-    received: Vec<ActualReceivedReply>,
-    retained: Vec<ActualRetainedCommit>,
-    terminals: Vec<ActualTerminalOutcome>,
-    chains: Vec<ActualToolFact>,
 }
 
 impl ModelView {
@@ -263,7 +253,7 @@ impl ModelView {
             closed: AtomicBool::new(closed),
             decision: Mutex::new(None),
             parked: Mutex::new(None),
-            facts: Mutex::new(Facts::default()),
+            facts: Arc::new(Mutex::new(ActualFacts::default())),
             todos: Mutex::new(Some(Vec::new())),
         }
     }
@@ -337,6 +327,7 @@ impl ModelView {
             && slots.iter().zip(messages).all(|(slot, message)| {
                 let commit = match slot {
                     Slot::Bound(_, commit) | Slot::Pending(commit) => commit,
+                    Slot::StagedSummary(_, _) => return false,
                 };
                 commit.owner().same_agent(&self.owner) && commit.message() == message
             })
@@ -451,6 +442,26 @@ fn unsourced() -> AgentError {
     )
 }
 
+/// One real selected provider terminal. Return data is kept here before
+/// an around-model wrapper can change/fail it. App transports can retain
+/// earlier, before their own receipt/usage/projection checks, through the
+/// private per-call recorder carried only by this terminal's request.
+async fn owned_model_return(
+    model: &dyn ModelProvider,
+    mut request: TrackedModelRequest,
+    owner: &ActualAgentOwner,
+    facts: Arc<Mutex<ActualFacts>>,
+) -> Result<ModelDelivery, AgentError> {
+    let returns = ReturnRecorder::new(owner, facts);
+    let _ownership = returns.owned();
+    request.returned = Some(returns.clone());
+    let result = model.complete_with_view(request).await;
+    if let Ok(delivery) = &result {
+        returns.retain(&delivery.response);
+    }
+    result
+}
+
 impl Agent {
     /// Entries that carry no source cannot be used on a selected agent.
     pub(super) fn refuse_untracked_entry(&self) -> Result<(), AgentError> {
@@ -531,7 +542,7 @@ impl Agent {
                 .iter()
                 .map(|slot| match slot {
                     Slot::Bound(source, _) => Some(source.clone()),
-                    Slot::Pending(_) => None,
+                    Slot::Pending(_) | Slot::StagedSummary(_, _) => None,
                 })
                 .collect(),
         )
@@ -540,6 +551,20 @@ impl Agent {
     /// Actual provider/terminal/retained events of this selected agent, including
     /// facts for which projection failed. These are private-memory history;
     /// no token certifies transport, persistence, restoration or permission.
+    /// Returned data of the selected provider call, including returns whose
+    /// later receipt/projection checks failed. No record grants app origin.
+    pub fn actual_provider_returns(&self) -> Option<Vec<ActualProviderReturn>> {
+        Some(
+            self.model_view
+                .as_ref()?
+                .facts
+                .lock()
+                .unwrap()
+                .provider_returns
+                .clone(),
+        )
+    }
+
     pub fn actual_received_replies(&self) -> Option<Vec<ActualReceivedReply>> {
         Some(
             self.model_view
@@ -627,6 +652,14 @@ impl Agent {
     ) -> Result<TurnResult, AgentError> {
         let view = self.supported_view()?;
         let _turn_activity = self.begin_turn()?;
+        let consistent = {
+            let state = self.state.lock().unwrap();
+            view.matches(&state.messages)
+        };
+        if !consistent {
+            view.close();
+            return Err(unsourced());
+        }
         let call = self
             .pending
             .lock()
@@ -666,12 +699,17 @@ impl Agent {
                     |(index, slot)| match slot {
                         Slot::Pending(commit) => Some((index, commit.clone())),
                         Slot::Bound(_, _) => None,
+                        Slot::StagedSummary(_, _) => None,
                     },
                 );
             let Some((index, commit)) = next else {
                 return Ok(());
             };
-            let source = view.boundary.observe_retained_framework(&commit).await?;
+            let source = if commit.event() == RetainedEvent::Summary {
+                view.boundary.observe_retained_summary(&commit).await?
+            } else {
+                view.boundary.observe_retained_framework(&commit).await?
+            };
             match view.sources.lock().unwrap().get_mut(index) {
                 Some(slot @ Slot::Pending(_)) => *slot = Slot::Bound(source, commit),
                 _ => return Err(unsourced()),
@@ -763,7 +801,13 @@ impl Agent {
         &self,
         view: &ModelView,
         working: &mut AgentState,
-    ) -> Result<Vec<Vec<SourcePart>>, AgentError> {
+    ) -> Result<(Vec<Vec<SourcePart>>, Option<Vec<Slot>>), AgentError> {
+        // A preparation may replace recorded messages with a summary. It
+        // works on a copy of the slots, which takes the place of the kept
+        // ones when the working state is committed.
+        self.settle_sources(view).await?;
+        let mut slots = view.sources.lock().unwrap().clone();
+        let mut replaced = false;
         let mut additions = Vec::new();
         // The stored todos have origins only while there is one per todo.
         let todos = view
@@ -778,6 +822,11 @@ impl Agent {
                     state: working,
                     todos: todos.as_deref(),
                     additions: &mut additions,
+                    boundary: view.boundary.as_ref(),
+                    owner: &view.owner,
+                    facts: &view.facts,
+                    slots: &mut slots,
+                    replaced: &mut replaced,
                 };
                 entry.prepare_model_with_view(&mut prepare).await?;
             } else {
@@ -788,7 +837,47 @@ impl Agent {
                 }
             }
         }
-        Ok(additions)
+        Ok((additions, replaced.then_some(slots)))
+    }
+
+    /// The working state of a round was committed. Slots that a preparation
+    /// of that round replaced take the place of the kept ones.
+    pub(super) fn commit_slots(
+        &self,
+        view: &ModelView,
+        staged: Option<Vec<Slot>>,
+    ) -> Result<(), AgentError> {
+        let Some(staged) = staged else {
+            return Ok(());
+        };
+        // Canonical state is already committed. Hold it while checking the
+        // actual items and issuing summary retention events; never issue a
+        // retained token from a candidate, a label or a checkpoint image.
+        let state = self.state.lock().unwrap();
+        if staged.len() > state.messages.len()
+            || staged
+                .iter()
+                .zip(&state.messages)
+                .any(|(slot, message)| match slot {
+                    Slot::Bound(_, commit) | Slot::Pending(commit) => commit.message() != message,
+                    Slot::StagedSummary(_, stage) => stage.message() != message,
+                })
+        {
+            return Err(unsourced());
+        }
+        let committed = staged
+            .into_iter()
+            .map(|slot| match slot {
+                Slot::StagedSummary(_, stage) => {
+                    let commit = ActualRetainedCommit::summary_issued(stage);
+                    view.facts.lock().unwrap().retained.push(commit.clone());
+                    Slot::Pending(commit)
+                }
+                slot => slot,
+            })
+            .collect();
+        *view.sources.lock().unwrap() = committed;
+        Ok(())
     }
 
     /// The source of the committed reply that asked for the call `call_id`:
@@ -852,27 +941,31 @@ impl Agent {
         view: &ModelView,
         working: &AgentState,
         additions: Vec<Vec<SourcePart>>,
+        staged: Option<&[Slot]>,
     ) -> Result<Option<ModelDelivery>, AgentError> {
         if !working.system_extras.is_empty() {
             return Err(unavailable());
         }
         view.live()?;
         self.settle_sources(view).await?;
-        if !view.matches(&working.messages) {
-            return Err(unsourced());
-        }
-        let messages = view
-            .sources
-            .lock()
-            .unwrap()
+        let current = match staged {
+            Some(staged) => staged.to_vec(),
+            None => view.sources.lock().unwrap().clone(),
+        };
+        let pairs = current
             .iter()
-            .map(|slot| match slot {
-                Slot::Bound(source, _) => Some(source.clone()),
-                Slot::Pending(_) => None,
-            })
+            .map(Slot::bound_input)
             .collect::<Option<Vec<_>>>()
             .ok_or_else(unsourced)?;
-        if messages.len() != working.messages.len() {
+        let (messages, inputs): (Vec<_>, Vec<_>) = pairs.into_iter().unzip();
+        if inputs.len() != working.messages.len()
+            || inputs
+                .iter()
+                .zip(&working.messages)
+                .any(|(input, message)| {
+                    !input.owner().same_agent(&view.owner) || input.message() != message
+                })
+        {
             return Err(unsourced());
         }
         let definitions = self.tool_defs();
@@ -893,20 +986,26 @@ impl Agent {
             },
             messages,
             tools,
-            retained: view
-                .sources
-                .lock()
-                .unwrap()
+            retained: inputs
                 .iter()
-                .map(|slot| match slot {
-                    Slot::Bound(_, commit) | Slot::Pending(commit) => commit.clone(),
+                .filter_map(|input| match input {
+                    ActualModelInput::Retained(commit) => Some(commit.clone()),
+                    _ => None,
                 })
                 .collect(),
+            inputs,
+            returned: None,
         };
         let model = self.model.clone();
+        let owner = view.owner.clone();
+        let facts = view.facts.clone();
         let terminal = move |request: TrackedModelRequest| -> BoxedViewFuture<'_> {
             let model = model.clone();
-            Box::pin(async move { model.complete_with_view(request).await })
+            let owner = owner.clone();
+            let facts = facts.clone();
+            Box::pin(
+                async move { owned_model_return(model.as_ref(), request, &owner, facts).await },
+            )
         };
         if self.interrupt_model_on_cancel {
             tokio::select! {
@@ -967,5 +1066,281 @@ impl Agent {
             _ => return Err(unsourced()),
         }
         Ok(())
+    }
+}
+
+impl TrackedPrepare<'_> {
+    /// Replaces recorded messages with a summary of them, made by
+    /// `summarizer` through its view path.
+    ///
+    /// The summarizer is given `text.system` as its system text, the recorded
+    /// messages at `summarized` with their own sources, and `text.ask` as a
+    /// final input. The summary message is `text.open`, the reply's text and
+    /// `text.close`, joined, recorded with the user role as the ordinary
+    /// compaction records it. After it come the recorded messages at `kept`,
+    /// with their slots. The usage anchor is reset as the ordinary compaction
+    /// resets it.
+    ///
+    /// Nothing is replaced when the summarizer or the boundary fails, or when
+    /// the turn is cancelled while the summarizer runs.
+    pub async fn replace_with_summary(
+        &mut self,
+        summarizer: &dyn ModelProvider,
+        text: crate::provenance::SummaryText,
+        summarized: &[usize],
+        kept: &[usize],
+    ) -> Result<(), AgentError> {
+        let crate::provenance::SummaryText {
+            system,
+            ask,
+            open,
+            close,
+        } = text;
+        let length = self.state.messages.len();
+        if self.slots.len() != length {
+            return Err(unsourced());
+        }
+        // The replacement must account for every original exactly once and
+        // preserve order within both groups. An index is never a source.
+        let mut covered = vec![false; length];
+        for group in [summarized, kept] {
+            if group.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(unsourced());
+            }
+            for &index in group {
+                let seen = covered.get_mut(index).ok_or_else(unsourced)?;
+                if *seen {
+                    return Err(unsourced());
+                }
+                *seen = true;
+            }
+        }
+        if covered.iter().any(|seen| !seen) {
+            return Err(unsourced());
+        }
+        for (slot, message) in self.slots.iter().zip(&self.state.messages) {
+            let (_, input) = slot.bound_input().ok_or_else(unsourced)?;
+            if !input.owner().same_agent(self.owner) || input.message() != message {
+                return Err(unsourced());
+            }
+        }
+        let mut messages = Vec::with_capacity(summarized.len() + 1);
+        let mut sources = Vec::with_capacity(summarized.len() + 1);
+        let mut inputs = Vec::with_capacity(summarized.len() + 1);
+        for &index in summarized {
+            let (source, input) = self.slots[index].bound_input().ok_or_else(unsourced)?;
+            messages.push(self.state.messages[index].clone());
+            sources.push(source);
+            inputs.push(input);
+        }
+        let ask_message = Msg::user(&*ask.text);
+        let ask_source = self.boundary.host_message(&ask).await?;
+        let ask_input = ActualRequestInput::issued(self.owner, ask_message.clone());
+        self.facts
+            .lock()
+            .unwrap()
+            .request_inputs
+            .push(ask_input.clone());
+        messages.push(ask_message);
+        sources.push(ask_source);
+        inputs.push(ActualModelInput::RequestInput(ask_input));
+        let retained = inputs
+            .iter()
+            .filter_map(|input| match input {
+                ActualModelInput::Retained(commit) => Some(commit.clone()),
+                _ => None,
+            })
+            .collect();
+        let request = TrackedModelRequest {
+            system: vec![self.boundary.system_addition(&[system]).await?],
+            request: ModelRequest {
+                system: String::new(),
+                messages,
+                tools: Vec::new(),
+            },
+            messages: sources,
+            tools: Vec::new(),
+            retained,
+            inputs,
+            returned: None,
+        };
+        self.boundary.validate_summary_inputs(&request)?;
+        let delivery = match crate::TurnCancellation::current() {
+            Some(turn) => tokio::select! {
+                biased;
+                _ = turn.cancelled() => return Err(AgentError::Cancelled),
+                delivery = owned_model_return(summarizer, request, self.owner, self.facts.clone()) => delivery?,
+            },
+            None => owned_model_return(summarizer, request, self.owner, self.facts.clone()).await?,
+        };
+        // What actually came back belongs to the fact owner before any
+        // projection, framing, cancellation or source check can fail.
+        let received = ActualReceivedReply::issued(
+            self.owner,
+            delivery.response.message.clone(),
+            delivery.response.usage.clone(),
+            delivery.receipt,
+        );
+        self.facts.lock().unwrap().received.push(received.clone());
+        if crate::TurnCancellation::current().is_some_and(|turn| turn.is_cancelled()) {
+            return Err(AgentError::Cancelled);
+        }
+        let reply_text = match received.message() {
+            Msg::Assistant { content, .. }
+            | Msg::User { content }
+            | Msg::System { content }
+            | Msg::Tool { content, .. } => content,
+        };
+        let summary = Msg::user(format!("{}{reply_text}{}", open.text, close.text));
+        let mut replaced = Vec::with_capacity(kept.len() + 1);
+        let tail_slots = kept
+            .iter()
+            .map(|&index| self.slots[index].clone())
+            .collect::<Vec<_>>();
+        replaced.push(summary.clone());
+        replaced.extend(kept.iter().map(|&index| self.state.messages[index].clone()));
+        self.state.messages = replaced;
+        self.state.last_usage = None;
+        self.state.last_usage_msg_count = 0;
+        // Issued at this actual working-state replacement, not at receipt
+        // validation and not as a canonical retained commit.
+        let stage = ActualStagedSummary::issued(self.owner, summary, received, open, close);
+        self.facts
+            .lock()
+            .unwrap()
+            .staged_summaries
+            .push(stage.clone());
+        let source = self.boundary.staged_summary_source(&stage).await?;
+        let mut slots = Vec::with_capacity(tail_slots.len() + 1);
+        slots.push(Slot::StagedSummary(source, stage));
+        slots.extend(tail_slots);
+        *self.slots = slots;
+        *self.replaced = true;
+        Ok(())
+    }
+}
+
+impl Agent {
+    /// The idle compaction of a selected agent: [`compact_idle`] with the
+    /// tracked path. The same conditions, the same exclusive activity, the
+    /// same saves before and after, and the same refusals when an approval is
+    /// pending, when the turn is cancelled or when the conversation changed
+    /// while the summarizer ran. The summarizer is asked through its view
+    /// path, and the summary and the kept messages keep their sources.
+    ///
+    /// [`compact_idle`]: Agent::compact_idle
+    pub async fn compact_idle_with_view(
+        &self,
+        compaction: &crate::builtin::CompactionMiddleware,
+    ) -> Result<Option<(usize, usize)>, AgentError> {
+        let view = self.supported_view()?;
+        if !self.durable_turn_checkpoints {
+            return Err(AgentError::State(
+                "Durable idle compaction is not enabled for this agent.".into(),
+            ));
+        }
+        let _activity = self.begin_activity(true)?;
+        let consistent = {
+            let state = self.state.lock().unwrap();
+            view.matches(&state.messages)
+        };
+        if !consistent {
+            view.close();
+            return Err(unsourced());
+        }
+        let cancellation = self.turn_input.lock().unwrap().cancellation.clone();
+        let result = match cancellation {
+            Some(turn) => {
+                turn.scope(self.compact_idle_with_view_inner(view, compaction))
+                    .await
+            }
+            None => {
+                crate::cancellation::unscoped(self.compact_idle_with_view_inner(view, compaction))
+                    .await
+            }
+        };
+        match result {
+            Ok(counts) => Ok(counts),
+            Err(error) => self.view_failed(view, error).await,
+        }
+    }
+
+    async fn compact_idle_with_view_inner(
+        &self,
+        view: &ModelView,
+        compaction: &crate::builtin::CompactionMiddleware,
+    ) -> Result<Option<(usize, usize)>, AgentError> {
+        if self.pending.lock().unwrap().is_some()
+            || self.parked_suspension.lock().unwrap().is_some()
+        {
+            return Err(AgentError::State(
+                "Resolve the pending approval before compacting the conversation.".into(),
+            ));
+        }
+        if self.take_cancel_request() {
+            return Err(AgentError::Cancelled);
+        }
+        view.reconcile(&mut self.state.lock().unwrap());
+        self.save_progress_checkpoint(None).await?;
+        self.settle_sources(view).await?;
+        let mut working = self.snapshot();
+        let messages = working.messages.clone();
+        let mut slots = view.sources.lock().unwrap().clone();
+        let mut replaced = false;
+        let mut additions = Vec::new();
+        {
+            let mut prepare = TrackedPrepare {
+                state: &mut working,
+                todos: None,
+                additions: &mut additions,
+                boundary: view.boundary.as_ref(),
+                owner: &view.owner,
+                facts: &view.facts,
+                slots: &mut slots,
+                replaced: &mut replaced,
+            };
+            compaction.compact_now_with_view(&mut prepare).await?;
+        }
+        let counts = {
+            let mut input = self.turn_input.lock().unwrap();
+            if input.cancel_requested
+                || input
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(|turn| turn.is_cancelled())
+            {
+                return Err(AgentError::Cancelled);
+            }
+            let mut state = self.state.lock().unwrap();
+            if state.messages != messages {
+                return Err(AgentError::State(
+                    "Conversation changed during compaction; the summary was discarded.".into(),
+                ));
+            }
+            let counts = replaced.then(|| {
+                let counts = (messages.len(), working.messages.len());
+                state.messages = working.messages;
+                state.last_usage = None;
+                state.last_usage_msg_count = 0;
+                let committed_slots = slots
+                    .into_iter()
+                    .map(|slot| match slot {
+                        Slot::StagedSummary(_, stage) => {
+                            let commit = ActualRetainedCommit::summary_issued(stage);
+                            view.facts.lock().unwrap().retained.push(commit.clone());
+                            Slot::Pending(commit)
+                        }
+                        slot => slot,
+                    })
+                    .collect();
+                *view.sources.lock().unwrap() = committed_slots;
+                counts
+            });
+            input.finishing = true;
+            counts
+        };
+        self.save_progress_checkpoint(None).await?;
+        self.settle_sources(view).await?;
+        Ok(counts)
     }
 }

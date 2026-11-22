@@ -22,9 +22,9 @@
 
 use super::*;
 use craftsman_harness::provenance::{
-    ActualAgentOwner, ActualRetainedCommit, ActualToolFact, ActualToolInvocation, FrameworkCommit,
-    ModelViewBoundary, ObservedToolResult, PartFrom, ReachedTool, ReplyEdit, RetainedEvent,
-    SourcePart, SourceRef, TrackedModelRequest,
+    ActualAgentOwner, ActualModelInput, ActualRetainedCommit, ActualStagedSummary, ActualToolFact,
+    ActualToolInvocation, FrameworkCommit, ModelViewBoundary, ObservedToolResult, PartFrom,
+    ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef, TrackedModelRequest,
 };
 use craftsman_harness::{
     AgentError, HitlAction, ModelRequest, Msg, ToolCall, ToolDef, ToolOutcome,
@@ -51,6 +51,16 @@ enum ViewSource {
     },
     /// One section a middleware added to the system text, part by part.
     Addition(Vec<AdditionPart>),
+    /// The message that replaced summarized ones: the application's opening
+    /// and closing text around what a summarizer of this conversation
+    /// returned. That text is model-origin, whatever role the message has.
+    Summary {
+        stage: ActualStagedSummary,
+        commit: Option<ActualRetainedCommit>,
+        open: AdmittedNode,
+        text: String,
+        close: AdmittedNode,
+    },
 }
 
 /// How a recorded tool result is seen by a model.
@@ -492,6 +502,10 @@ fn without_calls(message: &Msg) -> Option<Msg> {
     }
 }
 
+fn retained_input_is(input: &ActualModelInput, commit: &ActualRetainedCommit) -> bool {
+    matches!(input, ActualModelInput::Retained(actual) if actual.same_commit(commit))
+}
+
 impl PrivacySession {
     /// The source to keep beside the recorded item that `node` was admitted
     /// for. Only a node this session admitted is accepted.
@@ -518,12 +532,8 @@ impl PrivacySession {
         Ok(view)
     }
 
-    /// The request a model may see on a native wire, with the provider items
-    /// to send back. `identity` is the sending client's. Every reply of the
-    /// conversation must have been received by a client of exactly that
-    /// identity, at exactly its position. A reply without such a receipt, or
-    /// with another client's, stops the session before a request exists.
-    /// Items are sent back only for a reply that was committed as received.
+    /// The native request and its original provider items. Moving a native
+    /// reply currently refuses: no position-based portable downgrade exists.
     pub fn native_view(
         &self,
         request: &TrackedModelRequest,
@@ -545,6 +555,19 @@ impl PrivacySession {
             items.push((node.inner.received == node.inner.message).then(|| receipt.items.clone()));
         }
         Ok((view, NativeReplay { items }))
+    }
+
+    /// A summary may consume only representations the composer preserves.
+    /// Native history has no supported summary projection yet, so it refuses
+    /// before sending instead of silently discarding opaque provider items.
+    pub fn summary_view(&self, request: &TrackedModelRequest) -> Result<ModelRequest, SessionStop> {
+        if request.message_sources().iter().any(|source| {
+            matches!(source.downcast::<ViewSource>().as_deref(),
+                Some(ViewSource::Model(node)) if node.inner.native.is_some())
+        }) {
+            return Err(unbound(&self.inner));
+        }
+        self.model_view(request)
     }
 
     /// The committed model node behind `source`, if it is one of this
@@ -601,19 +624,14 @@ impl PrivacySession {
             .unwrap()
             .clone()
             .ok_or(SessionStop::Unbound)?;
-        if request
-            .retained_commits()
-            .iter()
-            .any(|commit| !commit.owner().same_agent(&actor))
-        {
-            return Err(unbound(inner));
-        }
-        if request.retained_commits().len() != recorded.messages.len()
+        if request.message_inputs().len() != recorded.messages.len()
             || request
-                .retained_commits()
+                .message_inputs()
                 .iter()
                 .zip(&recorded.messages)
-                .any(|(commit, message)| commit.message() != message)
+                .any(|(input, message)| {
+                    !input.owner().same_agent(&actor) || input.message() != message
+                })
         {
             return Err(unbound(inner));
         }
@@ -665,7 +683,12 @@ impl PrivacySession {
                 }
             }
             let mut messages = Vec::with_capacity(recorded.messages.len());
-            for (message, source) in recorded.messages.iter().zip(request.message_sources()) {
+            for ((message, source), input) in recorded
+                .messages
+                .iter()
+                .zip(request.message_sources())
+                .zip(request.message_inputs())
+            {
                 messages.push(match (message, &*own(source)?) {
                     (Msg::User { content }, ViewSource::Admitted(node)) => Msg::User {
                         content: view(node, content)?,
@@ -681,7 +704,10 @@ impl PrivacySession {
                             actual,
                             commit,
                         },
-                    ) if actual.call_id == *tool_call_id && commit.message() == message => {
+                    ) if actual.call_id == *tool_call_id
+                        && commit.message() == message
+                        && retained_input_is(input, commit) =>
+                    {
                         Msg::Tool {
                             tool_call_id: tool_call_id.clone(),
                             content: match result {
@@ -741,6 +767,7 @@ impl PrivacySession {
                             commit,
                         },
                     ) if commit.message() == message
+                        && retained_input_is(input, commit)
                         && matches!(
                             event,
                             FrameworkCommit::CancelledCall
@@ -765,16 +792,62 @@ impl PrivacySession {
                             event: FrameworkCommit::CancelNote,
                             commit,
                         },
-                    ) if tool_calls.is_empty() && commit.message() == message => Msg::Assistant {
-                        content: view(node, content)?,
-                        tool_calls: Vec::new(),
-                    },
+                    ) if tool_calls.is_empty()
+                        && commit.message() == message
+                        && retained_input_is(input, commit) =>
+                    {
+                        Msg::Assistant {
+                            content: view(node, content)?,
+                            tool_calls: Vec::new(),
+                        }
+                    }
                     (Msg::Assistant { .. }, ViewSource::Model(node))
                         if node.committed_by(self)
+                            && retained_input_is(input, &node.inner.commit)
                             && node.inner.commit.message() == message
                             && node.inner.message == *message =>
                     {
                         message.clone()
+                    }
+                    (
+                        Msg::User { content },
+                        ViewSource::Summary {
+                            stage,
+                            commit,
+                            open,
+                            text,
+                            close,
+                        },
+                    ) => {
+                        let bound = match (input, commit) {
+                            (ActualModelInput::StagedSummary(actual), None) => {
+                                actual.same_stage(stage)
+                            }
+                            (ActualModelInput::Retained(actual), Some(commit)) => {
+                                actual.same_commit(commit)
+                            }
+                            _ => false,
+                        };
+                        if !bound || stage.message() != message {
+                            return Err(SessionStop::Unbound);
+                        }
+                        // The recorded summary is the opening text, the
+                        // summarizer's text and the closing text, exactly.
+                        let (first, last) = (open.captured_len(), content.len());
+                        let fits = last.checked_sub(close.captured_len()).is_some_and(|tail| {
+                            first <= tail
+                                && content.is_char_boundary(first)
+                                && content.is_char_boundary(tail)
+                                && open.captured_text_is(&content[..first])
+                                && content[first..tail] == **text
+                                && close.captured_text_is(&content[tail..])
+                        });
+                        if !fits {
+                            return Err(SessionStop::Unbound);
+                        }
+                        Msg::User {
+                            content: format!("{}{text}{}", host(open)?, host(close)?),
+                        }
                     }
                     _ => return Err(SessionStop::Unbound),
                 });
@@ -888,6 +961,47 @@ impl ConversationBoundary {
             return Err(fault(SessionStop::Unbound));
         }
         Ok(())
+    }
+
+    async fn summary_node(
+        &self,
+        stage: &ActualStagedSummary,
+        commit: Option<ActualRetainedCommit>,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(stage.owner())?;
+        self.require_agent(stage.received().owner())?;
+        let inner = &self.session.inner;
+        let received = stage
+            .received()
+            .transport_receipt()
+            .downcast::<ReceivedModel>()
+            .filter(|received| Arc::ptr_eq(&received.owner, inner))
+            .ok_or_else(|| fault(unbound(inner)))?;
+        if received.message != *stage.received().message() {
+            return Err(fault(unbound(inner)));
+        }
+        let text = match &received.message {
+            Msg::Assistant { content, .. }
+            | Msg::User { content }
+            | Msg::System { content }
+            | Msg::Tool { content, .. } => content.clone(),
+        };
+        let (open, close) = (stage.open(), stage.close());
+        let fits = matches!(stage.message(), Msg::User { content }
+            if *content == format!("{}{text}{}", open.text, close.text));
+        if !fits || !matches!(open.from, PartFrom::Fixed) || !matches!(close.from, PartFrom::Fixed)
+        {
+            return Err(fault(unbound(inner)));
+        }
+        let open = self.owned_part(RawOrigin::HostStatic, &open.text).await?;
+        let close = self.owned_part(RawOrigin::HostStatic, &close.text).await?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Summary {
+            stage: stage.clone(),
+            commit,
+            open,
+            text,
+            close,
+        })))
     }
 
     /// The operation that was checked for the call running now, for a host
@@ -1057,6 +1171,57 @@ impl ModelViewBoundary for ConversationBoundary {
     async fn system_addition(&self, parts: &[SourcePart]) -> Result<SourceRef, AgentError> {
         let composed = self.held_parts(parts).await?;
         Ok(SourceRef::new(Arc::new(ViewSource::Addition(composed))))
+    }
+
+    async fn host_message(&self, part: &SourcePart) -> Result<SourceRef, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        let origin = match &part.from {
+            PartFrom::Fixed => RawOrigin::HostStatic,
+            PartFrom::Read { .. } => RawOrigin::HostFile,
+            _ => return Err(fault(unbound(inner))),
+        };
+        let node = self.owned_part(origin, &part.text).await?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node))))
+    }
+
+    fn validate_summary_inputs(&self, request: &TrackedModelRequest) -> Result<(), AgentError> {
+        self.session
+            .summary_view(request)
+            .map(|_| ())
+            .map_err(fault)
+    }
+
+    async fn summary_source(
+        &self,
+        _: SourceRef,
+        _: &SourcePart,
+        _: &SourcePart,
+        _: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        // Caller DTOs and receipt/message equality cannot issue a stage.
+        Err(fault(unbound(&self.session.inner)))
+    }
+
+    async fn staged_summary_source(
+        &self,
+        stage: &ActualStagedSummary,
+    ) -> Result<SourceRef, AgentError> {
+        self.summary_node(stage, None).await
+    }
+
+    async fn observe_retained_summary(
+        &self,
+        commit: &ActualRetainedCommit,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(commit.owner())?;
+        let stage = commit
+            .summary()
+            .ok_or_else(|| fault(SessionStop::Unbound))?;
+        if commit.event() != RetainedEvent::Summary || commit.message() != stage.message() {
+            return Err(fault(unbound(&self.session.inner)));
+        }
+        self.summary_node(stage, Some(commit.clone())).await
     }
 
     async fn commit_model(&self, _: SourceRef, _: &Msg) -> Result<SourceRef, AgentError> {
@@ -1315,6 +1480,7 @@ impl ModelViewBoundary for ConversationBoundary {
             match (decided, model) {
                 (Some(decided), Some(model))
                     if decided.call == *call
+                        && invocation.decision_action() == Some(&decided.action)
                         && invocation
                             .decision_source()
                             .is_some_and(|source| source.is(&decided.source)) =>
@@ -1404,6 +1570,9 @@ impl ModelViewBoundary for ConversationBoundary {
             action: action.clone(),
             source: decision.clone(),
         });
+        if let Some(input) = received {
+            input.apply_accepted_effect();
+        }
         Ok(())
     }
 }

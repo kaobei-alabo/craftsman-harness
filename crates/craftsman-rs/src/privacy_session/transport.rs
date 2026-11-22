@@ -168,23 +168,29 @@ impl ModelProvider for ViewChatProvider {
             )
             .await
             .map_err(|error| AgentError::Model(error.to_string()))?;
-        {
-            let mut usage = self.usage.lock().unwrap();
-            usage.0 += turn.usage.input_tokens;
-            usage.1 += turn.usage.output_tokens;
-        }
         let usage = Usage {
             input_tokens: turn.usage.input_tokens,
             output_tokens: turn.usage.output_tokens,
         };
         let message = to_fw_message(turn);
+        let response = ModelResponse { message, usage };
+        req.retain_received_data(&response);
+        {
+            let mut usage = self.usage.lock().unwrap();
+            usage.0 += response.usage.input_tokens;
+            usage.1 += response.usage.output_tokens;
+        }
         // The receipt is made here, from the reply as it was received and
         // the request it answered, before the agent reviews or commits it.
-        let receipt =
-            received_chat_reply(&self.session, &message, view.messages.len(), request_sha256)
-                .map_err(fault)?;
+        let receipt = received_chat_reply(
+            &self.session,
+            &response.message,
+            view.messages.len(),
+            request_sha256,
+        )
+        .map_err(fault)?;
         Ok(ModelDelivery::new(
-            ModelResponse { message, usage },
+            response,
             SourceRef::new(Arc::new(receipt)),
         ))
     }
@@ -197,6 +203,8 @@ pub struct ViewNativeProvider {
     sink: TokenSink,
     round_sink: Option<RoundSink>,
     defaults: AdmittedNode,
+    /// Whether this provider serves the summarizer of the conversation.
+    summaries: bool,
 }
 
 impl ViewNativeProvider {
@@ -227,7 +235,16 @@ impl ViewNativeProvider {
             sink,
             round_sink: None,
             defaults,
+            summaries: false,
         })
+    }
+
+    /// For the summarizer of the conversation. Its requests carry earlier
+    /// replies as their text and calls, never with provider items, as the
+    /// ordinary summarizer's do: its own client never received those replies.
+    pub fn for_summaries(mut self) -> Self {
+        self.summaries = true;
+        self
     }
 
     /// The frontend's notification before each request, as the ordinary
@@ -262,24 +279,34 @@ impl ModelProvider for ViewNativeProvider {
             .map_err(|error| AgentError::Model(error.to_string()))?;
         defaults_hold(&self.session, &self.defaults, &current)?;
         // The view, and the provider items this conversation itself received
-        // from a client of exactly this identity.
-        let (view, replay) = self
-            .session
-            .native_view(&req, native.identity())
-            .map_err(fault)?;
-        if replay.replies() >= NATIVE_REPLIES {
-            return Err(AgentError::Model(
-                "Native model history exceeds its checkpoint limit.".into(),
-            ));
-        }
+        // from a client of exactly this identity. The summarizer sends none.
+        let (view, replay) = if self.summaries {
+            (self.session.summary_view(&req).map_err(fault)?, None)
+        } else {
+            let (view, replay) = self
+                .session
+                .native_view(&req, native.identity())
+                .map_err(fault)?;
+            if replay.replies() >= NATIVE_REPLIES {
+                return Err(AgentError::Model(
+                    "Native model history exceeds its checkpoint limit.".into(),
+                ));
+            }
+            (view, Some(replay))
+        };
         let exchange = native
             .complete_view(
                 &view,
-                &|index, message| replay.items(index, message),
+                &|index, message| {
+                    replay
+                        .as_ref()
+                        .and_then(|replay| replay.items(index, message))
+                },
                 |text| (self.sink)(text),
             )
             .await
             .map_err(|error| AgentError::Model(error.to_string()))?;
+        req.retain_received_data(&exchange.response);
         {
             let mut usage = self.usage.lock().unwrap();
             let input = usage

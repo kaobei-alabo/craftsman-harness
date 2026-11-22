@@ -2519,6 +2519,45 @@ async fn build_session_with_capture_profile(
             crate::exec::meter::Role::Compaction,
             extras.output_closed.clone(),
         )?,
+        None if privacy_view.is_some() => {
+            // The summarizer of a privacy conversation: the same owner and
+            // guard, its own usage, and requests composed from sources.
+            let session = privacy_view.clone()?;
+            let client = make_unguarded_client()?;
+            let built: Result<Arc<dyn ModelProvider>, _> = if client.native.is_none() {
+                crate::privacy_session::ViewChatProvider::new(
+                    client,
+                    session,
+                    compact_usage,
+                    child_sink,
+                )
+                .await
+                .map(|provider| Arc::new(provider) as Arc<dyn ModelProvider>)
+            } else {
+                crate::privacy_session::ViewNativeProvider::new(
+                    client,
+                    session,
+                    compact_usage,
+                    child_sink,
+                )
+                .await
+                .map(|provider| Arc::new(provider.for_summaries()) as Arc<dyn ModelProvider>)
+            };
+            match built {
+                Ok(provider) => provider,
+                Err(_) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .refuse(crate::privacy_session::BuildRefusal::Provider);
+                    }
+                    if let Some(sink) = &extras.activity_sink {
+                        sink("The model connection of this session has no private view.");
+                    }
+                    return None;
+                }
+            }
+        }
         None => Arc::new(StreamingLlmProvider {
             client: make_client()?,
             usage: compact_usage,
@@ -2865,7 +2904,8 @@ async fn build_session_with_capture_profile(
         .map(|(privacy, prompt)| {
             let approval = human_approval.clone();
             let workspace = human_workspace.clone();
-            crate::privacy_entry::HumanDecisionProducer::register(
+            let effect_approval = approval;
+            crate::privacy_entry::HumanDecisionProducer::register_with_effect(
                 privacy.clone(),
                 Arc::new(move |parked| {
                     let call = parked.call();
@@ -2875,16 +2915,22 @@ async fn build_session_with_capture_profile(
                     match prompt(call, &summary, &details) {
                         ApprovalPromptResult::Approve => crate::privacy_entry::HumanChoice::Approve,
                         ApprovalPromptResult::ApproveAlways => {
-                            let mut approval = approval.lock().unwrap();
-                            if crate::tools::NETWORK_TOOLS.contains(&call.name.as_str()) {
-                                approval.auto_approve_network = true;
-                            } else {
-                                approval.auto_approve = true;
-                            }
                             crate::privacy_entry::HumanChoice::ApproveAlways
                         }
                         ApprovalPromptResult::Reject(feedback) => {
                             crate::privacy_entry::HumanChoice::Deny(feedback)
+                        }
+                    }
+                }),
+                Arc::new(move |choice, call| {
+                    if matches!(choice, crate::privacy_entry::HumanChoice::ApproveAlways) {
+                        // This effect follows the actual sealed decision's
+                        // source/admission checks, never the input read.
+                        let mut approval = effect_approval.lock().unwrap();
+                        if crate::tools::NETWORK_TOOLS.contains(&call.name.as_str()) {
+                            approval.auto_approve_network = true;
+                        } else {
+                            approval.auto_approve = true;
                         }
                     }
                 }),

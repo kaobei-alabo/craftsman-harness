@@ -437,13 +437,16 @@ impl Agent {
 
             // Rebuild the per-turn system additions from scratch each round.
             working.system_extras.clear();
-            let additions = match &self.model_view {
+            let (additions, staged) = match &self.model_view {
                 Some(view) => self.prepare_with_view(view, &mut working).await?,
                 None => {
                     self.chain.prepare_model(&mut working).await?;
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             };
+            if self.model_view.is_some() && self.take_cancel_request() {
+                return self.finish_cancelled().await;
+            }
 
             let mut system = self.system_prompt.clone();
             for extra in &working.system_extras {
@@ -465,7 +468,9 @@ impl Agent {
             };
             let mut view_received = None;
             let response = if let Some(view) = &self.model_view {
-                let Some(delivery) = self.deliver_with_view(view, &working, additions).await?
+                let Some(delivery) = self
+                    .deliver_with_view(view, &working, additions, staged.as_deref())
+                    .await?
                 else {
                     return self.finish_cancelled().await;
                 };
@@ -521,10 +526,14 @@ impl Agent {
                 );
                 if let (Some(view), Some(received)) = (&self.model_view, view_received) {
                     let commit = view.retained_model(&response.message, received, &[]);
-                    view.sources
-                        .lock()
-                        .unwrap()
-                        .push(model_view::Slot::Pending(commit));
+                    if self.commit_slots(view, staged).is_ok() {
+                        view.sources
+                            .lock()
+                            .unwrap()
+                            .push(model_view::Slot::Pending(commit));
+                    } else {
+                        view.close();
+                    }
                 }
                 return Err(reviewed.err().expect("failed review has its error"));
             }
@@ -558,6 +567,9 @@ impl Agent {
             let view_commit = match (&self.model_view, view_received) {
                 (Some(view), Some(received)) => {
                     let commit = view.retained_model(&assistant, received, &reply_edits);
+                    // Retain the actual reply fact before checking a staged
+                    // summary's publication. The canonical state is real.
+                    self.commit_slots(view, staged)?;
                     view.sources
                         .lock()
                         .unwrap()
@@ -1184,13 +1196,6 @@ impl Agent {
                                         return Err(error);
                                     }
                                 };
-                                if let Err(error) = view
-                                    .live()
-                                    .and_then(|()| view.boundary.terminal_live(&invocation))
-                                {
-                                    view.close();
-                                    return Err(error);
-                                }
                                 let tracked = watch
                                     .as_ref()
                                     .expect("selected invocation has its watch")
@@ -1198,6 +1203,13 @@ impl Agent {
                                     .unwrap()
                                     .tracked
                                     .clone();
+                                if let Err(error) = view
+                                    .live()
+                                    .and_then(|()| view.boundary.terminal_live(&invocation))
+                                {
+                                    view.close();
+                                    return Err(error);
+                                }
                                 let result = tool.call_with_view(call.args, ctx, &tracked).await;
                                 let actual = ActualTerminalOutcome::issued(
                                     invocation,

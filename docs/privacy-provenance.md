@@ -48,10 +48,12 @@ not detection of everything a model writes or of opaque provider content.
 | Providers for all four wires (Chat, Responses, Claude Messages, Gemini) through the existing clients and guard, with receipts | implemented, private; see below |
 | Protected repair of tool calls (`patch_tool_calls`) as a recorded change of the received reply | implemented, private; see below |
 | Todo list, memory section, todo reminders, task workflow notes, workspace checkpoints, and the system prompt as sections | implemented, private; see "Normal parts" below |
+| Compaction: automatic, and manual or idle through a typed entry | private Chat path; native histories with provider items refuse; see "Compaction" below |
 | Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path, which today is never the case outside test fixtures; see below |
-| Compaction (automatic, manual and idle), delegated agents with notifications and inbox | not implemented; these two are installed in every ordinary session and have no source path, so the build is refused |
+| Delegated agents with `task`, notifications and inbox | not implemented; the middleware is installed in every ordinary session and has no source path, so the build is refused |
 | Verification, context and failure controls, gadget catalog | not implemented; a selection that asks for one is refused |
-| Receipts for approval decisions taken inside the approval gate; `ask_user` answers as drafts | not implemented |
+| Sealed parked-call human decisions | private registered input producer; actual decision and raw edit retained, no caller action factory |
+| Decisions inside the approval gate; `ask_user` answers as drafts | producer adapters not implemented |
 | Terminal ingress, `/clear`, display of replies | not implemented |
 | Verification, context and failure controls, local gadgets | not implemented; a selection that asks for one is refused |
 | Reopening, transferring or rebinding a privacy conversation | refused |
@@ -81,7 +83,9 @@ sources of the system channel from the boundary. The provider receives it
 through `ModelProvider::complete_with_view`. A provider that does not implement
 that method refuses; the recorded text is not sent in its place.
 
-**Replies and results.** A reply is committed, journaled and saved first, then
+**Replies and results.** Returned provider data and actual usage are kept in a
+private fact owner before receipt, projection or review can fail. This record
+grants no transport or committed-origin authority. A reply is committed, journaled and saved first, then
 reported to the boundary with the provider's receipt. A tool result is
 journaled and committed first, and saved there when the agent saves after each
 result, then reported with what produced it: every run of the tool itself with
@@ -90,11 +94,12 @@ and what the dispatch chain finally returned. If the boundary returns no
 source, the real reply or result stays recorded with its usage and the turn
 stops.
 
-**Before a call runs.** The boundary is asked immediately before every call:
-before the dispatch chain for an ordinary call, and before the tool itself for
-a call a person approved. It is shown exactly what will run. A refusal means
-nothing ran; the reply that asked for the call stays recorded and no result is
-made up for it.
+**Before a call runs.** A source check precedes dispatch. After middleware,
+each actual terminal invocation has its own immutable call/decision witness,
+source check and final synchronous live check before the tool is polled. Actual
+terminal outcomes are retained before middleware can project or fail them.
+Source approval grants no execution permission. A refusal never invents effects
+or results for a tool that did not run.
 
 **Approvals.** A parked call is resumed only through
 `resume_with_view(action, deny_default, decision)`. The boundary checks the
@@ -145,8 +150,8 @@ request. A piece is owned by its producer: handing over the same owned piece
 again is the same source, while equal text in another piece is not.
 
 - *Tracked prepare.* A tracked middleware's `prepare_model` is not called.
-  `prepare_model_with_view` is, with the state read-only and one operation:
-  add a section of system text as parts. Each section is given to the boundary
+  `prepare_model_with_view` is, with the state read-only and bounded operations:
+  add a section of system text as parts or stage a sourced summary. Each section is given to the boundary
   and becomes one more source of the system channel. Bounds: 64 sections a
   round, 1024 parts and 1 MiB a section.
 - *Tracked dispatch.* During a tool call, a middleware reaches a handle through
@@ -163,6 +168,16 @@ again is the same source, while equal text in another piece is not.
   uses the statement only if the pieces join to exactly what the tool returned
   and the recorded content is exactly that plus what middleware appended.
 
+- *Summaries.* A tracked preparation can replace recorded messages with a
+  summary of them. It names the positions to summarize and to keep, the
+  summarizer, and the application's own text. The agent builds the
+  summarizer's request from the summarized messages with their own sources,
+  asks the summarizer through its view path, records the summary message as
+  the ordinary compaction does, and asks the boundary for its source. The
+  kept messages keep their slots. The replacement belongs to the round's
+  working state: it takes effect when that state is committed, and is dropped
+  with it when the round fails or is cancelled.
+
 The defaults of the `_with_view` hooks are written without `async`, so that an
 implementation that does not override them gets one small function instead of
 a state machine. The test binary of the application is close to a linker limit
@@ -170,8 +185,9 @@ on macOS that these state machines exceeded.
 
 Still refused on a selected agent because no source-preserving path exists: the
 untyped turn, steering and resume entries, reopening a thread, transferring a
-conversation, idle compaction, a boundary policy, a completion check, system
-text set on the agent, per-round system additions and an inbox.
+conversation, a boundary policy, a completion check, system text set on the
+agent, untracked system additions and an inbox. Typed Chat idle compaction and
+tracked additions have their separate paths described below.
 
 Durable reconciliation of calls whose completion was not recorded keeps every
 slot beside its message.
@@ -223,7 +239,9 @@ source. Roles, order, names, call ids, the model's own text and the arguments
 of its tool calls are the recorded ones. A source is used only when it is this
 session's own object and still fits the item beside it: the captured text
 equals the recorded text, a reply equals the reply that was committed, a result
-belongs to that call. Anything else stops the session before a request exists.
+belongs to that call. Every retained item also requires the same actual commit
+witness and complete immutable role/id/status/text. Anything else stops the
+session before a request exists.
 That includes a source from another conversation, a draft in the system
 channel, a recorded message that was changed after its source was made, and a
 tool schema in which admission found a value, because a schema cannot be
@@ -251,10 +269,12 @@ reply that asked for it, whether a person replaced the arguments, and the
 fields of the arguments. A component at the tool can read it through
 `ConversationBoundary::operation_in_flight`.
 
-**Decisions.** `PrivacySession::human_decision(call, action)` is called by the
-interface that showed the call to a person. A decision of another conversation,
-for another call or for another action is turned away; the call stays parked
-and the conversation continues.
+**Decisions.** `PrivacyView::request_decision` reads only the private producer
+registered by the actual builder, against the framework's actual parked-call
+witness. The producer retains the exact human choice and raw edit before parsing
+or admission. A caller action/JSON factory cannot issue a decision. Every edit
+is human-origin even if its JSON equals the model arguments, and raw issued
+aliases refuse before effects. The actual Always update follows acceptance.
 
 **Fields.** A `SourceField` is one occurrence, in model-origin text, of a
 placeholder that a commit of this conversation issued. It gives the place (the
@@ -284,13 +304,13 @@ receipt from a message it holds. Every receipt, on all four wires, carries the
 position of the reply and the SHA-256 of the exact request bytes that were
 sent, taken where those bytes are sealed for sending.
 
-One half of this is still open. When the agent reports a commit, the
-conversation checks that the receipt is its own and that the committed reply
-is the received one with the recorded changes. It does not yet verify a
-witness issued by the framework that the reply was actually retained. That
-witness, and the equivalent producer for human decisions, are being added to
-the framework on a separate correction branch; `PrivacySession::human_decision`
-is still a public factory here.
+The combined correction verifies a framework-issued actual retained commit
+and the full immutable message against the private transport receipt, with each
+tracked review edit kept. Caller messages, equal hashes and mutable/checkpoint
+state cannot issue that commit. The providers retain actual reply/usage data
+before later receipt checks; that fact record alone grants no source authority.
+The private human producer and actual parked-call witness replace the public
+human-decision factory. Inline gate and question adapters remain unfinished.
 
 **Chat.** `ViewChatProvider` composes the view, encodes it with the functions
 the ordinary provider uses and sends it with the existing retry policy. It
@@ -382,9 +402,9 @@ Then it:
   none, the build is refused and the frontend is told which.
 
 Today the statement exists for the approval gate, the result size limit, the
-protected call repair, the todo list, memory, the todo reminders, the task
-workflow notes and workspace checkpoints. Compaction and the delegated-agent
-middleware are installed in every ordinary session and have none. **So no
+protected call repair, the todo list, memory, the todo reminders, compaction,
+the task workflow notes and workspace checkpoints. The delegated-agent
+middleware is installed in every ordinary session and has none. **So no
 privacy session can be built outside tests yet**: a selection made from a real policy is refused
 with the list of those parts. Test fixtures alone use a fixture policy and a
 second constructor, both compiled only into test builds, that leave those
@@ -396,17 +416,46 @@ the privacy owner and changes nothing else; reopening and transfer are refused
 as they are for a guard-bound session. A new conversation is a new owner, a new
 reserved id, a new scope and a new session.
 
-**Typed entries.** `PrivacyView::turn`, `steer` and `decide` are the producers
-of what a person types. Each captures the text as a draft and admits it before
+**Typed entries.** `PrivacyView::compact` runs the manual compaction of an idle
+conversation through the tracked path. `PrivacyView::turn`, `steer` and
+`request_decision` are typed entry points. Terminal drafts are captured by the
+entry; decisions come only from the registered private human-input owner. Each captures the text as a draft and admits it before
 it is accepted, so a draft that cannot be admitted is turned away unchanged and
 the conversation continues. A reason typed with a denial is checked the same
 way. Nothing calls these entries yet.
 
-**In the fixtures.** A fixture session has no compaction and no delegated
-agents, so it also lacks the section the delegated-agent middleware adds to
-the system text and its `task` tool. A long conversation is not compacted. Reading the checkpoint back
+**In the fixtures.** A fixture session has no delegated agents, so it lacks
+the section the delegated-agent middleware adds to the system text and its
+`task` tool. Reading the checkpoint back
 with an ordinary session returns the real record: nothing in it is redacted or
 encrypted by this work.
+
+## Compaction
+
+The supported Chat path uses the ordinary trigger, thresholds, complete split,
+kept tail, user-role summary framing and usage-anchor reset. Every original is
+accounted for exactly once. Summarized messages retain their own immutable
+source/event witnesses; the host instruction has a request-input witness and
+no conversation-retention claim. The summarizer shares the conversation and
+guard, with its own usage counter.
+
+The actual reply and usage are retained before framing/source checks. The
+opening and closing host text stay apart from the summarizer's model text;
+issued aliases in that model text are never re-masked. A distinct working-state
+stage becomes a retained-summary witness only at the actual canonical commit.
+Failure or cancellation of an uncommitted stage leaves original canonical
+messages intact while retaining actual received/staged facts. A save failure
+keeps the real memory result and remains a failure.
+
+`Agent::compact_idle_with_view`, reached through `PrivacyView::compact`, keeps
+exclusive activity, the original durable-save conditions, pending-approval
+refusal and before/after saves. The untyped entry stays refused.
+
+Native history with provider items has no supported summary projection yet.
+It refuses before the summarizer sends. A moved native reply also refuses its
+normal replay check; position mismatch never silently strips opaque items or
+downgrades it to portable text. Future support must bind an explicit complete
+native projection to the actual source. Chat proof supplies no such coverage.
 
 ## Normal parts
 
@@ -422,7 +471,7 @@ How each normal component runs on a selected agent today.
 | Task workflow notes | the two fixed notes as parts; its observation of outcomes stays in its own memory |
 | Workspace checkpoints | reads recorded messages and writes its own store; changes nothing the agent records, which is checked |
 | Approval gate, result size limit | leave the record alone, which is checked |
-| Compaction | **no path.** Needs the summarizer request composed from views, the summary received with a receipt, and the replaced prefix given one source |
+| Compaction | tracked: same trigger, split and record as the ordinary compaction; see "Compaction" |
 | Delegated agents, notifications, inbox | **no path.** Children need the conversation's scope, their own boundary and envelopes for what they return |
 | Verification, context and failure controls, gadget catalog | **no path** |
 | Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |
@@ -439,22 +488,61 @@ How each normal component runs on a selected agent today.
   each and 4096 in total, with no retention.
 
 
-## Core event correction branch — November 22, 2026
+## Core event corrections — November 22, 2026
 
-A separate local correction branch now issues immutable retained-message and
-provider/terminal event witnesses at the actual framework event. They are
-private-memory history, with no caller constructor or serialized checkpoint
-certificate, and do not certify transport, saves, restoration or permission.
-The typed activity guard precedes the state/source check. Selected cancellation
-keeps already accepted inputs and sources through call balancing and final save.
-The one admission-entry clock is checked again after real vault work and before
-node release; the native vault bounds are unchanged and no worker quiescence is
-claimed. Final pinned-source observations require available timestamps and
-relative no-follow directory identities from the retained root.
+The local correction branch combines the immutable transport/source-part slices
+with framework-issued events. It remains unmerged, uninstalled and unselected;
+the installed `a903af65` guard is separate. No frontend, key/policy, restoration
+or normal privacy selection is enabled by this work.
 
-This branch is still under implementation and has not had its full local run or
-independent source review. Application consumption, actual human-input owners,
-transport integration and full-set source adapters remain pending here. The
-installed a903 guard is separate; no frontend, key/policy, restoration or normal
-privacy selection is enabled. The restricted private MAIN callback/budget and
-close-between-retry scenarios remain unexecuted and uninspected.
+Typed turn, resume and idle-compaction entries acquire activity before comparing
+state and source. Internal checks use explicit state-then-source guard scopes.
+Every retained witness binds the complete immutable message, including role,
+call id and error status, to its actual event. Public state, a caller message,
+equal content, a label, a digest or an ordinal cannot issue one.
+
+A private fact owner keeps actual provider returns, received replies and usage,
+terminal calls and outcomes, and final-chain outcomes before fallible source or
+review work. Returned data is not a transport, origin, save, permission or billing
+certificate. Selected failure closes future required privacy work, retains real
+facts and accepted input, and follows the actual journal/final-save path; a save
+failure remains a failure and is not retried as proof. Selected cancellation
+seals new steering and keeps already accepted originals and sources through real
+call balancing and final save. The unselected paths keep their existing behavior.
+
+A parked-call witness and a private registered human-input owner replace the
+caller action factory. The actual absent, denied, approved, Always or edited
+choice and raw edited bytes are retained. Every `ApproveEdited` remains human
+origin even when its JSON equals model bytes, and is admitted before effects.
+An issued alias in raw edited input refuses. An Always permission update happens
+only after the sealed decision passes its source/admission checks. Inline
+approval-gate and `ask_user` producer adapters remain separate, unfinished work.
+
+Each post-chain terminal invocation gets its own call, decision and source
+witness, with a synchronous live check immediately before the actual tool poll.
+That source check grants no tool permission. Completed tool and chain facts are
+kept independently of whether any model view can be published.
+
+The one 45-second admission-entry clock is checked after actual vault return,
+after guard work and immediately before node release. Completed map facts
+survive late refusal. The 16-slot admission bound, vault five-second/native busy
+limits and original terminal bounds remain; queued time does not prove blocking
+worker quiescence. Final pinned-source confirmation requires available before
+and after modified timestamps and relative no-follow identities from the
+retained root. Same-user rename/race limits remain observations, not containment.
+
+Compaction keeps a distinct actual working-state stage; its retained witness is
+issued only when that stage really becomes canonical state. The summarizer's
+unrecorded host instruction has a request-input witness, not a retained commit.
+Chat compaction preserves those sources. Native histories with provider items
+currently refuse compaction before sending; moved native items never silently
+become portable text. Full-set transport/producer adapters and actual frontend
+selection are still incomplete.
+
+Validation belongs to its exact source head in
+`target/verification/privacy-core-frontier-corrections`. Independent source
+review, combined-source native/hosted proof and separate merged-main validation
+remain gates before integration/install. The restricted private MAIN
+callback/budget-boundary, equivalent and close-between-retry scenarios remain
+UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
+The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.

@@ -114,6 +114,9 @@ async fn build(
         None,
         SessionExtras {
             privacy_view: Some(PrivacyViewSelection::fixture_limited_set(owner.clone())),
+            // The owned terminal's durable checkpoints, which idle compaction
+            // needs.
+            cancellation_session: Some(craftsman_harness::SessionCancellation::default()),
             workspace_root: Some(workspace.to_path_buf()),
             token_sink: Some(Arc::new(|_| {})),
             activity_sink: Some(Arc::new(move |line: &str| {
@@ -350,6 +353,87 @@ async fn view_wires_native_fixture() {
             "{wire}"
         );
         assert!(owner.check().is_ok(), "{wire}");
+        // Compaction is additive to the original four-wire proof above.
+        // Chat preserves the supported summary projection. Native history
+        // currently refuses rather than erasing original provider items.
+        view.turn(&session.agent, "and then?").await.unwrap();
+        let before = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(before.len(), 8, "{wire}");
+        if wire == "chat" {
+            let counts = view
+                .compact(&session.agent, &session.compaction)
+                .await
+                .unwrap_or_else(|error| panic!("{wire}: {error}"));
+            assert_eq!(counts, Some((8, 5)), "{wire}");
+            let after = session.agent.state.lock().unwrap().messages.clone();
+            assert_eq!(
+                after[0],
+                Msg::user("<conversation_summary>\nsecond answer\n</conversation_summary>"),
+                "{wire}"
+            );
+            assert_eq!(after[1..], before[4..], "{wire}");
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 5, "{wire}");
+            let asked = String::from_utf8(requests[4].body.clone()).unwrap();
+            // The summarizer saw views, and the first reply as its call without
+            // the provider's item: its own client never received that reply.
+            assert!(!asked.contains(EMAIL) && !asked.contains(PHONE), "{wire}");
+            assert!(
+                asked.contains("You are compacting an ongoing agent conversation"),
+                "{wire}"
+            );
+            assert!(
+                asked.contains("read_file") && asked.contains("Their number is "),
+                "{wire}"
+            );
+            assert!(!asked.contains("wire-original-"), "{wire}: {asked}");
+            // The Chat conversation goes on from the supported summary.
+            let TurnResult::Done(output) = view.turn(&session.agent, "go on").await.unwrap() else {
+                panic!("{wire}: the conversation continues after compaction");
+            };
+            assert_eq!(output.final_text(), "second answer", "{wire}");
+            let requests = server.received_requests().await.unwrap();
+            let next = String::from_utf8(requests[5].body.clone()).unwrap();
+            assert!(next.contains("<conversation_summary>"), "{wire}");
+            assert!(!next.contains(EMAIL) && !next.contains(PHONE), "{wire}");
+            assert!(!next.contains("wire-original-"), "{wire}");
+            assert!(
+                session
+                    .agent
+                    .recorded_sources()
+                    .unwrap()
+                    .iter()
+                    .all(Option::is_some),
+                "{wire}"
+            );
+        } else {
+            let usage = *session.usage.lock().unwrap();
+            assert!(
+                view.compact(&session.agent, &session.compaction)
+                    .await
+                    .is_err(),
+                "{wire}"
+            );
+            assert_eq!(
+                session.agent.state.lock().unwrap().messages,
+                before,
+                "{wire}"
+            );
+            assert_eq!(*session.usage.lock().unwrap(), usage, "{wire}");
+            assert_eq!(server.received_requests().await.unwrap().len(), 4, "{wire}");
+            assert!(
+                session
+                    .agent
+                    .actual_retained_commits()
+                    .unwrap()
+                    .iter()
+                    .all(|commit| commit.event()
+                        != craftsman_harness::provenance::RetainedEvent::Summary),
+                "{wire}"
+            );
+            assert!(owner.check().is_err(), "{wire}");
+        }
+
         session.lsp.shutdown().await;
     }
     println!(

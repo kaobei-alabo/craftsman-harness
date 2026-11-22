@@ -25,7 +25,8 @@ It is local, unmerged and not installed.
 | Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
 | Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
 | Mixed text from the system prompt, todos, memory, reminders and task workflow notes, as parts | implemented, private; see provenance |
-| Mixed text from compaction, delegated agents and context controls | not implemented |
+| Compaction summaries, with the summarizer's text kept as model text | implemented, private; see provenance |
+| Mixed text from delegated agents and context controls | not implemented |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
@@ -97,8 +98,9 @@ capability. The source is read and checked again on every call, so a rebuilt or
 replaced detector is refused even after an earlier call compiled it. No path
 is resolved through a link on the way to the files: a `gadgets` entry or a
 gadget directory that is a link is refused even when it leads to an approved
-source. The ancestor checks in steps 3 and 6 are observations before and after
-the read, not a guarantee against another process of the same user renaming a
+source. Available before/after modified timestamps are required, and final confirmation
+opens gadgets/id relative to the retained user root without following links,
+checking identities before and after the source label. These are observations, not a guarantee against another process of the same user renaming a
 directory at that moment.
 
 The call returns the guest's reply byte for byte. It is not parsed and encoded
@@ -219,21 +221,29 @@ session.source(&node)                             -> Result<SourceRef, SessionSt
 session.boundary(&system_nodes)                   -> Arc<ConversationBoundary>   // once per conversation
 session.model_view(&tracked_request)              -> Result<ModelRequest, SessionStop>
 session.admitted(&source) / session.committed_model(&source) / session.actual_result(&source)
-session.human_decision(&call, &action)            -> Result<SourceRef, SessionStop>
 boundary.operation_in_flight()                    -> Option<Arc<ApprovedOperation>>
 operation.call() / .model() / .edited_by_human() / .fields()
 committed_model.message() / .fields()
-field.place() / .range() / .with_record(|scope, records, index| ...)
+field.place() / .range() / .with_record(|scope, records, index| ...) // locator, not restore/file authority
 trait CapturedUserPolicy { enables_privacy_in(workspace_sha256); requires_inspectable_provider_items() }
 PrivacyViewSelection::from_user_policy(policy, session)   -> Result<Self, BuildRefusal>   // SessionExtras.privacy_view
 selection.report().refusal()                      -> Option<BuildRefusal>   // why the builder refused
 session.workspace_sha256()
-view.turn(&agent, typed) / view.steer(&agent, typed) / view.decide(&agent, &shown, action, deny_default)
+view.turn(&agent, typed) / view.steer(&agent, typed)
+view.request_decision(&agent, deny_default)        // registered actual human producer only
+view.compact(&agent, &compaction)                 -> Result<Option<(usize, usize)>, PrivateEntryError>
 
 // crate::privacy_session, the only producers of a reply's receipt
 ViewChatProvider::new(chat_client, session, usage, sink).await
 ViewNativeProvider::new(native_client, session, usage, sink).await
 session.chat_view(&tracked) / session.native_view(&tracked, identity)
+session.summary_view(&tracked)                     // native provider items refuse
+
+// framework-issued events, no public issuer/serialization
+tracked.message_inputs() / tracked.retained_commits()
+agent.actual_provider_returns() / agent.actual_received_replies()
+agent.actual_retained_commits() / agent.actual_tool_facts()
+agent.actual_terminal_outcomes() / agent.actual_parked_call()
 committed_model.received_message() / .edits() / .request_sha256() / .has_provider_items()
 
 // crate::privacy_vault, additive
@@ -280,22 +290,61 @@ call was made. Runs are recorded with their own head under
 - No Linux, Windows or hosted run covers this slice yet.
 
 
-## Core event correction branch — November 22, 2026
+## Core event corrections — November 22, 2026
 
-A separate local correction branch now issues immutable retained-message and
-provider/terminal event witnesses at the actual framework event. They are
-private-memory history, with no caller constructor or serialized checkpoint
-certificate, and do not certify transport, saves, restoration or permission.
-The typed activity guard precedes the state/source check. Selected cancellation
-keeps already accepted inputs and sources through call balancing and final save.
-The one admission-entry clock is checked again after real vault work and before
-node release; the native vault bounds are unchanged and no worker quiescence is
-claimed. Final pinned-source observations require available timestamps and
-relative no-follow directory identities from the retained root.
+The local correction branch combines the immutable transport/source-part slices
+with framework-issued events. It remains unmerged, uninstalled and unselected;
+the installed `a903af65` guard is separate. No frontend, key/policy, restoration
+or normal privacy selection is enabled by this work.
 
-This branch is still under implementation and has not had its full local run or
-independent source review. Application consumption, actual human-input owners,
-transport integration and full-set source adapters remain pending here. The
-installed a903 guard is separate; no frontend, key/policy, restoration or normal
-privacy selection is enabled. The restricted private MAIN callback/budget and
-close-between-retry scenarios remain unexecuted and uninspected.
+Typed turn, resume and idle-compaction entries acquire activity before comparing
+state and source. Internal checks use explicit state-then-source guard scopes.
+Every retained witness binds the complete immutable message, including role,
+call id and error status, to its actual event. Public state, a caller message,
+equal content, a label, a digest or an ordinal cannot issue one.
+
+A private fact owner keeps actual provider returns, received replies and usage,
+terminal calls and outcomes, and final-chain outcomes before fallible source or
+review work. Returned data is not a transport, origin, save, permission or billing
+certificate. Selected failure closes future required privacy work, retains real
+facts and accepted input, and follows the actual journal/final-save path; a save
+failure remains a failure and is not retried as proof. Selected cancellation
+seals new steering and keeps already accepted originals and sources through real
+call balancing and final save. The unselected paths keep their existing behavior.
+
+A parked-call witness and a private registered human-input owner replace the
+caller action factory. The actual absent, denied, approved, Always or edited
+choice and raw edited bytes are retained. Every `ApproveEdited` remains human
+origin even when its JSON equals model bytes, and is admitted before effects.
+An issued alias in raw edited input refuses. An Always permission update happens
+only after the sealed decision passes its source/admission checks. Inline
+approval-gate and `ask_user` producer adapters remain separate, unfinished work.
+
+Each post-chain terminal invocation gets its own call, decision and source
+witness, with a synchronous live check immediately before the actual tool poll.
+That source check grants no tool permission. Completed tool and chain facts are
+kept independently of whether any model view can be published.
+
+The one 45-second admission-entry clock is checked after actual vault return,
+after guard work and immediately before node release. Completed map facts
+survive late refusal. The 16-slot admission bound, vault five-second/native busy
+limits and original terminal bounds remain; queued time does not prove blocking
+worker quiescence. Final pinned-source confirmation requires available before
+and after modified timestamps and relative no-follow identities from the
+retained root. Same-user rename/race limits remain observations, not containment.
+
+Compaction keeps a distinct actual working-state stage; its retained witness is
+issued only when that stage really becomes canonical state. The summarizer's
+unrecorded host instruction has a request-input witness, not a retained commit.
+Chat compaction preserves those sources. Native histories with provider items
+currently refuse compaction before sending; moved native items never silently
+become portable text. Full-set transport/producer adapters and actual frontend
+selection are still incomplete.
+
+Validation belongs to its exact source head in
+`target/verification/privacy-core-frontier-corrections`. Independent source
+review, combined-source native/hosted proof and separate merged-main validation
+remain gates before integration/install. The restricted private MAIN
+callback/budget-boundary, equivalent and close-between-retry scenarios remain
+UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
+The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.

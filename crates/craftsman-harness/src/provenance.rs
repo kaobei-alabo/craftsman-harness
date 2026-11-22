@@ -25,9 +25,11 @@ use std::sync::Arc;
 #[path = "provenance_facts.rs"]
 mod facts;
 pub use facts::{
-    ActualAgentOwner, ActualParkedCall, ActualReceivedReply, ActualRetainedCommit,
+    ActualAgentOwner, ActualModelInput, ActualParkedCall, ActualProviderReturn,
+    ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualStagedSummary,
     ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
+pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
 /// Opaque evidence owned by the host that selected the boundary. This crate
 /// only keeps it beside the item it belongs to and hands it back. Holding one
@@ -236,12 +238,55 @@ pub const MAX_SYSTEM_ADDITIONS: usize = 64;
 pub const MAX_ADDITION_PARTS: usize = 1024;
 pub const MAX_ADDITION_BYTES: usize = 1_048_576;
 
+/// The application's own text around a summary: the summarizer's system
+/// text, the instruction that ends its request, and what opens and closes
+/// the summary message.
+pub struct SummaryText {
+    pub system: SourcePart,
+    pub ask: SourcePart,
+    pub open: SourcePart,
+    pub close: SourcePart,
+}
+
+/// What the agent keeps beside one recorded message.
+#[derive(Clone)]
+pub(crate) enum Slot {
+    Bound(SourceRef, ActualRetainedCommit),
+    /// Appended by the agent itself; the boundary has not been asked yet.
+    Pending(ActualRetainedCommit),
+    /// Exists only beside the working state until an actual commit.
+    StagedSummary(SourceRef, ActualStagedSummary),
+}
+
+impl Slot {
+    pub(crate) fn bound_input(&self) -> Option<(SourceRef, ActualModelInput)> {
+        match self {
+            Self::Bound(source, commit) => {
+                Some((source.clone(), ActualModelInput::Retained(commit.clone())))
+            }
+            Self::StagedSummary(source, stage) => Some((
+                source.clone(),
+                ActualModelInput::StagedSummary(stage.clone()),
+            )),
+            Self::Pending(_) => None,
+        }
+    }
+}
+
 /// What a middleware with a tracked prepare sees on a selected agent: the
-/// state, read-only, and one way to add system text.
+/// state, read-only, one way to add system text, and one way to replace
+/// recorded messages with a summary of them.
 pub struct TrackedPrepare<'a> {
-    pub(crate) state: &'a crate::AgentState,
+    pub(crate) state: &'a mut crate::AgentState,
     pub(crate) todos: Option<&'a [PartFrom]>,
     pub(crate) additions: &'a mut Vec<Vec<SourcePart>>,
+    pub(crate) boundary: &'a dyn ModelViewBoundary,
+    pub(crate) owner: &'a ActualAgentOwner,
+    pub(crate) facts: &'a Arc<std::sync::Mutex<ActualFacts>>,
+    /// The slots beside the recorded messages as this preparation sees them.
+    pub(crate) slots: &'a mut Vec<Slot>,
+    /// Whether this preparation replaced recorded messages.
+    pub(crate) replaced: &'a mut bool,
 }
 
 impl TrackedPrepare<'_> {
@@ -339,7 +384,7 @@ pub struct ReplyEdit {
 }
 
 /// The reply under review on a selected agent, for a middleware that stated
-/// [`ViewSupport::TrackedReply`]. It can be read freely. It can be changed
+/// [`ViewSupport::Tracked`]. It can be read freely. It can be changed
 /// only through the operations here, each of which is recorded.
 pub struct TrackedReply<'a> {
     pub(crate) message: &'a mut Msg,
@@ -389,6 +434,39 @@ impl fmt::Debug for TrackedReply<'_> {
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// A real working-state summary stage, before canonical retention. The
+    /// default bridge is for boundaries that supply no application authority.
+    async fn staged_summary_source(
+        &self,
+        stage: &ActualStagedSummary,
+    ) -> Result<SourceRef, AgentError> {
+        self.summary_source(
+            stage.received().transport_receipt().clone(),
+            stage.open(),
+            stage.close(),
+            stage.message(),
+        )
+        .await
+    }
+
+    /// A staged summary actually became the retained conversation and went
+    /// through the agent's real save path. This is distinct from staging.
+    async fn observe_retained_summary(
+        &self,
+        commit: &ActualRetainedCommit,
+    ) -> Result<SourceRef, AgentError> {
+        let stage = commit
+            .summary()
+            .ok_or_else(|| AgentError::State("The retained summary has no actual stage.".into()))?;
+        self.staged_summary_source(stage).await
+    }
+
+    /// Checks whether these exact sourced inputs can be projected to a
+    /// summarizer. A host must refuse representations it cannot preserve.
+    fn validate_summary_inputs(&self, _request: &TrackedModelRequest) -> Result<(), AgentError> {
+        Ok(())
+    }
+
     async fn accept_parked_decision(
         &self,
         parked: &ActualParkedCall,
@@ -532,6 +610,33 @@ pub trait ModelViewBoundary: Send + Sync {
         ))
     }
 
+    /// The source of one message the host itself writes into a request and
+    /// does not record: the instruction that ends a summarizer's request.
+    /// The default refuses.
+    async fn host_message(&self, part: &SourcePart) -> Result<SourceRef, AgentError> {
+        let _ = part;
+        Err(AgentError::State(
+            "This conversation has no source for a host message.".into(),
+        ))
+    }
+
+    /// A summarizer's reply was received through `receipt`, and `summary` is
+    /// the message that replaces the summarized ones: `open`, the reply's
+    /// text and `close`, joined. Returns the source to keep beside it. The
+    /// default refuses.
+    async fn summary_source(
+        &self,
+        receipt: SourceRef,
+        open: &SourcePart,
+        close: &SourcePart,
+        summary: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let _ = (receipt, open, close, summary);
+        Err(AgentError::State(
+            "This conversation has no source for a summary.".into(),
+        ))
+    }
+
     /// The agent itself appended `committed` at `event`, and it is recorded.
     /// Returns the source to keep beside it. The default refuses: a boundary
     /// that does not know such a message has no view of it.
@@ -579,14 +684,31 @@ pub struct TrackedModelRequest {
     pub(crate) messages: Vec<SourceRef>,
     pub(crate) tools: Vec<SourceRef>,
     pub(crate) retained: Vec<ActualRetainedCommit>,
+    pub(crate) inputs: Vec<ActualModelInput>,
+    pub(crate) returned: Option<Arc<ReturnRecorder>>,
 }
 
 impl TrackedModelRequest {
-    /// One immutable actual-retention witness beside each recorded message.
+    /// Retains the selected provider's actual returned data before its
+    /// fallible receipt/projection work. Available only during the actual
+    /// provider terminal call; not a source/HTTP/human/commit certificate.
+    /// `false` means no active return owner, or one return was already kept.
+    pub fn retain_received_data(&self, response: &ModelResponse) -> bool {
+        self.returned
+            .as_ref()
+            .is_some_and(|owner| owner.retain(response))
+    }
+    /// Immutable actual-retention witnesses in request order. A summarizer
+    /// can also have a staged summary or its unrecorded host instruction;
+    /// use [`message_inputs`](Self::message_inputs) to check every item.
     /// The host verifies its bound agent owner and the exact message, not an
     /// ordinal or equal source text. Nothing is loaded from a checkpoint.
     pub fn retained_commits(&self) -> &[ActualRetainedCommit] {
         &self.retained
+    }
+    /// Exactly one immutable actual-event witness beside every message.
+    pub fn message_inputs(&self) -> &[ActualModelInput] {
+        &self.inputs
     }
     /// The recorded messages and tool definitions. The system text is empty:
     /// a selected session has no system text outside its sources.
