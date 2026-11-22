@@ -17,6 +17,7 @@
 
 use crate::error::AgentError;
 use crate::middleware::{AgentMiddleware, ToolNext};
+use crate::provenance::{SourcePart, ViewSupport};
 use crate::state::{TodoStatus, ToolCall};
 use crate::tool::{ToolCtx, ToolOutcome};
 use async_trait::async_trait;
@@ -91,6 +92,9 @@ impl AgentMiddleware for SystemRemindersMiddleware {
         next: ToolNext<'_>,
     ) -> Result<ToolOutcome, AgentError> {
         let is_write_todos = call.name == "write_todos";
+        // On an agent with a source view: where this middleware announces
+        // what it changes outside the tool.
+        let tracked = next.tracked();
         let mut outcome = next.run(call, ctx).await?;
 
         // Advance the round counter and record a write if this was write_todos.
@@ -98,6 +102,10 @@ impl AgentMiddleware for SystemRemindersMiddleware {
         let round = round + 1;
         let last_write = if is_write_todos { round } else { last_write };
         write_meta(&mut ctx.state.custom, round, last_write);
+        if let Some(tracked) = &tracked {
+            // Its own round counters, and nothing else in the custom state.
+            tracked.owns_custom_key(META_KEY);
+        }
 
         let has_open = ctx
             .state
@@ -109,8 +117,24 @@ impl AgentMiddleware for SystemRemindersMiddleware {
         // the very round the list was (re)written.
         if has_open && !is_write_todos && round.saturating_sub(last_write) >= self.stale_rounds {
             outcome.content.push_str(TODO_REMINDER);
+            if let Some(tracked) = &tracked {
+                static REMINDER: std::sync::OnceLock<std::sync::Arc<str>> =
+                    std::sync::OnceLock::new();
+                tracked.appended_to_outcome(SourcePart::fixed(
+                    REMINDER
+                        .get_or_init(|| std::sync::Arc::from(TODO_REMINDER))
+                        .clone(),
+                ));
+            }
         }
         Ok(outcome)
+    }
+
+    /// It counts rounds under its own key of the custom state and may append
+    /// one fixed reminder to a tool outcome. On an agent with a source view
+    /// it announces both.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
     }
 }
 

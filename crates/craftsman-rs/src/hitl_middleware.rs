@@ -123,6 +123,44 @@ impl ApprovalMiddleware {
         Some(self.prompt_approval(call, summary, details))
     }
 
+    /// The same decision for a call whose file operation was derived before
+    /// this review, in a privacy conversation. The policy is evaluated on
+    /// what will really be written and a person is shown it; whichever
+    /// decides, the decision is recorded by the operation where it is taken
+    /// and carried to the call's terminal. Modes, switches, allow-lists and
+    /// the effect of "always" are the ones above.
+    fn reviewed_decision(
+        &self,
+        reviewed: &Arc<crate::privacy_session::ReviewedFile>,
+        tracked: &craftsman_harness::provenance::TrackedDispatch,
+        call: &ToolCall,
+        summary: &str,
+    ) -> Result<Option<Decision>, crate::privacy_session::FileRefusal> {
+        match reviewed.policy_decides(&self.approval, tracked) {
+            ToolPermission::Allow => return Ok(None),
+            ToolPermission::Deny(reason) => return Ok(Some(Decision::Reject(reason))),
+            ToolPermission::Prompt => {}
+        }
+        // A refusal here is the operation's own, not the person's answer.
+        reviewed
+            .person_decides(tracked, |preview| {
+                // What the person is asked about is the preview itself.
+                let shown = ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    args: preview.arguments.clone(),
+                };
+                let details = crate::tools::approval_details_at(
+                    &shown.name,
+                    &shown.args,
+                    &self.workspace_root,
+                );
+                let decision = self.prompt_approval(&shown, summary, &details);
+                (matches!(decision, Decision::Approve), decision)
+            })
+            .map(Some)
+    }
+
     fn prompt_approval(&self, call: &ToolCall, summary: &str, details: &str) -> Decision {
         if let Some(prompt) = &self.call_approval_prompt {
             return match prompt(call, summary, details) {
@@ -192,10 +230,33 @@ impl AgentMiddleware for ApprovalMiddleware {
             || summarize_call(&call.name, &call.args),
             |review| review.summary.clone(),
         );
-        let details = review.as_ref().map_or_else(
-            || crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root),
-            |review| review.details.clone(),
-        );
+        // In a privacy conversation, what a file write or edit will really
+        // do was derived when the agent planned the call, before this
+        // review. The policy and a person then decide on the real content.
+        // The call itself stays as the model wrote it. A call that could
+        // not be derived is answered with the refusal before any effect.
+        let tracked = next.tracked();
+        let reviewed = tracked
+            .as_ref()
+            .and_then(crate::privacy_session::ReviewedFile::of);
+        let shown = match &reviewed {
+            Some(reviewed) => match reviewed.shown_arguments() {
+                Ok(arguments) => Some(crate::tools::approval_details_at(
+                    &call.name,
+                    &arguments,
+                    &self.workspace_root,
+                )),
+                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+            },
+            None => None,
+        };
+        let details = match (&shown, &review) {
+            (Some(details), _) => details.clone(),
+            (None, Some(review)) => review.details.clone(),
+            (None, None) => {
+                crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root)
+            }
+        };
         let call_id = call.id.clone();
         let tool = call.name.clone();
         self.emit(&summary);
@@ -230,7 +291,24 @@ impl AgentMiddleware for ApprovalMiddleware {
                 None
             }
         } else {
-            self.approval_decision(&call, &summary, &details)
+            match (&reviewed, &tracked) {
+                (Some(reviewed), Some(tracked)) => {
+                    match self.reviewed_decision(reviewed, tracked, &call, &summary) {
+                        Ok(decision) => decision,
+                        Err(refusal) => {
+                            let content = refusal.to_string();
+                            self.emit_tool_event(ToolActivityEvent::Finished {
+                                call_id,
+                                tool,
+                                content: content.clone(),
+                                is_error: true,
+                            });
+                            return Ok(ToolOutcome::err(content));
+                        }
+                    }
+                }
+                _ => self.approval_decision(&call, &summary, &details),
+            }
         };
         if let Some(Decision::Reject(feedback)) = decision {
             let content = rejection_result(&feedback);

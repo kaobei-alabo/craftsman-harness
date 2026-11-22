@@ -966,6 +966,7 @@ mod pinned_hook;
 // Additive: one privacy conversation per model wire through the shared
 // session builder, with this module's source-built detector approved and
 // pinned. Nothing above or below is changed.
+mod restore_wires;
 mod view_wires;
 
 mod offline_lock_tests {

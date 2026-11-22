@@ -26,16 +26,30 @@
 //! projection of it.
 
 #[cfg(test)]
+mod deadline_tests;
+mod file_view;
+mod human;
+#[cfg(test)]
 mod tests;
 mod transport;
 mod view;
 #[cfg(test)]
 mod view_tests;
+#[cfg(test)]
+pub(crate) mod wire_fixtures;
 
-pub use transport::{ViewChatProvider, ViewNativeProvider};
+pub use file_view::{
+    DecidedBy, DerivedFileOperation, FileChange, FileDecision, FilePreview, FileRefusal,
+    FileReview, RestoredFileTool, ReviewedFile,
+};
+pub(crate) use file_view::{authorized_write, call_to_show};
+pub use human::{
+    HeldStream, HumanRefusal, HumanReply, HumanReplySink, HumanText, ReplyDisplay, Streamed,
+};
+pub use transport::{ViewChatProvider, ViewNativeProvider, delegated_provider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    NativeReplay, ReceivedModel, SourceField,
+    NativeReplay, PlannedOperation, ReceivedModel, SourceField,
 };
 
 use crate::checkpoints::LibsqlCheckpointer;
@@ -64,6 +78,14 @@ const ADMISSION_BOUND: Duration = Duration::from_secs(45);
 /// Admissions that may be inside the owner at once: one running, the rest
 /// waiting. A further one is turned away at entry.
 const ADMISSION_SLOTS: usize = 16;
+
+fn admission_deadline(deadline: Instant, now: Instant) -> Result<(), SessionStop> {
+    if now >= deadline {
+        Err(SessionStop::Deadline)
+    } else {
+        Ok(())
+    }
+}
 
 /// A refusal of one unaccepted draft, decided before any vault or detector
 /// effect that the mandatory policy treats as fatal. The session stays usable
@@ -181,6 +203,24 @@ pub trait CapturedUserPolicy: Send + Sync {
     /// Whether the policy requires that everything a provider is sent can be
     /// inspected. Native wires send back provider items that cannot.
     fn requires_inspectable_provider_items(&self) -> bool;
+
+    /// The data format the user's policy names for content that the file
+    /// tools write to `destination`, in the workspace with this digest.
+    /// `destination` is the absolute path of the file the operation is bound
+    /// to, as the host resolved it when the operation was derived: the
+    /// opened file for an edit, the observed directory and the new name for
+    /// a create. It is never the path as a model wrote it. Private values
+    /// are restored into a file's content only under such a rule. `None`,
+    /// the default, restores nothing. A file's name or extension is not a
+    /// rule: only what the user or the host reviewed for that file is.
+    fn restorable_file_data(
+        &self,
+        workspace_sha256: &str,
+        destination: &std::path::Path,
+    ) -> Option<crate::privacy_restore::FileDataFormat> {
+        let _ = (workspace_sha256, destination);
+        None
+    }
 }
 
 /// Why no session was built for a selection. Each is decided before the
@@ -241,8 +281,6 @@ pub struct PrivacyViewSelection {
     policy: Arc<dyn CapturedUserPolicy>,
     session: Arc<PrivacySession>,
     report: Arc<SelectionReport>,
-    #[cfg(test)]
-    fixture_limited_set: bool,
 }
 
 impl PrivacyViewSelection {
@@ -262,8 +300,6 @@ impl PrivacyViewSelection {
             policy,
             session,
             report: Arc::new(SelectionReport::default()),
-            #[cfg(test)]
-            fixture_limited_set: false,
         })
     }
 
@@ -271,18 +307,6 @@ impl PrivacyViewSelection {
     /// selection.
     pub fn report(&self) -> Arc<SelectionReport> {
         self.report.clone()
-    }
-
-    /// Test fixtures only: a selection under a fixture policy that builds
-    /// with the parts that have a source-preserving path and names the
-    /// others to the frontend. Neither exists outside tests.
-    #[cfg(test)]
-    pub(crate) fn fixture_limited_set(session: Arc<PrivacySession>) -> Self {
-        Self {
-            fixture_limited_set: true,
-            ..Self::from_user_policy(Arc::new(FixturePolicy::default()), session)
-                .expect("a live fixture conversation")
-        }
     }
 
     pub(crate) fn session(&self) -> &Arc<PrivacySession> {
@@ -299,17 +323,10 @@ impl PrivacyViewSelection {
         self.policy.requires_inspectable_provider_items()
     }
 
-    /// Whether parts without a source-preserving path are left out and named
-    /// instead of refusing the build. Never outside tests.
-    pub(crate) fn leaves_out_unadapted_parts(&self) -> bool {
-        #[cfg(test)]
-        {
-            self.fixture_limited_set
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
+    /// The user's captured policy, for the parts of the session that ask it
+    /// about one operation.
+    pub(crate) fn policy(&self) -> Arc<dyn CapturedUserPolicy> {
+        self.policy.clone()
     }
 }
 
@@ -346,12 +363,36 @@ impl CapturedUserPolicy for FixturePolicy {
 /// agent selected.
 pub struct PrivacyView {
     session: Arc<PrivacySession>,
+    pub(crate) human_source: Option<Arc<crate::privacy_entry::HumanDecisionProducer>>,
     boundary: Arc<ConversationBoundary>,
+    /// The user's captured policy, kept here for the life of the session
+    /// that was built for it. The file review and the file tools refer to
+    /// it weakly, so that nothing that outlives the session keeps the
+    /// policy's owner alive.
+    policy: Option<Arc<dyn CapturedUserPolicy>>,
 }
 
 impl PrivacyView {
     pub(crate) fn new(session: Arc<PrivacySession>, boundary: Arc<ConversationBoundary>) -> Self {
-        Self { session, boundary }
+        Self {
+            session,
+            boundary,
+            human_source: None,
+            policy: None,
+        }
+    }
+
+    pub(crate) fn with_policy(mut self, policy: Option<Arc<dyn CapturedUserPolicy>>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub(crate) fn with_human_source(
+        mut self,
+        source: Arc<crate::privacy_entry::HumanDecisionProducer>,
+    ) -> Self {
+        self.human_source = Some(source);
+        self
     }
 
     pub fn session(&self) -> &Arc<PrivacySession> {
@@ -537,8 +578,13 @@ struct Inner {
     operation: tokio::sync::Mutex<Ledger>,
     slots: tokio::sync::Semaphore,
     stopped: AtomicBool,
+    // The most recent actual map return survives a late admission stop. It is
+    // private retention, never a model node or permission to resolve a value.
+    last_map_commit: std::sync::Mutex<Option<Arc<MaskedText>>>,
     /// Whether the one boundary of this conversation has been handed out.
     bound: AtomicBool,
+    agent_owner: std::sync::Mutex<Option<craftsman_harness::provenance::ActualAgentOwner>>,
+    lanes: std::sync::Mutex<Vec<std::sync::Weak<view::Lane>>>,
     #[cfg(test)]
     after_commit: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -601,7 +647,10 @@ impl PrivacySession {
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
+                last_map_commit: std::sync::Mutex::new(None),
                 bound: AtomicBool::new(false),
+                agent_owner: std::sync::Mutex::new(None),
+                lanes: std::sync::Mutex::new(Vec::new()),
                 #[cfg(test)]
                 after_commit: std::sync::Mutex::new(None),
             }),
@@ -627,6 +676,24 @@ impl PrivacySession {
 
     pub fn check(&self) -> Result<(), SessionStop> {
         self.inner.live()
+    }
+
+    pub(crate) fn check_agent(
+        &self,
+        owner: &craftsman_harness::provenance::ActualAgentOwner,
+    ) -> Result<(), SessionStop> {
+        self.inner.live()?;
+        if !self
+            .inner
+            .agent_owner
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|held| held.same_agent(owner))
+        {
+            return Err(SessionStop::Unbound);
+        }
+        Ok(())
     }
 
     /// Ends the session: the guard refuses every later send and the scope
@@ -711,6 +778,11 @@ impl PrivacySession {
                 .await
                 .map_err(vault)?,
         );
+        *inner.last_map_commit.lock().unwrap() = Some(masked.clone());
+        // Keep the actual completed map result even if its owner must stop
+        // below. This is a retained commit, not a new admitted model node.
+        ledger.absorb(&masked).map_err(vault)?;
+        admission_deadline(deadline, Instant::now()).map_err(|stop| inner.stopped(stop))?;
         #[cfg(test)]
         if let Some(hook) = inner.after_commit.lock().unwrap().as_ref() {
             hook();
@@ -725,21 +797,22 @@ impl PrivacySession {
             .guard
             .admit(masked.resolution_records_for_host_fields().map_err(vault)?)
             .map_err(|refusal| inner.stopped(SessionStop::Guard(refusal)))?;
-        ledger.absorb(&masked).map_err(vault)?;
         // The guard's own verifier over the view about to be released.
         let view = masked.text_for_later_model_request().map_err(vault)?;
         inner
             .guard
             .seal(b"null".to_vec(), &[view])
             .map_err(|refusal| inner.stopped(SessionStop::Guard(refusal)))?;
-        Ok(AdmittedNode {
+        let node = AdmittedNode {
             inner: Arc::new(NodeInner {
                 raw: raw.clone(),
                 masked,
                 replacements: spans.len(),
                 owner: inner.clone(),
             }),
-        })
+        };
+        admission_deadline(deadline, Instant::now()).map_err(|stop| inner.stopped(stop))?;
+        Ok(node)
     }
 
     #[cfg(test)]

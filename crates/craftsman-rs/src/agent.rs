@@ -735,7 +735,12 @@ impl Tool for HostTool {
                     }
                     None => None,
                 };
-                let result = b.write(path, content).await;
+                // In a privacy conversation the write of a call that names a
+                // placeholder is the one derived and approved for it.
+                let result = match crate::privacy_session::authorized_write() {
+                    Some(written) => written.map(|_| ()).map_err(|refusal| refusal.to_string()),
+                    None => b.write(path, content).await.map_err(|e| e.to_string()),
+                };
                 if let Some(workspace) = &self.workspace_checkpoints {
                     workspace.finish_mutation(baseline).await;
                 }
@@ -745,7 +750,7 @@ impl Tool for HostTool {
                         self.append_diagnostics(path, &mut message).await;
                         ToolOutcome::ok(message)
                     }
-                    Err(e) => err_outcome(e),
+                    Err(e) => ToolOutcome::err(e),
                 }
             }
             HostKind::Edit => {
@@ -762,7 +767,13 @@ impl Tool for HostTool {
                     }
                     None => None,
                 };
-                let result = b.edit(path, old, new, replace_all).await;
+                let result = match crate::privacy_session::authorized_write() {
+                    Some(written) => written.map(|_| ()).map_err(|refusal| refusal.to_string()),
+                    None => b
+                        .edit(path, old, new, replace_all)
+                        .await
+                        .map_err(|e| e.to_string()),
+                };
                 if let Some(workspace) = &self.workspace_checkpoints {
                     workspace.finish_mutation(baseline).await;
                 }
@@ -772,7 +783,7 @@ impl Tool for HostTool {
                         self.append_diagnostics(path, &mut message).await;
                         ToolOutcome::ok(message)
                     }
-                    Err(e) => err_outcome(e),
+                    Err(e) => ToolOutcome::err(e),
                 }
             }
             HostKind::Ls => {
@@ -813,6 +824,158 @@ impl Tool for HostTool {
             }
         })
     }
+
+    /// The same call on an agent with a source view. Where the outcome
+    /// repeats a string of the call's own arguments, the tool says so, piece
+    /// by piece. The agent binds such a piece to the reply that asked for
+    /// the call only if the call ran as that reply wrote it.
+    async fn call_with_view(
+        &self,
+        args: Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &craftsman_harness::provenance::TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        let outcome = self.call(args.clone(), ctx).await?;
+        if let Some(parts) = repeated_arguments(&self.kind, &args, &outcome) {
+            tracked.outcome_is(parts);
+        }
+        Ok(outcome)
+    }
+}
+
+/// The system prompt's sections with the gadget authoring skill added the
+/// way the ordinary text has it: directly after the last section, as a piece
+/// of its own.
+#[cfg(feature = "gadgets")]
+fn with_gadget_skill(
+    mut chunks: Vec<crate::prompt::SystemChunk>,
+    skill: &str,
+) -> Vec<crate::prompt::SystemChunk> {
+    if !skill.is_empty()
+        && let Some(last) = chunks.last_mut()
+    {
+        if last.pieces.is_empty() {
+            last.pieces.push(crate::prompt::SystemPiece {
+                text: last.text.clone(),
+                read: last.read,
+            });
+        }
+        last.pieces.push(crate::prompt::SystemPiece {
+            text: skill.to_owned(),
+            read: Some("gadget authoring skill"),
+        });
+        last.text.push_str(skill);
+    }
+    chunks
+}
+
+/// The pieces of a host tool's own outcome that repeat the call's arguments,
+/// for the three outcomes that do: a written or edited file's path, with the
+/// language diagnostics that follow it, and a glob pattern that matched
+/// nothing. `None` for every other outcome, which is then the tool's result
+/// as a whole.
+fn repeated_arguments(
+    kind: &HostKind,
+    args: &Value,
+    outcome: &ToolOutcome,
+) -> Option<Vec<craftsman_harness::provenance::OutcomePart>> {
+    use craftsman_harness::provenance::OutcomePart;
+    use std::sync::OnceLock;
+    static UPDATED: OnceLock<Arc<str>> = OnceLock::new();
+    static NO_MATCH: OnceLock<Arc<str>> = OnceLock::new();
+    static QUOTE: OnceLock<Arc<str>> = OnceLock::new();
+    let fixed = |cell: &'static OnceLock<Arc<str>>, text: &'static str| {
+        OutcomePart::Fixed(cell.get_or_init(|| Arc::from(text)).clone())
+    };
+    if outcome.is_error {
+        return None;
+    }
+    match kind {
+        HostKind::Write | HostKind::Edit => {
+            let path = args["file_path"].as_str()?;
+            let rest = outcome
+                .content
+                .strip_prefix("Updated file ")?
+                .strip_prefix(path)?;
+            let mut parts = vec![
+                fixed(&UPDATED, "Updated file "),
+                OutcomePart::Argument {
+                    pointer: "/file_path".into(),
+                    text: Arc::from(path),
+                },
+            ];
+            if !rest.is_empty() {
+                // What the language server said about the file.
+                parts.push(OutcomePart::Read {
+                    what: "language diagnostics".into(),
+                    text: Arc::from(rest),
+                });
+            }
+            Some(parts)
+        }
+        HostKind::Glob => {
+            let pattern = args["pattern"].as_str()?;
+            (outcome.content == format!("No files match pattern '{pattern}'")).then(|| {
+                vec![
+                    fixed(&NO_MATCH, "No files match pattern '"),
+                    OutcomePart::Argument {
+                        pointer: "/pattern".into(),
+                        text: Arc::from(pattern),
+                    },
+                    fixed(&QUOTE, "'"),
+                ]
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The tools of an agent of a privacy conversation: the two file tools
+/// wrapped, directly on the tool, so that a call that names a placeholder
+/// runs only as the operation that was derived for its plan, reviewed and
+/// decided. Every other tool, and every tool of a session without a review,
+/// is as it was.
+fn with_restored_files(
+    tools: Vec<Arc<dyn Tool>>,
+    review: Option<&Arc<crate::privacy_session::FileReview>>,
+) -> Vec<Arc<dyn Tool>> {
+    let Some(review) = review else {
+        return tools;
+    };
+    let mut wrapped = Vec::with_capacity(tools.len());
+    for tool in tools {
+        wrapped.push(match tool.def().name.as_str() {
+            "write_file" | "edit_file" => Arc::new(crate::privacy_session::RestoredFileTool::new(
+                tool,
+                review.clone(),
+            )) as Arc<dyn Tool>,
+            _ => tool,
+        });
+    }
+    wrapped
+}
+
+/// A delegated agent's tools behind the legacy gate. In a privacy
+/// conversation its two file tools are the same as the root agent's, and
+/// the gate in front of them decides on the operation the delegated agent's
+/// own boundary derived; the gate, its rules and its prompt are the same.
+pub(crate) fn gated_for_delegation(
+    tools: Vec<Arc<dyn Tool>>,
+    approval: &Arc<Mutex<ApprovalState>>,
+    prompt: (
+        &Option<ApprovalPrompt>,
+        &Option<(CallApprovalPrompt, ToolActivitySink)>,
+    ),
+    cwd: &std::path::Path,
+    review: Option<&Arc<crate::privacy_session::FileReview>>,
+) -> Vec<Arc<dyn Tool>> {
+    crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
+        with_restored_files(tools, review),
+        approval,
+        prompt.0.clone(),
+        cwd,
+        prompt.1.clone(),
+    )
 }
 
 fn host_and_web_tools(
@@ -889,6 +1052,12 @@ pub struct SessionExtras {
     /// permission to build with fewer parts. No frontend, configuration or
     /// CLI route sets this.
     pub(crate) privacy_view: Option<crate::privacy_session::PrivacyViewSelection>,
+    /// Where an interactive frontend takes the replies of a privacy
+    /// conversation's main agent, as a person may read them. With it the
+    /// main model's stream is held and never reaches `token_sink`. It has no
+    /// effect on any other session, and none on a privacy conversation
+    /// without it.
+    pub human_reply_sink: Option<crate::privacy_session::HumanReplySink>,
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
     /// TUI and ACP main-model wait opt-in; tools retain their cleanup ownership.
@@ -1535,8 +1704,10 @@ async fn build_session_with_capture_profile(
     let privacy_view = match &extras.privacy_view {
         None => None,
         Some(selection) => {
+            // The model-visible gadget runtime has a source path. A script
+            // capture has none.
             #[cfg(feature = "gadgets")]
-            let gadgets_requested = extras.local_gadgets || extras.script_capture.is_some();
+            let gadgets_requested = extras.script_capture.is_some();
             #[cfg(not(feature = "gadgets"))]
             let gadgets_requested = false;
             use crate::privacy_session::BuildRefusal;
@@ -1568,6 +1739,12 @@ async fn build_session_with_capture_profile(
             Some(selection.session().clone())
         }
     };
+    // Capture only the actual registered app input callback. No value, flag or
+    // model/project record can mint a human decision source.
+    let human_prompt = privacy_view
+        .as_ref()
+        .and_then(|_| extras.call_approval_prompt.clone());
+    let human_approval = approval.clone();
     let send_guard = match &privacy_view {
         Some(session) => Some(session.send_guard()),
         None => send_guard,
@@ -1810,7 +1987,32 @@ async fn build_session_with_capture_profile(
         Some(_) => Arc::new(|_: &str| {}),
         None => stdout_sink(),
     };
-    let main_sink = extras.token_sink.unwrap_or_else(stdout_sink);
+    // A frontend that shows the replies of a privacy conversation is given
+    // each one when the agent has retained it. Until then the main model's
+    // stream is held and shown nowhere.
+    let reply_display = match (&privacy_view, &extras.human_reply_sink) {
+        (Some(session), Some(show)) => Some(crate::privacy_session::ReplyDisplay::new(
+            session.clone(),
+            show.clone(),
+        )),
+        _ => None,
+    };
+    let main_sink = match &reply_display {
+        Some(display) => display.token_sink(),
+        None => extras.token_sink.unwrap_or_else(stdout_sink),
+    };
+    let main_round_sink: Option<RoundSink> = match &reply_display {
+        Some(display) => {
+            let (display, inner) = (display.clone(), extras.round_sink.clone());
+            Some(Arc::new(move || {
+                display.round_started();
+                if let Some(inner) = &inner {
+                    inner();
+                }
+            }))
+        }
+        None => extras.round_sink.clone(),
+    };
     // ORIGINAL declared identity snapshot, not display labels or caller aliases.
     let mut request_agents = Vec::new();
     if let Some(prepared) = construction.prepared() {
@@ -1908,8 +2110,7 @@ async fn build_session_with_capture_profile(
                 .await
                 .map(|provider| {
                     Arc::new(
-                        provider
-                            .with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
+                        provider.with_sinks(main_round_sink.clone(), extras.activity_sink.clone()),
                     ) as Arc<dyn ModelProvider>
                 })
                 .map_err(|_| unavailable.clone())
@@ -1927,7 +2128,7 @@ async fn build_session_with_capture_profile(
                 )
                 .await
                 .map(|provider| {
-                    Arc::new(provider.with_round_sink(extras.round_sink.clone()))
+                    Arc::new(provider.with_round_sink(main_round_sink.clone()))
                         as Arc<dyn ModelProvider>
                 })
                 .map_err(|_| unavailable.clone())
@@ -2031,18 +2232,70 @@ async fn build_session_with_capture_profile(
     #[cfg(feature = "gadgets")]
     let system = format!("{system}{gadget_system_suffix}");
     // A privacy conversation has no system text outside its sources. The
-    // text built above is captured here as host text and admitted once,
-    // before any request exists.
+    // sections of the system prompt are taken from their producer while they
+    // are still apart, and each is captured and admitted on its own, before
+    // any request exists. Joined, they must be exactly the text built above.
     let (system, privacy_boundary) = match &privacy_view {
         None => (system, None),
         Some(session) => {
-            let raw = crate::privacy_session::CapturedRaw::from_producer(
-                crate::privacy_session::RawOrigin::HostConfig,
-                &system,
+            use crate::privacy_session::{CapturedRaw, RawOrigin};
+            let chunks = crate::prompt::system_prompt_chunks(
+                cfg,
+                &harness_profile,
+                extra_system,
+                &cwd,
+                &extensions,
             );
-            let boundary = match session.admit_raw(&raw).await {
-                Ok(node) => session.boundary(&[node]).ok(),
-                Err(_) => None,
+            #[cfg(feature = "gadgets")]
+            let chunks = with_gadget_skill(chunks, &gadget_system_suffix);
+            let joined = chunks
+                .iter()
+                .map(|chunk| chunk.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            // A section of several origins is admitted piece by piece: each
+            // instruction file, skill and extension is its own capture.
+            let mut sections = Vec::with_capacity(chunks.len());
+            if joined == system {
+                'sections: for chunk in &chunks {
+                    let whole = [(chunk.text.as_str(), chunk.read)];
+                    let pieces: Vec<(&str, Option<&'static str>)> = match chunk.pieces.is_empty() {
+                        true => whole.to_vec(),
+                        false => chunk
+                            .pieces
+                            .iter()
+                            .map(|piece| (piece.text.as_str(), piece.read))
+                            .collect(),
+                    };
+                    let mut section = Vec::with_capacity(pieces.len());
+                    for (text, read) in pieces {
+                        let origin = match read {
+                            None => RawOrigin::HostStatic,
+                            Some(what)
+                                if what.ends_with("instruction file")
+                                    || what == "discovered skill" =>
+                            {
+                                RawOrigin::HostFile
+                            }
+                            Some(_) => RawOrigin::HostConfig,
+                        };
+                        match session
+                            .admit_raw(&CapturedRaw::from_producer(origin, text))
+                            .await
+                        {
+                            Ok(node) => section.push(node),
+                            Err(_) => {
+                                sections.clear();
+                                break 'sections;
+                            }
+                        }
+                    }
+                    sections.push(section);
+                }
+            }
+            let boundary = match sections.is_empty() {
+                true => None,
+                false => session.boundary_of_sections(&sections).ok(),
             };
             let Some(boundary) = boundary else {
                 if let Some(selection) = &extras.privacy_view {
@@ -2057,6 +2310,27 @@ async fn build_session_with_capture_profile(
             };
             (String::new(), Some(boundary))
         }
+    };
+    if let (Some(display), Some(boundary)) = (reply_display, &privacy_boundary) {
+        boundary.show_replies(display);
+    }
+    // In a privacy conversation the boundaries of the root agent and of
+    // every delegated agent derive, before a call is reviewed, what a file
+    // write or edit that names a placeholder will really do, and the file
+    // tools run only that. The user's policy is kept by the session that is
+    // built here; the review and the tools refer to it weakly.
+    let user_policy = extras
+        .privacy_view
+        .as_ref()
+        .filter(|_| privacy_view.is_some())
+        .map(|selection| selection.policy());
+    let file_review = match (&privacy_boundary, &user_policy) {
+        (Some(boundary), Some(policy)) => {
+            let review = crate::privacy_session::FileReview::new(policy, cwd.clone());
+            boundary.review_files(review.clone());
+            Some(review)
+        }
+        _ => None,
     };
     let shell_settings = match construction.prepared() {
         Some(prepared) => prepared.shell().clone(), // Includes disabled-service credential sources.
@@ -2325,6 +2599,7 @@ async fn build_session_with_capture_profile(
     // Shared registry + notification channel: the `task` tool records spawned
     // subagents in `registry`; background children push completions/messages on
     // `notif_tx`, which the app drains through `notif_rx` (see Session).
+    let human_workspace = cwd.clone();
     let registry = Arc::new(AgentRegistry::default());
     let (notif_tx, notif_rx) = craftsman_harness::notification_channel();
 
@@ -2346,6 +2621,32 @@ async fn build_session_with_capture_profile(
             crate::exec::meter::Role::Subagent,
             extras.output_closed.clone(),
         )?,
+        None if privacy_view.is_some() => {
+            // The delegated agents of a privacy conversation: the same owner
+            // and guard, their own usage, and requests composed from the
+            // sources of each agent's own lane.
+            let built = crate::privacy_session::delegated_provider(
+                make_unguarded_client()?,
+                privacy_view.clone()?,
+                sub_usage,
+                child_sink.clone(),
+            )
+            .await;
+            match built {
+                Ok(provider) => provider,
+                Err(_) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .refuse(crate::privacy_session::BuildRefusal::Provider);
+                    }
+                    if let Some(sink) = &extras.activity_sink {
+                        sink("The model connection of this session has no private view.");
+                    }
+                    return None;
+                }
+            }
+        }
         None => Arc::new(StreamingLlmProvider {
             client: make_client()?,
             usage: sub_usage,
@@ -2381,7 +2682,6 @@ async fn build_session_with_capture_profile(
         }
         #[cfg(feature = "gadgets")]
         subagent_prompt.push_str(&gadget_skill_block);
-        let subagent_tools = shared_tools.clone();
         Some(SubAgentSpec {
             name: "general-purpose".into(),
             description: gp_profile.description.unwrap_or_else(|| {
@@ -2392,14 +2692,14 @@ async fn build_session_with_capture_profile(
             // host/network tool uses the same gate: legacy SubagentGate shares
             // ApprovalState/UI callbacks; headless shares its immutable policy.
             tools: if construction.gate().is_some() {
-                subagent_tools // Already wrapped with the SAME immutable invocation gate.
+                shared_tools.clone() // Already wrapped with the SAME immutable invocation gate.
             } else {
-                crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
-                    subagent_tools,
+                gated_for_delegation(
+                    shared_tools.clone(),
                     &approval,
-                    extras.approval_prompt.clone(),
+                    (&extras.approval_prompt, &extras.delegated_tool_callbacks),
                     &cwd,
-                    extras.delegated_tool_callbacks.clone(),
+                    file_review.as_ref(),
                 )
             },
             model: Some(sub_provider.clone()),
@@ -2436,12 +2736,12 @@ async fn build_session_with_capture_profile(
         let tools = if construction.gate().is_some() {
             tools
         } else {
-            crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
+            gated_for_delegation(
                 tools,
                 &approval,
-                extras.approval_prompt.clone(),
+                (&extras.approval_prompt, &extras.delegated_tool_callbacks),
                 &cwd,
-                extras.delegated_tool_callbacks.clone(),
+                file_review.as_ref(),
             )
         };
         let subagent_prompt = match construction.prepared() {
@@ -2483,6 +2783,45 @@ async fn build_session_with_capture_profile(
             crate::exec::meter::Role::Compaction,
             extras.output_closed.clone(),
         )?,
+        None if privacy_view.is_some() => {
+            // The summarizer of a privacy conversation: the same owner and
+            // guard, its own usage, and requests composed from sources.
+            let session = privacy_view.clone()?;
+            let client = make_unguarded_client()?;
+            let built: Result<Arc<dyn ModelProvider>, _> = if client.native.is_none() {
+                crate::privacy_session::ViewChatProvider::new(
+                    client,
+                    session,
+                    compact_usage,
+                    child_sink,
+                )
+                .await
+                .map(|provider| Arc::new(provider) as Arc<dyn ModelProvider>)
+            } else {
+                crate::privacy_session::ViewNativeProvider::new(
+                    client,
+                    session,
+                    compact_usage,
+                    child_sink,
+                )
+                .await
+                .map(|provider| Arc::new(provider.for_summaries()) as Arc<dyn ModelProvider>)
+            };
+            match built {
+                Ok(provider) => provider,
+                Err(_) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .refuse(crate::privacy_session::BuildRefusal::Provider);
+                    }
+                    if let Some(sink) = &extras.activity_sink {
+                        sink("The model connection of this session has no private view.");
+                    }
+                    return None;
+                }
+            }
+        }
         None => Arc::new(StreamingLlmProvider {
             client: make_client()?,
             usage: compact_usage,
@@ -2680,7 +3019,7 @@ async fn build_session_with_capture_profile(
     // source-preserving path. One whose author made no statement for the
     // source view refuses the build, and the frontend is told which. A
     // selection carries no permission to run with fewer parts than the user
-    // configured. Test fixtures alone may leave such parts out, by name.
+    // configured, and nothing here leaves a part out.
     let middleware = match &privacy_view {
         None => middleware,
         Some(_) => {
@@ -2688,38 +3027,25 @@ async fn build_session_with_capture_profile(
             let (kept, unadapted): (Vec<_>, Vec<_>) = middleware.into_iter().partition(|entry| {
                 matches!(
                     entry.view_support(),
-                    ViewSupport::Preserving | ViewSupport::TrackedReply
+                    ViewSupport::Preserving | ViewSupport::Tracked
                 )
             });
             if !unadapted.is_empty() {
                 let names: Vec<&str> = unadapted.iter().map(|entry| entry.name()).collect();
-                let leave_out = extras
-                    .privacy_view
-                    .as_ref()
-                    .is_some_and(|selection| selection.leaves_out_unadapted_parts());
                 if let Some(sink) = &extras.activity_sink {
-                    sink(&if leave_out {
-                        format!(
-                            "This private conversation runs without: {}.",
-                            names.join(", ")
-                        )
-                    } else {
-                        format!(
-                            "This private conversation cannot be built. No source path exists for: {}.",
-                            names.join(", ")
-                        )
-                    });
+                    sink(&format!(
+                        "This private conversation cannot be built. No source path exists for: {}.",
+                        names.join(", ")
+                    ));
                 }
-                if !leave_out {
-                    if let Some(selection) = &extras.privacy_view {
-                        selection.report().refuse(
-                            crate::privacy_session::BuildRefusal::MissingSourcePaths(
-                                names.iter().map(|name| (*name).to_owned()).collect(),
-                            ),
-                        );
-                    }
-                    return None;
+                if let Some(selection) = &extras.privacy_view {
+                    selection.report().refuse(
+                        crate::privacy_session::BuildRefusal::MissingSourcePaths(
+                            names.iter().map(|name| (*name).to_owned()).collect(),
+                        ),
+                    );
                 }
+                return None;
             }
             kept
         }
@@ -2768,8 +3094,8 @@ async fn build_session_with_capture_profile(
             .checkpointer(cp.clone() as Arc<dyn craftsman_harness::Checkpointer>)
             .journal(Arc::new(JsonlJournal::new()));
     }
-    for tool in &shared_tools {
-        builder = builder.tool(tool.clone());
+    for tool in with_restored_files(shared_tools.clone(), file_review.as_ref()) {
+        builder = builder.tool(tool);
     }
     if let Some(controller) = &verification {
         builder = builder.tool(Arc::new(crate::verification::VerifyTool(
@@ -2823,6 +3149,54 @@ async fn build_session_with_capture_profile(
     if let Some(controls) = &controls {
         controls.bind_tools(&agent, &trusted_observational_tools, &trusted_file_tools);
     }
+    let human_source = privacy_view
+        .as_ref()
+        .zip(human_prompt)
+        .map(|(privacy, prompt)| {
+            let approval = human_approval.clone();
+            let workspace = human_workspace.clone();
+            let effect_approval = approval;
+            crate::privacy_entry::HumanDecisionProducer::register_with_effect(
+                privacy.clone(),
+                Arc::new(move |parked, shown| {
+                    let call = parked.call();
+                    let summary = crate::tools::summarize_call(&call.name, &call.args);
+                    // A parked file operation is shown as it will really be
+                    // written: the preview of the operation the agent
+                    // carried with the parked call, taken under the digest
+                    // the agent handed over with it. If that digest is not
+                    // the operation's, nobody is asked.
+                    let Some(shown_call) = crate::privacy_session::call_to_show(parked, shown)
+                    else {
+                        return crate::privacy_entry::HumanChoice::Absent;
+                    };
+                    let call = &shown_call;
+                    let details =
+                        crate::tools::approval_details_at(&call.name, &call.args, &workspace);
+                    match prompt(call, &summary, &details) {
+                        ApprovalPromptResult::Approve => crate::privacy_entry::HumanChoice::Approve,
+                        ApprovalPromptResult::ApproveAlways => {
+                            crate::privacy_entry::HumanChoice::ApproveAlways
+                        }
+                        ApprovalPromptResult::Reject(feedback) => {
+                            crate::privacy_entry::HumanChoice::Deny(feedback)
+                        }
+                    }
+                }),
+                Arc::new(move |choice, call| {
+                    if matches!(choice, crate::privacy_entry::HumanChoice::ApproveAlways) {
+                        // This effect follows the actual sealed decision's
+                        // source/admission checks, never the input read.
+                        let mut approval = effect_approval.lock().unwrap();
+                        if crate::tools::NETWORK_TOOLS.contains(&call.name.as_str()) {
+                            approval.auto_approve_network = true;
+                        } else {
+                            approval.auto_approve = true;
+                        }
+                    }
+                }),
+            )
+        });
     Some(Session {
         #[cfg(feature = "gadgets")]
         script_capture,
@@ -2840,7 +3214,14 @@ async fn build_session_with_capture_profile(
         send_guard,
         privacy_view: privacy_view
             .zip(privacy_boundary)
-            .map(|(session, boundary)| crate::privacy_session::PrivacyView::new(session, boundary)),
+            .map(|(session, boundary)| {
+                let view = crate::privacy_session::PrivacyView::new(session, boundary)
+                    .with_policy(user_policy);
+                match human_source {
+                    Some(source) => view.with_human_source(source),
+                    None => view,
+                }
+            }),
         memories,
         compaction,
         mcp: mcp_summary,

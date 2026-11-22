@@ -39,6 +39,7 @@
 use crate::error::AgentError;
 use crate::middleware::AgentMiddleware;
 use crate::model::{ModelProvider, ModelRequest, TokenCounter, Usage};
+use crate::provenance::{SourcePart, SummaryText, TrackedPrepare, ViewSupport};
 use crate::state::{AgentState, Msg};
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -222,6 +223,93 @@ impl CompactionMiddleware {
         (to_summarize, tail)
     }
 
+    /// [`split`](Self::split) as positions: which recorded messages are
+    /// summarized and which are kept, each in order.
+    fn split_positions(&self, messages: &[Msg], pass: Pass) -> (Vec<usize>, Vec<usize>) {
+        let by_count = |keep_tail_msgs: usize| {
+            let cut = Self::cut_point_by_message_count(messages, keep_tail_msgs);
+            ((0..cut).collect(), (cut..messages.len()).collect())
+        };
+        match pass {
+            Pass::Manual => by_count(Self::manual_keep_tail(messages.len())),
+            Pass::Auto => match &self.trigger {
+                CompactionTrigger::MessageCount { keep_tail_msgs, .. } => by_count(*keep_tail_msgs),
+                CompactionTrigger::Tokens {
+                    token_counter,
+                    keep_tail_tokens,
+                    ..
+                } => {
+                    // The same walk as `select_tail_by_tokens`.
+                    let mut kept = BTreeSet::new();
+                    let mut used = 0u64;
+                    for (index, message) in messages.iter().enumerate().rev() {
+                        if !matches!(message, Msg::User { .. }) {
+                            continue;
+                        }
+                        let cost = token_counter.count(std::slice::from_ref(message));
+                        if used.saturating_add(cost) > *keep_tail_tokens {
+                            break;
+                        }
+                        used += cost;
+                        kept.insert(index);
+                    }
+                    (
+                        (0..messages.len())
+                            .filter(|index| !kept.contains(index))
+                            .collect(),
+                        kept.into_iter().collect(),
+                    )
+                }
+            },
+        }
+    }
+
+    /// The compaction of an agent with a source view. The summarizer is
+    /// asked through its view path with the summarized messages' own
+    /// sources, and the summary replaces them with a source of its own.
+    /// Returns whether anything was replaced.
+    async fn compact_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+        pass: Pass,
+    ) -> Result<bool, AgentError> {
+        use std::sync::OnceLock;
+        static SYSTEM: OnceLock<Arc<str>> = OnceLock::new();
+        static ASK: OnceLock<Arc<str>> = OnceLock::new();
+        static OPEN: OnceLock<Arc<str>> = OnceLock::new();
+        static CLOSE: OnceLock<Arc<str>> = OnceLock::new();
+        let fixed = |cell: &'static OnceLock<Arc<str>>, text: &str| {
+            SourcePart::fixed(cell.get_or_init(|| Arc::from(text)).clone())
+        };
+        let (summarized, kept) = self.split_positions(&prepare.state().messages, pass);
+        if summarized.is_empty() {
+            return Ok(false);
+        }
+        prepare
+            .replace_with_summary(
+                self.model.as_ref(),
+                SummaryText {
+                    system: fixed(&SYSTEM, SUMMARY_SYSTEM),
+                    ask: fixed(&ASK, SUMMARY_REQUEST),
+                    open: fixed(&OPEN, "<conversation_summary>\n"),
+                    close: fixed(&CLOSE, "\n</conversation_summary>"),
+                },
+                &summarized,
+                &kept,
+            )
+            .await?;
+        Ok(true)
+    }
+
+    /// The manual pass of an agent with a source view: `compact_now`, through
+    /// the tracked path.
+    pub async fn compact_now_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<bool, AgentError> {
+        self.compact_with_view(prepare, Pass::Manual).await
+    }
+
     /// Compact `messages` NOW, regardless of the trigger condition — the
     /// manual `/compact` entry point. Keeps the most recent
     /// [`MANUAL_KEEP_TAIL_MSGS`] messages rather than the tail the trigger
@@ -292,6 +380,33 @@ impl AgentMiddleware for CompactionMiddleware {
             // re-establishes it.
             st.last_usage = None;
             st.last_usage_msg_count = 0;
+        }
+        Ok(())
+    }
+
+    /// On an agent with a source view the same trigger decides, and the
+    /// compaction runs through the tracked path.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        let state = prepare.state();
+        let should_compact = match &self.trigger {
+            CompactionTrigger::MessageCount { threshold_msgs, .. } => {
+                state.messages.len() > *threshold_msgs
+            }
+            CompactionTrigger::Tokens {
+                token_counter,
+                trigger_tokens,
+                ..
+            } => Self::estimate_tokens(state, token_counter.as_ref()) > *trigger_tokens,
+        };
+        if should_compact {
+            self.compact_with_view(prepare, Pass::Auto).await?;
         }
         Ok(())
     }

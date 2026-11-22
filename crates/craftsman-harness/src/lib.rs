@@ -20,7 +20,7 @@ pub mod middleware;
 pub use middleware::{AgentMiddleware, Flow, MiddlewareChain, Next, ToolNext, ViewNext};
 
 pub mod agent;
-pub use agent::{Agent, AgentBuilder, AgentIdentity, TurnOutput, TurnResult};
+pub use agent::{Agent, AgentBuilder, AgentIdentity, TrackedTask, TurnOutput, TurnResult};
 
 pub mod completion;
 pub use completion::{CompletionAction, CompletionAfterCheck, CompletionCheck};
@@ -30,8 +30,9 @@ pub use boundary::{AgentBoundaryPolicy, HumanInputKind, ModelBoundaryAction};
 
 pub mod provenance;
 pub use provenance::{
-    FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult, ReachedTool, ReplyEdit,
-    SourceRef, TrackedModelRequest, TrackedReply, ViewSupport,
+    BoxedBoundaryFuture, FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult,
+    OutcomePart, PartFrom, ReachedTool, ReplyEdit, SourcePart, SourceRef, SummaryText,
+    TrackedDispatch, TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
 };
 
 pub mod interrupt;

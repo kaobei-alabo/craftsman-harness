@@ -26,6 +26,7 @@ struct Seen {
     system: Vec<String>,
     messages: Vec<String>,
     tools: Vec<String>,
+    inputs: Vec<crate::provenance::ActualModelInput>,
 }
 
 struct ViewModel {
@@ -62,6 +63,7 @@ impl ModelProvider for ViewModel {
             system: req.system_sources().iter().map(tag).collect(),
             messages: req.message_sources().iter().map(tag).collect(),
             tools: req.tool_sources().iter().map(tag).collect(),
+            inputs: req.message_inputs().to_vec(),
         });
         match self.script.lock().unwrap().next() {
             Some(message) => Ok(ModelDelivery::new(
@@ -189,6 +191,12 @@ async fn an_agent_without_a_boundary_keeps_its_paths_and_has_no_typed_entry() {
         system: vec![],
         messages: vec![source("input")],
         tools: vec![],
+        retained: vec![],
+        inputs: vec![],
+        returned: None,
+        conversation: None,
+        summary: false,
+        owner: None,
     };
     drop(requests);
     assert!(matches!(
@@ -329,11 +337,16 @@ async fn a_selected_agent_with_a_part_that_has_no_source_path_refuses() {
     let boundary = Arc::new(Boundary::default());
     let model = ViewModel::new(vec![Msg::assistant("unused")]);
     let base = || Agent::builder(model.clone()).model_view_boundary(Some(boundary.clone()));
-    // System text outside the boundary, and any middleware.
+    // System text outside the boundary, and a middleware whose author made
+    // no statement for the boundary.
+    struct Unstated;
+    impl crate::AgentMiddleware for Unstated {
+        fn name(&self) -> &str {
+            "unstated"
+        }
+    }
     let with_system = base().system_prompt("untracked system text").build();
-    let with_middleware = base()
-        .middleware(Arc::new(crate::builtin::todos::TodoListMiddleware::new()))
-        .build();
+    let with_middleware = base().middleware(Arc::new(Unstated)).build();
     for agent in [&with_system, &with_middleware] {
         assert!(matches!(
             agent.run_turn_with_view("raw", source("input")).await,
@@ -484,6 +497,8 @@ use crate::{AgentMiddleware, ToolCtx, ToolOutcome};
 struct Frontiers {
     events: Mutex<Vec<String>>,
     refuse_dispatch: AtomicBool,
+    /// Every system addition it was asked about: (where from, text) per part.
+    additions: Mutex<Vec<Vec<(String, String)>>>,
 }
 
 impl Frontiers {
@@ -539,10 +554,84 @@ impl ModelViewBoundary for Frontiers {
         self.commit_model(receipt, committed).await
     }
 
+    async fn host_message(
+        &self,
+        part: &crate::provenance::SourcePart,
+    ) -> Result<SourceRef, AgentError> {
+        self.note(format!("host message {:?}", &*part.text));
+        Ok(source("host:ask"))
+    }
+
+    async fn summary_source(
+        &self,
+        receipt: SourceRef,
+        open: &crate::provenance::SourcePart,
+        close: &crate::provenance::SourcePart,
+        summary: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let Msg::User { content } = summary else {
+            panic!("a summary is recorded with the user role");
+        };
+        assert!(content.starts_with(&*open.text) && content.ends_with(&*close.text));
+        self.note(format!("summary {} {content:?}", tag(&receipt)));
+        Ok(source(&format!("summary:{}", tag(&receipt))))
+    }
+
+    async fn system_addition(
+        &self,
+        parts: &[crate::provenance::SourcePart],
+    ) -> Result<SourceRef, AgentError> {
+        use crate::provenance::PartFrom;
+        let mut additions = self.additions.lock().unwrap();
+        additions.push(
+            parts
+                .iter()
+                .map(|part| {
+                    let from = match &part.from {
+                        PartFrom::Fixed => "fixed".to_owned(),
+                        PartFrom::Read { what } => format!("read {what}"),
+                        PartFrom::Call {
+                            reply,
+                            call_id,
+                            pointer,
+                        } => format!("call {} {call_id} {pointer}", tag(reply)),
+                        PartFrom::CallJson {
+                            reply,
+                            call_id,
+                            pointer,
+                        } => format!("call json {} {call_id} {pointer}", tag(reply)),
+                        PartFrom::Source { source } => format!("source {}", tag(source)),
+                    };
+                    (from, part.text.to_string())
+                })
+                .collect(),
+        );
+        Ok(source(&format!("addition:{}", additions.len() - 1)))
+    }
+
     async fn observe_tool_result(
         &self,
         result: ObservedToolResult<'_>,
     ) -> Result<SourceRef, AgentError> {
+        if !result.appended.is_empty() {
+            self.note(format!(
+                "appended {} part(s) to {}",
+                result.appended.len(),
+                result.call_id
+            ));
+        }
+        if !result.parts.is_empty() {
+            use crate::provenance::PartFrom;
+            let made: Vec<String> = result
+                .parts
+                .iter()
+                .map(|part| match &part.from {
+                    PartFrom::CallJson { pointer, .. } => format!("<{pointer}>"),
+                    _ => part.text.to_string(),
+                })
+                .collect();
+            self.note(format!("parts of {}: {}", result.call_id, made.join("")));
+        }
         self.note(format!(
             "result {} {:?} reached=[{}] returned={:?}",
             result.call_id,
@@ -1056,13 +1145,18 @@ async fn a_parked_call_resumes_only_through_a_checked_decision() {
 #[tokio::test]
 async fn text_from_another_agent_has_no_source_and_stops_the_next_request() {
     let f = frontier(vec![Msg::assistant("never sent")]);
-    f.agent.model_view.as_ref().unwrap().note_inputs(vec![None]);
+    let notification = Msg::user("[message from agent 'child']\nhello");
     f.agent
         .state
         .lock()
         .unwrap()
         .messages
-        .push(Msg::user("[message from agent 'child']\nhello"));
+        .push(notification.clone());
+    f.agent
+        .model_view
+        .as_ref()
+        .unwrap()
+        .note_inputs(&[notification], vec![None]);
     let error = f
         .agent
         .run_turn_with_view("go", source("input"))
@@ -1096,6 +1190,7 @@ async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
 
     let view = ModelView::new(Arc::new(Frontiers::default()));
     view.note_inputs(
+        &messages,
         ["input", "model:0", "result:c1", "later", "model:1"]
             .iter()
             .map(|name| Some(source(name)))
@@ -1112,8 +1207,14 @@ async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
     let shape: Vec<String> = slots
         .iter()
         .map(|slot| match slot {
-            Slot::Bound(kept) => tag(kept),
-            Slot::Pending(event) => format!("{event:?}"),
+            Slot::Bound(kept, _) => tag(kept),
+            Slot::Pending(commit) => match commit.event() {
+                crate::provenance::RetainedEvent::Framework(event) => format!("{event:?}"),
+                event => format!("{event:?}"),
+            },
+            Slot::StagedSummary(_, _) | Slot::StagedHostMessage(_, _) => {
+                panic!("an uncommitted stage entered canonical slots")
+            }
         })
         .collect();
     assert_eq!(
@@ -1335,11 +1436,22 @@ async fn a_statement_does_not_cover_changes_to_todos_files_custom_state_or_a_rep
         assert_eq!(state.messages, vec![Msg::user("go")], "{what}");
         assert!(state.custom.is_empty() && state.todos.is_empty() && state.files.is_empty());
     }
-    // An untracked change of the received reply stops the turn before the
-    // reply is committed or any call runs.
+    // An untracked review change stops further work, but the actual reply
+    // and usage remain retained. No call runs and no replacement is invented.
     let (result, agent, _) = run("reply").await;
     assert!(matches!(result, Err(AgentError::State(_))));
-    assert_eq!(recorded(&agent), vec![Msg::user("go")]);
+    assert_eq!(recorded(&agent), vec![Msg::user("go"), script()[0].clone()]);
+    assert_eq!(
+        agent.actual_provider_returns().unwrap()[0].message(),
+        &script()[0]
+    );
+    assert_eq!(
+        agent.actual_received_replies().unwrap()[0]
+            .usage()
+            .input_tokens,
+        7
+    );
+    assert!(agent.actual_terminal_outcomes().unwrap().is_empty());
     // A change around the tool: the tool ran, so its result and its own
     // effect are kept, and the turn stops there.
     for what in ["before tool", "after tool"] {
@@ -1355,4 +1467,375 @@ async fn a_statement_does_not_cover_changes_to_todos_files_custom_state_or_a_rep
     assert!(matches!(result, Ok(TurnResult::Done(_))));
     assert_eq!(model.seen.lock().unwrap().len(), 2);
     assert_eq!(agent.state.lock().unwrap().custom["tool"], 1);
+}
+
+// ---- tracked system additions: todos, memory, reminders -----------------------
+
+fn todo_call(id: &str, items: &[(&str, &str)]) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        name: "write_todos".into(),
+        args: serde_json::json!({"todos": items
+            .iter()
+            .map(|(content, status)| serde_json::json!({"content": content, "status": status}))
+            .collect::<Vec<_>>()}),
+    }
+}
+
+fn memory_backend(text: &str) -> Arc<crate::StateFs> {
+    let state = Arc::new(Mutex::new(AgentState::default()));
+    state.lock().unwrap().files.insert(
+        "/memories/AGENTS.md".into(),
+        crate::FileData {
+            content: text.into(),
+            modified: false,
+        },
+    );
+    Arc::new(crate::StateFs::new(state))
+}
+
+fn normal_middleware() -> Vec<Arc<dyn AgentMiddleware>> {
+    use crate::builtin::{MemoryMiddleware, SystemRemindersMiddleware, TodoListMiddleware};
+    vec![
+        Arc::new(TodoListMiddleware::new()),
+        Arc::new(MemoryMiddleware::new(
+            memory_backend("prefers short answers"),
+            vec!["/memories/AGENTS.md".into()],
+        )),
+        Arc::new(SystemRemindersMiddleware::new(1)),
+    ]
+}
+
+#[tokio::test]
+async fn todos_memory_and_reminders_add_the_same_text_as_parts_with_their_origins() {
+    let script = || {
+        vec![
+            calls(vec![todo_call(
+                "c1",
+                &[("first step", "in_progress"), ("second step", "pending")],
+            )]),
+            calls(vec![echo_call("c2", "work")]),
+            Msg::assistant("done"),
+        ]
+    };
+    let model = ViewModel::new(script());
+    let boundary = Arc::new(Frontiers::default());
+    let mut builder = Agent::builder(model.clone())
+        .tool(Arc::new(Echo(AtomicUsize::new(0))))
+        .model_view_boundary(Some(boundary.clone()));
+    for entry in normal_middleware() {
+        builder = builder.middleware(entry);
+    }
+    let agent = builder.build();
+    agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+
+    // The same conversation on an agent without a boundary.
+    let plain_model = Arc::new(ScriptedModel::new(script()));
+    let mut builder = Agent::builder(plain_model.clone()).tool(Arc::new(Echo(AtomicUsize::new(0))));
+    for entry in normal_middleware() {
+        builder = builder.middleware(entry);
+    }
+    let plain = builder.build();
+    plain.run_turn("go").await.unwrap();
+    // The record is the same, the stale-list reminder on the second result
+    // and the round counters included.
+    assert_eq!(recorded(&agent), recorded(&plain));
+    assert_eq!(
+        agent.state.lock().unwrap().custom,
+        plain.state.lock().unwrap().custom
+    );
+    assert_eq!(
+        agent.state.lock().unwrap().todos,
+        plain.state.lock().unwrap().todos
+    );
+    assert!(matches!(&recorded(&agent)[4], Msg::Tool { content, .. }
+        if content.starts_with("work") && content.contains("<system-reminder>")));
+
+    // Every round added two sections, todos then memory, and joined they
+    // are exactly the system text the other agent sent.
+    let additions = boundary.additions.lock().unwrap().clone();
+    assert_eq!(additions.len(), 6);
+    let plain_requests = plain_model.requests.lock().unwrap();
+    for (round, request) in plain_requests.iter().enumerate() {
+        let joined: String = additions[round * 2..round * 2 + 2]
+            .iter()
+            .map(|parts| {
+                let text: String = parts.iter().map(|(_, text)| text.as_str()).collect();
+                format!("\n\n{text}")
+            })
+            .collect();
+        assert_eq!(joined, request.system, "round {round}");
+    }
+    assert_eq!(
+        model.seen.lock().unwrap()[2].system,
+        ["addition:4", "addition:5"]
+    );
+
+    // Before any todo exists the section is the fixed prompt alone. After the
+    // call it carries each todo's text as text of that call's arguments, in
+    // the reply that asked for it, between the application's own labels.
+    assert_eq!(
+        additions[0]
+            .iter()
+            .map(|(from, _)| from.as_str())
+            .collect::<Vec<_>>(),
+        ["fixed"]
+    );
+    let todo_parts: Vec<(&str, &str)> = additions[2]
+        .iter()
+        .skip(2)
+        .map(|(from, text)| (from.as_str(), text.as_str()))
+        .collect();
+    assert_eq!(
+        todo_parts,
+        [
+            ("fixed", "- [InProgress] "),
+            ("call model:receipt:0 c1 /todos/0/content", "first step"),
+            ("fixed", "\n"),
+            ("fixed", "- [Pending] "),
+            ("call model:receipt:0 c1 /todos/1/content", "second step"),
+            ("fixed", "\n"),
+        ]
+    );
+    // What was read from the memory store is a part of its own, named by
+    // what was read.
+    assert!(additions[1].contains(&(
+        "read /memories/AGENTS.md".to_owned(),
+        "prefers short answers".to_owned()
+    )));
+    assert!(
+        additions[1]
+            .iter()
+            .filter(|(from, _)| from != "fixed")
+            .count()
+            == 1
+    );
+    // The reminder the middleware appended was announced with the result.
+    assert!(
+        boundary
+            .events()
+            .contains(&"appended 1 part(s) to c2".to_owned())
+    );
+    // The todo tool said what its own outcome is made of: its fixed words
+    // around the JSON encoding of each content string of its arguments.
+    assert!(boundary.events().contains(
+        &r#"parts of c1: Updated todo list to [{"content":</todos/0/content>,"status":"in_progress"},{"content":</todos/1/content>,"status":"pending"}]"#
+            .to_owned()
+    ));
+}
+
+/// A tool that replaces the todo list without saying where its text came
+/// from.
+struct SilentTodos;
+
+#[async_trait::async_trait]
+impl Tool for SilentTodos {
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: "echo".into(),
+            description: "sets todos".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    async fn call(
+        &self,
+        _: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        ctx.state.todos = vec![crate::Todo {
+            content: "from nowhere".into(),
+            status: crate::TodoStatus::Pending,
+        }];
+        Ok(ToolOutcome::ok("set"))
+    }
+}
+
+#[tokio::test]
+async fn a_stored_todo_without_an_origin_stops_the_next_request() {
+    let model = ViewModel::new(vec![
+        calls(vec![echo_call("c1", "x")]),
+        Msg::assistant("never sent"),
+    ]);
+    let boundary = Arc::new(Frontiers::default());
+    let agent = Agent::builder(model.clone())
+        .tool(Arc::new(SilentTodos))
+        .middleware(Arc::new(crate::builtin::TodoListMiddleware::new()))
+        .model_view_boundary(Some(boundary.clone()))
+        .build();
+    let error = agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::State(_)));
+    // The tool ran and its result and effect are kept; one request was made.
+    assert_eq!(recorded(&agent).len(), 3);
+    assert_eq!(agent.state.lock().unwrap().todos.len(), 1);
+    assert_eq!(model.seen.lock().unwrap().len(), 1);
+}
+
+// ---- compaction through the tracked path ------------------------------------
+
+fn compaction_of(
+    summarizer: Arc<dyn ModelProvider>,
+    threshold_msgs: usize,
+) -> Arc<crate::builtin::CompactionMiddleware> {
+    Arc::new(crate::builtin::CompactionMiddleware::new(
+        summarizer,
+        crate::builtin::CompactionTrigger::MessageCount {
+            threshold_msgs,
+            keep_tail_msgs: 2,
+        },
+    ))
+}
+
+#[tokio::test]
+async fn compaction_replaces_messages_with_a_sourced_summary_and_keeps_the_tail_sources() {
+    let replies = || {
+        vec![
+            Msg::assistant("one"),
+            Msg::assistant("two"),
+            Msg::assistant("three"),
+        ]
+    };
+    // The selected agent: the summarizer is asked through its view path.
+    let model = ViewModel::new(replies());
+    let summarizer = ViewModel::new(vec![Msg::assistant("SUMMARY")]);
+    let boundary = Arc::new(Frontiers::default());
+    let agent = Agent::builder(model.clone())
+        .middleware(compaction_of(summarizer.clone(), 4))
+        .model_view_boundary(Some(boundary.clone()))
+        .build();
+    // The same conversation without a boundary.
+    let plain_model = Arc::new(ScriptedModel::new(replies()));
+    let plain_summarizer = Arc::new(ScriptedModel::new(vec![Msg::assistant("SUMMARY")]));
+    let plain = Agent::builder(plain_model.clone())
+        .middleware(compaction_of(plain_summarizer.clone(), 4))
+        .build();
+    for (index, input) in ["first", "second", "third"].into_iter().enumerate() {
+        agent
+            .run_turn_with_view(input, source(&format!("input:{index}")))
+            .await
+            .unwrap();
+        plain.run_turn(input).await.unwrap();
+    }
+    // The record is the same: one summary, the kept tail and the new reply.
+    assert_eq!(recorded(&agent), recorded(&plain));
+    assert_eq!(recorded(&agent).len(), 4);
+    assert!(matches!(&recorded(&agent)[0], Msg::User { content }
+        if content == "<conversation_summary>\nSUMMARY\n</conversation_summary>"));
+
+    // The summarizer was given the summarized messages with their own
+    // sources, then the application's instruction, and no tools. It is the
+    // same request the other summarizer got as text.
+    let asked = summarizer.seen.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        asked[0].messages,
+        ["input:0", "model:receipt:0", "input:1", "host:ask"]
+    );
+    assert_eq!(asked[0].system.len(), 1);
+    assert!(asked[0].tools.is_empty());
+    let plain_asked = plain_summarizer.requests.lock().unwrap();
+    assert_eq!(asked[0].recorded.messages, plain_asked[0].messages);
+    assert_eq!(summarizer.recorded_path_calls.load(Ordering::SeqCst), 0);
+
+    // The request that followed carried the summary's own source and the
+    // sources of the kept messages.
+    assert_eq!(
+        last_sources(&model),
+        ["summary:receipt:0", "model:receipt:1", "input:2"]
+    );
+    let slots = agent.recorded_sources().unwrap();
+    assert_eq!(slots.len(), 4);
+    assert!(slots.iter().all(Option::is_some));
+    let retained = agent.actual_retained_commits().unwrap();
+    let summary = retained
+        .iter()
+        .find(|commit| commit.event() == crate::provenance::RetainedEvent::Summary)
+        .expect("the actual canonical summary commit was retained");
+    assert_eq!(summary.message(), &recorded(&agent)[0]);
+    assert_eq!(summary.received().unwrap().usage().input_tokens, 7);
+    let requested = model.seen.lock().unwrap();
+    let crate::provenance::ActualModelInput::StagedSummary(stage) =
+        &requested.last().unwrap().inputs[0]
+    else {
+        panic!("the round requested its actual working-state stage");
+    };
+    assert!(stage.same_stage(summary.summary().unwrap()));
+    let crate::provenance::ActualModelInput::RequestInput(ask) = &asked[0].inputs.last().unwrap()
+    else {
+        panic!("the summary instruction was mislabeled as retained");
+    };
+    assert!(ask.owner().same_agent(summary.owner()));
+    assert_eq!(ask.message(), asked[0].recorded.messages.last().unwrap());
+    assert!(
+        boundary.events().contains(
+            &r#"summary receipt:0 "<conversation_summary>\nSUMMARY\n</conversation_summary>""#
+                .to_owned()
+        )
+    );
+}
+
+#[tokio::test]
+async fn idle_compaction_of_a_selected_agent_keeps_the_same_record_and_every_source() {
+    let replies = || vec![Msg::assistant("one"), Msg::assistant("two")];
+    let model = ViewModel::new(replies());
+    let summarizer = ViewModel::new(vec![Msg::assistant("SUMMARY")]);
+    let compaction = compaction_of(summarizer.clone(), 100);
+    let agent = Agent::builder(model.clone())
+        .middleware(compaction.clone())
+        .model_view_boundary(Some(Arc::new(Frontiers::default())))
+        .checkpointer(Arc::new(MemCheckpointer::default()))
+        .durable_turn_checkpoints(true)
+        .build();
+    let plain_summarizer = Arc::new(ScriptedModel::new(vec![Msg::assistant("SUMMARY")]));
+    let plain_compaction = compaction_of(plain_summarizer, 100);
+    let plain = Agent::builder(Arc::new(ScriptedModel::new(replies())))
+        .middleware(plain_compaction.clone())
+        .checkpointer(Arc::new(MemCheckpointer::default()))
+        .durable_turn_checkpoints(true)
+        .build();
+    for (index, input) in ["first", "second"].into_iter().enumerate() {
+        agent
+            .run_turn_with_view(input, source(&format!("input:{index}")))
+            .await
+            .unwrap();
+        plain.run_turn(input).await.unwrap();
+    }
+    // The untyped entry stays refused on a selected agent.
+    assert!(agent.compact_idle(&compaction).await.is_err());
+    let counts = agent.compact_idle_with_view(&compaction).await.unwrap();
+    assert_eq!(counts, plain.compact_idle(&plain_compaction).await.unwrap());
+    assert_eq!(counts, Some((4, 4)));
+    assert_eq!(recorded(&agent), recorded(&plain));
+    // The summary has its own source, and the kept messages kept theirs.
+    let slots: Vec<String> = agent
+        .recorded_sources()
+        .unwrap()
+        .iter()
+        .map(|slot| tag(slot.as_ref().unwrap()))
+        .collect();
+    assert_eq!(
+        slots,
+        [
+            "summary:receipt:0",
+            "model:receipt:0",
+            "input:1",
+            "model:receipt:1"
+        ]
+    );
+    // Nothing is summarized when the conversation is too short.
+    let short = Agent::builder(ViewModel::new(vec![]))
+        .model_view_boundary(Some(Arc::new(Frontiers::default())))
+        .checkpointer(Arc::new(MemCheckpointer::default()))
+        .durable_turn_checkpoints(true)
+        .build();
+    assert_eq!(
+        short.compact_idle_with_view(&compaction).await.unwrap(),
+        None
+    );
 }

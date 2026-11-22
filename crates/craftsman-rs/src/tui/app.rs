@@ -1074,6 +1074,31 @@ impl App {
         self.dirty = true;
     }
 
+    /// One committed reply of a privacy conversation. It is a transcript
+    /// item of its own, drawn like any other cell, and it follows the same
+    /// rule as a stream: nothing is added once the turn is stopping or over.
+    /// The text is read while the conversation is live; if it is not, a
+    /// fixed line stands in its place and nothing of the reply is shown.
+    pub(super) fn show_human_reply(&mut self, reply: crate::privacy_session::HumanReply) {
+        use crate::privacy_session::HumanReply;
+        if self.discard_stream_deltas || !self.running {
+            return;
+        }
+        let text = match reply {
+            HumanReply::Text(text) => text.read(str::to_owned).ok(),
+            HumanReply::Withheld(_) => None,
+        };
+        self.active_response = None;
+        match text {
+            Some(text) => self.append_delta(text),
+            None => self.push_kind(
+                TranscriptKind::Activity,
+                "A reply of this private conversation could not be shown.",
+            ),
+        }
+        self.active_response = None;
+    }
+
     pub(super) fn activity(&mut self, line: String) {
         self.active_response = None;
         self.push_kind(TranscriptKind::Activity, line);

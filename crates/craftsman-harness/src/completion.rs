@@ -20,6 +20,13 @@ pub enum CompletionAfterCheck {
 
 #[async_trait]
 pub trait CompletionCheck: Send + Sync {
+    /// The actual configured host source for a selected view adapter. Generic
+    /// erasure grants no authority; the app must validate its own producer.
+    /// None keeps selected verification unsupported rather than inventing a
+    /// model origin for a host-scheduled call.
+    fn source_for_view(&self) -> Option<crate::provenance::SourceRef> {
+        None
+    }
     /// Called after the actual reviewed response has been committed. Default
     /// agents have no policy, so their original finish path remains unchanged.
     async fn before_finish(&self, state: &AgentState) -> Result<CompletionAction, AgentError>;

@@ -4,7 +4,6 @@
 //! and the guard are real; the detector is fixed host reply rules.
 
 use super::tests::{draft, vault};
-use super::view::received_chat_reply;
 use super::*;
 use crate::llm::LlmClient;
 use crate::privacy_hook::tests::{EMAIL, LiteralSource, PHONE};
@@ -78,7 +77,7 @@ fn client(server: &MockServer) -> LlmClient {
 struct Conversation {
     session: Arc<PrivacySession>,
     boundary: Arc<ConversationBoundary>,
-    agent: Agent,
+    agent: std::sync::LazyLock<Agent, Box<dyn FnOnce() -> Agent + Send + Sync>>,
     usage: Arc<Mutex<(u64, u64)>>,
     shown: Arc<Mutex<String>>,
 }
@@ -111,10 +110,14 @@ async fn conversation(vault: &Vault, server: &MockServer, tool_result: &str) -> 
     })
     .await
     .unwrap();
-    let agent = Agent::builder(Arc::new(provider))
-        .tool(Arc::new(Lookup(tool_result.to_owned())))
-        .model_view_boundary(Some(boundary.clone()))
-        .build();
+    let agent_boundary = boundary.clone();
+    let tool_result = tool_result.to_owned();
+    let agent = std::sync::LazyLock::new(Box::new(move || {
+        Agent::builder(Arc::new(provider))
+            .tool(Arc::new(Lookup(tool_result)))
+            .model_view_boundary(Some(agent_boundary))
+            .build()
+    }) as Box<dyn FnOnce() -> Agent + Send + Sync>);
     Conversation {
         session,
         boundary,
@@ -122,6 +125,26 @@ async fn conversation(vault: &Vault, server: &MockServer, tool_result: &str) -> 
         usage,
         shown,
     }
+}
+
+fn fixture_human_input(
+    session: &Arc<PrivacySession>,
+    agent: &Agent,
+    action: &HitlAction,
+) -> SourceRef {
+    let choice = match action {
+        HitlAction::Approve => crate::privacy_entry::HumanChoice::Approve,
+        HitlAction::Deny { feedback } => crate::privacy_entry::HumanChoice::Deny(feedback.clone()),
+        HitlAction::ApproveEdited { args } => {
+            crate::privacy_entry::HumanChoice::Edit(args.to_string())
+        }
+    };
+    let producer = crate::privacy_entry::HumanDecisionProducer::register(
+        session.clone(),
+        Arc::new(move |_, _| choice.clone()),
+    );
+    let parked = agent.actual_parked_call().unwrap();
+    SourceRef::new(producer.receive(&parked).unwrap())
 }
 
 fn recorded(agent: &Agent) -> Vec<Msg> {
@@ -372,9 +395,7 @@ async fn a_source_that_is_not_this_conversations_or_does_not_fit_is_refused() {
 
     // A reply received by another conversation cannot be committed here.
     let reply = Msg::assistant("a reply");
-    let receipt = SourceRef::new(Arc::new(
-        received_chat_reply(&other.session, &reply, 0, [0; 32]).unwrap(),
-    ));
+    let receipt = super::view::receipt_for_test(&other.boundary.conversation().unwrap(), &reply);
     assert!(c.boundary.commit_model(receipt, &reply).await.is_err());
     assert_eq!(c.session.check(), Err(SessionStop::Closed));
 
@@ -681,21 +702,19 @@ async fn a_parked_call_runs_only_as_decided_and_the_tool_sees_the_checked_operat
     let mut altered = call.clone();
     altered.args = json!({"who": "someone"});
     for wrong in [
-        other
-            .session
-            .human_decision(&call, &HitlAction::Approve)
-            .unwrap(),
-        g.c.session
-            .human_decision(&altered, &HitlAction::Approve)
-            .unwrap(),
-        g.c.session
-            .human_decision(
-                &call,
-                &HitlAction::Deny {
-                    feedback: String::new(),
-                },
-            )
-            .unwrap(),
+        SourceRef::new(Arc::new((
+            other.session.clone(),
+            call.clone(),
+            HitlAction::Approve,
+        ))),
+        SourceRef::new(Arc::new((altered, HitlAction::Approve))),
+        fixture_human_input(
+            &g.c.session,
+            &g.agent,
+            &HitlAction::Deny {
+                feedback: String::new(),
+            },
+        ),
     ] {
         assert!(
             g.agent
@@ -706,10 +725,7 @@ async fn a_parked_call_runs_only_as_decided_and_the_tool_sees_the_checked_operat
     }
     assert!(g.tool.seen.lock().unwrap().args.is_empty());
     assert!(g.c.session.check().is_ok());
-    let decision =
-        g.c.session
-            .human_decision(&call, &HitlAction::Approve)
-            .unwrap();
+    let decision = fixture_human_input(&g.c.session, &g.agent, &HitlAction::Approve);
     g.agent
         .resume_with_view(HitlAction::Approve, "Denied.", decision)
         .await
@@ -772,7 +788,7 @@ async fn a_parked_call_runs_only_as_decided_and_the_tool_sees_the_checked_operat
     let server = MockServer::start().await;
     let g = gated(&vault, &server, "done").await;
     let node = g.c.session.admit_raw(&draft(&text)).await.unwrap();
-    let placeholder = issued(&node);
+    let placeholder = "ordinary human contact".to_owned();
     scripted(
         &server,
         vec![
@@ -795,7 +811,7 @@ async fn a_parked_call_runs_only_as_decided_and_the_tool_sees_the_checked_operat
     let edit = HitlAction::ApproveEdited {
         args: json!({"who": placeholder, "typed": EMAIL}),
     };
-    let decision = g.c.session.human_decision(&call, &edit).unwrap();
+    let decision = fixture_human_input(&g.c.session, &g.agent, &edit);
     g.agent
         .resume_with_view(edit, "Denied.", decision)
         .await
@@ -836,10 +852,11 @@ async fn a_parked_call_runs_only_as_decided_and_the_tool_sees_the_checked_operat
     let deny = HitlAction::Deny {
         feedback: format!("call {PHONE} first"),
     };
-    let decision =
-        g.c.session
-            .human_decision(&parked.request.tool_call, &deny)
-            .unwrap();
+    assert_eq!(
+        g.agent.actual_parked_call().unwrap().call(),
+        &parked.request.tool_call
+    );
+    let decision = fixture_human_input(&g.c.session, &g.agent, &deny);
     g.agent
         .resume_with_view(deny, "The call was denied.", decision)
         .await
@@ -913,66 +930,8 @@ use std::sync::atomic::AtomicUsize;
 /// The first reply carries an item only the provider can read.
 fn native_reply(wire: &str, index: usize, asks: bool) -> ResponseTemplate {
     let args = json!({"who": "them"});
-    let raw = match wire {
-        "responses" => {
-            let mut output = vec![];
-            if index == 0 {
-                output.push(json!({"type":"reasoning","id":"wire-reasoning","encrypted_content":"wire-original-opaque","summary":[]}));
-            }
-            output.push(if asks {
-                json!({"type":"function_call","id":"wire-function","call_id":"c1","name":"lookup","arguments":args.to_string(),"status":"completed"})
-            } else {
-                json!({"type":"message","id":"wire-message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"fixture answer","annotations":[]}]})
-            });
-            let value = json!({"type":"response.completed","response":{"id":"wire-response","status":"completed","output":output,"usage":{"input_tokens":3,"output_tokens":2}}});
-            format!("event: response.completed\ndata: {value}\n\n")
-        }
-        "claude" => {
-            let mut events =
-                vec![json!({"type":"message_start","message":{"usage":{"input_tokens":3}}})];
-            if index == 0 {
-                events.push(json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}));
-                events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"wire fixture reasoning"}}));
-                events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"wire-original-signature"}}));
-                events.push(json!({"type":"content_block_stop","index":0}));
-            }
-            let block = usize::from(index == 0);
-            events.push(
-                json!({"type":"content_block_start","index":block,"content_block":if asks {
-                    json!({"type":"tool_use","id":"c1","name":"lookup","input":{}})
-                } else {
-                    json!({"type":"text","text":""})
-                }}),
-            );
-            events.push(
-                json!({"type":"content_block_delta","index":block,"delta":if asks {
-                    json!({"type":"input_json_delta","partial_json":args.to_string()})
-                } else {
-                    json!({"type":"text_delta","text":"fixture answer"})
-                }}),
-            );
-            events.push(json!({"type":"content_block_stop","index":block}));
-            events.push(json!({"type":"message_delta","delta":{"stop_reason":if asks {"tool_use"} else {"end_turn"}},"usage":{"output_tokens":2}}));
-            events.push(json!({"type":"message_stop"}));
-            events
-                .iter()
-                .map(|event| format!("data: {event}\n\n"))
-                .collect()
-        }
-        _ => {
-            let mut part = if asks {
-                json!({"functionCall":{"id":"c1","name":"lookup","args":args}})
-            } else {
-                json!({"text":"fixture answer"})
-            };
-            if index == 0 {
-                part["thoughtSignature"] = json!("wire-original-signature");
-            }
-            let value = json!({"candidates":[{"content":{"parts":[part]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}});
-            format!("data: {value}\n\n")
-        }
-    };
-    ResponseTemplate::new(200).set_body_raw(raw, "text/event-stream")
+    let call = asks.then_some(("c1", "lookup", &args));
+    super::wire_fixtures::reply(wire, index, call, "fixture answer")
 }
 
 fn native_client(wire: &str, server: &MockServer, key: &str) -> LlmClient {
@@ -1371,3 +1330,275 @@ async fn what_a_client_adds_to_every_request_is_admitted_and_may_hold_no_value()
     assert!(c.session.check().is_ok());
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+#[path = "frontier_tests.rs"]
+mod core_frontier_tests;
+// ---- system additions as parts: todos, memory, reminders ---------------------
+
+#[tokio::test]
+async fn todos_memory_and_reminders_reach_the_wire_as_parts_of_their_own_origin() {
+    use craftsman_harness::builtin::{MemoryMiddleware, TodoListMiddleware};
+    use craftsman_harness::provenance::{PartFrom, SourcePart};
+    use craftsman_harness::{FileData, StateFs};
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let c = conversation(&vault, &server, "unused").await;
+    let text = format!("who handles {EMAIL}?");
+    let node = c.session.admit_raw(&draft(&text)).await.unwrap();
+    let placeholder = issued(&node);
+    let call = |id: &str, name: &str, arguments: Value| {
+        sse(
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": id, "type": "function",
+            "function": {"name": name, "arguments": arguments.to_string()}}]}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1}}),
+        )
+    };
+    scripted(
+        &server,
+        vec![
+            // The model plans with the placeholder it was shown.
+            call(
+                "c0",
+                "write_todos",
+                json!({"todos": [{"content": format!("ask {placeholder}"), "status": "in_progress"}]}),
+            ),
+            call("c1", "lookup", json!({"who": "them"})),
+            answer("chat", &["fixture answer"]),
+        ],
+    )
+    .await;
+    // The memory store holds a number.
+    let files = Arc::new(Mutex::new(craftsman_harness::AgentState::default()));
+    files.lock().unwrap().files.insert(
+        "/memories/AGENTS.md".into(),
+        FileData::text(format!("Reach the office at {PHONE}.")),
+    );
+    let provider = ViewChatProvider::new(
+        client(&server),
+        c.session.clone(),
+        c.usage.clone(),
+        Arc::new(|_: &str| {}),
+    )
+    .await
+    .unwrap();
+    let agent = Agent::builder(Arc::new(provider))
+        .tool(Arc::new(Lookup("found them".into())))
+        .middleware(Arc::new(TodoListMiddleware::new()))
+        .middleware(Arc::new(MemoryMiddleware::new(
+            Arc::new(StateFs::new(files)),
+            vec!["/memories/AGENTS.md".into()],
+        )))
+        .middleware(Arc::new(
+            craftsman_harness::builtin::SystemRemindersMiddleware::new(1),
+        ))
+        .model_view_boundary(Some(c.boundary.clone()))
+        .build();
+    agent
+        .run_turn_with_view(text.clone(), c.session.source(&node).unwrap())
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        let raw = String::from_utf8(request.body.clone()).unwrap();
+        for original in [EMAIL, PHONE, OPERATOR] {
+            assert!(!raw.contains(original), "{original}");
+        }
+    }
+    let sent = bodies(&server).await;
+    let system = |index: usize| sent[index]["messages"][0]["content"].as_str().unwrap();
+    // What was read from the memory store went out as its view, inside the
+    // section the memory middleware always writes.
+    assert!(system(0).contains("<agent_memory>\n/memories/AGENTS.md\nReach the office at "));
+    assert!(system(0).contains("</agent_memory>"));
+    // The todo the model wrote is sent as the model wrote it, between the
+    // application's own heading and label. Its placeholder is neither
+    // replaced by the address nor masked a second time.
+    assert!(!system(0).contains("Current todo list:"));
+    assert!(system(2).contains(&format!(
+        "Current todo list:\n- [InProgress] ask {placeholder}\n"
+    )));
+    // The stored todo is the real one.
+    assert_eq!(
+        agent.state.lock().unwrap().todos[0].content,
+        format!("ask {placeholder}")
+    );
+    // The todo tool's own result repeats the list. It is held piece by
+    // piece, so the placeholder the model wrote goes back as written and the
+    // conversation continues; a result admitted whole would have ended it.
+    let listing = format!(
+        r#"Updated todo list to [{{"content":"ask {placeholder}","status":"in_progress"}}]"#
+    );
+    assert_eq!(sent[1]["messages"][3]["content"], listing);
+    assert!(matches!(&recorded(&agent)[2], Msg::Tool { content, .. } if *content == listing));
+    let todo_result = agent.recorded_sources().unwrap()[2].clone().unwrap();
+    assert!(c.session.admitted(&todo_result).is_none());
+    assert_eq!(
+        c.session.actual_result(&todo_result).unwrap().tool(),
+        "write_todos"
+    );
+
+    // The reminder the middleware appended to the second result is recorded
+    // with it, apart from the tool's own content.
+    let messages = recorded(&agent);
+    assert!(matches!(&messages[4], Msg::Tool { content, .. }
+        if content.starts_with("found them") && content.contains("<system-reminder>")));
+    let sources = agent.recorded_sources().unwrap();
+    let result = c
+        .session
+        .actual_result(sources[4].as_ref().unwrap())
+        .unwrap();
+    assert_eq!(
+        result.reached()[0].result.as_ref().unwrap().content,
+        "found them"
+    );
+    assert_eq!(result.appended().len(), 1);
+    assert!(result.appended()[0].text.contains("<system-reminder>"));
+    assert_eq!(
+        c.session
+            .admitted(sources[4].as_ref().unwrap())
+            .unwrap()
+            .origin(),
+        RawOrigin::ChainResult
+    );
+
+    // A part that claims a call wrote its text is checked against the
+    // committed reply: text that is not at that place of that call has no
+    // source, and the conversation ends.
+    let reply = sources[1].clone().unwrap();
+    let forged = SourcePart {
+        text: Arc::from("never written"),
+        from: PartFrom::Call {
+            reply,
+            call_id: "c0".into(),
+            pointer: "/todos/0/content".into(),
+        },
+    };
+    assert!(c.boundary.system_addition(&[forged]).await.is_err());
+    assert_eq!(c.session.check(), Err(SessionStop::Closed));
+}
+
+// ---- compaction ---------------------------------------------------------------
+
+#[tokio::test]
+async fn compaction_asks_the_summarizer_with_views_and_keeps_its_text_as_model_text() {
+    use craftsman_harness::builtin::{CompactionMiddleware, CompactionTrigger};
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let c = conversation(&vault, &server, "unused").await;
+    let first = format!("who handles {EMAIL}?");
+    let node = c.session.admit_raw(&draft(&first)).await.unwrap();
+    let placeholder = issued(&node);
+    // Two replies, then the summarizer's reply, then the third reply. The
+    // summarizer repeats the placeholder it was shown.
+    let summary = format!("Earlier the user asked who handles {placeholder}.");
+    scripted(
+        &server,
+        vec![
+            answer("chat", &["one"]),
+            answer("chat", &["two"]),
+            answer("chat", &[&summary]),
+            answer("chat", &["three"]),
+        ],
+    )
+    .await;
+    let provider = |usage: Arc<Mutex<(u64, u64)>>| {
+        let session = c.session.clone();
+        let client = client(&server);
+        async move {
+            Arc::new(
+                ViewChatProvider::new(client, session, usage, Arc::new(|_: &str| {}))
+                    .await
+                    .unwrap(),
+            ) as Arc<dyn ModelProvider>
+        }
+    };
+    // The summarizer is another provider of the same conversation with its
+    // own usage, as the session builder makes it.
+    let summarizer_usage = Arc::new(Mutex::new((0, 0)));
+    let compaction = Arc::new(CompactionMiddleware::new(
+        provider(summarizer_usage.clone()).await,
+        CompactionTrigger::MessageCount {
+            threshold_msgs: 4,
+            keep_tail_msgs: 2,
+        },
+    ));
+    let agent = Agent::builder(provider(c.usage.clone()).await)
+        .middleware(compaction)
+        .model_view_boundary(Some(c.boundary.clone()))
+        .build();
+    agent
+        .run_turn_with_view(first.clone(), c.session.source(&node).unwrap())
+        .await
+        .unwrap();
+    for input in ["and then?", "go on"] {
+        let node = c.session.admit_raw(&draft(input)).await.unwrap();
+        agent
+            .run_turn_with_view(input, c.session.source(&node).unwrap())
+            .await
+            .unwrap();
+    }
+
+    // The record: the summary as the summarizer wrote it, the kept tail and
+    // the new reply.
+    let recorded_summary = format!("<conversation_summary>\n{summary}\n</conversation_summary>");
+    assert_eq!(
+        recorded(&agent),
+        vec![
+            Msg::user(recorded_summary.clone()),
+            Msg::assistant("two"),
+            Msg::user("go on"),
+            Msg::assistant("three"),
+        ]
+    );
+    // Each lane kept its own real usage.
+    assert_eq!(*c.usage.lock().unwrap(), (9, 6));
+    assert_eq!(*summarizer_usage.lock().unwrap(), (3, 2));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in &requests {
+        let raw = String::from_utf8(request.body.clone()).unwrap();
+        assert!(!raw.contains(EMAIL) && !raw.contains(OPERATOR));
+    }
+    let sent = bodies(&server).await;
+    // The summarizer was given its own instructions, the views of what it
+    // summarizes and the application's request, and no tools.
+    let asked = sent[2]["messages"].as_array().unwrap();
+    assert_eq!(asked.len(), 5);
+    assert!(
+        asked[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are compacting an ongoing agent conversation")
+    );
+    assert_eq!(asked[1]["content"], node.model_view().unwrap());
+    assert_eq!(asked[2], json!({"role": "assistant", "content": "one"}));
+    assert_eq!(asked[3], json!({"role": "user", "content": "and then?"}));
+    assert_eq!(
+        asked[4]["content"],
+        "Summarize the conversation above per your instructions, as a continuation summary."
+    );
+    assert!(sent[2].get("tools").is_none());
+    // The summary went back to the model as the summarizer wrote it. Its
+    // placeholder is neither replaced by the address nor masked again, and
+    // the user role does not make it raw input.
+    assert_eq!(
+        sent[3]["messages"][1],
+        json!({"role": "user", "content": recorded_summary})
+    );
+    let sources = agent.recorded_sources().unwrap();
+    let summary_source = sources[0].as_ref().unwrap();
+    assert!(c.session.admitted(summary_source).is_none());
+    assert!(c.session.committed_model(summary_source).is_none());
+    assert!(c.session.check().is_ok());
+}
+
+#[path = "delegation_tests.rs"]
+mod delegation;
+
+#[path = "restoration_tests.rs"]
+mod restoration;

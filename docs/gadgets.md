@@ -171,6 +171,13 @@ private user-owned Unix directories, never project/shared/symlink cache roots.
 Windows uses the in-memory cache until a DACL ownership check is added. Calls get a fresh store and instance; an in-flight
 call keeps its component if the on-disk bundle changes.
 
+In a privacy conversation, which nothing selects yet, the same update is
+appended as parts instead of one text: the framing and guidance above as the
+application's fixed text, and the fingerprint and the catalog JSON as data the
+host read from the runtime. The refresh, its change-only rule and the
+restore after a compaction are the same; see
+[privacy-provenance.md](privacy-provenance.md).
+
 ## Declarative commands, agents and prompts
 
 A data-only gadget needs only `gadget.toml`, not a component or compiler:

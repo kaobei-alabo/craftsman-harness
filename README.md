@@ -39,6 +39,16 @@ Also in development: **privacy hooks** that mask supported personal data before
 model requests and restore it in local replies and file edits. The encrypted
 vault, WASM detector and restoration views are implemented privately;
 normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
+A private [restoration candidate](docs/privacy-restore.md) supplies a separate
+human view of a committed reply and derived content for file writes or edits,
+for the main agent and delegated agents behind their own gate. Its actual
+pre-review source is wired, while independently registered human/automatic
+decision producers remain incomplete; a
+digest or gate-owned approval is insufficient. The file tool still runs
+its own checkpoint and diagnostics around such a write, and the terminal's
+bridge draws a committed reply once through its safe backend. Nothing selects
+any of it yet: the user's policy has no owner outside test fixtures and the
+terminal has no entry for a privacy turn.
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
 Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrapped
@@ -51,7 +61,13 @@ A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
 [views of sources](docs/privacy-provenance.md), for all four model wires, are
 in development on top of them. No frontend, configuration or command selects
-either, and a session cannot be built with them outside tests yet.
+either. The local core correction retains actual input/reply/tool facts and
+sealed human decisions, with a separate sourced model view and actual child/
+notification owners. It adds actual pre-review/terminal events, retained end/save
+failures and stop checks for new selected invocations. Kept native items remain exact through compaction; changed
+native replies refuse replay. Real policy/frontend/restore adapters and
+independent validation remain required before activation. Failed local checks
+and the unresolved native linker warning remain recorded.
 
 ## Planned WASM enhancement
 
@@ -165,6 +181,11 @@ documents and folders containing several projects are supported too.
 [Private key and bootstrap](docs/privacy-bootstrap.md) ·
 [Private admission core](docs/privacy-admission.md) ·
 [Privacy provenance](docs/privacy-provenance.md) ·
+[Privacy restoration](docs/privacy-restore.md) ·
 [Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
+
+Private source-view work also has a separate local core correction branch for
+immutable event retention and cancellation; it remains unselected and awaits
+application integration, full validation and independent review.
