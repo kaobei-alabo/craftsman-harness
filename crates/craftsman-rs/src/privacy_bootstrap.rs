@@ -502,6 +502,9 @@ impl PrivateBuiltSession {
     pub(crate) fn session_for_terminal(&self) -> &crate::agent::Session {
         &self.session
     }
+    pub(crate) fn session_for_terminal_mut(&mut self) -> &mut crate::agent::Session {
+        &mut self.session
+    }
     pub fn thread_id(&self) -> &str {
         &self.session.thread_id
     }

@@ -1,7 +1,7 @@
 //! Private password popup and directly retained terminal input. Nothing selects
 //! it in a normal frontend. Input never enters composer/history/UiEvent.
 mod owned;
-pub use owned::OwnedSecretTerminal;
+pub use owned::{OwnedSecretTerminal, PrivateTerminalError};
 #[cfg(all(test, unix))]
 mod native;
 use crate::privacy_key::{KeyError, Passphrase, Result};

@@ -164,6 +164,7 @@ impl SetupModal {
 
 pub(super) enum Modal {
     Approval(ApprovalModal),
+    PrivacyApproval(super::privacy_approval::PrivacyApprovalModal),
     Ask(AskModal),
     Selection(SelectionModal),
     Setup(SetupModal),
@@ -179,6 +180,10 @@ impl Modal {
                 let _ = modal.response.send(ApprovalChoice::Deny(String::new()));
                 true
             }
+            Self::PrivacyApproval(modal) => {
+                modal.cancel();
+                true
+            }
             Self::Ask(modal) => {
                 let _ = modal.response.send(None);
                 true
@@ -189,10 +194,15 @@ impl Modal {
 }
 
 pub(super) fn handle_modal_key(app: &mut App, key: KeyEvent) {
+    if matches!(app.modal, Some(Modal::PrivacyApproval(_))) {
+        super::privacy_approval::key(app, key);
+        return;
+    }
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
     match modal {
+        Modal::PrivacyApproval(_) => unreachable!("private approval handled before ordinary modal"),
         Modal::Approval(approval) if approval.feedback_mode => match key.code {
             KeyCode::Char(character)
                 if !key
@@ -380,6 +390,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
     let area = centered_rect(72, 55, frame.area());
     frame.render_widget(Clear, area);
     match modal {
+        Modal::PrivacyApproval(modal) => modal.render(frame, area),
         Modal::Approval(modal) if modal.feedback_mode => {
             let block = Block::default()
                 .title(" deny with feedback ")
@@ -583,7 +594,7 @@ pub(super) fn render_modal(frame: &mut ratatui::Frame<'_>, modal: &Modal) {
     }
 }
 
-fn approval_detail_lines(text: &str, width: usize) -> Vec<String> {
+pub(super) fn approval_detail_lines(text: &str, width: usize) -> Vec<String> {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
     let mut lines = Vec::new();

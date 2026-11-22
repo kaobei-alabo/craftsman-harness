@@ -6,6 +6,29 @@ use crate::privacy_cli::PrivateKeyOperations;
 #[cfg(unix)]
 use crate::privacy_key::Passphrase;
 use crate::privacy_key::{KeyError, Result, UnlockedVault};
+#[cfg(unix)]
+mod live;
+
+#[derive(thiserror::Error)]
+pub enum PrivateTerminalError {
+    #[error("The private terminal bootstrap stopped: {0}")]
+    Source(crate::privacy_bootstrap::BootstrapError),
+    #[error("The private terminal session could not be built: {0}")]
+    Build(crate::privacy_bootstrap::PrivateBuildError),
+    #[error("The private terminal input or display stopped.")]
+    Terminal,
+    #[error("The private terminal entry was cancelled.")]
+    Cancelled,
+    #[error("Private terminal cleanup did not finish; work may still be completing.")]
+    Cleanup,
+    #[error("Private terminal cleanup also failed after this entry error: {0}")]
+    CleanupAfter(Box<PrivateTerminalError>),
+}
+impl std::fmt::Debug for PrivateTerminalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrivateTerminalError([fixed])")
+    }
+}
 
 /// No frontend/command constructs this owner. It is the complete terminal
 /// acquisition path for private init/unlock, not an active-turn modal adapter.
@@ -100,41 +123,52 @@ impl OwnedSecretTerminal {
         }
     }
 
-    /// Only the private owned terminal entry supplies this actual bridge.
-    /// Its receiver is retained and pumped by that same application loop.
-    pub(in crate::tui) async fn request_full_session_on_bridge(
-        &mut self,
-        owner: &std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
-        cfg: &crate::config::Config,
+    /// The only successful private frontend route consumes this fresh popup,
+    /// constructs the actual receiver/input/shutdown owner, and pumps it while
+    /// the COMPLETE builder is pending. No caller-ready Boolean or arbitrary
+    /// sender/bridge can substitute for that retained frontend.
+    #[cfg(unix)]
+    async fn request_full_session_on_bridge(
+        self,
+        owner: std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
+        cfg: crate::config::Config,
         approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
-        bridge: &crate::tui::session_bridge::UiBridge,
-    ) -> std::result::Result<
-        crate::privacy_bootstrap::PrivateBuiltSession,
-        crate::privacy_bootstrap::PrivateBuildError,
-    > {
+    ) -> std::result::Result<live::Frontend, PrivateTerminalError> {
+        let mut frontend = live::Frontend::from_popup(self.inner, owner, cfg, approval)?;
+        frontend.build_full().await?;
+        Ok(frontend)
+    }
+
+    /// Actual fresh terminal bootstrap and loop, unselected by every normal
+    /// route. The secret phase ends before the ordinary event reader begins;
+    /// private clear/reopen/transfer and settings saves remain explicit refusals.
+    pub async fn run_private(
+        self,
+        bootstrap: crate::privacy_bootstrap::PrivateBootstrap,
+        cfg: crate::config::Config,
+        approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+    ) -> std::result::Result<i32, PrivateTerminalError> {
         #[cfg(unix)]
         {
-            use crate::privacy_bootstrap::{BootstrapError, PrivateBuildError};
-            self.inner
-                .check()
-                .map_err(|error| PrivateBuildError::Source(BootstrapError::Key(error)))?;
-            owner.check_sources().map_err(PrivateBuildError::Source)?;
-            let mut extras = bridge.session_extras();
-            extras.cancellation_session = Some(
-                self.inner
-                    .shutdown
-                    .cancellation
-                    .child()
-                    .map_err(|_| PrivateBuildError::Unavailable)?,
-            );
-            owner.request_full_session(cfg, approval, extras).await
+            let mut terminal = self;
+            let owner = match bootstrap.unlock_private(&mut terminal).await {
+                Ok(owner) => std::sync::Arc::new(owner),
+                Err(error) => {
+                    if matches!(error, crate::privacy_bootstrap::BootstrapError::Key(KeyError::Cancelled))
+                        && terminal.inner.shutdown.exit_code() != 0
+                    {
+                        return Ok(terminal.inner.shutdown.exit_code());
+                    }
+                    return Err(PrivateTerminalError::Source(error));
+                }
+            };
+            let mut frontend = terminal.request_full_session_on_bridge(owner, cfg, approval).await?;
+            frontend.run().await
         }
         #[cfg(not(unix))]
         {
-            let _ = (owner, cfg, approval, bridge);
-            Err(crate::privacy_bootstrap::PrivateBuildError::Source(
-                crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported),
-            ))
+            let _ = (self, bootstrap, cfg, approval);
+            Err(PrivateTerminalError::Source(crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported)))
         }
     }
 
@@ -214,6 +248,7 @@ struct UnixPopup {
     panic: PanicHookGuard,
     shutdown: Shutdown,
     ui_events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::session_bridge::UiEvent>>,
+    secret_reader: bool,
 }
 
 #[cfg(unix)]
@@ -237,6 +272,7 @@ impl UnixPopup {
             panic,
             shutdown,
             ui_events: None,
+            secret_reader: true,
         })
     }
 
@@ -420,7 +456,9 @@ impl Drop for UnixPopup {
         // guard restores it. TCIFLUSH discards ALL queued terminal type-ahead,
         // including bytes intended for a later reader. Bytes arriving after
         // that flush are outside this sampled cleanup observation.
-        let _ = self.input.finish_input();
+        if self.secret_reader {
+            let _ = self.input.finish_input();
+        }
         // The retained guard restores the captured modes. No secret, draft,
         // history, exit-success or OS quiescence message is printed here.
         let _ = &self.guard;

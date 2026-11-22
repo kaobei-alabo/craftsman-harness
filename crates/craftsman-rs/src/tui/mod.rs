@@ -10,6 +10,7 @@ mod input;
 mod modals;
 mod model_commands;
 pub mod privacy_unlock;
+mod privacy_approval;
 mod program_status;
 mod provider_setup;
 mod render;

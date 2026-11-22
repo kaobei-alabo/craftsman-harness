@@ -59,6 +59,10 @@ pub(super) enum UiEvent {
         details: String,
         response: std_mpsc::Sender<ApprovalChoice>,
     },
+    PrivacyApproval {
+        request: crate::privacy_entry::PrivacyApprovalRequest,
+        response: std_mpsc::Sender<Option<crate::privacy_entry::PrivacyApprovalDecision>>,
+    },
     AskUser {
         question: String,
         response: std_mpsc::Sender<Option<String>>,
@@ -131,7 +135,7 @@ impl Drop for CancelPrompt {
     }
 }
 
-fn cancel_prompt<T: Send + 'static>(
+pub(super) fn cancel_prompt<T: Send + 'static>(
     turn: Option<craftsman_harness::TurnCancellation>,
     response: std_mpsc::Sender<T>,
     refusal: T,
@@ -144,7 +148,7 @@ fn cancel_prompt<T: Send + 'static>(
     })
 }
 
-fn scoped_prompt(event: UiEvent, turn: &Option<craftsman_harness::TurnCancellation>) -> UiEvent {
+pub(super) fn scoped_prompt(event: UiEvent, turn: &Option<craftsman_harness::TurnCancellation>) -> UiEvent {
     match turn {
         Some(turn) => UiEvent::ScopedPrompt {
             cancellation: turn.clone(),
@@ -577,12 +581,21 @@ impl Drop for AgentSlot {
 
 pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
     match event {
+        UiEvent::PrivacyApproval { response, .. } => {
+            // Only the real private receiver retains the core Ui owner and
+            // installs its bound modal. An ordinary receiver cannot approve it.
+            let _ = response.send(None);
+            app.push_error("This terminal receiver cannot present a private approval request.");
+        }
         UiEvent::ScopedPrompt {
             cancellation,
             event,
         } => {
             if cancellation.is_cancelled() {
                 match *event {
+                    UiEvent::PrivacyApproval { response, .. } => {
+                        let _ = response.send(None);
+                    }
                     UiEvent::Approval { response, .. } => {
                         let _ = response.send(ApprovalChoice::Deny(String::new()));
                     }
