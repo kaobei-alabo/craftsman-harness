@@ -47,8 +47,9 @@ vault key and existing-only unlock backend. An unselected
 those owners with a pinned detector and fresh conversation; normal activation remains unavailable.
 A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
-[views of sources](docs/privacy-provenance.md) are in development on top of
-them; no frontend, configuration or command selects either.
+[views of sources](docs/privacy-provenance.md), for all four model wires, are
+in development on top of them. No frontend, configuration or command selects
+either, and a session cannot be built with them outside tests yet.
 
 ## Planned WASM enhancement
 

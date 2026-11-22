@@ -9,8 +9,8 @@ use crate::privacy_hook::Detector;
 use crate::privacy_hook::tests::{LiteralSource, PHONE};
 use crate::privacy_send::tests::{EMAIL, answer, open};
 use crate::privacy_session::{
-    AdmitRefusal, FreshConversationBinding, PrivacySession, PrivacyViewSelection, RawOrigin,
-    SessionStop,
+    AdmitRefusal, BuildRefusal, FixturePolicy, FreshConversationBinding, PrivacySession,
+    PrivacyViewSelection, RawOrigin, SessionStop,
 };
 use crate::privacy_vault::Vault;
 use craftsman_harness::{Msg, TurnResult};
@@ -57,9 +57,8 @@ async fn build(
 ) -> Option<Session> {
     let activity = activity.clone();
     let mut extras = SessionExtras {
-        privacy_view: selected.map(|session| {
-            PrivacyViewSelection::limited_set_permitted_by_host_policy(session.clone())
-        }),
+        privacy_view: selected
+            .map(|session| PrivacyViewSelection::fixture_limited_set(session.clone())),
         workspace_root: Some(directory.to_path_buf()),
         token_sink: Some(Arc::new(|_| {})),
         activity_sink: Some(Arc::new(move |line: &str| {
@@ -118,6 +117,7 @@ async fn privacy_view_builder_fixture() {
     let (vault, _) = open(&vault_root, "unused-thread").await;
     let activity = Arc::new(Mutex::new(Vec::new()));
     conversation(&directory, &vault, &activity).await;
+    repair(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -169,9 +169,11 @@ async fn conversation(
         .find(|line| line.starts_with("This private conversation runs without: "))
         .cloned()
         .expect("the frontend is told what is left out");
-    for part in ["patch_tool_calls", "compaction"] {
+    for part in ["todo", "compaction"] {
         assert!(named.contains(part), "{named}");
     }
+    // The protected call repair is not among them: it runs, tracked.
+    assert!(!named.contains("patch_tool_calls"), "{named}");
     // The untyped entry is refused before anything is recorded.
     assert!(session.agent.run_turn("untyped").await.is_err());
     assert!(session.agent.state.lock().unwrap().messages.is_empty());
@@ -298,7 +300,68 @@ async fn conversation(
     session.lsp.shutdown().await;
 }
 
-/// Selections that are refused before any store, provider or request.
+/// The protected call repair in a built session: a reply whose call arguments
+/// are not a JSON object is repaired as always, and the conversation keeps
+/// what was received and what the repair changed.
+async fn repair(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
+    let server = MockServer::start().await;
+    let malformed = "notes.txt{";
+    let body = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","type":"function","function":{"name":"read_file","arguments":malformed}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}});
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!("data: {body}\n\ndata: [DONE]\n\n"),
+            "text/event-stream",
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(answer("chat", &["fixture answer"]))
+        .mount(&server)
+        .await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let session = build(&cfg, directory, Some(&owner), None, activity, |_| {})
+        .await
+        .unwrap();
+    let view = session.privacy_view.as_ref().unwrap();
+    let TurnResult::Done(output) = view.turn(&session.agent, "read the notes").await.unwrap()
+    else {
+        panic!("the turn finishes");
+    };
+    assert_eq!(output.final_text(), "fixture answer");
+    // The record holds the repaired call and the tool's real answer to it.
+    let repaired = json!({"_raw": malformed});
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    assert!(matches!(&messages[1], Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == repaired));
+    assert!(matches!(&messages[2], Msg::Tool { .. }));
+    // The conversation keeps the reply as received and the recorded change.
+    let sources = session.agent.recorded_sources().unwrap();
+    let reply = owner.committed_model(sources[1].as_ref().unwrap()).unwrap();
+    assert!(
+        matches!(reply.received_message().unwrap(), Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == serde_json::Value::String(malformed.into()))
+    );
+    let edits = reply.edits().unwrap();
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].by, "patch_tool_calls");
+    assert_eq!(edits[0].replaced, repaired);
+    // The tool was given the repaired call, and the next request carries it.
+    let result = owner.actual_result(sources[2].as_ref().unwrap()).unwrap();
+    assert_eq!(result.reached()[0].call.args, repaired);
+    let requests = sent(&server).await;
+    let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+    assert_eq!(
+        second["messages"][2]["tool_calls"][0]["function"]["arguments"],
+        repaired.to_string()
+    );
+    session.lsp.shutdown().await;
+}
+
+/// Selections that are refused before a session exists, each with its
+/// typed reason for the host that made the selection.
 async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
     let server = MockServer::start().await;
     let cfg = config("chat", &server);
@@ -311,70 +374,148 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
             .filter(|seen| *seen == line)
             .count()
     };
+    let owner = privacy(vault, directory).await;
+    let policy = |disabled: bool, inspectable_items: bool| {
+        Arc::new(FixturePolicy {
+            disabled,
+            inspectable_items,
+        })
+    };
+
+    // A policy that does not enable privacy for the workspace makes no
+    // selection, and neither does a conversation that has ended.
+    assert_eq!(
+        PrivacyViewSelection::from_user_policy(policy(true, false), owner.clone()).err(),
+        Some(BuildRefusal::PolicyDisabled)
+    );
+    let ended = privacy(vault, directory).await;
+    let late = PrivacyViewSelection::fixture_limited_set(ended.clone());
+    ended.stop();
+    assert_eq!(
+        PrivacyViewSelection::from_user_policy(policy(false, false), ended.clone()).err(),
+        Some(BuildRefusal::Ended)
+    );
 
     // A caller's thread id, a separate guard, a requested part that must not
-    // be left out, and an owner that has already ended.
-    let owner = privacy(vault, directory).await;
-    assert!(
-        build(
-            &cfg,
-            directory,
-            Some(&owner),
-            Some("caller-thread".into()),
-            activity,
-            |_| {}
-        )
-        .await
-        .is_none()
-    );
+    // be left out, and an owner that ended after the selection was made.
     let other = privacy(vault, directory).await;
+    let guard = other.send_guard();
+    type Alter = Box<dyn FnOnce(&mut SessionExtras)>;
+    let cases: Vec<(Option<String>, Alter, BuildRefusal)> = vec![
+        (
+            Some("caller-thread".into()),
+            Box::new(|_| {}),
+            BuildRefusal::NotFresh,
+        ),
+        (
+            None,
+            Box::new(move |extras| extras.send_guard = Some(guard)),
+            BuildRefusal::NotFresh,
+        ),
+        (
+            None,
+            Box::new(|extras| extras.verification = true),
+            BuildRefusal::RequestedPart,
+        ),
+        (
+            None,
+            Box::new(|extras| extras.context_compilation = true),
+            BuildRefusal::RequestedPart,
+        ),
+        (
+            None,
+            Box::new(|extras| extras.failure_controls = true),
+            BuildRefusal::RequestedPart,
+        ),
+    ];
+    for (thread, alter, expected) in cases {
+        let selection = PrivacyViewSelection::fixture_limited_set(owner.clone());
+        let report = selection.report();
+        assert!(
+            build(&cfg, directory, None, thread, activity, |extras| {
+                extras.privacy_view = Some(selection);
+                alter(extras)
+            })
+            .await
+            .is_none()
+        );
+        assert_eq!(report.refusal(), Some(expected));
+    }
+    let report = late.report();
     assert!(
-        build(&cfg, directory, Some(&owner), None, activity, |extras| {
-            extras.send_guard = Some(other.send_guard())
+        build(&cfg, directory, None, None, activity, |extras| {
+            extras.privacy_view = Some(late)
         })
         .await
         .is_none()
     );
-    for part in 0..3 {
-        assert!(
-            build(
-                &cfg,
-                directory,
-                Some(&owner),
-                None,
-                activity,
-                |extras| match part {
-                    0 => extras.verification = true,
-                    1 => extras.context_compilation = true,
-                    _ => extras.failure_controls = true,
-                }
-            )
-            .await
-            .is_none()
-        );
-    }
-    let ended = privacy(vault, directory).await;
-    ended.stop();
-    assert!(
-        build(&cfg, directory, Some(&ended), None, activity, |_| {})
-            .await
-            .is_none()
-    );
+    assert_eq!(report.refusal(), Some(BuildRefusal::Ended));
     assert_eq!(count(fixed), 6);
     // None of them ended the conversation that was offered.
     assert!(owner.check().is_ok());
 
-    // A wire with provider items of its own has no receipts yet.
+    // A policy that requires inspectable provider items refuses a native
+    // wire, which sends back items that cannot be inspected.
     let native = config("responses", &server);
+    let selection =
+        PrivacyViewSelection::from_user_policy(policy(false, true), owner.clone()).unwrap();
+    let report = selection.report();
     assert!(
-        build(&native, directory, Some(&owner), None, activity, |_| {})
-            .await
-            .is_none()
+        build(&native, directory, None, None, activity, |extras| {
+            extras.privacy_view = Some(selection)
+        })
+        .await
+        .is_none()
     );
+    assert_eq!(report.refusal(), Some(BuildRefusal::OpaqueProviderItems));
     assert_eq!(
-        count("The private conversation view supports only the Chat wire."),
+        count(
+            "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected."
+        ),
         1
     );
+
+    // The selection a policy makes leaves nothing out. Every installed part
+    // must have a source path, and the ones that have none are named: to the
+    // frontend in one line, and to the host as a typed list. The protected
+    // call repair, the approval gate and the result size limit are not among
+    // them.
+    let selection =
+        PrivacyViewSelection::from_user_policy(policy(false, false), owner.clone()).unwrap();
+    let report = selection.report();
+    assert!(
+        build(&cfg, directory, None, None, activity, |extras| {
+            extras.privacy_view = Some(selection)
+        })
+        .await
+        .is_none()
+    );
+    let Some(BuildRefusal::MissingSourcePaths(missing)) = report.refusal() else {
+        panic!("the host is told which parts have no source path");
+    };
+    assert!(
+        missing.iter().any(|part| part == "compaction"),
+        "{missing:?}"
+    );
+    for kept in ["patch_tool_calls", "hitl", "result_budgets"] {
+        assert!(!missing.iter().any(|part| part == kept), "{missing:?}");
+    }
+    let line = activity
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|line| {
+            line.starts_with(
+                "This private conversation cannot be built. No source path exists for: ",
+            )
+        })
+        .cloned()
+        .expect("the frontend is told why");
+    assert!(
+        line.ends_with(&format!("{}.", missing.join(", "))),
+        "{line}"
+    );
+    assert!(owner.check().is_ok());
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 

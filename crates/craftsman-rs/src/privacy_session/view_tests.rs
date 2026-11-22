@@ -4,10 +4,10 @@
 //! and the guard are real; the detector is fixed host reply rules.
 
 use super::tests::{draft, vault};
+use super::view::received_chat_reply;
 use super::*;
 use crate::llm::LlmClient;
 use crate::privacy_hook::tests::{EMAIL, LiteralSource, PHONE};
-use crate::privacy_provider::ViewChatProvider;
 use crate::privacy_send::tests::answer;
 use craftsman_harness::provenance::{ModelViewBoundary, SourceRef};
 use craftsman_harness::{
@@ -109,6 +109,7 @@ async fn conversation(vault: &Vault, server: &MockServer, tool_result: &str) -> 
         let shown = shown.clone();
         Arc::new(move |text: &str| shown.lock().unwrap().push_str(text))
     })
+    .await
     .unwrap();
     let agent = Agent::builder(Arc::new(provider))
         .tool(Arc::new(Lookup(tool_result.to_owned())))
@@ -262,6 +263,7 @@ async fn a_returned_result_without_a_view_stays_recorded_and_ends_the_conversati
             c.usage.clone(),
             Arc::new(|_: &str| {}),
         )
+        .await
         .unwrap(),
     ))
     .tool(Arc::new(Lookup(result.clone())))
@@ -341,6 +343,7 @@ async fn a_source_that_is_not_this_conversations_or_does_not_fit_is_refused() {
         c.usage.clone(),
         Arc::new(|_: &str| {}),
     )
+    .await
     .unwrap();
     assert!(matches!(
         provider
@@ -362,13 +365,16 @@ async fn a_source_that_is_not_this_conversations_or_does_not_fit_is_refused() {
             c.usage.clone(),
             Arc::new(|_: &str| {})
         )
+        .await
         .err(),
         Some(SessionStop::Guard(_))
     ));
 
     // A reply received by another conversation cannot be committed here.
     let reply = Msg::assistant("a reply");
-    let receipt = SourceRef::new(Arc::new(other.session.received_model(&reply).unwrap()));
+    let receipt = SourceRef::new(Arc::new(
+        received_chat_reply(&other.session, &reply, 0, [0; 32]).unwrap(),
+    ));
     assert!(c.boundary.commit_model(receipt, &reply).await.is_err());
     assert_eq!(c.session.check(), Err(SessionStop::Closed));
 
@@ -545,6 +551,7 @@ async fn gated(vault: &Vault, server: &MockServer, result: &str) -> Gated {
         c.usage.clone(),
         Arc::new(|_: &str| {}),
     )
+    .await
     .unwrap();
     let agent = Arc::new(
         Agent::builder(Arc::new(provider))
@@ -892,4 +899,475 @@ async fn a_call_the_committed_reply_did_not_ask_for_is_refused_before_it_runs() 
             .is_err()
     );
     assert_eq!(e.session.check(), Err(SessionStop::Closed));
+}
+
+// ---- native wires: receipts, and the protected call repair -------------------
+
+use crate::provider_config::Protocol;
+use craftsman_harness::ModelResponse;
+use craftsman_harness::builtin::PatchToolCallsMiddleware;
+use craftsman_harness::provenance::{ModelDelivery, TrackedModelRequest};
+use std::sync::atomic::AtomicUsize;
+
+/// One reply of a native wire's own stream, asking for `lookup` or answering.
+/// The first reply carries an item only the provider can read.
+fn native_reply(wire: &str, index: usize, asks: bool) -> ResponseTemplate {
+    let args = json!({"who": "them"});
+    let raw = match wire {
+        "responses" => {
+            let mut output = vec![];
+            if index == 0 {
+                output.push(json!({"type":"reasoning","id":"wire-reasoning","encrypted_content":"wire-original-opaque","summary":[]}));
+            }
+            output.push(if asks {
+                json!({"type":"function_call","id":"wire-function","call_id":"c1","name":"lookup","arguments":args.to_string(),"status":"completed"})
+            } else {
+                json!({"type":"message","id":"wire-message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"fixture answer","annotations":[]}]})
+            });
+            let value = json!({"type":"response.completed","response":{"id":"wire-response","status":"completed","output":output,"usage":{"input_tokens":3,"output_tokens":2}}});
+            format!("event: response.completed\ndata: {value}\n\n")
+        }
+        "claude" => {
+            let mut events =
+                vec![json!({"type":"message_start","message":{"usage":{"input_tokens":3}}})];
+            if index == 0 {
+                events.push(json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}));
+                events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"wire fixture reasoning"}}));
+                events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"wire-original-signature"}}));
+                events.push(json!({"type":"content_block_stop","index":0}));
+            }
+            let block = usize::from(index == 0);
+            events.push(
+                json!({"type":"content_block_start","index":block,"content_block":if asks {
+                    json!({"type":"tool_use","id":"c1","name":"lookup","input":{}})
+                } else {
+                    json!({"type":"text","text":""})
+                }}),
+            );
+            events.push(
+                json!({"type":"content_block_delta","index":block,"delta":if asks {
+                    json!({"type":"input_json_delta","partial_json":args.to_string()})
+                } else {
+                    json!({"type":"text_delta","text":"fixture answer"})
+                }}),
+            );
+            events.push(json!({"type":"content_block_stop","index":block}));
+            events.push(json!({"type":"message_delta","delta":{"stop_reason":if asks {"tool_use"} else {"end_turn"}},"usage":{"output_tokens":2}}));
+            events.push(json!({"type":"message_stop"}));
+            events
+                .iter()
+                .map(|event| format!("data: {event}\n\n"))
+                .collect()
+        }
+        _ => {
+            let mut part = if asks {
+                json!({"functionCall":{"id":"c1","name":"lookup","args":args}})
+            } else {
+                json!({"text":"fixture answer"})
+            };
+            if index == 0 {
+                part["thoughtSignature"] = json!("wire-original-signature");
+            }
+            let value = json!({"candidates":[{"content":{"parts":[part]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}});
+            format!("data: {value}\n\n")
+        }
+    };
+    ResponseTemplate::new(200).set_body_raw(raw, "text/event-stream")
+}
+
+fn native_client(wire: &str, server: &MockServer, key: &str) -> LlmClient {
+    let protocol = match wire {
+        "responses" => Protocol::OpenaiResponses,
+        "claude" => Protocol::AnthropicMessages,
+        _ => Protocol::GeminiGenerateContent,
+    };
+    LlmClient::configured(
+        &server.uri(),
+        key,
+        "fixture-model",
+        protocol,
+        "test/fixture-model",
+        &BTreeMap::new(),
+    )
+    .unwrap()
+}
+
+/// Hands the first request to one provider and every later one to another,
+/// as a conversation whose connection changed under it would.
+struct Switching {
+    first: Arc<dyn ModelProvider>,
+    later: Arc<dyn ModelProvider>,
+    requests: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for Switching {
+    async fn complete(&self, _: ModelRequest) -> Result<ModelResponse, AgentError> {
+        Err(AgentError::Model("recorded text".into()))
+    }
+
+    async fn complete_with_view(
+        &self,
+        req: TrackedModelRequest,
+    ) -> Result<ModelDelivery, AgentError> {
+        match self.requests.fetch_add(1, Ordering::SeqCst) {
+            0 => self.first.complete_with_view(req).await,
+            _ => self.later.complete_with_view(req).await,
+        }
+    }
+}
+
+#[tokio::test]
+async fn provider_items_go_back_only_through_the_client_that_received_them() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let text = format!("who handles {EMAIL}?");
+    let silent = || -> crate::agent::TokenSink { Arc::new(|_: &str| {}) };
+
+    // What happens after the first reply when the second request would go
+    // through `later`: nothing is sent, and what really happened is kept.
+    async fn stopped(c: &Conversation, agent: &Agent, text: &str, server: &MockServer) {
+        let node = c.session.admit_raw(&draft(text)).await.unwrap();
+        let error = agent
+            .run_turn_with_view(text, c.session.source(&node).unwrap())
+            .await
+            .err()
+            .expect("the second request is refused");
+        assert!(matches!(error, AgentError::Model(_)));
+        // The first reply, the call it asked for and the real result are
+        // recorded; the real usage of that one reply is kept.
+        let messages = recorded(agent);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0], Msg::user(text));
+        assert!(matches!(&messages[1], Msg::Assistant { tool_calls, .. }
+            if tool_calls[0].name == "lookup"));
+        assert!(
+            matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
+            if content.contains(PHONE))
+        );
+        assert_eq!(*c.usage.lock().unwrap(), (3, 2));
+        // One request left the process, and the conversation is over.
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(c.session.check(), Err(SessionStop::Closed));
+    }
+
+    for wire in ["responses", "claude", "gemini"] {
+        // Another credential: the items were received by a different client.
+        let server = MockServer::start().await;
+        scripted(
+            &server,
+            vec![native_reply(wire, 0, true), native_reply(wire, 1, false)],
+        )
+        .await;
+        let c = conversation(&vault, &server, "unused").await;
+        let provider = |key: &str| {
+            let client = native_client(wire, &server, key);
+            let (session, usage) = (c.session.clone(), c.usage.clone());
+            async move {
+                Arc::new(
+                    ViewNativeProvider::new(client, session, usage, Arc::new(|_: &str| {}))
+                        .await
+                        .unwrap(),
+                ) as Arc<dyn ModelProvider>
+            }
+        };
+        let agent = Agent::builder(Arc::new(Switching {
+            first: provider("fixture-key").await,
+            later: provider("another-key").await,
+            requests: AtomicUsize::new(0),
+        }))
+        .tool(Arc::new(Lookup(format!("their number is {PHONE}"))))
+        .model_view_boundary(Some(c.boundary.clone()))
+        .build();
+        stopped(&c, &agent, &text, &server).await;
+
+        // The same client throughout: the item goes back exactly.
+        let server = MockServer::start().await;
+        scripted(
+            &server,
+            vec![native_reply(wire, 0, true), native_reply(wire, 1, false)],
+        )
+        .await;
+        let c = conversation(&vault, &server, "unused").await;
+        let provider = ViewNativeProvider::new(
+            native_client(wire, &server, "fixture-key"),
+            c.session.clone(),
+            c.usage.clone(),
+            silent(),
+        )
+        .await
+        .unwrap();
+        let agent = Agent::builder(Arc::new(provider))
+            .tool(Arc::new(Lookup(format!("their number is {PHONE}"))))
+            .model_view_boundary(Some(c.boundary.clone()))
+            .build();
+        let node = c.session.admit_raw(&draft(&text)).await.unwrap();
+        agent
+            .run_turn_with_view(text.clone(), c.session.source(&node).unwrap())
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let second = String::from_utf8(requests[1].body.clone()).unwrap();
+        let signed = if wire == "responses" {
+            "wire-original-opaque"
+        } else {
+            "wire-original-signature"
+        };
+        assert!(second.contains(signed), "{wire}: {second}");
+        for original in [EMAIL, PHONE, OPERATOR] {
+            assert!(!second.contains(original), "{wire}");
+        }
+        assert_eq!(*c.usage.lock().unwrap(), (6, 4));
+    }
+
+    // A reply that no native client of this conversation received has no
+    // items to send back on a native wire.
+    let chat = server().await;
+    let native = MockServer::start().await;
+    let c = conversation(&vault, &chat, "unused").await;
+    let first = ViewChatProvider::new(client(&chat), c.session.clone(), c.usage.clone(), silent())
+        .await
+        .unwrap();
+    let later = ViewNativeProvider::new(
+        native_client("claude", &native, "fixture-key"),
+        c.session.clone(),
+        c.usage.clone(),
+        silent(),
+    )
+    .await
+    .unwrap();
+    let agent = Agent::builder(Arc::new(Switching {
+        first: Arc::new(first),
+        later: Arc::new(later),
+        requests: AtomicUsize::new(0),
+    }))
+    .tool(Arc::new(Lookup(format!("their number is {PHONE}"))))
+    .model_view_boundary(Some(c.boundary.clone()))
+    .build();
+    let node = c.session.admit_raw(&draft(&text)).await.unwrap();
+    assert!(
+        agent
+            .run_turn_with_view(text.clone(), c.session.source(&node).unwrap())
+            .await
+            .is_err()
+    );
+    assert_eq!(recorded(&agent).len(), 3);
+    assert_eq!(*c.usage.lock().unwrap(), (5, 1));
+    assert!(native.received_requests().await.unwrap().is_empty());
+    assert_eq!(c.session.check(), Err(SessionStop::Closed));
+
+    // And the other way: a reply a native client received is not sent on
+    // the Chat wire without its items.
+    let native = MockServer::start().await;
+    scripted(&native, vec![native_reply("gemini", 0, true)]).await;
+    let chat = MockServer::start().await;
+    let c = conversation(&vault, &native, "unused").await;
+    let first = ViewNativeProvider::new(
+        native_client("gemini", &native, "fixture-key"),
+        c.session.clone(),
+        c.usage.clone(),
+        silent(),
+    )
+    .await
+    .unwrap();
+    let later = ViewChatProvider::new(client(&chat), c.session.clone(), c.usage.clone(), silent())
+        .await
+        .unwrap();
+    let agent = Agent::builder(Arc::new(Switching {
+        first: Arc::new(first),
+        later: Arc::new(later),
+        requests: AtomicUsize::new(0),
+    }))
+    .tool(Arc::new(Lookup(format!("their number is {PHONE}"))))
+    .model_view_boundary(Some(c.boundary.clone()))
+    .build();
+    stopped(&c, &agent, &text, &native).await;
+    assert!(chat.received_requests().await.unwrap().is_empty());
+
+    // A conversation has one agent: its boundary is handed out once.
+    assert_eq!(c.session.boundary(&[]).err(), Some(SessionStop::Unbound));
+    // A client with no native transport is not a native provider, and a
+    // native client is not a Chat provider.
+    let d = conversation(&vault, &chat, "unused").await;
+    assert!(
+        ViewNativeProvider::new(client(&chat), d.session.clone(), d.usage.clone(), silent())
+            .await
+            .is_err()
+    );
+    assert!(
+        ViewChatProvider::new(
+            native_client("claude", &chat, "fixture-key"),
+            d.session.clone(),
+            d.usage.clone(),
+            silent()
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_repaired_call_keeps_what_was_received_and_what_the_repair_changed() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let c = conversation(&vault, &server, "unused").await;
+    let text = format!("who handles {EMAIL}?");
+    let node = c.session.admit_raw(&draft(&text)).await.unwrap();
+    let placeholder = issued(&node);
+    // The model writes arguments that are not a JSON object.
+    let malformed = format!("ask {placeholder} now{{");
+    scripted(
+        &server,
+        vec![
+            sse(json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                "function": {"name": "lookup", "arguments": malformed}}]}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1}})),
+            answer("chat", &["fixture answer"]),
+        ],
+    )
+    .await;
+    let tool = Arc::new(Inspect {
+        boundary: Mutex::new(Some(c.boundary.clone())),
+        seen: Mutex::new(Seen::default()),
+        result: "done".into(),
+    });
+    let provider = ViewChatProvider::new(
+        client(&server),
+        c.session.clone(),
+        c.usage.clone(),
+        Arc::new(|_: &str| {}),
+    )
+    .await
+    .unwrap();
+    let agent = Agent::builder(Arc::new(provider))
+        .tool(tool.clone())
+        .middleware(Arc::new(PatchToolCallsMiddleware))
+        .model_view_boundary(Some(c.boundary.clone()))
+        .build();
+    agent
+        .run_turn_with_view(text.clone(), c.session.source(&node).unwrap())
+        .await
+        .unwrap();
+
+    // The record holds the repaired call, as an ordinary session records it.
+    let repaired = json!({"_raw": malformed});
+    let messages = recorded(&agent);
+    assert!(matches!(&messages[1], Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == repaired));
+    // The conversation keeps what was received, what the repair changed, and
+    // which middleware changed it.
+    let sources = agent.recorded_sources().unwrap();
+    let reply = c
+        .session
+        .committed_model(sources[1].as_ref().unwrap())
+        .unwrap();
+    assert_eq!(reply.message().unwrap(), &messages[1]);
+    assert!(
+        matches!(reply.received_message().unwrap(), Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == Value::String(malformed.clone()))
+    );
+    let edits = reply.edits().unwrap();
+    assert_eq!(edits.len(), 1);
+    assert_eq!(
+        (
+            edits[0].by.as_str(),
+            edits[0].call,
+            &edits[0].received,
+            &edits[0].replaced
+        ),
+        (
+            "patch_tool_calls",
+            0,
+            &Value::String(malformed.clone()),
+            &repaired
+        )
+    );
+    {
+        // The repaired call is what was checked and run, and the placeholder
+        // the model wrote is found where the repair put it.
+        let seen = tool.seen.lock().unwrap();
+        assert_eq!(seen.args, [repaired.clone()]);
+        assert_eq!(seen.edited, [false]);
+        assert_eq!(
+            seen.fields[0],
+            [(
+                FieldPlace::Argument {
+                    tool: "lookup".into(),
+                    pointer: "/_raw".into(),
+                },
+                4..4 + placeholder.len(),
+                EMAIL.to_owned(),
+            )]
+        );
+    }
+    // The next request carries the repaired call, and no original.
+    let sent = bodies(&server).await;
+    assert_eq!(
+        sent[1]["messages"][2]["tool_calls"][0]["function"]["arguments"],
+        repaired.to_string()
+    );
+    let raw = String::from_utf8(server.received_requests().await.unwrap()[1].body.clone()).unwrap();
+    assert!(!raw.contains(EMAIL));
+}
+
+#[tokio::test]
+async fn what_a_client_adds_to_every_request_is_admitted_and_may_hold_no_value() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let silent = || -> crate::agent::TokenSink { Arc::new(|_: &str| {}) };
+    // A configured setting that holds a supported value cannot be replaced
+    // without changing what it means: the provider is refused and the
+    // conversation that was offered ends before any request.
+    let c = conversation(&vault, &server, "unused").await;
+    let setting = BTreeMap::from([("stop_sequences".to_owned(), json!([EMAIL]))]);
+    let native = LlmClient::configured(
+        &server.uri(),
+        "fixture-key",
+        "fixture-model",
+        Protocol::AnthropicMessages,
+        "test/fixture-model",
+        &setting,
+    )
+    .unwrap();
+    assert_eq!(
+        ViewNativeProvider::new(native, c.session.clone(), c.usage.clone(), silent())
+            .await
+            .err(),
+        Some(SessionStop::Unbound)
+    );
+    assert_eq!(c.session.check(), Err(SessionStop::Closed));
+
+    let c = conversation(&vault, &server, "unused").await;
+    let setting = BTreeMap::from([("user".to_owned(), json!(EMAIL))]);
+    let chat = LlmClient::new_with_options(&server.uri(), "fixture-key", "fixture-model", &setting);
+    assert_eq!(
+        ViewChatProvider::new(chat, c.session.clone(), c.usage.clone(), silent())
+            .await
+            .err(),
+        Some(SessionStop::Unbound)
+    );
+    assert_eq!(c.session.check(), Err(SessionStop::Closed));
+
+    // Ordinary settings are admitted as they are and sent as they are.
+    let c = conversation(&vault, &server, "unused").await;
+    let setting = BTreeMap::from([("temperature".to_owned(), json!(0.5))]);
+    let native = LlmClient::configured(
+        &server.uri(),
+        "fixture-key",
+        "fixture-model",
+        Protocol::OpenaiResponses,
+        "test/fixture-model",
+        &setting,
+    )
+    .unwrap();
+    assert!(
+        ViewNativeProvider::new(native, c.session.clone(), c.usage.clone(), silent())
+            .await
+            .is_ok()
+    );
+    assert!(c.session.check().is_ok());
+    assert!(server.received_requests().await.unwrap().is_empty());
 }

@@ -28,12 +28,14 @@ only after the vault's commit and the send guard's admission. It is not
 connected to any normal display or file path. The private bootstrap now
 composes its actual key/user-policy owners with this admission core.
 [Privacy provenance](privacy-provenance.md) records how sources and model views
-reach a request. A private path now exists for the Chat wire, from typed input
-and tool results through the framework agent and the shared session builder to
-the existing client and guard, with a limited set of parts. Nothing selects it,
-native wires are refused, and the full expected feature set and restoration
-adapters are not built. The new owned key popup does not select that reduced
-fixture path or grant user policy with its bare permission. The target diagram
+reach a request. Private paths now exist for all four model wires, from typed
+input and tool results through the framework agent and shared builder to the
+existing clients and guard; protected call repair is a recorded change. A real
+user-policy selection omits no components. Todos, memory, compaction, reminders
+and other required source adapters still prevent full construction. The owned
+key popup and private composition do not use a fixture permission to bypass
+that refusal. Actual human-decision/retained-commit frontiers, normal terminal
+view/display/file adapters and activation remain pending. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 

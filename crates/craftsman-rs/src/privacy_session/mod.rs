@@ -27,13 +27,15 @@
 
 #[cfg(test)]
 mod tests;
+mod transport;
 mod view;
 #[cfg(test)]
 mod view_tests;
 
+pub use transport::{ViewChatProvider, ViewNativeProvider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    ReceivedModel, SourceField,
+    NativeReplay, ReceivedModel, SourceField,
 };
 
 use crate::checkpoints::LibsqlCheckpointer;
@@ -164,21 +166,179 @@ impl FreshConversationBinding {
     }
 }
 
-/// The selection a host's trusted policy hands to the session builder for
-/// one live privacy conversation. It states that the policy permits that
-/// conversation to run with the limited set of parts that have a
-/// source-preserving path. It cannot be built from configuration.
+/// The user's captured privacy policy, as far as the session builder needs
+/// it. The application's policy owner implements this for the policy it
+/// captured from the user's own configuration, before any project file was
+/// merged. A flag, a label, a digest or a statement in a test is not a
+/// policy. Outside tests nothing in this crate implements the trait yet, so
+/// no selection can be made.
+pub trait CapturedUserPolicy: Send + Sync {
+    /// Whether the user's policy enables privacy for a conversation in the
+    /// workspace with this digest, which is the one
+    /// [`PrivacySession::workspace_sha256`] gives.
+    fn enables_privacy_in(&self, workspace_sha256: &str) -> bool;
+
+    /// Whether the policy requires that everything a provider is sent can be
+    /// inspected. Native wires send back provider items that cannot.
+    fn requires_inspectable_provider_items(&self) -> bool;
+}
+
+/// Why no session was built for a selection. Each is decided before the
+/// session exists; none of them ends the conversation that was offered,
+/// except where the text says so.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BuildRefusal {
+    #[error("The user's policy does not enable privacy for this workspace.")]
+    PolicyDisabled,
+    #[error("The privacy conversation has already ended.")]
+    Ended,
+    #[error(
+        "A privacy conversation starts fresh: no caller thread id, separate guard or prepared runtime."
+    )]
+    NotFresh,
+    #[error("A requested part of the session has no source path and may not be left out.")]
+    RequestedPart,
+    #[error(
+        "The policy requires inspectable provider items, and this wire sends back items that cannot be inspected."
+    )]
+    OpaqueProviderItems,
+    /// The conversation that was offered may have ended: a client whose own
+    /// settings hold a supported value ends it.
+    #[error("The model connection has no private view.")]
+    Provider,
+    #[error("The system text has no private view.")]
+    SystemText,
+    /// The installed parts that have no source path, by name.
+    #[error("These parts of the session have no source path: {}.", .0.join(", "))]
+    MissingSourcePaths(Vec<String>),
+}
+
+/// Where the session builder records why it refused a selection. The
+/// builder's own result has no room for a reason.
+#[derive(Default)]
+pub struct SelectionReport {
+    refusal: std::sync::Mutex<Option<BuildRefusal>>,
+}
+
+impl SelectionReport {
+    /// The first refusal the builder recorded, if it refused.
+    pub fn refusal(&self) -> Option<BuildRefusal> {
+        self.refusal.lock().unwrap().clone()
+    }
+
+    pub(crate) fn refuse(&self, refusal: BuildRefusal) {
+        self.refusal.lock().unwrap().get_or_insert(refusal);
+    }
+}
+
+/// The selection the session builder takes for one live privacy
+/// conversation: the user's captured policy and the conversation that was
+/// opened under it. It cannot be built from configuration. It carries no
+/// permission to run with fewer parts than the user configured: the builder
+/// refuses a session in which any part has no source-preserving path, and
+/// says which through [`SelectionReport`].
 pub struct PrivacyViewSelection {
+    policy: Arc<dyn CapturedUserPolicy>,
     session: Arc<PrivacySession>,
+    report: Arc<SelectionReport>,
+    #[cfg(test)]
+    fixture_limited_set: bool,
 }
 
 impl PrivacyViewSelection {
-    pub fn limited_set_permitted_by_host_policy(session: Arc<PrivacySession>) -> Self {
-        Self { session }
+    /// Refused when the policy does not enable privacy for the conversation's
+    /// workspace, or the conversation has ended.
+    pub fn from_user_policy(
+        policy: Arc<dyn CapturedUserPolicy>,
+        session: Arc<PrivacySession>,
+    ) -> Result<Self, BuildRefusal> {
+        if session.check().is_err() {
+            return Err(BuildRefusal::Ended);
+        }
+        if !policy.enables_privacy_in(session.workspace_sha256()) {
+            return Err(BuildRefusal::PolicyDisabled);
+        }
+        Ok(Self {
+            policy,
+            session,
+            report: Arc::new(SelectionReport::default()),
+            #[cfg(test)]
+            fixture_limited_set: false,
+        })
+    }
+
+    /// Where the builder records why it refused, for the host that made the
+    /// selection.
+    pub fn report(&self) -> Arc<SelectionReport> {
+        self.report.clone()
+    }
+
+    /// Test fixtures only: a selection under a fixture policy that builds
+    /// with the parts that have a source-preserving path and names the
+    /// others to the frontend. Neither exists outside tests.
+    #[cfg(test)]
+    pub(crate) fn fixture_limited_set(session: Arc<PrivacySession>) -> Self {
+        Self {
+            fixture_limited_set: true,
+            ..Self::from_user_policy(Arc::new(FixturePolicy::default()), session)
+                .expect("a live fixture conversation")
+        }
     }
 
     pub(crate) fn session(&self) -> &Arc<PrivacySession> {
         &self.session
+    }
+
+    /// Whether the policy still enables privacy for this conversation.
+    pub(crate) fn policy_holds(&self) -> bool {
+        self.policy
+            .enables_privacy_in(self.session.workspace_sha256())
+    }
+
+    pub(crate) fn requires_inspectable_items(&self) -> bool {
+        self.policy.requires_inspectable_provider_items()
+    }
+
+    /// Whether parts without a source-preserving path are left out and named
+    /// instead of refusing the build. Never outside tests.
+    pub(crate) fn leaves_out_unadapted_parts(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.fixture_limited_set
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+}
+
+/// A policy for test fixtures. It is a fixed statement, not a user's policy,
+/// and is compiled only into test builds.
+#[cfg(test)]
+pub(crate) struct FixturePolicy {
+    pub(crate) disabled: bool,
+    pub(crate) inspectable_items: bool,
+}
+
+#[cfg(test)]
+impl Default for FixturePolicy {
+    fn default() -> Self {
+        Self {
+            disabled: false,
+            inspectable_items: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl CapturedUserPolicy for FixturePolicy {
+    fn enables_privacy_in(&self, _: &str) -> bool {
+        !self.disabled
+    }
+
+    fn requires_inspectable_provider_items(&self) -> bool {
+        self.inspectable_items
     }
 }
 
@@ -377,6 +537,8 @@ struct Inner {
     operation: tokio::sync::Mutex<Ledger>,
     slots: tokio::sync::Semaphore,
     stopped: AtomicBool,
+    /// Whether the one boundary of this conversation has been handed out.
+    bound: AtomicBool,
     #[cfg(test)]
     after_commit: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -439,10 +601,17 @@ impl PrivacySession {
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
+                bound: AtomicBool::new(false),
                 #[cfg(test)]
                 after_commit: std::sync::Mutex::new(None),
             }),
         })
+    }
+
+    /// The SHA-256 of the canonical workspace this conversation was reserved
+    /// for, as lowercase hex.
+    pub fn workspace_sha256(&self) -> &str {
+        &self.inner.binding.workspace
     }
 
     /// The thread id this conversation was reserved with. The session builder
