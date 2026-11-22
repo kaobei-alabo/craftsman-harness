@@ -279,9 +279,10 @@ wrote it, and goes back to the model through its ordinary projection.
 - A delegated agent's text is not drawn by a frontend, so it has no human
   view; its final answer returns to the root agent as a tool result.
 - No normal session can reach any of this: the user's policy has no owner
-  outside fixtures, the terminal has no entry for a privacy turn, and the
-  builder still refuses a selection together with verification, context
-  and failure controls or local gadgets.
+  outside fixtures, and the terminal has no entry for a privacy turn.
+  Declared verification, context compilation and failure controls are now
+  installed behind the conversation's adapters; see
+  [privacy-provenance.md](privacy-provenance.md), "Controller adapters".
 
 ## What is still to supply
 

@@ -5,9 +5,11 @@ mod view;
 
 use async_trait::async_trait;
 use craftsman_harness::builtin::CompactionMiddleware;
+use craftsman_harness::middleware::BoxedViewFuture;
 use craftsman_harness::{
-    AgentError, AgentMiddleware, AgentState, ModelRequest, ModelResponse, Next, ToolCall, ToolCtx,
-    ToolNext, ToolOutcome,
+    AgentError, AgentMiddleware, AgentState, ModelRequest, ModelResponse, Next, SourceRef,
+    ToolCall, ToolCtx, ToolNext, ToolOutcome, TrackedModelRequest, TrackedPrepare, ViewNext,
+    ViewSupport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -167,7 +169,20 @@ struct RuntimeState {
     passive_input_sequence: u64,
     last_request: Option<RequestShape>,
     failed: bool,
+    /// For a conversation with a source view, in memory only: where the
+    /// text of recorded inputs and of observed file paths came from, and the
+    /// fixed pieces of the last sections. Never read from the custom state.
+    inputs: Vec<view::RetainedInput>,
+    paths: Vec<view::RetainedPath>,
+    fixed: view::FixedPieces,
 }
+
+/// The most input sources kept: the first one and the latest ones.
+const MAX_RETAINED_INPUTS: usize = 2 * state::MAX_UPDATES + 1;
+/// The most observed path sources kept.
+const MAX_RETAINED_PATHS: usize = 2 * state::MAX_FILES;
+/// The longest call id a path source is kept for.
+const MAX_RETAINED_ID_BYTES: usize = 512;
 
 pub(crate) struct ContextController {
     options: ContextOptions,
@@ -330,6 +345,121 @@ impl ContextController {
         Ok(Some(compiled.counts))
     }
 
+    /// The custom-state key this controller keeps its bookkeeping under.
+    pub(crate) fn own_key() -> &'static str {
+        state::KEY
+    }
+
+    /// For a conversation with a source view: keeps the source of the
+    /// input recorded with `stamp`. Called by the adapter that received the
+    /// agent's own event for that input and recorded it here. The source is
+    /// checked by the conversation when a section names it, not here.
+    pub(crate) fn retain_input_source(&self, stamp: InputStamp, source: SourceRef) {
+        if !self.options.enabled {
+            return;
+        }
+        if let Ok(mut runtime) = self.runtime.lock() {
+            if runtime.inputs.len() >= MAX_RETAINED_INPUTS {
+                // The first input stays; the oldest of the later ones goes.
+                runtime.inputs.remove(1);
+            }
+            runtime.inputs.push(view::RetainedInput {
+                event: stamp.revision,
+                source,
+            });
+        }
+    }
+
+    /// The input sources kept now, in order.
+    #[cfg(test)]
+    pub(crate) fn retained_input_sources(&self) -> Vec<SourceRef> {
+        let runtime = self.runtime.lock().unwrap();
+        runtime
+            .inputs
+            .iter()
+            .map(|kept| kept.source.clone())
+            .collect()
+    }
+
+    /// For a conversation with a source view: the call that named a file
+    /// path this controller observes, so that a later section can name the
+    /// committed reply that wrote the path.
+    fn retain_path_source(&self, call: &ToolCall) {
+        if !self.options.enabled
+            || !matches!(call.name.as_str(), "read_file" | "write_file" | "edit_file")
+            || call.id.is_empty()
+            || call.id.len() > MAX_RETAINED_ID_BYTES
+        {
+            return;
+        }
+        let Some(selector) = call
+            .args
+            .get("file_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty() && path.len() <= state::MAX_SELECTOR_BYTES)
+        else {
+            return;
+        };
+        if let Ok(mut runtime) = self.runtime.lock() {
+            runtime.paths.retain(|kept| kept.selector != selector);
+            if runtime.paths.len() >= MAX_RETAINED_PATHS {
+                runtime.paths.remove(0);
+            }
+            runtime.paths.push(view::RetainedPath {
+                selector: selector.to_owned(),
+                call_id: call.id.clone(),
+            });
+        }
+    }
+
+    /// One of this controller's own operations on its own key, for a
+    /// conversation with a source view. The operation sees nothing of the
+    /// recorded state but that key, and only that key is set afterwards.
+    pub(crate) fn on_own_key(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+        operation: impl FnOnce(&Self, &mut AgentState) -> Result<(), AgentError>,
+    ) -> Result<(), AgentError> {
+        let mut own = AgentState::default();
+        if let Some(value) = prepare.state().custom.get(state::KEY) {
+            own.custom.insert(state::KEY.into(), value.clone());
+        }
+        operation(self, &mut own)?;
+        if let Some(value) = own.custom.remove(state::KEY) {
+            if prepare.state().custom.get(state::KEY) != Some(&value) {
+                prepare.set_own_custom(state::KEY, value);
+            }
+        }
+        Ok(())
+    }
+
+    /// [`append_context`](Self::append_context) for a conversation with a
+    /// source view: the same record is stored under this controller's own
+    /// key, and the section is added as parts.
+    pub fn append_context_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<Option<CompiledCounts>, AgentError> {
+        if !self.options.enabled {
+            return Ok(None);
+        }
+        self.check_failure()?;
+        let record = self.bound_record(prepare.state())?;
+        let (parts, counts) = {
+            let mut runtime = self.runtime.lock().map_err(|_| context_error())?;
+            let RuntimeState {
+                inputs,
+                paths,
+                fixed,
+                ..
+            } = &mut *runtime;
+            view::compile_parts(&record, prepare, self.options, inputs, paths, fixed)?
+        };
+        self.on_own_key(prepare, |_, own| record.store(own))?;
+        prepare.add_system(parts)?;
+        Ok(Some(counts))
+    }
+
     pub fn capture_request(&self, request: &ModelRequest) -> Result<(), AgentError> {
         if !self.options.enabled {
             return Ok(());
@@ -488,6 +618,12 @@ impl AgentMiddleware for ToolObserver {
         self.controller.reset_report()
     }
 
+    /// The observer changes only this controller's own key, which it
+    /// announces during the dispatch.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
     async fn around_tool(
         &self,
         call: ToolCall,
@@ -497,6 +633,16 @@ impl AgentMiddleware for ToolObserver {
         self.controller.validate_state(ctx.state)?;
         let trusted =
             call.name.len() <= 512 && self.trust.as_ref().is_none_or(|trust| trust(&call.name));
+        // In a conversation with a source view this observer says which key
+        // of the custom state it keeps, and remembers the call that named a
+        // file path, so that a later section can name where the path came
+        // from. It changes nothing else of the recorded state.
+        if let Some(tracked) = next.tracked() {
+            tracked.owns_custom_key(state::KEY);
+            if trusted {
+                self.controller.retain_path_source(&call);
+            }
+        }
         let observed = if trusted {
             bounded_call(&call)
         } else {
@@ -550,6 +696,39 @@ impl AgentMiddleware for RequestObserver {
         self.controller.capture_request(&request)?;
         next.run(request).await
     }
+
+    /// The report keeps the shape of the recorded request. The request
+    /// itself is passed on as it is.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
+    }
+
+    fn around_model_with_view<'a, 'b, 'f>(
+        &'a self,
+        request: TrackedModelRequest,
+        next: ViewNext<'b>,
+    ) -> BoxedViewFuture<'f>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        Box::pin(async move {
+            // The system text of such a request is made of sources and is
+            // not part of the recorded request, so its size is not reported.
+            if self.controller.options.enabled {
+                self.controller.check_failure()?;
+                let mut shape = RequestShape::capture(request.recorded());
+                shape.system_bytes = None;
+                self.controller
+                    .runtime
+                    .lock()
+                    .map_err(|_| context_error())?
+                    .last_request = Some(shape);
+            }
+            next.run(request).await
+        })
+    }
 }
 
 struct ContextCompiler {
@@ -562,6 +741,18 @@ impl AgentMiddleware for ContextCompiler {
     }
     async fn prepare_model(&self, state: &mut AgentState) -> Result<(), AgentError> {
         self.controller.append_context(state)?;
+        Ok(())
+    }
+
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        self.controller.append_context_with_view(prepare)?;
         Ok(())
     }
 }
@@ -597,6 +788,41 @@ impl AgentMiddleware for ContextCompaction {
             }
         }
         self.controller.append_context(state)?;
+        Ok(())
+    }
+
+    /// The same order on the tracked path: the original compaction through
+    /// its own tracked preparation, this controller's observation of it
+    /// under its own key, the transition callback, and the section as parts.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        if !self.controller.options.enabled && self.on_transition.is_none() {
+            return self.original.prepare_model_with_view(prepare).await;
+        }
+        let before = if self.controller.options.enabled {
+            self.controller.begin_compaction(prepare.state())?
+        } else {
+            TranscriptAnchor::capture(prepare.state())
+        };
+        self.original.prepare_model_with_view(prepare).await?;
+        let observation = before.compare(&TranscriptAnchor::capture(prepare.state()));
+        if self.controller.options.enabled {
+            self.controller.on_own_key(prepare, |controller, own| {
+                controller.observe_compaction(own, observation)
+            })?;
+        }
+        if observation != CompactionObservation::Unchanged {
+            if let Some(callback) = &self.on_transition {
+                callback(observation);
+            }
+        }
+        self.controller.append_context_with_view(prepare)?;
         Ok(())
     }
 }

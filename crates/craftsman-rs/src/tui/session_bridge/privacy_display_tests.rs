@@ -43,15 +43,14 @@ impl PrivacyTerminal {
         let bridge = UiBridge { tx };
         let root_cancellation = craftsman_harness::SessionCancellation::default();
         let cancellation = root_cancellation.child().unwrap();
-        // The terminal's own sinks and prompts. The parts a privacy
-        // conversation still refuses are left out, as a host that selects
-        // one has to.
+        // The terminal's own sinks and prompts, with declared verification,
+        // context compilation and failure controls requested as the terminal
+        // requests them. The one part a privacy conversation still refuses
+        // is left out, as a host that selects one has to.
         let mut extras = bridge.session_extras();
         extras.privacy_view = Some(selection);
         extras.workspace_root = Some(directory.to_path_buf());
-        extras.verification = false;
-        extras.context_compilation = false;
-        extras.failure_controls = false;
+        assert!(extras.verification && extras.context_compilation && extras.failure_controls);
         #[cfg(feature = "gadgets")]
         {
             extras.local_gadgets = false;

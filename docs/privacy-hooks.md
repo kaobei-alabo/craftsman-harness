@@ -625,3 +625,37 @@ remain gates before integration/install. The restricted private MAIN
 callback/budget-boundary, equivalent and close-between-retry scenarios remain
 UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
 The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.
+
+
+## Controller adapters — November 22, 2026
+
+Declared verification, context compilation and failure controls can now be
+part of a privacy conversation's session. The builder makes the session's
+original controllers from the user's settings and installs them behind two
+private adapters; nothing is left out and nothing else about those
+controllers changes. The details are in
+[privacy-provenance.md](privacy-provenance.md#controller-adapters).
+
+What runs in built sessions, on all four wires, with a real vault, guard,
+store, files and commands:
+
+- context and failure controls: the record and the controllers' own keys are
+  exact, the context section is sent as source parts with the input quoted as
+  the input itself is seen, and the advisory after a repeated identical error
+  is fixed text;
+- a declared check the model asks for: a person reviews the protected change
+  as it really is, the real command runs, the recorded result is its real
+  output and status, and the model is given that result's view.
+
+What does not run: a check the verification controller schedules itself after
+the model's answer. On the current framework base an agent with a source view
+closes its turn's window before the completion check and then refuses the
+scheduled call. The fixture for this case is kept and fails there. A local
+experiment with a one-condition change in the framework let that fixture pass;
+it was not committed and is not evidence for this base. Two more gaps are the
+framework's: a stop by the completion controller appends a note without an
+event, and a manual compaction does not call the controller's callback.
+
+This remains unmerged, uninstalled and unselected. No frontend, key, policy or
+normal privacy selection is enabled by it, stored history is not encrypted or
+redacted, and no paid call was made.

@@ -64,3 +64,8 @@ The first full local run caught the new reserved-command entry out of lexical
 order. The entry was reordered; the existing sorted/unique assertion and all
 other native checks remain intact. The first failed run is retained separately
 from corrected-source validation.
+
+In a privacy conversation, which nothing selects yet, the same controller runs
+behind a private adapter. Its record is unchanged; the section the model is
+given is made of source parts and carries no digest or size of recorded text.
+See [privacy-provenance.md](privacy-provenance.md#controller-adapters).

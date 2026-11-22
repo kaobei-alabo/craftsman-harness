@@ -25,6 +25,9 @@ const HELPER: &str = "agent::privacy_view_tests::privacy_view_builder_fixture";
 const MARKER: &str = "craftsman-privacy-view=";
 const DONE: &str =
     "actual builder, loopback HTTP, checkpoint store and private view assertions completed";
+const CHECK_HELPER: &str = "agent::privacy_view_tests::privacy_view_check";
+const CHECK_MARKER: &str = "craftsman-privacy-check=";
+const WIRES: [&str; 4] = ["chat", "responses", "claude", "gemini"];
 
 async fn privacy(vault: &Vault, directory: &std::path::Path) -> Arc<PrivacySession> {
     let source = LiteralSource::new(&[(EMAIL, "email"), (PHONE, "phone")]);
@@ -140,7 +143,12 @@ async fn privacy_view_builder_fixture() {
         })
         .collect();
     let on_a_pty = cfg!(unix) && selected.len() == 1 && selected[0] == "terminal";
-    if selected.len() != 1 || !(selected[0] == "chat" || on_a_pty) {
+    if selected.len() != 1
+        || !(matches!(
+            selected[0].as_str(),
+            "chat" | "controls" | "verification" | "scheduled"
+        ) || on_a_pty)
+    {
         return;
     }
     let directory = std::env::current_dir().unwrap();
@@ -154,6 +162,19 @@ async fn privacy_view_builder_fixture() {
         return;
     }
     let activity = Arc::new(Mutex::new(Vec::new()));
+    // The configured controllers of a session, on every wire: the context
+    // and failure controller, and with it the verification controller.
+    if selected[0] != "chat" {
+        for wire in WIRES {
+            match selected[0].as_str() {
+                "controls" => controls(wire, &directory, &vault, &activity).await,
+                "verification" => verification(wire, false, &directory, &vault, &activity).await,
+                _ => verification(wire, true, &directory, &vault, &activity).await,
+            }
+        }
+        eprintln!("{DONE}");
+        return;
+    }
     conversation(&directory, &vault, &activity).await;
     repair(&directory, &vault, &activity).await;
     normal_parts(&directory, &vault, &activity).await;
@@ -1690,6 +1711,557 @@ async fn terminal_on_a_pty(directory: &std::path::Path, vault: &Vault) {
     terminal.session().lsp.shutdown().await;
 }
 
+/// The declared check of the controls case: a real subprocess that reads
+/// the one file its marker names and leaves with a real status.
+#[test]
+#[ignore = "owned check of the private-view fixture; an unmarked or unknown start returns before any access"]
+fn privacy_view_check() {
+    let named: Vec<_> = std::env::args_os()
+        .filter_map(|arg| {
+            arg.to_str()
+                .and_then(|arg| arg.strip_prefix(CHECK_MARKER))
+                .map(str::to_owned)
+        })
+        .collect();
+    if named.len() != 1
+        || !WIRES.iter().any(|wire| {
+            named[0] == format!("asked-{wire}/value.txt")
+                || named[0] == format!("scheduled-{wire}/value.txt")
+        })
+    {
+        return;
+    }
+    let value = std::fs::read_to_string(&named[0]).unwrap();
+    println!("checked value: {value}");
+    use std::io::Write;
+    std::io::stdout().flush().unwrap();
+    if !value.starts_with("fixed") {
+        std::process::exit(7);
+    }
+}
+
+/// The command that runs [`privacy_view_check`] on `file` in the shell the
+/// session's own runner uses, with the check's real exit status.
+fn check_command(file: &str) -> String {
+    let binary = std::env::current_exe().unwrap();
+    let binary = binary.to_str().unwrap();
+    #[cfg(windows)]
+    {
+        format!(
+            "$craftsman_check = [System.Diagnostics.Process]::new(); $craftsman_check.StartInfo.FileName = '{}'; $craftsman_check.StartInfo.Arguments = '--ignored --exact {CHECK_HELPER} --nocapture {CHECK_MARKER}{file}'; $craftsman_check.StartInfo.WorkingDirectory = [Environment]::CurrentDirectory; $craftsman_check.StartInfo.UseShellExecute = $false; $craftsman_check.StartInfo.RedirectStandardOutput = $true; $craftsman_check.StartInfo.RedirectStandardError = $true; [void]$craftsman_check.Start(); $craftsman_check_stdout = $craftsman_check.StandardOutput.ReadToEnd(); $craftsman_check_stderr = $craftsman_check.StandardError.ReadToEnd(); $craftsman_check.WaitForExit(); $craftsman_check_exit = $craftsman_check.ExitCode; $craftsman_check.Dispose(); [Console]::Out.Write($craftsman_check_stdout); [Console]::Error.Write($craftsman_check_stderr); [Console]::Out.Flush(); [Console]::Error.Flush(); [Environment]::Exit($craftsman_check_exit)",
+            binary.replace("'", "''")
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "'{}' --ignored --exact {CHECK_HELPER} --nocapture {CHECK_MARKER}{file}",
+            binary.replace('\'', "'\\''")
+        )
+    }
+}
+
+/// The configured context and failure controller in a built privacy
+/// conversation on one wire: the session's own builder makes the original
+/// controller from the user's settings and installs it behind the
+/// conversation's adapter.
+///
+/// A person asks about a file. The model reads it, asks twice for a file
+/// that is not there, and answers. The controller records the input and the
+/// observed path under its own keys; the model is given the same context as
+/// parts, each seen as its own source is seen, and the failure controls'
+/// advisory after the same error came back twice. Nothing is paused.
+async fn controls(
+    wire: &'static str,
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let folder = format!("noted-{wire}");
+    std::fs::create_dir(directory.join(&folder)).unwrap();
+    let notes = format!("{folder}/notes.txt");
+    let missing = format!("{folder}/missing.txt");
+    std::fs::write(
+        directory.join(&notes),
+        format!("Their number is {PHONE}.\n"),
+    )
+    .unwrap();
+    let server = MockServer::start().await;
+    let read = |file: &str| json!({"file_path": directory.join(file)});
+    let scripted = [
+        reply(
+            wire,
+            0,
+            Some(("call-notes", "read_file", &read(&notes))),
+            "",
+        ),
+        reply(
+            wire,
+            1,
+            Some(("call-first", "read_file", &read(&missing))),
+            "",
+        ),
+        reply(
+            wire,
+            2,
+            Some(("call-again", "read_file", &read(&missing))),
+            "",
+        ),
+        reply(wire, 3, None, "nobody else"),
+    ];
+    for (place, scripted) in scripted.into_iter().enumerate() {
+        mount_once(
+            &server,
+            place as u8 + 1,
+            Mock::given(method("POST")).respond_with(scripted),
+        )
+        .await;
+    }
+    Mock::given(method("POST"))
+        .respond_with(reply(wire, 4, None, "welcome"))
+        .mount(&server)
+        .await;
+    let mut cfg = config(wire, &server);
+    cfg.extra.insert("context".into(), json!({"enabled": true}));
+    cfg.extra
+        .insert("failure_control".into(), json!({"repeat_limit": 5}));
+    let owner = privacy(vault, directory).await;
+    let session = build(&cfg, directory, Some(&owner), None, activity, |extras| {
+        extras.verification = true;
+        extras.context_compilation = true;
+        extras.failure_controls = true;
+        extras.task_workflow = true;
+    })
+    .await
+    .unwrap_or_else(|| panic!("the configured controller is built on {wire}"));
+    // The session keeps the original controller, as any session does, and
+    // no verification controller: none is declared.
+    let original = session.controls.clone().expect("the original controller");
+    assert!(session.verification.is_none());
+    let view = session.privacy_view.as_ref().unwrap();
+    let typed = format!("Who handles {EMAIL}? See the notes.");
+    let TurnResult::Done(output) = view.turn(&session.agent, &typed).await.unwrap() else {
+        panic!("the turn finishes on {wire}");
+    };
+    assert_eq!(output.final_text(), "nobody else", "{wire}");
+
+    // The record is exact.
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    assert_eq!(messages.len(), 8, "{wire}: {messages:?}");
+    assert_eq!(messages[0], Msg::user(typed.clone()));
+    assert!(
+        matches!(&messages[2], Msg::Tool { content, is_error, .. }
+            if content.contains(PHONE) && !is_error),
+        "{wire}"
+    );
+    let errors: Vec<&String> = [&messages[4], &messages[6]]
+        .into_iter()
+        .map(|message| match message {
+            Msg::Tool {
+                content,
+                is_error: true,
+                ..
+            } => content,
+            other => panic!("a missing file is an error on {wire}: {other:?}"),
+        })
+        .collect();
+    assert_eq!(errors[0], errors[1], "{wire}");
+
+    // The original controller kept its own bookkeeping beside the record:
+    // the context record with the input as typed and the path as the call
+    // wrote it, and the stamp of the failure controls. Nothing else of the
+    // record changed for it.
+    let custom = session.agent.state.lock().unwrap().custom.clone();
+    let mut keys: Vec<&str> = custom
+        .keys()
+        .map(String::as_str)
+        .filter(|key| key.starts_with("_craftsman_"))
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, {
+        let mut own = original.own_keys();
+        own.sort_unstable();
+        own
+    });
+    assert_eq!(
+        keys,
+        ["_craftsman_context_v1", "_craftsman_failure_input_v1"]
+    );
+    let record = &custom["_craftsman_context_v1"];
+    assert_eq!(record["initial_input"]["text"], json!(typed));
+    let noted = directory.join(&notes);
+    assert_eq!(
+        record["files"][0]["selector"],
+        json!(noted.to_str().unwrap()),
+        "{wire}"
+    );
+    assert_eq!(
+        custom["_craftsman_failure_input_v1"]["stamp"]["revision"],
+        json!(original.recorded_input().unwrap().revision)
+    );
+    // The failure controls saw the same error twice and paused nothing.
+    assert!(original.confirmed_pause().is_none());
+
+    // The agent's own events: one accepted input, for the adapter the
+    // conversation made, and a source beside every recorded message.
+    let events = session.agent.actual_boundary_inputs().unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(!events[0].in_callback());
+    let sources = session.agent.recorded_sources().unwrap();
+    assert!(sources.len() == 8 && sources.iter().all(Option::is_some));
+
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 4, "{wire}");
+    for body in &requests {
+        // Nothing private left the process, and the section quotes the
+        // input as the input itself is seen.
+        assert!(!body.contains(EMAIL) && !body.contains(PHONE), "{wire}");
+        assert!(body.contains("Task context from earlier user inputs"));
+        assert!(body.contains("Initial request (event 1):"), "{wire}");
+        assert!(body.matches("Who handles ").count() >= 2, "{wire}");
+        // Digests and sizes of recorded text are no part of it.
+        assert!(!body.contains("original_bytes") && !body.contains("result_digest"));
+    }
+    // A path is named once the observer saw the call that wrote it.
+    assert!(!requests[0].contains("File observations"));
+    for body in &requests[1..] {
+        assert!(
+            body.contains("File observations") && body.contains(" | read | completed=true | "),
+            "{wire}"
+        );
+    }
+    // The advisory is the application's own fixed text, after the second
+    // identical error and not before.
+    let advisory = "returned the same error repeatedly";
+    assert!(requests[..3].iter().all(|body| !body.contains(advisory)));
+    assert!(requests[3].contains(advisory), "{wire}");
+
+    // The conversation continues: a second input is accepted by the same
+    // controller and quoted beside the first.
+    let TurnResult::Done(output) = view.turn(&session.agent, "Thanks.").await.unwrap() else {
+        panic!("the second turn finishes on {wire}");
+    };
+    assert_eq!(output.final_text(), "welcome");
+    assert_eq!(session.agent.actual_boundary_inputs().unwrap().len(), 2);
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 5);
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("Initial request (event 1):") && last.contains("Recent user input (event")
+    );
+    assert!(!last.contains(EMAIL) && !last.contains(PHONE));
+    assert!(owner.check().is_ok(), "{wire}");
+    assert!(
+        !activity
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.starts_with("This private conversation ")),
+        "{wire}"
+    );
+    session.lsp.shutdown().await;
+}
+
+/// The configured verification, context and failure controllers in a built
+/// privacy conversation on one wire, with the terminal's kind of extras: the
+/// session's own builder makes the original controllers from the user's
+/// settings and installs them behind the conversation's adapters.
+///
+/// A person asks for a fix. The model edits a source file and a protected
+/// file. Then the declared check runs: either the model asks for it itself
+/// before it answers, or it answers and the verification controller
+/// schedules the check (`scheduled`). A person reviews the protected change
+/// as it really is, the real command runs, and the model is asked once more
+/// with the check's result. Everything recorded is exact; everything sent is
+/// a view.
+async fn verification(
+    wire: &'static str,
+    scheduled: bool,
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let folder = match scheduled {
+        true => format!("scheduled-{wire}"),
+        false => format!("asked-{wire}"),
+    };
+    std::fs::create_dir(directory.join(&folder)).unwrap();
+    let value = format!("{folder}/value.txt");
+    let guard = format!("{folder}/guard.txt");
+    std::fs::write(directory.join(&value), format!("broken for {PHONE}")).unwrap();
+    std::fs::write(
+        directory.join(&guard),
+        format!("guard original for {PHONE}"),
+    )
+    .unwrap();
+    let server = MockServer::start().await;
+    let edit = |file: &str, old: &str, new: &str| json!({"file_path": file, "old_string": old, "new_string": new});
+    let scripted = [
+        reply(
+            wire,
+            0,
+            Some(("call-value", "edit_file", &edit(&value, "broken", "fixed"))),
+            "",
+        ),
+        reply(
+            wire,
+            1,
+            Some((
+                "call-guard",
+                "edit_file",
+                &edit(&guard, "original", "updated"),
+            )),
+            "",
+        ),
+        match scheduled {
+            true => reply(wire, 2, None, "edited"),
+            false => reply(wire, 2, Some(("call-verify", "verify", &json!({}))), ""),
+        },
+        reply(wire, 3, None, "verified"),
+    ];
+    for (place, scripted) in scripted.into_iter().enumerate() {
+        mount_once(
+            &server,
+            place as u8 + 1,
+            Mock::given(method("POST")).respond_with(scripted),
+        )
+        .await;
+    }
+    Mock::given(method("POST"))
+        .respond_with(reply(wire, 4, None, "welcome"))
+        .mount(&server)
+        .await;
+    let mut cfg = config(wire, &server);
+    let command = check_command(&value);
+    cfg.extra.insert(
+        "verification".into(),
+        json!({"commands": [command], "paths": [folder], "protected_paths": [guard]}),
+    );
+    cfg.extra.insert("context".into(), json!({"enabled": true}));
+    cfg.extra.insert(
+        "failure_control".into(),
+        json!({"repeat_limit": 5, "test_review_signals": true}),
+    );
+    let owner = privacy(vault, directory).await;
+    // What a person was asked to approve, with the details they were shown.
+    let asked: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+    let prompt: ApprovalPrompt = {
+        let asked = asked.clone();
+        Arc::new(move |tool, _, details| {
+            asked
+                .lock()
+                .unwrap()
+                .push((tool.to_owned(), details.to_owned()));
+            ApprovalPromptResult::Approve
+        })
+    };
+    let session = build(&cfg, directory, Some(&owner), None, activity, |extras| {
+        extras.verification = true;
+        extras.context_compilation = true;
+        extras.failure_controls = true;
+        extras.task_workflow = true;
+        extras.approval_prompt = Some(prompt);
+    })
+    .await
+    .unwrap_or_else(|| panic!("the configured controllers are built on {wire}"));
+    // The session keeps the original controllers, as any session does.
+    assert!(session.verification.is_some() && session.controls.is_some());
+    let view = session.privacy_view.as_ref().unwrap();
+    let typed = format!("Fix the value for {EMAIL}.");
+    let TurnResult::Done(output) = view.turn(&session.agent, &typed).await.unwrap() else {
+        panic!("the turn finishes on {wire}");
+    };
+    assert_eq!(output.final_text(), "verified", "{wire}");
+
+    // The record is exact: the input as typed, both edits, the call for the
+    // check, the check's real result and the answer that followed it. A
+    // scheduled check comes after the model's answer, in the agent's own
+    // message with the call the controller directed.
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    let carrier = messages.len() - 3;
+    assert_eq!(
+        carrier,
+        if scheduled { 6 } else { 5 },
+        "{wire}: {messages:?}"
+    );
+    assert_eq!(messages[0], Msg::user(typed.clone()));
+    let check = match &messages[carrier] {
+        Msg::Assistant {
+            content,
+            tool_calls,
+        } => {
+            if scheduled {
+                assert_eq!(content, "Running the declared completion check.");
+            }
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].name, "verify");
+            assert_eq!(tool_calls[0].args, json!({}));
+            tool_calls[0].id.clone()
+        }
+        other => panic!("the call for the check is recorded on {wire}: {other:?}"),
+    };
+    let Msg::Tool {
+        tool_call_id,
+        content: evidence,
+        is_error,
+    } = &messages[carrier + 1]
+    else {
+        panic!("the check's result is recorded on {wire}");
+    };
+    assert_eq!(tool_call_id, &check);
+    assert!(!is_error, "{wire}: {evidence}");
+    // The real command, its real status and its real output, which quotes
+    // the source it checked.
+    assert!(
+        evidence.starts_with(&format!(
+            "Verification passed.\nCheck: {}\nExit: 0\n",
+            check_command(&value)
+        )) && evidence.contains(&format!("checked value: fixed for {PHONE}\n")),
+        "{wire}: {evidence}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join(&value)).unwrap(),
+        format!("fixed for {PHONE}")
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join(&guard)).unwrap(),
+        format!("guard updated for {PHONE}")
+    );
+
+    // A person was asked three times: for each edit, and for the check with
+    // the protected file as it really was and is. Nothing was waived.
+    let asked = asked.lock().unwrap().clone();
+    let tools: Vec<&str> = asked.iter().map(|(tool, _)| tool.as_str()).collect();
+    assert_eq!(tools, ["edit_file", "edit_file", "verify"], "{wire}");
+    let review = &asked[2].1;
+    assert!(
+        review.contains(&format!("Protected file: {guard}"))
+            && review.contains(&format!("guard original for {PHONE}"))
+            && review.contains(&format!("guard updated for {PHONE}")),
+        "{wire}: {review}"
+    );
+
+    // The controllers kept their own bookkeeping, and only that, beside the
+    // record: the context record with the input as typed, and the stamp of
+    // the failure controls.
+    let custom = session.agent.state.lock().unwrap().custom.clone();
+    let mut keys: Vec<&str> = custom
+        .keys()
+        .map(String::as_str)
+        .filter(|key| key.starts_with("_craftsman_"))
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["_craftsman_context_v1", "_craftsman_failure_input_v1"],
+        "{wire}"
+    );
+    assert_eq!(
+        custom["_craftsman_context_v1"]["initial_input"]["text"],
+        json!(typed)
+    );
+    let observed: Vec<&str> = custom["_craftsman_context_v1"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["selector"].as_str().unwrap())
+        .collect();
+    assert_eq!(observed, [value.as_str(), guard.as_str()], "{wire}");
+
+    // The agent's own events: one accepted input for the installed
+    // controller and, for a scheduled check, one call the installed
+    // completion controller scheduled. Every recorded message has its
+    // source, the agent's message for that call included.
+    assert_eq!(session.agent.actual_boundary_inputs().unwrap().len(), 1);
+    let hosted = session.agent.actual_host_scheduled_calls().unwrap();
+    assert_eq!(hosted.len(), usize::from(scheduled));
+    if scheduled {
+        assert_eq!(hosted[0].call().id, check);
+    }
+    let sources = session.agent.recorded_sources().unwrap();
+    assert_eq!(sources.len(), messages.len());
+    assert!(sources.iter().all(Option::is_some), "{wire}");
+    // A scheduled call ran as that and has no operation of a reply. A call
+    // the model asked for has the operation of its reply.
+    let result = owner
+        .actual_result(sources[carrier + 1].as_ref().unwrap())
+        .expect("the check's result has its record");
+    assert_eq!(result.tool(), "verify");
+    assert_eq!(result.reached().len(), 1);
+    assert_eq!(result.operation().is_none(), scheduled);
+    // The agent's own event for a scheduled call is accepted once, by the
+    // conversation it was scheduled in, and by no other.
+    if scheduled {
+        use craftsman_harness::provenance::ModelViewBoundary;
+        assert!(
+            view.boundary()
+                .observe_host_scheduled(&hosted[0])
+                .await
+                .is_err()
+        );
+        let other = privacy(vault, directory).await;
+        let foreign = other.boundary(&[]).unwrap();
+        assert!(foreign.observe_host_scheduled(&hosted[0]).await.is_err());
+        assert!(owner.check().is_ok() && other.check().is_ok());
+    }
+
+    // Nothing private left the process in any request.
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 4, "{wire}");
+    for body in &requests {
+        assert!(!body.contains(EMAIL) && !body.contains(PHONE), "{wire}");
+        // Every request carries the context section with the first input
+        // quoted as its own view, and the note of declared verification.
+        assert!(body.contains("Task context from earlier user inputs"));
+        assert!(body.contains("Initial request (event 1):"), "{wire}");
+        assert!(body.matches("Fix the value for ").count() >= 2, "{wire}");
+        assert!(body.contains("Declared verification is enabled."));
+        // Digests and sizes of recorded text are no part of that section.
+        assert!(!body.contains("original_bytes") && !body.contains("result_digest"));
+    }
+    // After the first edit the section names the path as the call wrote it.
+    assert!(!requests[0].contains("File observations"));
+    assert!(requests[1].contains("File observations") && requests[1].contains(" | edit | "));
+    // The request after the check holds the call for it and the check's
+    // result as a view: the real output with the number replaced.
+    let after = &requests[3];
+    assert_eq!(
+        after.contains("Running the declared completion check."),
+        scheduled
+    );
+    assert!(after.contains(&check) && after.contains("verify"), "{wire}");
+    assert!(after.contains("Verification passed.") && after.contains("checked value: fixed for "));
+    for earlier in &requests[..3] {
+        assert!(!earlier.contains("Verification passed."));
+    }
+    assert!(owner.check().is_ok(), "{wire}");
+
+    // The conversation continues: a second input is accepted by the same
+    // controller and quoted beside the first.
+    let TurnResult::Done(output) = view.turn(&session.agent, "Thanks.").await.unwrap() else {
+        panic!("the second turn finishes on {wire}");
+    };
+    assert_eq!(output.final_text(), "welcome");
+    assert_eq!(session.agent.actual_boundary_inputs().unwrap().len(), 2);
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 5);
+    let last = requests.last().unwrap();
+    assert!(
+        last.contains("Initial request (event 1):") && last.contains("Recent user input (event")
+    );
+    assert!(!last.contains(EMAIL) && !last.contains(PHONE));
+    assert!(owner.check().is_ok(), "{wire}");
+    assert!(
+        !activity
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.starts_with("This private conversation ")),
+        "{wire}"
+    );
+    session.lsp.shutdown().await;
+}
+
 /// Selections that are refused before a session exists, each with its
 /// typed reason for the host that made the selection.
 async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
@@ -1726,8 +2298,10 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
         Some(BuildRefusal::Ended)
     );
 
-    // A caller's thread id, a separate guard, a requested part that must not
-    // be left out, and an owner that ended after the selection was made.
+    // A caller's thread id, a separate guard, and an owner that ended after
+    // the selection was made. Declared verification, context compilation and
+    // failure controls are requested parts that have their adapters now: the
+    // `controls` case builds and runs them, and they are not refused here.
     let other = privacy(vault, directory).await;
     let guard = other.send_guard();
     type Alter = Box<dyn FnOnce(&mut SessionExtras)>;
@@ -1741,21 +2315,6 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
             None,
             Box::new(move |extras| extras.send_guard = Some(guard)),
             BuildRefusal::NotFresh,
-        ),
-        (
-            None,
-            Box::new(|extras| extras.verification = true),
-            BuildRefusal::RequestedPart,
-        ),
-        (
-            None,
-            Box::new(|extras| extras.context_compilation = true),
-            BuildRefusal::RequestedPart,
-        ),
-        (
-            None,
-            Box::new(|extras| extras.failure_controls = true),
-            BuildRefusal::RequestedPart,
         ),
     ];
     for (thread, alter, expected) in cases {
@@ -1780,7 +2339,7 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
         .is_none()
     );
     assert_eq!(report.refusal(), Some(BuildRefusal::Ended));
-    assert_eq!(count(fixed), 6);
+    assert_eq!(count(fixed), 3);
     // None of them ended the conversation that was offered.
     assert!(owner.check().is_ok());
 
@@ -1818,6 +2377,25 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
     assert_eq!(report.refusal(), None);
     built.lsp.shutdown().await;
     assert!(owner.check().is_ok());
+
+    // The three parts a terminal always requests are not refused either.
+    // With nothing declared for them in the user's settings there is no
+    // controller to install, exactly as in an ordinary session.
+    let requested = privacy(vault, directory).await;
+    let selected = selected_by_policy(&requested);
+    let report = selected.report();
+    let built = build(&cfg, directory, None, None, activity, |extras| {
+        extras.privacy_view = Some(selected);
+        extras.verification = true;
+        extras.context_compilation = true;
+        extras.failure_controls = true;
+    })
+    .await
+    .expect("the requested parts are built");
+    assert_eq!(report.refusal(), None);
+    assert!(built.verification.is_none() && built.controls.is_none());
+    built.lsp.shutdown().await;
+    assert!(requested.check().is_ok());
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
@@ -1885,6 +2463,39 @@ async fn actual_builder_runs_a_selected_privacy_conversation_on_the_chat_wire() 
     let error = std::str::from_utf8(&output.stderr).unwrap();
     assert!(output.status.success(), "{error}");
     assert_eq!(error.lines().filter(|line| *line == DONE).count(), 1);
+}
+
+async fn run_marked(mode: &str) {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(temp.path().join("config")).unwrap();
+    let output = run_fixture(&[format!("{MARKER}{mode}")], &workspace, temp.path()).await;
+    assert!(output.stdout.len() <= 65536 && output.stderr.len() <= 65536);
+    let error = std::str::from_utf8(&output.stderr).unwrap();
+    assert!(output.status.success(), "{error}");
+    assert_eq!(error.lines().filter(|line| *line == DONE).count(), 1);
+}
+
+#[tokio::test]
+async fn actual_builder_runs_context_and_failure_controls_in_a_privacy_conversation_on_four_wires()
+{
+    run_marked("controls").await;
+}
+
+#[tokio::test]
+async fn actual_builder_runs_declared_verification_in_a_privacy_conversation_on_four_wires() {
+    run_marked("verification").await;
+}
+
+/// The check the verification controller schedules itself, after the
+/// model's answer. On an agent with a source view the framework closes the
+/// turn's window before its completion check and then refuses the call it
+/// scheduled; until that is corrected in the framework this case fails
+/// there, before any effect of the check.
+#[tokio::test]
+async fn actual_builder_runs_the_check_the_verification_controller_schedules_on_four_wires() {
+    run_marked("scheduled").await;
 }
 
 /// Everything a child wrote to the terminal it was started on: a newly

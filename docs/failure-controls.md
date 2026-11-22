@@ -68,3 +68,8 @@ Source: `src/failure_control/`, `src/agent_controls.rs`, the optional framework
 boundary owner and the existing verification/snapshot adapters. Tests use actual
 loop, tool, HTTP/file/checkpoint and UI events; native conformance and selected
 live checks remain separate from a full performance evaluation.
+
+In a privacy conversation, which nothing selects yet, the same governor runs
+behind a private adapter of its controller: its observations, input stamp,
+advisory and pause are unchanged, and the advisory is sent as fixed text. See
+[privacy-provenance.md](privacy-provenance.md#controller-adapters).

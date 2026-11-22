@@ -52,7 +52,7 @@ not detection of everything a model writes or of opaque provider content.
 | Compaction: automatic, and manual or idle through a typed entry | private explicit summary projection, actual stage/commit witnesses and retained native items for unchanged moved replies; see "Compaction" below |
 | Session builder selection and typed session entries | private full ordinary component set; no limited-set constructor. Actual policy/frontend selection remains absent; configured unsupported components refuse; see below |
 | Delegated agents with `task`, notifications and inbox | private actual child/parent/retained-envelope adapters; task returns retain real partial state and facts |
-| Verification, context and failure controls | selected activation remains refused; genuine control helpers are provided for complementary adapters |
+| Verification, context and failure controls | private adapters around the original controllers, installed by the session builder; context and failure controls and a check the model asks for run in built sessions on all four wires. A check the verification controller schedules itself is still refused by the framework on the current base; see "Controller adapters" below |
 | Sealed parked-call human decisions | private registered input producer; actual decision and raw edit retained, no caller action factory |
 | Decisions inside the approval gate; `ask_user` answers as drafts | producer adapters not implemented |
 | Terminal ingress, `/clear` | not implemented |
@@ -150,8 +150,8 @@ those objects and sources in `ActualControllerBindings`, and the selected host
 must validate its private issuer and exact installed object before input/save
 or custom mutation. `validate_controller_sources` defaults to refusal for any
 controller. Declaration and `Some(SourceRef)` are feasibility only. The
-unadapted helper remains refused, while the application keeps RequestedPart
-holds until its real original-controller adapters are wired and reviewed.
+unadapted helper remains refused. The application's adapters for its original
+controllers are described under "Controller adapters" below.
 
 **Approvals.** A parked call is resumed only through
 `resume_with_view(action, deny_default, decision)`. The boundary checks the
@@ -499,8 +499,13 @@ refuses:
 
 - a caller's thread id, a separately selected guard, the prepared headless
   runtime and an owner that has already ended;
-- a request for verification, context controls, failure controls or script
-  capture whose source adapter is still unavailable.
+- a request for a script capture, whose source adapter is still unavailable.
+
+Declared verification, context compilation and failure controls are no longer
+refused at this point. Their controllers are made from the user's settings as
+for any session and installed behind the conversation's adapters; if one of
+them cannot be installed that way, the build is refused then, with the same
+typed reason. None is ever left out.
 
 Then it:
 
@@ -524,7 +529,8 @@ Then it:
 
 Today the statement exists for the approval gate, the result size limit, the
 protected call repair, the todo list, memory, the todo reminders, compaction,
-the task workflow notes, workspace checkpoints and the delegated agents. With
+the task workflow notes, workspace checkpoints, the delegated agents and the
+middlewares of the verification, context and failure controllers. With
 the ordinary configuration that is every installed part, so a selection made
 from a policy builds the session with all of them: the same tools, the same
 system text and the same delegated agents as an ordinary session. The builder
@@ -532,9 +538,9 @@ has no way to leave a part out. The earlier test-only selection that left
 parts out and named them is gone.
 
 The model-visible gadget runtime has a source path too; see "Gadget runtime".
-Verification, context and failure controls and a script capture have none. A
-frontend asks for those explicitly, and a selection that does is refused
-before anything is built. If a middleware without a statement were installed
+A script capture has none. A frontend asks for it explicitly, and a selection
+that does is refused before anything is built. If a middleware without a
+statement were installed
 some other way, for the root agent or for a delegated agent, the build would
 be refused and would name it.
 
@@ -708,7 +714,7 @@ How each normal component runs on a selected agent today.
 | Host tools | a result is the tool's own raw text. Three outcomes repeat a string of the call's arguments and say so piece by piece: `write_file` and `edit_file` the path, with any language diagnostics as host text after it, and `glob` the pattern it found nothing for. The piece is bound to the reply that asked for the call only if the call ran as that reply wrote it. The gate around a delegated agent's tools passes the statement through |
 | Compaction | tracked: same trigger, split and record as the ordinary compaction; see "Compaction" |
 | Delegated agents, notifications, inbox | tracked: a lane per agent, the description and messages as text of the call, results and notifications with the source of what the agent ended with; see "Delegated agents" |
-| Verification, context and failure controls | **no path**; a selection that asks for one is refused |
+| Verification, context and failure controls | the original controllers behind the conversation's adapters; see "Controller adapters". The context section is added as parts, the failure advisory and the verification note as fixed text, and each controller writes only its own keys of the custom state |
 | Gadget runtime and catalog | tracked: the update as a host note of parts; see "Gadget runtime" |
 | Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |
 
@@ -742,15 +748,115 @@ How each normal component runs on a selected agent today.
   output, a file's content, a web page, an MCP result or a gadget's output
   that holds a placeholder this conversation issued is refused, and the
   conversation ends, even when the tool only echoed what the model wrote.
-- The verification, context and failure controls are not adapted. The
-  completion check makes the agent write a call of its own and dispatch it,
-  which needs the framework's witness of a host-scheduled call; the context
-  compiler builds its text from recorded inputs and file observations, which
-  need the sources of those inputs and not their recorded text; the failure
-  governor stops a turn through the boundary policy, which a selected agent
-  still refuses.
+- A check the verification controller schedules itself does not run yet on
+  an agent with a source view: the framework closes the turn's window before
+  its completion check and then refuses the call it scheduled. A stop by that
+  controller leaves a note of the framework without a source, which ends the
+  conversation at its next entry, and a manual compaction does not tell the
+  context and failure controller. All three are the framework's; see
+  "Controller adapters".
 - Vault capacity is fixed at 128 conversations that hold a value, 512 values
   each and 4096 in total, with no retention.
+
+
+## Controller adapters
+
+A session can be configured with declared verification, context compilation
+and failure controls. Their controllers are the session's own objects: the
+verification controller with its captured plan, commands, scopes and protected
+paths, and the context and failure controller with its governor. For a privacy
+conversation the builder makes exactly these objects from the user's settings,
+as for any session, and installs them on the agent behind two adapters of the
+conversation. The session keeps the original objects, and the approval gate
+and the `verify` tool use them directly, as always.
+
+**What is accepted.** An adapter is made for the boundary of the
+conversation's root agent, once, before that agent is built, while the
+conversation is live. The boundary keeps the adapter and hands the agent a
+source that is the adapter's own object. Before any typed entry the framework
+shows the boundary the controllers its builder really installed, and the
+boundary accepts the agent only if they are the very adapters it holds, each
+with the source it was made with, on its own agent. An original controller
+without an adapter, another conversation's adapter, another object that states
+the same and hands out the adapter's source, an agent built without an adapter
+that was made, and an adapter that no longer exists are all refused before the
+input is recorded, saved or sent, and before any controller is called. A
+conversation without controllers needs none.
+
+**Accepted input.** The original controller's callback for an accepted input
+runs only for the agent's own event of that input: an event of this agent,
+issued for this installed adapter, still in its callback, taken once, for a
+retained input whose source is text this conversation admitted for exactly the
+recorded message at that place. The original then sees a state that holds
+that one message and its own bookkeeping keys, and nothing else of the record.
+Only those keys are written back, also when the original refuses the input
+after recording it, as the ordinary callback keeps them. If it changed
+anything else, nothing is written and the input is refused. The keys are the
+context record and, with failure controls, the input stamp; nothing is read
+from them as a source. An event after its callback, another conversation's
+event, and the entry without an event are refused, and the original is not
+reached.
+
+**Context.** The observer, the compiler, the request shape report and the
+compaction wrapper have statements and tracked hooks. The record under the
+controller's key is the same as in any session, with the input as typed. The
+section the model is given is made of parts:
+
+- the guidance, headings, counters and observation facts are the
+  application's fixed text;
+- an input is quoted whole from the source the boundary gave at its
+  accepted-input event, so it is seen as the input itself is seen;
+- a todo is the text of the call that stored it;
+- a file path is the text a call of a committed reply wrote, found through
+  the agent's retained event for that reply.
+
+An entry whose text has no such source is left out and counted. Digests and
+sizes of recorded text are not part of this section. The byte limit applies
+to the text as recorded, and whole entries are left out in the ordinary
+section's order. The sources are kept in memory, within bounds; a value of
+the custom state selects which recorded entry is listed and is never the
+origin of its text. File observations stay historical and uncertain and give
+no right to read anything. A registered file tool that stands behind the
+conversation's own file wrapper is trusted as the builtin it wraps, by being
+the object the builder put in its place.
+
+**Failure controls.** The governor observes the same tool outcomes; its
+observer leaves the record alone, which the agent checks on every dispatch.
+The advisory after repeated identical errors is the application's fixed text.
+The input stamp is one of the controller's own keys. A pause is the
+controller's own stop at the boundary and is unchanged. The structural notes
+about protected tests are part of the review a person is shown; they are not
+sent to a model.
+
+**Verification.** The verification note is fixed text. A check the model asks
+for runs as any call of a reply: the gate shows a person the protected
+changes as they really are, the real commands run in the session's own
+runner, and the recorded result is the real output with its real exit
+status. The model is given that result as the view of its admitted text.
+A check the controller schedules is the agent's own event: the boundary
+gives a source for the agent's message only for the completion adapter it
+holds, with that adapter's source, for the one check the original controller
+directed last, once, when the message is the agent's retained carrier of
+exactly that call and the call's arguments are structure only. The call then
+runs as that schedule and as no reply's operation.
+
+**Not yet, on the current base.** These are the framework's, and the
+application cannot supply them:
+
+1. An agent with a source view closes the turn's window at the end of the
+   round, before its completion check, and then refuses the call the check
+   schedules ("This selected invocation has no live turn."). A scheduled
+   check therefore fails before any effect of the check. The fixture for it
+   is kept and fails on this base.
+2. A stop by the completion controller appends the framework's fixed note
+   without an event, so the note has no source and the conversation ends at
+   its next entry.
+3. A manual or idle compaction through the typed entry does not call the
+   controller's compaction callback, so the context record and the governor
+   are not told. Automatic compaction goes through the wrapper and tells
+   them.
+
+Nothing here is selected by a frontend, and normal sessions are unchanged.
 
 
 ## Core event corrections — November 22, 2026

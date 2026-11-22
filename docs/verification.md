@@ -178,3 +178,9 @@ long command/path details. The review order and paged display correct that
 usability defect; the failed capture and subsequent native proof remain separate
 under `target/verification/verification-gate/`. No unchanged broad CI retry or
 weakened existing deadline/assertion counts as correction evidence.
+
+In a privacy conversation, which nothing selects yet, the same controller is
+installed behind a private adapter. A check the model asks for runs unchanged
+and the model is given the view of its real result. A check the controller
+schedules itself is still refused by the framework for such a conversation.
+See [privacy-provenance.md](privacy-provenance.md#controller-adapters).
