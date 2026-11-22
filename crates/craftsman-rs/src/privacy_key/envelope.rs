@@ -65,6 +65,16 @@ impl Passphrase {
     }
 }
 
+/// The key tests' own serial gate, for a fixture outside this module that
+/// derives a real key. It is the gate `test_serial` gives and nothing more:
+/// the production admission above is untouched and still answers Busy.
+#[cfg(all(test, unix, feature = "gadgets"))]
+impl Passphrase {
+    pub(crate) fn kdf_test_serial() -> std::sync::MutexGuard<'static, ()> {
+        test_serial()
+    }
+}
+
 pub(super) struct Envelope(Zeroizing<[u8; ENVELOPE_BYTES]>);
 impl fmt::Debug for Envelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
