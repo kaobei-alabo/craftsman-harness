@@ -128,6 +128,25 @@ impl GrantStore {
         }))
     }
 
+    /// A stored approval of these exact component bytes at this source. Unlike
+    /// `approved`, a grant of an earlier build at the same path does not count.
+    /// Used only by the host-selected pinned call; ordinary gadget approval and
+    /// its rebuild inheritance are unchanged.
+    pub fn approved_exact(
+        &self,
+        id: &str,
+        source: &Path,
+        hash: &str,
+        capabilities: &Capabilities,
+    ) -> Result<bool, GadgetError> {
+        Ok(self.load()?.entries.iter().any(|g| {
+            g.id == id
+                && g.source == source
+                && g.component_hash == hash
+                && capabilities.is_subset_of(&g.capabilities)
+        }))
+    }
+
     pub fn approve(
         &self,
         id: &str,

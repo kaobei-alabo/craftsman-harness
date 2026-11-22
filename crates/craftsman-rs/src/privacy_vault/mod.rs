@@ -498,6 +498,16 @@ impl HostDisplayField {
     }
 }
 
+impl Category {
+    /// Whether `value` is one complete supported original of this category
+    /// under this vault's own grammar. Pure: no session, mapping, key or IO.
+    /// A host adapter uses it to refuse a reported span before any vault
+    /// effect; it is neither a detector nor a grant.
+    pub fn admits(self, value: &str) -> bool {
+        format::validate_original(self, value).is_ok()
+    }
+}
+
 macro_rules! private_debug {
     ($($type:ty),+ $(,)?) => {$(
         impl fmt::Debug for $type {

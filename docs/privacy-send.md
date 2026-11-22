@@ -6,9 +6,11 @@ there is no configuration key, command, frontend option, key source, detector
 run, masking, restoration or hook registration. Normal sessions behave exactly
 as before, and privacy remains inactive.
 
-Its source has a source-scoped independent acceptance and one passing full
-local run on macOS, described under [Evidence](#evidence). It has no hosted
-run, is not merged to main and is not installed.
+Its source has a source-scoped independent acceptance and passing full local
+runs on macOS, described under [Evidence](#evidence). It is merged to main
+under PR #33 as `a903af65`. That PR's hosted run and the separate run on the
+merged main each passed all four contexts in both native modes, and that main
+is installed locally. Nothing selects the guard in the installed build.
 
 This is one slice of the work described in [privacy hooks](privacy-hooks.md).
 It builds on the [private vault](privacy-vault.md). It is a separate candidate
@@ -84,11 +86,15 @@ The guard refuses when an admitted original appears in any of these forms:
 1. **In the final bytes.** A contiguous run anywhere in the encoded body:
    string values, object keys, numbers and tool definitions.
 2. **In the decoded structure.** Inside any decoded JSON string of the body,
-   under any standard JSON escaping. Strings that are themselves complete JSON
-   documents are decoded too, down to four documents below the body. This
-   covers tool-call arguments that the Chat and Responses wires carry as a JSON
-   string, including escapes such as `\u0040` for `@` that a provider may have
-   written.
+   under any standard JSON escaping. A string that carries an escape is decoded
+   and checked; if its decoded text is itself a complete JSON document, that
+   document is parsed and walked too, down to four documents below the body.
+   This covers tool-call arguments that the Chat and Responses wires carry as a
+   JSON string, including escapes such as `\u0040` for `@` that a provider may
+   have written. A string with no escape gets no further walk: it is a verbatim
+   run of bytes that form 1 already checked, it cannot hold a quoted string,
+   and an array or number written inside it is not parsed as an embedded
+   document.
 3. **In the request's own text nodes** (native transports). The system prompt
    and each message's text are checked before encoding. This catches a visible
    answer that a provider's replayed item splits across several parts.
@@ -109,10 +115,14 @@ The guard refuses, rather than passes, a body it cannot check:
 | Body is not exactly one JSON value, or is not UTF-8 | unsupported |
 | Body larger than 4 MiB | bounds |
 | Request text nodes supplied with the body larger than 4 MiB, counting one byte per node | bounds |
-| More than 96 open JSON containers, summed across embedded documents | bounds |
-| A fifth embedded JSON document below the body | bounds |
+| More than 96 open JSON containers in the decoded walk, summed across the body and the embedded documents it parses | bounds |
+| A fifth parsed embedded JSON document below the body | bounds |
 | More than 128 MiB of counted work for one verification (see below) | bounds |
 | More than 512 originals, or 256 KiB of originals in total | bounds, and the guard closes |
+
+The container and embedded-document limits count only what the decoded walk
+parses. Content inside a string with no escape is not parsed, so it adds
+nothing to either count; its bytes are covered by form 1.
 
 ## What the work ceiling counts
 
@@ -271,13 +281,19 @@ implementation files are identical to `38da30b`.
 merges this guard with `7fca3d9`. No guard source or test file and no
 foundation implementation file differs from its reviewed side; only documents
 were reconciled and updated. The acceptance stays bound to `70d4b0e` and the
-full local run to `38da30b`. Any local run of the later merge is recorded with
-its own head in the directory named below; none is stated here.
+full local run to `38da30b`. That later merge, `2c53d48`, has its own
+independent source-scoped acceptance of the combined implementation, and the
+unchanged script passed once on it on macOS: 17 of 17 checks, core 2208 passed
+and 36 ignored, gadgets 2532 passed and 48 ignored. A further commit merges
+main `dffddeae` itself, whose tree is that of `7fca3d9`, so main is an ancestor
+and no file changes. Any local run of commits after `2c53d48` is recorded with
+its own head in the directories named below; none is stated here.
 
 **Records.** `target/verification/privacy-send-fable52/` (first candidate),
 `privacy-send-fable52-correction/` and `privacy-send-fable52-copy-bound/`
 (corrections), `privacy-send-aligned-full17/` (alignment and the full run),
-`privacy-guard-final-alignment/` (alignment with the merged foundation source).
+`privacy-guard-final-alignment/` (alignment with the merged foundation source),
+`privacy-send-guard-ready/` (main as an ancestor and this documentation).
 
 **The guard's own cases.**
 
@@ -302,24 +318,32 @@ repeated for the corrections.
 These are synthetic, sequential tests. No detector ran, no model service was
 contacted and no paid call was made.
 
-**What has not run.**
+**Hosted runs, and what has not run.**
 
-- Linux and Windows have not run these cases. There is no hosted run of the
-  guard.
+- PR #33's hosted run
+  [44981644431](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44981644431)
+  at `4bea365` ran these cases on Linux, macOS and Windows and passed all four
+  contexts, every mandatory step and both native modes. The separate run on the
+  merged main,
+  [44985966590](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44985966590),
+  passed its independent audit at `a903af65` in the same way, and that main is
+  installed locally.
 - The foundation's earlier hosted run
   [44937824282](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44937824282)
   refused its Windows data fixture at `pe.align.section`. Its merged PR head's
   run [44973387679](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44973387679)
   passed all four contexts in both native modes. Neither ran this guard, and
   neither gives the guard coverage.
-- A separate run on main after the PR #32 merge is under independent audit and
-  is not claimed here. It does not contain this guard either.
+- The separate run on main after the PR #32 merge,
+  [44976215399](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44976215399),
+  passed its independent audit at `dffddeae`: all four contexts, every
+  mandatory step and both native modes. That main is now installed locally.
+  Its tree does not contain this guard, so neither the run nor the installed
+  build gives the guard coverage.
 - No test ran in the default voice configuration.
-- The guard is not merged to main and not installed, and no key, policy, hook,
-  masking, restoration or activation exists.
-
-Hosted validation of the guard on all four contexts in both native modes, and
-the independent main proof, remain before delivery.
+- No key, policy, hook, masking, restoration or activation exists in the
+  merged or installed source. Later private work that would use the guard is
+  local, unreviewed and not installed.
 
 ## Known gaps
 

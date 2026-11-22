@@ -7,18 +7,33 @@ main run [43821887233](https://github.com/kaobei-alabo/craftsman-harness/actions
 The private script-capture/bundle foundations are merged as PR #31 at `29349c5`;
 independent main run [44567715919](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44567715919)
 passed all four jobs, every mandatory step and both native modes. That main
-source is locally installed; public script execution and privacy hooks remain
-unselected. The context/failure continuation is recorded below. Source validation, live
+source was then installed locally; the PR #32 main described below has since
+replaced it. Public script execution and privacy hooks remain unselected. The
+context/failure continuation is recorded below. Source validation, live
 coding results and published releases are separate evidence.
 
 PR #32's private privacy foundations are merged as `dffddeae`, with the same
 tree as its reviewed head 7fca. That head's run
 [44973387679](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44973387679)
 passed all four contexts, every mandatory step and both native modes, including
-both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents. A
-separate run on main, 44976215399, is under independent audit and is not
-claimed here; that main is not installed. Normal privacy remains inactive and
-unselected, and the private send guard is not part of that merge.
+both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents. The
+separate run on main,
+[44976215399](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44976215399),
+passed its independent audit at `dffddeae`: all four contexts, 68 of 70 steps
+with the two skips being the Linux-only voice package step on Windows and
+macOS, all 156 test groups in both native modes, and the same two Windows
+parents. Windows keeps its 17 earlier Rust warnings and adds none. That main is
+now the locally installed source. The installed build contains the private
+foundations and selects none of them. Normal privacy remains inactive and
+unselected. The private send guard was not part of that merge. It is merged
+separately under PR #33 as `a903af65`, after that PR's run
+[44981644431](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44981644431)
+at `4bea365` passed all four contexts, every mandatory step and both native
+modes. The separate run on that main,
+[44985966590](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44985966590),
+passed its independent audit at `a903af65` in the same way, and that main is now
+the locally installed source. Nothing in it selects the guard. The later
+private admission and source-view work is local, unreviewed and not installed.
 
 The earlier failed runs remain recorded. Native run
 [44891734880](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44891734880)
@@ -35,8 +50,8 @@ without changing acceptance. Its new CreateFileW security pointer/NULL match
 the existing declaration; that warning is separate from the unknown PE refusal.
 Those changes and the later fixture diagnostics and fixed options are part of
 the merged head; [privacy-hooks.md](privacy-hooks.md) keeps each dated run. The
-independent main proof remains pending; normal privacy and OS containment are
-not claimed.
+independent main proof for that merge has passed, as stated above; normal
+privacy and OS containment are not claimed.
 
 The [harness plan](craftsman-harness-plan.md) retains its explicitly historical
 October 16 baseline and target architecture. Feature docs retain the relevant
@@ -150,8 +165,11 @@ are not proof of OS containment or blocking-worker quiescence.
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations merged under PR #32; normal sessions inactive | Merged as `dffddeae` with the tree of reviewed head 7fca. PR run44973387679 at 7fca passed all four contexts, every mandatory step and both native modes; both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents passed with the unchanged 16-byte check. That pass covers its selected tools and exact operation only; the producer of the earlier extra 24-byte header and any general effect of `/EMITVOLATILEMETADATA:NO` are not established. Separate main run44976215399 is under independent audit and is not claimed; that main is not installed. Earlier failed runs are retained: ac17/44937824282 (`pe.align.section`), 56aa/44949456781 (VirtualSize 40) and 61ac/44957234452 (two Windows `Vault::open` Deadline unwraps, the 40-against-16 refusal, one macOS closed-stdout observer status, skipped post steps; causes unknown). Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
-| Private send guard | Private, default-absent refusal seam at both model send sites; unselected | Refuses final request bytes that contain originals already held by real vault mapping records. No configuration, frontend, key source, detector, masking, restoration or activation. A separate candidate, not part of merged PR #32. Guard source `70d4b0e` has a source-scoped independent acceptance. Merged with the earlier fixture foundation `ac17c4d` as `38da30b`, the unchanged `scripts/verify.sh` passed once on macOS: 17 of 17 checks, the default voice build build-checked only, and both no-default-feature test modes (core 2208 passed/36 ignored, gadgets 2527/48, 26 groups each, no compiler warnings). That run belongs to `38da30b`, not to later commits. A later local merge with the final foundation source 7fca changes no guard or foundation implementation file; any local run of that merge is recorded with its own head, and none is stated here. No Linux, Windows or hosted run covers the guard; the foundation's passing PR run 44973387679 ran a tree without the guard and gives it no coverage. Not merged to main or installed. Concurrency, charge propagation and the copy bound remain source-only, and key, policy, hook, masking, restoration and activation remain separate work. See [privacy-send.md](privacy-send.md) |
+| Privacy hooks | Private foundations merged under PR #32; normal sessions inactive | Merged as `dffddeae` with the tree of reviewed head 7fca. PR run44973387679 at 7fca passed all four contexts, every mandatory step and both native modes; both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents passed with the unchanged 16-byte check. That pass covers its selected tools and exact operation only; the producer of the earlier extra 24-byte header and any general effect of `/EMITVOLATILEMETADATA:NO` are not established. Separate main run44976215399 at `dffddeae` passed its independent audit: all four contexts, 68 of 70 steps with two Linux-only skips, all 156 groups, 17 retained Windows warnings and none new, both original Windows parents. It covers the foundation only. That main is installed locally; the installed build selects no privacy and contains no guard. Earlier failed runs are retained: ac17/44937824282 (`pe.align.section`), 56aa/44949456781 (VirtualSize 40) and 61ac/44957234452 (two Windows `Vault::open` Deadline unwraps, the 40-against-16 refusal, one macOS closed-stdout observer status, skipped post steps; causes unknown). Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
+| Private send guard | Private, default-absent refusal seam at both model send sites; unselected | Refuses final request bytes that contain originals already held by real vault mapping records. No configuration, frontend, key source, detector, masking, restoration or activation. Not part of PR #32; merged under PR #33 as `a903af65` with the tree of `4bea365`. Guard source `70d4b0e` has a source-scoped independent acceptance. Merged with the earlier fixture foundation `ac17c4d` as `38da30b`, the unchanged `scripts/verify.sh` passed once on macOS: 17 of 17 checks, the default voice build build-checked only, and both no-default-feature test modes (core 2208 passed/36 ignored, gadgets 2527/48, 26 groups each, no compiler warnings). That run belongs to `38da30b`, not to later commits. A later local merge with the final foundation source 7fca changes no guard or foundation implementation file; any local run of that merge is recorded with its own head, and none is stated here. PR #33's hosted run 44981644431 at `4bea365` passed all four contexts, every mandatory step and both native modes with the guard's cases; the foundation's earlier runs ran trees without the guard. The separate run on the merged main, 44985966590, passed its independent audit at `a903af65` the same way, and that main is installed locally; nothing in it selects the guard. Concurrency, charge propagation and the copy bound remain source-only, and key, policy, hook, masking, restoration and activation remain separate work. See [privacy-send.md](privacy-send.md) |
+| Private admission core | Private detector contract with a narrow host floor, source-pinned detector call and one-conversation admission owner; unselected | Local, unmerged, not installed. The pinned call reaches a user-level source by handle without following a link, requires regular single-link files, both file hashes, no capability and a stored grant for the exact bytes before any compile, describe or run, and returns the reply bytes unchanged; ordinary gadget approval is unchanged. An admitted node exists only after the vault's commit of one actual raw capture, including a commit that found nothing, and the send guard's admission. Raw text with an issued placeholder is refused; every detector, vault or guard failure stops the session; stored history is not changed. The conversation binding reserves the application's own fresh thread id, but the session builder does not consume it yet. No producer, provider, tool, approval, display, file, key, policy or activation wiring; no Linux, Windows or hosted run. See [privacy-admission.md](privacy-admission.md) and [privacy-provenance.md](privacy-provenance.md) |
+| Source view boundary | Optional, default-absent framework boundary; unselected | Local, unmerged, not installed. An agent built without it runs its existing paths. With it, the agent takes turns, steering and approval decisions only through typed entries, keeps one opaque host source beside each recorded message, composes each request from sources through a provider method that defaults to refusal, asks the boundary before every call runs, and records the source of a reply, a tool result or a message it appended itself only after the real one is committed. A middleware runs only if its author stated that it leaves recorded messages and system text alone, and the agent checks that after every hook phase. Recorded input, results, replies, usage, journal and checkpoints are unchanged. Boundary policies, completion checks, system text on the agent, per-round system additions, an inbox, reopening, transfer and idle compaction have no source path and are refused. See [privacy-provenance.md](privacy-provenance.md) |
+| Conversation view, Chat provider and builder selection | Private application side of the boundary for one privacy conversation, one Chat provider, and a private selection in the shared session builder; selected by nothing | Local, unmerged, not installed. Sources are minted at an actual capture, receipt or commit. A request is composed by replacing each recorded text with the view of its own source; a source that is foreign or no longer fits stops the session before a request exists. A call runs only if the last committed reply asked for exactly it or a checked human decision allowed exactly it. The provider sends the view through the existing Chat client, encoding, retry policy and send guard, and refuses recorded text and native wires. The builder selection uses the reserved thread id and the conversation's own guard, admits the built system text as one capture, keeps only the approval gate and the result size limit as middleware and names the rest, and refuses verification, context and failure controls, gadgets, a caller's thread id and native wires. Such a session has no todos, memory text, compaction, delegated agents or call repair, and its stored record is not redacted. No frontend, configuration or command makes the selection. See [privacy-provenance.md](privacy-provenance.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -486,5 +504,7 @@ restoration cases and the macOS observer case also passed; why they failed at
 61ac is still unknown. The pass covers that run's selected tools and this exact
 operation only: which tool wrote the block, what its second value means and any
 general effect of the switch remain not established. PR #32 is merged as
-`dffddeae` with the same tree. A separate run on main, 44976215399, is under
-independent audit and is not claimed here. Normal privacy remains off.
+`dffddeae` with the same tree. The separate run on main, 44976215399, passed its
+independent audit at `dffddeae`: all four contexts, every mandatory step and
+both native modes, with both original Windows parents passing again. It covers
+this foundation only. Normal privacy remains off.

@@ -11,11 +11,25 @@ non-echoing terminal ownership, activation and native validation remain pending.
 
 Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under
-PR #32. The PR head passed all four hosted contexts in both native modes; a
-separate run on main is under independent audit and is not claimed here.
+PR #32. The PR head and the separate run on the merged main each passed all
+four hosted contexts in both native modes.
 Normal Craftsman sessions do not select this hook yet. Actual key ownership,
 required-hook policy and model/file integration remain open. Existing gadget
 grants and permissions remain in force.
+
+A private [detector contract and admission core](privacy-admission.md) now
+exists as a local, unmerged slice: a source-pinned detector call on the gadget
+engine and an owner that turns one actual raw capture into an admitted node
+only after the vault's commit and the send guard's admission. It is not
+connected to any display, file, key source or policy.
+[Privacy provenance](privacy-provenance.md) records how sources and model views
+reach a request. A private path now exists for the Chat wire, from typed input
+and tool results through the framework agent and the shared session builder to
+the existing client and guard, with a limited set of parts. Nothing selects it,
+native wires are refused, and restoration, key handling and activation are not
+built. The target diagram
+below predates that contract where it shows masked history: stored history
+stays exact and the model gets a separate view.
 
 The selected behavior is to replace supported personal data before a model
 request and restore known replacements in **displayed replies and file edits**.
@@ -513,5 +527,7 @@ restoration cases and the macOS observer case also passed; why they failed at
 61ac is still unknown. The pass covers that run's selected tools and this exact
 operation only: which tool wrote the block, what its second value means and any
 general effect of the switch remain not established. PR #32 is merged as
-`dffddeae` with the same tree. A separate run on main, 44976215399, is under
-independent audit and is not claimed here. Normal privacy remains off.
+`dffddeae` with the same tree. The separate run on main, 44976215399, passed its
+independent audit at `dffddeae`: all four contexts, every mandatory step and
+both native modes, with both original Windows parents passing again. It covers
+this foundation only. Normal privacy remains off.

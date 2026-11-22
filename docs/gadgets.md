@@ -393,6 +393,17 @@ id, hash and capabilities. Rebuilds at that same source inherit a grant only
 when their capabilities are equal or narrower. Wider capabilities ask again.
 First-load "always" approval never becomes global permission bypass.
 
+A separate private call path exists for a detector that host code selects by
+id and by the SHA-256 of its component and manifest. It reads only the
+user-level source, by handle from the user configuration root and without
+following any link, requires each file to be a regular single-link file,
+refuses a project gadget of the same id, requires no declared capability and
+requires a stored grant for those exact component bytes; rebuild inheritance,
+allow-list entries and workspace trust do not count there, and it never
+prompts. It returns the guest's reply bytes unchanged. Ordinary gadget calls, approval and grants are
+unchanged, and nothing selects that path yet. See
+[privacy-admission.md](privacy-admission.md).
+
 Wasmtime is pinned to **48.0.8**, not the plan's historical48.0.5/48.0.6 pins.
 The reviewed48.x patches include the AArch64/br_table sandbox-escape fix
 (GHSA-mghf-wjfp-p5xm, fixed from48.0.7), later component/WASI fixes in48.0.8,
@@ -1005,5 +1016,7 @@ restoration cases and the macOS observer case also passed; why they failed at
 61ac is still unknown. The pass covers that run's selected tools and this exact
 operation only: which tool wrote the block, what its second value means and any
 general effect of the switch remain not established. PR #32 is merged as
-`dffddeae` with the same tree. A separate run on main, 44976215399, is under
-independent audit and is not claimed here. Normal privacy remains off.
+`dffddeae` with the same tree. The separate run on main, 44976215399, passed its
+independent audit at `dffddeae`: all four contexts, every mandatory step and
+both native modes, with both original Windows parents passing again. It covers
+this foundation only. Normal privacy remains off.

@@ -44,6 +44,19 @@ impl ModelResponse {
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, AgentError>;
+
+    /// Delivers a request composed from sources, for an agent that selected a
+    /// model view boundary. An agent without one never calls this. A provider
+    /// that does not implement it refuses: the request is not passed to
+    /// `complete`, because that would send the recorded text instead of views.
+    async fn complete_with_view(
+        &self,
+        _req: crate::provenance::TrackedModelRequest,
+    ) -> Result<crate::provenance::ModelDelivery, AgentError> {
+        Err(AgentError::Model(
+            "This provider cannot deliver a source-bound request.".into(),
+        ))
+    }
 }
 
 /// Estimates token counts for a slice of messages. Implemented by the

@@ -172,6 +172,12 @@ impl AgentMiddleware for ApprovalMiddleware {
         "hitl"
     }
 
+    /// The gate lets a call through unchanged or answers it itself. It never
+    /// touches a recorded message or the system text.
+    fn view_support(&self) -> craftsman_harness::provenance::ViewSupport {
+        craftsman_harness::provenance::ViewSupport::Preserving
+    }
+
     async fn around_tool(
         &self,
         call: ToolCall,

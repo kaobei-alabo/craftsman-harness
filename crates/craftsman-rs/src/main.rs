@@ -52,12 +52,25 @@ pub mod privacy_key;
 pub mod privacy_policy;
 #[doc(hidden)]
 pub use tui::privacy_unlock;
+// Private detector contract and pinned source call; nothing selects them.
+#[doc(hidden)]
+pub mod privacy_hook;
+// Typed entries of a session built for a privacy conversation; nothing calls them.
+#[doc(hidden)]
+pub mod privacy_entry;
+// Private source-view Chat provider, constructed only for a private selection
+// that no frontend, configuration or CLI route can make.
+#[doc(hidden)]
+pub mod privacy_provider;
 // App-binary host views only; no tool, transport, renderer or hook selects them.
 #[doc(hidden)]
 pub mod privacy_restore;
 // Private final-send guard; no CLI, configuration, frontend or hook selects it.
 #[doc(hidden)]
 pub mod privacy_send;
+// Private admission owner; no frontend, provider, tool or key source uses it.
+#[doc(hidden)]
+pub mod privacy_session;
 // Host-supplied private primitives only; no CLI, agent or hook selects them.
 // Public reachability within this binary keeps the unwired APIs typechecked.
 #[doc(hidden)]

@@ -17,7 +17,7 @@ pub mod tool;
 pub use tool::{Tool, ToolCtx, ToolErrorKind, ToolMeta, ToolOutcome};
 
 pub mod middleware;
-pub use middleware::{AgentMiddleware, Flow, MiddlewareChain, Next, ToolNext};
+pub use middleware::{AgentMiddleware, Flow, MiddlewareChain, Next, ToolNext, ViewNext};
 
 pub mod agent;
 pub use agent::{Agent, AgentBuilder, AgentIdentity, TurnOutput, TurnResult};
@@ -27,6 +27,12 @@ pub use completion::{CompletionAction, CompletionAfterCheck, CompletionCheck};
 
 pub mod boundary;
 pub use boundary::{AgentBoundaryPolicy, HumanInputKind, ModelBoundaryAction};
+
+pub mod provenance;
+pub use provenance::{
+    FrameworkCommit, ModelDelivery, ModelViewBoundary, ObservedToolResult, ReachedTool, SourceRef,
+    TrackedModelRequest, ViewSupport,
+};
 
 pub mod interrupt;
 pub use interrupt::{HitlAction, HitlRequest, Suspension, SuspensionFrame};
