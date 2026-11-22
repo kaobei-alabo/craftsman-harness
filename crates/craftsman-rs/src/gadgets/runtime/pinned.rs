@@ -194,6 +194,26 @@ impl Anchored {
     }
 }
 
+/// Blocking work of the pinned path, run on the runtime's blocking pool and
+/// awaited. Every use goes through one erased closure and result type, so
+/// the runtime's task code is compiled once for all of them instead of once
+/// per closure. Where it runs, what is awaited and how a failure is reported
+/// are the same as a direct `spawn_blocking` of the closure.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, GadgetError> + Send + 'static,
+) -> Result<T, GadgetError> {
+    type Erased = Box<dyn FnOnce() -> Result<Box<dyn std::any::Any + Send>, GadgetError> + Send>;
+    let erased: Erased =
+        Box::new(move || work().map(|value| Box::new(value) as Box<dyn std::any::Any + Send>));
+    let value = tokio::task::spawn_blocking(erased)
+        .await
+        .map_err(io_error)??;
+    value
+        .downcast::<T>()
+        .map(|value| *value)
+        .map_err(|_| io_error("pinned blocking work returned another type"))
+}
+
 fn hash_shape(value: &str) -> bool {
     value.len() == 64
         && value
@@ -246,7 +266,7 @@ impl GadgetRuntime {
         let (bundle, bytes) = self.pinned_bundle(pin).await?;
         let grants = self.grants.clone();
         let copy = bundle.clone();
-        let granted = tokio::task::spawn_blocking(move || {
+        let granted = blocking(move || {
             grants.approved_exact(
                 &copy.manifest.id,
                 &copy.source,
@@ -254,8 +274,7 @@ impl GadgetRuntime {
                 &copy.manifest.capabilities,
             )
         })
-        .await
-        .map_err(io_error)??;
+        .await?;
         if !granted {
             return Err(GadgetError::new(
                 ErrorKind::NeedsApproval,
@@ -356,7 +375,7 @@ impl GadgetRuntime {
         let config = self.config.clone();
         let shadow = self.workspace.join(".craftsman/gadgets").join(&pin.id);
         let pin = pin.clone();
-        tokio::task::spawn_blocking(move || {
+        blocking(move || {
             match fs::symlink_metadata(&shadow) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Ok(_) => {
@@ -400,7 +419,6 @@ impl GadgetRuntime {
             ))
         })
         .await
-        .map_err(io_error)?
     }
 
     /// Compiles the bytes that were just hashed for the pin, or returns the
@@ -416,9 +434,7 @@ impl GadgetRuntime {
         }
         let engine = self.engine.clone();
         let component =
-            tokio::task::spawn_blocking(move || Component::new(&engine, bytes).map_err(wasm_error))
-                .await
-                .map_err(io_error)??;
+            blocking(move || Component::new(&engine, bytes).map_err(wasm_error)).await?;
         let mut cache = self.components.lock().unwrap();
         if cache.len() >= 16 {
             cache.clear();
