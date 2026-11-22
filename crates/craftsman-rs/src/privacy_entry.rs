@@ -216,6 +216,7 @@ impl HumanDecisionProducer {
         Self::registered(session, read, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn register_with_effect(
         session: Arc<PrivacySession>,
         read: HumanReader,
@@ -224,6 +225,7 @@ impl HumanDecisionProducer {
         Self::registered(session, read, Some(effect))
     }
 
+    #[cfg(test)]
     fn registered(
         session: Arc<PrivacySession>,
         read: HumanReader,

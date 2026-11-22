@@ -1010,7 +1010,7 @@ or ordinary callback can substitute. Full17, warning clearance, independent
 source review and native/hosted proof remain pending.
 
 
-The next canonical data slice exposes default-refusing `CapturedUserPolicy`
+The canonical data slice uses default-refusing `CapturedUserPolicy`
 methods `supported_file_data(&FileDataRequest)` and
 `retained_file_effect(&FileEffectRequest)`. Requests have no caller constructor.
 `FileDataRequest` carries the actual planned source/operation, bound workspace
@@ -1025,12 +1025,39 @@ A's captured-user provider must verify its actual current root/source/owner,
 explicit operation/application declaration and exact bound location before
 returning a validator record. For an actual final effect request,
 `bind_retained_parent(&File)` validates the retained no-follow directory against
-the operation's original parent identity. The final consumer must retain and
-use that grant for relative exclusive/no-follow creation; updates keep their
-verified held file. No fresh ambient path lookup is authorized by the grant.
+the operation's original parent identity. The final consumer calls that same
+actual selected policy for both records, checks their actual request identities,
+and rechecks the operation/source owner before any effect. A validator record
+or a supplied directory record alone cannot select user policy.
 
-This is the interface stage: no production provider is installed and the whole
-range/effect consumer is not yet wired. DATA-01/02/03 remain open until those
-consumers and A's real captured provider pass independent source/native proof.
-Actual A's live-None hold remains required; this API, direct parser checks and
-metadata do not authorize live restoration, activation or publication.
+The consumer now retains every actual selector and replacement range, including
+all nonoverlapping `replace_all` matches. The private bounded JSON index checks
+the complete before/after documents, duplicate decoded keys, value paths and
+whole escape/scalar boundaries. `ContactJsonV1` permits only root `owner` and
+`note` string values. `ContactLinesV1` permits fixed contact-note field prefixes,
+including the retained fixture's fixed task wrapper; those prefixes do not
+establish resource/application authority. The actual captured-user provider
+must still exclude configuration, credentials, schemas, instructions, skills,
+source and every unsupported application regardless of filename or extension.
+Production no longer consults the old format-only policy hook; the hook remains
+test-only compatibility/error classification. Complete actual bytes choose a
+candidate decoder, and the typed policy must validate its full images.
+
+On Unix, creates use exclusive/no-follow `openat` under the actual policy's
+retained directory. Updates use the original held file, with its exact content
+rechecked and a final regular/single-link/effective-user/non-executable metadata
+observation whose identity must equal no-follow `fstatat` of the name in that
+directory. Non-Unix effects refuse at this slice. No external-writer CAS,
+rollback, secure deletion or Windows native acceptance is claimed.
+
+Ordinary main/delegated activity receives model arguments; the decoded preview
+belongs only to the registered opaque private UI request. Production parked
+input is unregistered: ordinary tuple callbacks cannot receive restored data
+or issue human provenance. The old test-only parked fixture remains available,
+and the original delegated no-channel refusal is retained.
+
+The range/effect consumer is wired locally, but A's actual captured-provider,
+key/UI/entry/clear branch has not yet been integrated at this slice. DATA-01/02/03
+need independent combined-source and native proof; API, parser, metadata and
+local fixture checks do not authorize live restoration, activation or
+publication. A's live-None hold remains required until the real union is proved.

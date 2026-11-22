@@ -27,8 +27,9 @@ have actual agent/parent/commit witnesses in the private combined source.
 Nothing selects it: actual user policy and frontend adapters are absent, and
 configured controls and inline human adapters still refuse or
 remain unwired.
-Sealed parked-call decisions have a private registered input producer and actual
-commit/invocation witnesses. Restoration has a private path of its own: a
+Sealed parked-call decisions retain test-only registered-input primitives and
+actual commit/invocation witnesses; production has no opaque parked UI adapter
+and remains unregistered. Restoration has a private path of its own: a
 person's view of a committed reply, a hold on a streamed reply, and file writes
 and edits that are derived with the real content in the agent's own event
 before a call is reviewed, from the plan the agent issued. A gate's policy or

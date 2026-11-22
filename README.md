@@ -47,7 +47,11 @@ exist in the local correction branch. Human approval uses an opaque request,
 presentation and original reply from the registered UI; an ordinary callback,
 digest or operation-owned decision is insufficient. The file tool still runs
 its own checkpoint and diagnostics around such a write, and the terminal's
-bridge draws a committed reply once through its safe backend. Nothing selects
+bridge draws a committed reply once through its safe backend. The local file
+consumer now requires typed full-image data and retained-parent grants from
+its selected policy; ordinary activity keeps model arguments and decoded
+previews remain in the private UI. Real user-policy/UI integration and native
+proof are still pending. Nothing selects
 any of it yet: the user's policy has no owner outside test fixtures and the
 terminal has no entry for a privacy turn.
 A private [final-send guard](docs/privacy-send.md) that refuses requests

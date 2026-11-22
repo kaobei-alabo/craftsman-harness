@@ -31,6 +31,9 @@ mod deadline_tests;
 mod file_data;
 mod file_view;
 mod human;
+// Private lexical facts used by the full-image contact-data validator;
+// parser facts themselves grant no source, policy or effect authority.
+mod json_ranges;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -45,11 +48,13 @@ pub use file_data::{
     FileDataRequest, FileEffectRequest, RetainedFileEffect, SupportedDataApplication,
     SupportedFileData,
 };
+pub(crate) use file_view::authorized_write;
+#[cfg(test)]
+pub(crate) use file_view::call_to_show;
 pub use file_view::{
     DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, RestoredFileTool,
     ReviewedFile,
 };
-pub(crate) use file_view::{authorized_write, call_to_show};
 pub use human::{
     HeldStream, HumanRefusal, HumanReply, HumanReplySink, HumanText, ReplyDisplay, Streamed,
 };
@@ -401,14 +406,6 @@ impl PrivacyView {
 
     pub(crate) fn with_policy(mut self, policy: Option<Arc<dyn CapturedUserPolicy>>) -> Self {
         self.policy = policy;
-        self
-    }
-
-    pub(crate) fn with_human_source(
-        mut self,
-        source: Arc<crate::privacy_entry::HumanDecisionProducer>,
-    ) -> Self {
-        self.human_source = Some(source);
         self
     }
 

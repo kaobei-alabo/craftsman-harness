@@ -38,6 +38,7 @@
 //! other. Copied content cannot be taken back, so every check that matters
 //! for the write happens before the write. Delete and rename are untouched.
 
+use super::file_data::{DataRequest, FileDataRequest, FileEffectRequest, SupportedDataApplication};
 use super::view::{
     ApprovedOperation, ConversationBoundary, FieldPlace, PlannedOperation, SourceField,
 };
@@ -122,6 +123,58 @@ fn identity(metadata: &std::fs::Metadata) -> Option<Identity> {
     }
 }
 
+/// A final observation of the held update and the name under the policy's
+/// retained parent. This does not grant permission or prevent same-user
+/// writers from racing a subsequent write.
+#[cfg(unix)]
+fn validate_held_update(
+    file: &std::fs::File,
+    directory: &std::fs::File,
+    name: &std::ffi::OsStr,
+    bound: Option<Identity>,
+) -> Result<(), FileRefusal> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+
+    let held = file.metadata().map_err(|_| FileRefusal::Stale)?;
+    if !held.is_file()
+        || held.nlink() != 1
+        || held.uid() != unsafe { libc::geteuid() }
+        || held.mode() & 0o111 != 0
+        || identity(&held) != bound
+    {
+        return Err(FileRefusal::Stale);
+    }
+    let name =
+        std::ffi::CString::new(name.as_encoded_bytes()).map_err(|_| FileRefusal::Unsupported)?;
+    let mut named = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: directory is retained and live, name is NUL-terminated, and
+    // fstatat initializes named only on success. No link is followed.
+    let result = unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            named.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result != 0 {
+        return Err(FileRefusal::Stale);
+    }
+    // SAFETY: the successful fstatat initialized the complete stat.
+    let named = unsafe { named.assume_init() };
+    if named.st_mode & libc::S_IFMT != libc::S_IFREG
+        || named.st_nlink != 1
+        || named.st_uid != held.uid()
+        || named.st_mode & 0o111 != 0
+        || named.st_dev as u64 != held.dev()
+        || named.st_ino as u64 != held.ino()
+    {
+        return Err(FileRefusal::Stale);
+    }
+    Ok(())
+}
+
 /// What the operation held on to when it was derived.
 enum Destination {
     /// Nothing was at the path. The directory it goes into, as it was.
@@ -149,6 +202,8 @@ struct Held {
     destination: Destination,
     old: Option<Zeroizing<String>>,
     new: Zeroizing<String>,
+    data_request: FileDataRequest,
+    application: SupportedDataApplication,
 }
 
 /// One derived operation. It is made only inside a [`ReviewedFile`], from
@@ -159,8 +214,6 @@ pub struct DerivedFileOperation {
     /// The destination the operation is bound to, as the host resolved it
     /// when the operation was derived. Never the model's spelling.
     path: PathBuf,
-    format: FileDataFormat,
-    workspace: String,
     policy: Weak<dyn CapturedUserPolicy>,
     digest: [u8; 32],
     held: Mutex<Option<Held>>,
@@ -201,12 +254,17 @@ fn argument<'a>(args: &'a serde_json::Value, name: &str) -> Result<&'a str, File
 /// One content field with the values put back. Each occurrence is checked
 /// against the live record of the commit that issued its placeholder. An
 /// alias nobody validated, or one inside a longer token, refuses the field.
+struct RestoredText {
+    value: Zeroizing<String>,
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
 fn restored_field(
     format: FileDataFormat,
     whole_document: bool,
     text: &str,
     fields: &[&SourceField],
-) -> Result<Zeroizing<String>, FileRefusal> {
+) -> Result<RestoredText, FileRefusal> {
     let mut restored = Vec::with_capacity(fields.len());
     for field in fields {
         let range = field.range();
@@ -232,11 +290,82 @@ fn restored_field(
         };
         restored.push(Restored { range, original });
     }
+    let mut removed = 0usize;
+    let mut inserted = 0usize;
+    let mut ranges = Vec::with_capacity(restored.len());
+    for occurrence in &restored {
+        let length = if format == FileDataFormat::JsonDocument && whole_document {
+            serde_json::to_string(occurrence.original.as_str())
+                .map_err(|_| FileRefusal::Restore(RestoreError::Input))?
+                .len()
+                - 2
+        } else {
+            occurrence.original.len()
+        };
+        let start = occurrence
+            .range
+            .start
+            .checked_sub(removed)
+            .and_then(|n| n.checked_add(inserted))
+            .ok_or(FileRefusal::Restore(RestoreError::Bounds))?;
+        ranges.push(start..start + length);
+        removed += occurrence.range.len();
+        inserted += length;
+    }
     let format = match whole_document {
         true => format,
         false => FileDataFormat::PlainText,
     };
-    file_candidate(format, text, &restored).map_err(FileRefusal::Restore)
+    let value = file_candidate(format, text, &restored).map_err(FileRefusal::Restore)?;
+    Ok(RestoredText { value, ranges })
+}
+
+/// Same ordinary nonoverlapping replacement semantics, retaining the exact
+/// before selector and after replacement ranges of every restored occurrence.
+fn replace_with_ranges(
+    before: &str,
+    old: &RestoredText,
+    new: &RestoredText,
+    replace_all: bool,
+) -> Result<
+    (
+        Zeroizing<String>,
+        Vec<std::ops::Range<usize>>,
+        Vec<std::ops::Range<usize>>,
+    ),
+    FileRefusal,
+> {
+    let mut after = Zeroizing::new(String::new());
+    let mut copied = 0;
+    let mut selectors = Vec::new();
+    let mut replacements = Vec::new();
+    for (offset, _) in before.match_indices(old.value.as_str()) {
+        after.push_str(&before[copied..offset]);
+        let start = after.len();
+        selectors.extend(
+            old.ranges
+                .iter()
+                .map(|range| offset + range.start..offset + range.end),
+        );
+        replacements.extend(
+            new.ranges
+                .iter()
+                .map(|range| start + range.start..start + range.end),
+        );
+        after.push_str(&new.value);
+        if after.len() > MAX_FILE {
+            return Err(FileRefusal::Restore(RestoreError::Bounds));
+        }
+        copied = offset + old.value.len();
+        if !replace_all {
+            break;
+        }
+    }
+    after.push_str(&before[copied..]);
+    if after.len() > MAX_FILE {
+        return Err(FileRefusal::Restore(RestoreError::Bounds));
+    }
+    Ok((after, selectors, replacements))
 }
 
 impl PrivacySession {
@@ -299,10 +428,21 @@ impl PrivacySession {
         // The data format is the user's rule for the file this operation is
         // bound to, as the host resolved it. It is never a guess from a
         // name, and never asked about the model's spelling of the path.
-        let rule = |bound: &Path| {
-            policy_owner
-                .restorable_file_data(&workspace, bound)
-                .ok_or(FileRefusal::NoRule)
+        let proposed_format = |bound: &Path, text: &str| {
+            // The old fixture hook supplies only error classification in
+            // tests. Production never consults it. Complete actual bytes
+            // select a candidate decoder; only the selected source-bound
+            // typed provider's validation of both images authorizes it.
+            #[cfg(test)]
+            if let Some(format) = policy_owner.restorable_file_data(&workspace, bound) {
+                return format;
+            }
+            let _ = bound;
+            if serde_json::from_str::<serde_json::Value>(text).is_ok() {
+                FileDataFormat::JsonDocument
+            } else {
+                FileDataFormat::PlainText
+            }
         };
         let path = match Path::new(path_text).is_absolute() {
             true => PathBuf::from(path_text),
@@ -315,7 +455,10 @@ impl PrivacySession {
                 members.insert(name.to_owned(), serde_json::Value::String(text.to_owned()));
             }
         };
-        let (change, destination, bound, format, old, new) = match call.name.as_str() {
+        let (change, destination, bound, format, old, new, selectors, replacements) = match call
+            .name
+            .as_str()
+        {
             "write_file" => {
                 // A create binds the absence of the file, as the tool does.
                 match std::fs::symlink_metadata(&path) {
@@ -350,10 +493,10 @@ impl PrivacySession {
                     return Err(FileRefusal::Stale);
                 }
                 let bound = resolved.join(name);
-                let format = rule(&bound)?;
+                let format = proposed_format(&bound, argument(&call.args, "content")?);
                 let new =
                     restored_field(format, true, argument(&call.args, "content")?, &by_field[0])?;
-                shown("content", &new);
+                shown("content", &new.value);
                 (
                     FileChange::Create,
                     Destination::Absent {
@@ -362,7 +505,9 @@ impl PrivacySession {
                     bound,
                     format,
                     None,
-                    new,
+                    new.value,
+                    Vec::new(),
+                    new.ranges,
                 )
             }
             _ => {
@@ -391,7 +536,9 @@ impl PrivacySession {
                 if !again.is_file() || identity(&again) != identity(&opened) {
                     return Err(FileRefusal::Stale);
                 }
-                let format = rule(&bound)?;
+                let mut text = Zeroizing::new(String::new());
+                file.read_to_string(&mut text).map_err(unreadable)?;
+                let format = proposed_format(&bound, &text);
                 let old_string = restored_field(
                     format,
                     false,
@@ -404,21 +551,19 @@ impl PrivacySession {
                     argument(&call.args, "new_string")?,
                     &by_field[1],
                 )?;
-                shown("old_string", &old_string);
-                shown("new_string", &new_string);
+                shown("old_string", &old_string.value);
+                shown("new_string", &new_string.value);
                 let replace_all = call
                     .args
                     .get("replace_all")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
-                if old_string.is_empty() {
+                if old_string.value.is_empty() {
                     return Err(FileRefusal::Tool(
                         "Error: old_string must not be empty".into(),
                     ));
                 }
-                let mut text = Zeroizing::new(String::new());
-                file.read_to_string(&mut text).map_err(unreadable)?;
-                let count = text.matches(old_string.as_str()).count();
+                let count = text.matches(old_string.value.as_str()).count();
                 if count == 0 {
                     return Err(FileRefusal::Tool(format!(
                         "Error: old_string not found in {}",
@@ -431,10 +576,8 @@ impl PrivacySession {
                         path.display()
                     )));
                 }
-                let new = Zeroizing::new(match replace_all {
-                    true => text.replace(old_string.as_str(), &new_string),
-                    false => text.replacen(old_string.as_str(), &new_string, 1),
-                });
+                let (new, selectors, replacements) =
+                    replace_with_ranges(&text, &old_string, &new_string, replace_all)?;
                 if new.len() > MAX_FILE {
                     return Err(FileRefusal::Restore(RestoreError::Bounds));
                 }
@@ -453,9 +596,29 @@ impl PrivacySession {
                     format,
                     Some(text),
                     new,
+                    selectors,
+                    replacements,
                 )
             }
         };
+
+        let data_request = FileDataRequest::issued(DataRequest {
+            owner: self.inner.clone(),
+            operation: operation.clone(),
+            workspace: workspace.clone(),
+            destination: bound.clone(),
+            change,
+            format,
+            before: old.clone(),
+            after: new.clone(),
+            selectors,
+            replacements,
+        });
+        let supported = policy_owner
+            .supported_file_data(&data_request)
+            .filter(|supported| supported.matches(&data_request))
+            .ok_or(FileRefusal::NoRule)?;
+        let application = supported.application();
 
         // What a decision is bound to: the call as the model wrote it, the
         // data format, the bound destination and both contents. The call's
@@ -483,8 +646,6 @@ impl PrivacySession {
             owner: self.inner.clone(),
             change,
             path: bound,
-            format,
-            workspace,
             policy: policy.clone(),
             digest: hasher.finalize().into(),
             held: Mutex::new(Some(Held {
@@ -492,6 +653,8 @@ impl PrivacySession {
                 destination,
                 old,
                 new,
+                data_request,
+                application,
             })),
             state: Mutex::new(State::Derived),
             presented: AtomicBool::new(false),
@@ -539,12 +702,29 @@ impl DerivedFileOperation {
     fn write(&self) -> Result<usize, FileRefusal> {
         self.owner.live().map_err(FileRefusal::Stopped)?;
         let mut held = self.held.lock().unwrap().take().ok_or(FileRefusal::Spent)?;
-        let rule = self
-            .policy
-            .upgrade()
-            .and_then(|policy| policy.restorable_file_data(&self.workspace, &self.path));
-        if rule != Some(self.format) {
-            return Err(FileRefusal::NoRule);
+        // Keep the actual selected policy owner through both grant returns
+        // and the effect. A supplied grant or a schema/directory check alone
+        // never substitutes for that provider call.
+        let policy = self.policy.upgrade().ok_or(FileRefusal::NoRule)?;
+        #[cfg(test)]
+        {
+            let rule =
+                policy.restorable_file_data(held.data_request.workspace_sha256(), &self.path);
+            // A legacy fixture proposal is never sufficient and may be None.
+            if rule.is_some() && rule != Some(held.data_request.format()) {
+                return Err(FileRefusal::NoRule);
+            }
+        }
+        let supported = policy
+            .supported_file_data(&held.data_request)
+            .filter(|supported| {
+                supported.matches(&held.data_request) && supported.application() == held.application
+            })
+            .ok_or(FileRefusal::NoRule)?;
+        if supported.application() != held.application
+            || held.data_request.after() != held.new.as_str()
+        {
+            return Err(FileRefusal::Stale);
         }
         let failed = |error: std::io::Error| {
             FileRefusal::Tool(format!("Error writing {}: {error}", self.path.display()))
@@ -558,22 +738,64 @@ impl DerivedFileOperation {
                 if parent.is_some() && now.as_ref().and_then(identity) != *parent {
                     return Err(FileRefusal::Stale);
                 }
-                // The create itself refuses a file that appeared since.
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&self.path)
-                    .map_err(|error| match error.kind() {
-                        std::io::ErrorKind::AlreadyExists => FileRefusal::Stale,
-                        _ => failed(error),
-                    })?;
-                file.write_all(held.new.as_bytes()).map_err(failed)?;
-                file.flush().map_err(failed)?;
+                let observed = now.as_ref().ok_or(FileRefusal::Stale)?;
+                let effect_request = FileEffectRequest::issued(&held.data_request, observed)?;
+                let effect = policy
+                    .retained_file_effect(&effect_request)
+                    .filter(|effect| effect.matches(&effect_request))
+                    .ok_or(FileRefusal::NoRule)?;
+                self.owner.live().map_err(FileRefusal::Stopped)?;
+                // The actual policy-retained parent anchors the effect.
+                // No fresh absolute-path open or source/permission shortcut.
+                #[cfg(unix)]
+                let mut file = {
+                    use std::os::fd::{AsRawFd, FromRawFd};
+                    let name = self.path.file_name().ok_or(FileRefusal::Unsupported)?;
+                    let name = std::ffi::CString::new(name.as_encoded_bytes())
+                        .map_err(|_| FileRefusal::Unsupported)?;
+                    let descriptor = unsafe {
+                        libc::openat(
+                            effect.directory().as_raw_fd(),
+                            name.as_ptr(),
+                            libc::O_WRONLY
+                                | libc::O_CREAT
+                                | libc::O_EXCL
+                                | libc::O_NOFOLLOW
+                                | libc::O_CLOEXEC,
+                            0o666,
+                        )
+                    };
+                    if descriptor < 0 {
+                        let error = std::io::Error::last_os_error();
+                        return Err(if error.kind() == std::io::ErrorKind::AlreadyExists {
+                            FileRefusal::Stale
+                        } else {
+                            failed(error)
+                        });
+                    }
+                    // SAFETY: openat returned one new owned descriptor.
+                    unsafe { std::fs::File::from_raw_fd(descriptor) }
+                };
+                #[cfg(not(unix))]
+                return Err(FileRefusal::Unsupported);
+                #[cfg(unix)]
+                {
+                    file.write_all(held.new.as_bytes()).map_err(failed)?;
+                    file.flush().map_err(failed)?;
+                }
             }
             Destination::Existing {
                 file,
                 identity: bound,
             } => {
+                let parent = self.path.parent().ok_or(FileRefusal::Stale)?;
+                let observed = std::fs::metadata(parent).map_err(|_| FileRefusal::Stale)?;
+                let effect_request = FileEffectRequest::issued(&held.data_request, &observed)?;
+                let effect = policy
+                    .retained_file_effect(&effect_request)
+                    .filter(|effect| effect.matches(&effect_request))
+                    .ok_or(FileRefusal::NoRule)?;
+                self.owner.live().map_err(FileRefusal::Stopped)?;
                 // The path still names the file that was opened, and the
                 // file still holds what was read and shown.
                 let named =
@@ -589,9 +811,22 @@ impl DerivedFileOperation {
                     return Err(FileRefusal::Stale);
                 }
                 file.seek(SeekFrom::Start(0)).map_err(failed)?;
-                file.set_len(0).map_err(failed)?;
-                file.write_all(held.new.as_bytes()).map_err(failed)?;
-                file.flush().map_err(failed)?;
+                #[cfg(unix)]
+                validate_held_update(
+                    file,
+                    effect.directory(),
+                    self.path.file_name().ok_or(FileRefusal::Unsupported)?,
+                    *bound,
+                )?;
+                #[cfg(not(unix))]
+                return Err(FileRefusal::Unsupported);
+                self.owner.live().map_err(FileRefusal::Stopped)?;
+                #[cfg(unix)]
+                {
+                    file.set_len(0).map_err(failed)?;
+                    file.write_all(held.new.as_bytes()).map_err(failed)?;
+                    file.flush().map_err(failed)?;
+                }
             }
         }
         Ok(held.new.len())
@@ -661,6 +896,7 @@ impl ReviewedFile {
 
     /// The reviewed operation of a parked call, for the reader that asks a
     /// person about it.
+    #[cfg(test)]
     pub(crate) fn of_parked(parked: &ActualParkedCall) -> Option<Arc<Self>> {
         parked.review_source()?.downcast::<Self>()
     }
@@ -682,6 +918,7 @@ impl ReviewedFile {
     /// to show, if `shown` is the digest the agent carried for this very
     /// operation. A reader that does not take the preview has shown nothing,
     /// and the decision it returns is then not a decision on this operation.
+    #[cfg(test)]
     pub(crate) fn shown_to_reader<T>(
         &self,
         shown: Option<[u8; 32]>,
@@ -800,6 +1037,7 @@ impl ReviewedFile {
 /// such an operation, and one whose operation could not be derived, is
 /// shown as the model wrote it; the tool answers the latter with its
 /// refusal. `None` when the digest is not the operation's: nobody is asked.
+#[cfg(test)]
 pub(crate) fn call_to_show(parked: &ActualParkedCall, shown: Option<[u8; 32]>) -> Option<ToolCall> {
     let call = parked.call();
     let Some(reviewed) = ReviewedFile::of_parked(parked) else {
@@ -1090,5 +1328,46 @@ impl Tool for RestoredFileTool {
         let outcome = outcome?;
         state_outcome(tracked, &call, &outcome);
         Ok(outcome)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod held_update_tests {
+    use super::*;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    #[test]
+    fn final_held_update_observes_the_retained_name_role_and_single_link() {
+        let root = tempfile::tempdir().unwrap();
+        let mut options = std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let directory = options.open(root.path()).unwrap();
+        let path = root.path().join("contacts.txt");
+        std::fs::write(&path, "Contact owner@example.test.\n").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let bound = identity(&file.metadata().unwrap());
+        let check = || validate_held_update(&file, &directory, path.file_name().unwrap(), bound);
+        assert_eq!(check(), Ok(()));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(check(), Err(FileRefusal::Stale));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(check(), Ok(()));
+
+        let link = root.path().join("also-contacts.txt");
+        std::fs::hard_link(&path, &link).unwrap();
+        assert_eq!(check(), Err(FileRefusal::Stale));
+        std::fs::remove_file(link).unwrap();
+        assert_eq!(check(), Ok(()));
+
+        std::fs::rename(&path, root.path().join("old.txt")).unwrap();
+        std::fs::write(&path, "Contact owner@example.test.\n").unwrap();
+        assert_eq!(check(), Err(FileRefusal::Stale));
     }
 }

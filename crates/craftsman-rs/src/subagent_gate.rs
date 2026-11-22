@@ -185,10 +185,9 @@ impl SubagentGate {
                 DELEGATED_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
             name: self.inner.def().name,
-            args: match &reviewed {
-                Some((_, shown)) => shown.clone(),
-                None => args.clone(),
-            },
+            // Ordinary activity/correlated sinks receive MODEL bytes only.
+            // The actual registered opaque request owns the decoded preview.
+            args: args.clone(),
         };
         sink(ToolActivityEvent::Started {
             call_id: call.id.clone(),
@@ -240,6 +239,23 @@ impl SubagentGate {
     ) -> Result<ToolOutcome, AgentError> {
         let name = self.inner.def().name;
         if let Some(tracked) = tracked {
+            if self.privacy_prompt.is_none()
+                && self.approval_prompt.is_none()
+                && self.correlated.is_none()
+            {
+                let permission_args = reviewed.as_ref().map_or(&args, |(_, shown)| shown);
+                if self
+                    .approval
+                    .lock()
+                    .unwrap()
+                    .permission(&name, permission_args)
+                    == ToolPermission::Prompt
+                {
+                    return Ok(ToolOutcome::err(format!(
+                        "'{name}' requires user approval, but this delegated run has no interactive approval channel. Do this step directly or use an explicit permission mode."
+                    )));
+                }
+            }
             let Some(producer) = &self.inline_source else {
                 return Ok(ToolOutcome::err(
                     "This selected delegated call has no registered input/policy producer.",

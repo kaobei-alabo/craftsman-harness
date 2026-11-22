@@ -299,6 +299,14 @@ call was made. Runs are recorded with their own head under
 
 ## Core event corrections — November 22, 2026
 
+The current file consumer obtains data/effect records only from its actual
+selected policy and binds the full images and all changed ranges before a
+preview or effect. The legacy format-only hook and parked tuple-reader producer
+remain test-only; production parked input is unregistered. Ordinary main and
+delegated activity carries model arguments, while the opaque private UI owns
+the restored preview. The actual A provider/UI/entry union and independent
+native acceptance remain pending; this does not enable any frontend.
+
 The local correction branch combines the immutable transport/source-part slices
 with framework-issued events. It remains unmerged, uninstalled and unselected;
 the installed `a903af65` guard is separate. No frontend, key/policy, restoration

@@ -1178,10 +1178,39 @@ async fn delegation(
     session.lsp.shutdown().await;
 }
 
-/// A user's policy with a rule for file content: plain text, for every file.
-struct PlainTextFiles;
+/// A synthetic user policy for contact-note data in its actual owned test
+/// directory. It retains that directory before any planned file request.
+struct PlainTextFiles(std::fs::File);
+
+impl PlainTextFiles {
+    fn at(directory: &std::path::Path) -> Self {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        Self(options.open(directory).unwrap())
+    }
+}
 
 impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
+    fn retained_file_effect(
+        &self,
+        request: &crate::privacy_session::FileEffectRequest,
+    ) -> Option<crate::privacy_session::RetainedFileEffect> {
+        self.supported_file_data(request.data())?;
+        request.bind_retained_parent(&self.0).ok()
+    }
+    fn supported_file_data(
+        &self,
+        request: &crate::privacy_session::FileDataRequest,
+    ) -> Option<crate::privacy_session::SupportedFileData> {
+        request
+            .validate_application(crate::privacy_session::SupportedDataApplication::ContactLinesV1)
+            .ok()
+    }
     fn enables_privacy_in(&self, _: &str) -> bool {
         true
     }
@@ -1227,10 +1256,12 @@ async fn restoration(
     let typed = format!("Who handles {EMAIL}?");
     // What the approval prompt was shown, and what it answers.
     let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let ordinary: Arc<Mutex<Vec<ToolActivityEvent>>> = Arc::default();
     let approve = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let run = |file: &'static str, with_rule: bool| {
         let (shown, approve, typed) = (shown.clone(), approve.clone(), typed.clone());
         let activity = activity.clone();
+        let ordinary = ordinary.clone();
         async move {
             let note = directory.join(file);
             let server = MockServer::start().await;
@@ -1261,7 +1292,7 @@ async fn restoration(
             let cfg = config("chat", &server);
             let owner = privacy(vault, directory).await;
             let policy: Arc<dyn crate::privacy_session::CapturedUserPolicy> = match with_rule {
-                true => Arc::new(PlainTextFiles),
+                true => Arc::new(PlainTextFiles::at(directory)),
                 false => Arc::new(FixturePolicy::default()),
             };
             let selection = PrivacyViewSelection::from_user_policy(policy, owner.clone()).unwrap();
@@ -1273,6 +1304,9 @@ async fn restoration(
                 }
             });
             let session = build(&cfg, directory, None, None, &activity, |extras| {
+                extras.tool_activity_sink = Some(Arc::new(move |event| {
+                    ordinary.lock().unwrap().push(event);
+                }));
                 extras.privacy_view = Some(selection);
                 extras.privacy_approval_prompt = Some(fixture_bound_approval(prompt.clone()));
                 extras.approval_prompt = Some(prompt);
@@ -1344,6 +1378,33 @@ async fn restoration(
         crate::privacy_session::FileRefusal::NoRule.to_string()
     );
     assert_eq!(shown.lock().unwrap().len(), 2);
+
+    // The same actual runs exercise the ordinary lifecycle sink separately
+    // from the registered private UI. It keeps model arguments, while the
+    // private UI assertions above require the real restored preview.
+    assert_eq!(private_file_started(&ordinary.lock().unwrap()), 2);
+}
+
+fn private_file_started(events: &[ToolActivityEvent]) -> usize {
+    let mut count = 0;
+    for event in events {
+        if let ToolActivityEvent::Started {
+            tool,
+            summary,
+            details,
+            ..
+        } = event
+        {
+            if tool == "write_file" {
+                count += 1;
+                for text in [summary, details] {
+                    assert!(!text.contains(EMAIL) && !text.contains(PHONE));
+                }
+                assert!(details.contains("pv1-"), "{details}");
+            }
+        }
+    }
+    count
 }
 
 /// What the file at `note` holds, if the last workspace checkpoint of the
@@ -1393,10 +1454,13 @@ async fn delegated_restoration(
 ) {
     let typed = format!("Note that {EMAIL} answers {PHONE}.");
     let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let ordinary: Arc<Mutex<Vec<ToolActivityEvent>>> = Arc::default();
+    let tuple_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let approve = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let run = |file: &'static str, with_rule: bool| {
         let (shown, approve, typed) = (shown.clone(), approve.clone(), typed.clone());
         let activity = activity.clone();
+        let (ordinary, tuple_calls) = (ordinary.clone(), tuple_calls.clone());
         async move {
             let note = directory.join(file);
             let server = MockServer::start().await;
@@ -1427,7 +1491,7 @@ async fn delegated_restoration(
             let cfg = config("chat", &server);
             let owner = privacy(vault, directory).await;
             let policy: Arc<dyn crate::privacy_session::CapturedUserPolicy> = match with_rule {
-                true => Arc::new(PlainTextFiles),
+                true => Arc::new(PlainTextFiles::at(directory)),
                 false => Arc::new(FixturePolicy::default()),
             };
             let selection = PrivacyViewSelection::from_user_policy(policy, owner.clone()).unwrap();
@@ -1439,6 +1503,13 @@ async fn delegated_restoration(
                 }
             });
             let session = build(&cfg, directory, None, None, &activity, |extras| {
+                extras.delegated_tool_callbacks = Some((
+                    Arc::new(move |_, _, _| {
+                        tuple_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        ApprovalPromptResult::Approve
+                    }),
+                    Arc::new(move |event| ordinary.lock().unwrap().push(event)),
+                ));
                 extras.privacy_view = Some(selection);
                 extras.privacy_approval_prompt = Some(fixture_bound_approval(prompt.clone()));
                 extras.approval_prompt = Some(prompt);
@@ -1500,6 +1571,8 @@ async fn delegated_restoration(
         crate::privacy_session::FileRefusal::NoRule.to_string()
     );
     assert_eq!(shown.lock().unwrap().len(), 2);
+    assert_eq!(private_file_started(&ordinary.lock().unwrap()), 2);
+    assert_eq!(tuple_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 /// The gates' automatic policy in a built session. A person approves the
@@ -1556,8 +1629,11 @@ async fn automatic_policy(
     mount_once(&server, 8, post().respond_with(answers())).await;
     let cfg = config("chat", &server);
     let owner = privacy(vault, directory).await;
-    let selection =
-        PrivacyViewSelection::from_user_policy(Arc::new(PlainTextFiles), owner.clone()).unwrap();
+    let selection = PrivacyViewSelection::from_user_policy(
+        Arc::new(PlainTextFiles::at(directory)),
+        owner.clone(),
+    )
+    .unwrap();
     let shown: Arc<Mutex<Vec<String>>> = Arc::default();
     let asked = shown.clone();
     let prompt: ApprovalPrompt = Arc::new(move |_, _, details| {

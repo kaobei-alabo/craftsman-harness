@@ -212,7 +212,12 @@ impl AgentMiddleware for ApprovalMiddleware {
         ctx: &mut ToolCtx<'_>,
         next: ToolNext<'_>,
     ) -> Result<ToolOutcome, AgentError> {
-        let review = match self.verification.as_ref().filter(|_| call.name == "verify") {
+        let tracked = next.tracked();
+        let review = match self
+            .verification
+            .as_ref()
+            .filter(|_| call.name == "verify" && tracked.is_none())
+        {
             Some(controller) => Some(controller.approval_context().await?),
             None => None,
         };
@@ -225,27 +230,19 @@ impl AgentMiddleware for ApprovalMiddleware {
         // review. The policy and a person then decide on the real content.
         // The call itself stays as the model wrote it. A call that could
         // not be derived is answered with the refusal before any effect.
-        let tracked = next.tracked();
         let reviewed = tracked
             .as_ref()
             .and_then(crate::privacy_session::ReviewedFile::of);
-        let shown = match &reviewed {
-            Some(reviewed) => match reviewed.shown_arguments() {
-                Ok(arguments) => Some(crate::tools::approval_details_at(
-                    &call.name,
-                    &arguments,
-                    &self.workspace_root,
-                )),
-                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
-            },
-            None => None,
-        };
-        let details = match (&shown, &review) {
-            (Some(details), _) => details.clone(),
-            (None, Some(review)) => review.details.clone(),
-            (None, None) => {
-                crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root)
+        if let Some(reviewed) = &reviewed {
+            if let Err(refusal) = reviewed.derived() {
+                return Ok(ToolOutcome::err(refusal.to_string()));
             }
+        }
+        // Ordinary sinks/ACP frames retain MODEL arguments, never the decoded
+        // preview. Only the registered private UI request may carry that view.
+        let details = match &review {
+            Some(review) => review.details.clone(),
+            None => crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root),
         };
         let call_id = call.id.clone();
         let tool = call.name.clone();

@@ -1782,12 +1782,9 @@ async fn build_session_with_capture_profile(
             Some(selection.session().clone())
         }
     };
-    // Capture only the actual registered app input callback. No value, flag or
-    // model/project record can mint a human decision source.
-    let human_prompt = privacy_view
-        .as_ref()
-        .and_then(|_| extras.call_approval_prompt.clone());
-    let human_approval = approval.clone();
+    // Production parked input has no bound opaque UI lifetime adapter yet.
+    // Ordinary tuple callbacks cannot issue human source or receive restored
+    // contents. The private parked source stays explicitly unregistered.
     let send_guard = match &privacy_view {
         Some(session) => Some(session.send_guard()),
         None => send_guard,
@@ -2642,7 +2639,6 @@ async fn build_session_with_capture_profile(
     // Shared registry + notification channel: the `task` tool records spawned
     // subagents in `registry`; background children push completions/messages on
     // `notif_tx`, which the app drains through `notif_rx` (see Session).
-    let human_workspace = cwd.clone();
     let registry = Arc::new(AgentRegistry::default());
     let (notif_tx, notif_rx) = craftsman_harness::notification_channel();
 
@@ -3246,54 +3242,6 @@ async fn build_session_with_capture_profile(
     if let Some(controls) = &controls {
         controls.bind_tools(&agent, &trusted_observational_tools, &trusted_file_tools);
     }
-    let human_source = privacy_view
-        .as_ref()
-        .zip(human_prompt)
-        .map(|(privacy, prompt)| {
-            let approval = human_approval.clone();
-            let workspace = human_workspace.clone();
-            let effect_approval = approval;
-            crate::privacy_entry::HumanDecisionProducer::register_with_effect(
-                privacy.clone(),
-                Arc::new(move |parked, shown| {
-                    let call = parked.call();
-                    let summary = crate::tools::summarize_call(&call.name, &call.args);
-                    // A parked file operation is shown as it will really be
-                    // written: the preview of the operation the agent
-                    // carried with the parked call, taken under the digest
-                    // the agent handed over with it. If that digest is not
-                    // the operation's, nobody is asked.
-                    let Some(shown_call) = crate::privacy_session::call_to_show(parked, shown)
-                    else {
-                        return crate::privacy_entry::HumanChoice::Absent;
-                    };
-                    let call = &shown_call;
-                    let details =
-                        crate::tools::approval_details_at(&call.name, &call.args, &workspace);
-                    match prompt(call, &summary, &details) {
-                        ApprovalPromptResult::Approve => crate::privacy_entry::HumanChoice::Approve,
-                        ApprovalPromptResult::ApproveAlways => {
-                            crate::privacy_entry::HumanChoice::ApproveAlways
-                        }
-                        ApprovalPromptResult::Reject(feedback) => {
-                            crate::privacy_entry::HumanChoice::Deny(feedback)
-                        }
-                    }
-                }),
-                Arc::new(move |choice, call| {
-                    if matches!(choice, crate::privacy_entry::HumanChoice::ApproveAlways) {
-                        // This effect follows the actual sealed decision's
-                        // source/admission checks, never the input read.
-                        let mut approval = effect_approval.lock().unwrap();
-                        if crate::tools::NETWORK_TOOLS.contains(&call.name.as_str()) {
-                            approval.auto_approve_network = true;
-                        } else {
-                            approval.auto_approve = true;
-                        }
-                    }
-                }),
-            )
-        });
     Some(Session {
         #[cfg(feature = "gadgets")]
         script_capture,
@@ -3314,10 +3262,7 @@ async fn build_session_with_capture_profile(
             .map(|(session, boundary)| {
                 let view = crate::privacy_session::PrivacyView::new(session, boundary)
                     .with_policy(user_policy);
-                match human_source {
-                    Some(source) => view.with_human_source(source),
-                    None => view,
-                }
+                view
             }),
         memories,
         compaction,

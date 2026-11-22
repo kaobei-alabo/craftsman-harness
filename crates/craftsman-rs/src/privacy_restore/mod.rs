@@ -482,7 +482,7 @@ pub fn file_candidate(
 /// document that serde already admitted. A key that looks like an alias, a
 /// repeated key and a document beyond the bounds are refused, as in
 /// [`Restorer::file_data`].
-pub(crate) fn json_value_strings(text: &str) -> Result<Vec<std::ops::Range<usize>>> {
+fn json_value_strings(text: &str) -> Result<Vec<std::ops::Range<usize>>> {
     let bytes = text.as_bytes();
     let mut objects: Vec<Option<BTreeSet<[u8; 32]>>> = Vec::new();
     let mut values = Vec::new();

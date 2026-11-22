@@ -22,13 +22,24 @@ what is written to disk are separate views derived from that record.
 | Derived file operation for `write_file` and `edit_file` (`ReviewedFile`, `DerivedFileOperation`), made in the agent's own event before a call is reviewed, from the plan the agent issued | implemented, private |
 | Decision on it by the approval gate's policy or a person at its prompt, for the root agent, recorded where it is taken and carried to the terminal | implemented, private |
 | The same for every delegated agent, in its own lane and at its own gate | implemented, private |
-| A parked call: the registered reader shows the operation's preview under the digest the agent carries, and the person's sealed input is checked at the file | implemented, private; nothing in the application parks a call yet |
+| A parked call's source and preview | legacy test-only registered-reader primitive retained; production input is unregistered until an opaque UI lifetime adapter exists |
 | The file tool's own workspace checkpoint, language diagnostics and result around a derived write | kept; the tool takes only its write from the derived operation |
-| The user's rule for file content (`CapturedUserPolicy::restorable_file_data`) | interface only; nothing implements the policy outside owned test fixtures, so no normal session can select any of this |
+| The user's rule for file content (`supported_file_data` / `retained_file_effect`) | local typed range/effect consumer wired; actual A captured-provider integration and independent/native proof pending; the old format-only hook is test-only and supplies no authority |
 | Typing a turn into a privacy conversation in the terminal, the secret and bootstrap interface, `/clear` | not implemented here; another owner's |
 | Memory files, MCP, gadget, shell, web and every other tool argument | not restored |
 | Delete, rename, batch plans | unchanged; no restoration |
 | A sealed human input for a decision taken at an inline prompt, without a parked call | local registered producer and opaque UI request/presentation/decision core; A's real receiver/modal/choice consumer and independent validation remain pending |
+
+The current consumer uses only grants returned by its selected policy for the
+actual full before/after data request. Whole JSON and every changed alias span
+are checked as values in a concrete contact-data application, rather than by
+extension or a caller pointer. Unix creation uses the policy's retained parent;
+the held update is checked against that parent's actual no-follow name before
+writing. Unsupported hosts or data roles refuse. Ordinary activity keeps model
+arguments, and only the private opaque UI receives decoded previews. These
+details and the remaining application/permission/same-user limits are recorded
+in [privacy-provenance.md](privacy-provenance.md); A's actual UI/provider union,
+full native proof and normal activation remain separate.
 
 ## What a person reads
 

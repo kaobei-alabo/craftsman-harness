@@ -2,6 +2,7 @@
 //! Actual canonical derivation issues requests. Neither a path, format,
 //! purpose, pointer nor Boolean constructs a validated data/effect grant.
 
+use super::json_ranges::{JsonRanges, PathStep, StringRole};
 use super::view::PlannedOperation;
 use super::{FileChange, FileRefusal, Inner};
 use crate::privacy_restore::FileDataFormat;
@@ -49,6 +50,16 @@ impl FileDataRequest {
     pub(super) fn issued(value: DataRequest) -> Self {
         Self(Arc::new(value))
     }
+    /// Bind a policy provider to its own actual conversation, including every
+    /// delegated lane of that same Inner. Identity is only a refusal check;
+    /// it supplies no application/schema/permission/effect authority.
+    pub fn require_session(&self, session: &super::PrivacySession) -> Result<(), FileRefusal> {
+        if !Arc::ptr_eq(&self.0.owner, &session.inner) {
+            return Err(FileRefusal::Stopped(super::SessionStop::Unbound));
+        }
+        session.check().map_err(FileRefusal::Stopped)
+    }
+
     pub fn workspace_sha256(&self) -> &str {
         &self.0.workspace
     }
@@ -86,12 +97,14 @@ impl FileDataRequest {
         if !inside_all(&self.0.replacements, &values) {
             return Err(FileRefusal::Unsupported);
         }
+        check_json_ranges(application, &self.0.after, &self.0.replacements)?;
         match &self.0.before {
             Some(before) => {
                 let values = permitted_values(application, before)?;
                 if !inside_all(&self.0.selectors, &values) {
                     return Err(FileRefusal::Unsupported);
                 }
+                check_json_ranges(application, before, &self.0.selectors)?;
             }
             None if !self.0.selectors.is_empty() => return Err(FileRefusal::Unsupported),
             None => {}
@@ -193,6 +206,27 @@ fn inside_all(ranges: &[Range<usize>], values: &[Range<usize>]) -> bool {
                 .any(|value| value.start <= range.start && range.end <= value.end)
     })
 }
+fn check_json_ranges(
+    application: SupportedDataApplication,
+    text: &str,
+    ranges: &[Range<usize>],
+) -> Result<(), FileRefusal> {
+    if application != SupportedDataApplication::ContactJsonV1 {
+        return Ok(());
+    }
+    let indexed = JsonRanges::index(text.as_bytes())
+        .map_err(|_| FileRefusal::Restore(crate::privacy_restore::RestoreError::Input))?;
+    for range in ranges {
+        let located = indexed
+            .locate(range.clone())
+            .map_err(|_| FileRefusal::Restore(crate::privacy_restore::RestoreError::Input))?;
+        match indexed.path(located.string()).as_deref() {
+            Some([PathStep::Key("owner" | "note")]) => {}
+            _ => return Err(FileRefusal::Unsupported),
+        }
+    }
+    Ok(())
+}
 fn forbidden_destination(path: &Path) -> bool {
     let names = path
         .components()
@@ -201,7 +235,15 @@ fn forbidden_destination(path: &Path) -> bool {
     if names.iter().any(|name| {
         matches!(
             name.as_str(),
-            ".git" | ".craftsman" | ".ssh" | ".aws" | ".config" | "node_modules"
+            ".git"
+                | ".craftsman"
+                | ".ssh"
+                | ".aws"
+                | ".config"
+                | ".claude"
+                | ".codex"
+                | ".agents"
+                | "node_modules"
         )
     }) {
         return true;
@@ -215,6 +257,7 @@ fn forbidden_destination(path: &Path) -> bool {
         || matches!(
             name.as_str(),
             "agents.md"
+                | "skill.md"
                 | "claude.md"
                 | "config.json"
                 | "package.json"
@@ -279,6 +322,8 @@ fn permitted_values(
                 let line_value = line.strip_suffix('\n').unwrap_or(line);
                 let prefix = [
                     "Contact ",
+                    "Work on this: Note that ",
+                    "Work on this: Who handles ",
                     "Call ",
                     "call ",
                     "to ",
@@ -319,9 +364,19 @@ fn permitted_values(
             {
                 return Err(FileRefusal::Unsupported);
             }
-            crate::privacy_restore::json_value_strings(text)
-                .map(|ranges| ranges.into_iter().map(|r| r.start + 1..r.end - 1).collect())
-                .map_err(FileRefusal::Restore)
+            let indexed = JsonRanges::index(text.as_bytes())
+                .map_err(|_| FileRefusal::Restore(crate::privacy_restore::RestoreError::Input))?;
+            let mut values = Vec::new();
+            for (index, string) in indexed.strings().iter().enumerate() {
+                if string.role() != StringRole::Value {
+                    continue;
+                }
+                match indexed.path(index).as_deref() {
+                    Some([PathStep::Key("owner" | "note")]) => values.push(string.content()),
+                    _ => return Err(FileRefusal::Unsupported),
+                }
+            }
+            Ok(values)
         }
     }
 }
@@ -409,6 +464,10 @@ mod tests {
             "/workspace/.env",
             "/workspace/config.json",
             "/workspace/AGENTS.md",
+            "/workspace/skills/example/SKILL.md",
+            "/workspace/.claude/commands/note.txt",
+            "/workspace/.codex/settings/contact-data.json",
+            "/workspace/.agents/skills/note.txt",
             "/workspace/contacts.schema.json",
             "/workspace/src/file.rs",
             "/workspace/privacy-key.v1",

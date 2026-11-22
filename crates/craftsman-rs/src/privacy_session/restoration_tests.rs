@@ -9,9 +9,34 @@ use crate::privacy_restore::{FileDataFormat, RestoreError};
 
 /// A user's rule for file content: one data format for every file, or none.
 /// It records every destination it was asked about.
-struct Rule(Option<FileDataFormat>, Arc<Mutex<Vec<std::path::PathBuf>>>);
+struct Rule(
+    Option<FileDataFormat>,
+    Arc<Mutex<Vec<std::path::PathBuf>>>,
+    std::fs::File,
+);
 
 impl CapturedUserPolicy for Rule {
+    fn retained_file_effect(
+        &self,
+        request: &crate::privacy_session::FileEffectRequest,
+    ) -> Option<crate::privacy_session::RetainedFileEffect> {
+        self.supported_file_data(request.data())?;
+        request.bind_retained_parent(&self.2).ok()
+    }
+    fn supported_file_data(
+        &self,
+        request: &crate::privacy_session::FileDataRequest,
+    ) -> Option<crate::privacy_session::SupportedFileData> {
+        use crate::privacy_session::SupportedDataApplication;
+        match self.0? {
+            FileDataFormat::PlainText => request
+                .validate_application(SupportedDataApplication::ContactLinesV1)
+                .ok(),
+            FileDataFormat::JsonDocument => request
+                .validate_application(SupportedDataApplication::ContactJsonV1)
+                .ok(),
+        }
+    }
     fn enables_privacy_in(&self, _: &str) -> bool {
         true
     }
@@ -329,7 +354,15 @@ async fn set_up_with_main_gate(
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let asked: Arc<Mutex<Vec<std::path::PathBuf>>> = Arc::default();
-    let policy: Arc<dyn CapturedUserPolicy> = Arc::new(Rule(rule, asked.clone()));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let actual_directory = options.open(dir.path()).unwrap();
+    let policy: Arc<dyn CapturedUserPolicy> = Arc::new(Rule(rule, asked.clone(), actual_directory));
     // The boundary of the conversation derives planned writes from now on,
     // for this agent and every agent it delegates to.
     let review = FileReview::new(&policy, dir.path().to_path_buf());
@@ -2002,4 +2035,126 @@ async fn registered_inline_raw_edits_keep_human_origin_on_main_and_delegated_cal
             }
         }
     }
+}
+
+#[tokio::test]
+async fn supported_data_guard_rejects_json_keys_duplicates_and_protected_roles_before_effects() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    for duplicate in [false, true] {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, Some(FileDataFormat::JsonDocument)).await;
+        let before = format!("{{\"owner\":\"{EMAIL}\",\"note\":\"none\"}}\n");
+        let path = f.dir.path().join("contacts.json");
+        std::fs::write(&path, &before).unwrap();
+        let (old, new) = if duplicate {
+            (
+                format!("\"owner\":\"{}\"", f.placeholder),
+                format!(
+                    "\"owner\":\"{}\",\"\\u006fwner\":\"{}\"",
+                    f.placeholder, f.placeholder
+                ),
+            )
+        } else {
+            ("owner".to_owned(), f.placeholder.clone())
+        };
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "c1",
+                    "edit_file",
+                    json!({
+                        "file_path":"contacts.json", "old_string":old, "new_string":new,
+                    }),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        assert!(f.around.steps.lock().unwrap().is_empty());
+        assert!(f.reviewer.shown.lock().unwrap().is_empty());
+        assert!(result_at(&f.agent, 2).1);
+        nothing_original_sent(&server).await;
+    }
+    for destination in [
+        "SKILL.md",
+        "AGENTS.md",
+        "config.json",
+        "contacts.schema.json",
+        ".env",
+    ] {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "c1",
+                    "write_file",
+                    json!({
+                        "file_path":destination, "content":format!("Contact {}.", f.placeholder),
+                    }),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        assert!(!f.dir.path().join(destination).exists());
+        assert!(f.around.steps.lock().unwrap().is_empty());
+        assert!(f.reviewer.shown.lock().unwrap().is_empty());
+        assert!(result_at(&f.agent, 2).1);
+        nothing_original_sent(&server).await;
+    }
+}
+
+#[tokio::test]
+async fn supported_json_replace_all_keeps_every_actual_value_and_unchanged_document_byte() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::JsonDocument)).await;
+    let before = format!("{{ \"owner\" : \"{EMAIL}\",\n  \"note\" : \"{EMAIL}\" }}\n");
+    let path = f.dir.path().join("contacts.json");
+    std::fs::write(&path, &before).unwrap();
+    scripted(
+        &server,
+        vec![
+            file_call(
+                "c1",
+                "edit_file",
+                json!({
+                    "file_path":"contacts.json", "old_string":f.placeholder,
+                    "new_string":format!("ask {}", f.placeholder), "replace_all":true,
+                }),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    let expected = before.replace(EMAIL, &format!("ask {EMAIL}"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    let shown = f.reviewer.shown.lock().unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].old.as_deref(), Some(before.as_str()));
+    assert_eq!(shown[0].new, expected);
+    assert_eq!(
+        *f.around.steps.lock().unwrap(),
+        ["began contacts.json", "finished contacts.json"]
+    );
+    assert!(!result_at(&f.agent, 2).1);
+    nothing_original_sent(&server).await;
 }
