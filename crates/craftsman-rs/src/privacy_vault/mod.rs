@@ -487,6 +487,28 @@ impl HostDisplayField {
     }
 }
 
+impl Category {
+    /// Whether `value` is one complete supported original of this category
+    /// under this vault's own grammar. Pure: no session, mapping, key or IO.
+    /// A host adapter uses it to refuse a reported span before any vault
+    /// effect; it is neither a detector nor a grant.
+    pub fn admits(self, value: &str) -> bool {
+        format::validate_original(self, value).is_ok()
+    }
+}
+
+impl MappingSession {
+    /// Every authenticated mapping of this session's own live scope, read and
+    /// verified in one bounded operation. The records carry this session's
+    /// identity exactly as mask and resolve records do. Nothing is created,
+    /// changed, guessed or accepted from a caller: there is no alias, status or
+    /// record constructor here, and another scope's rows are never returned.
+    /// A refusal closes this session, as every refused vault request does.
+    pub async fn scope_records(&self) -> Result<ResolutionRecords> {
+        storage::scope_records(self.live.clone()).await
+    }
+}
+
 macro_rules! private_debug {
     ($($type:ty),+ $(,)?) => {$(
         impl fmt::Debug for $type {

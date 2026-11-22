@@ -41,6 +41,8 @@ vault, WASM detector and restoration views are implemented privately;
 normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
+A private [detector contract and admission core](docs/privacy-admission.md)
+is in development on top of them; it is not wired to any session.
 
 ## Planned WASM enhancement
 
@@ -151,6 +153,7 @@ documents and folders containing several projects are supported too.
 [Failure controls](docs/failure-controls.md) ·
 [Privacy hook development](docs/privacy-hooks.md) ·
 [Private send guard](docs/privacy-send.md) ·
+[Private admission core](docs/privacy-admission.md) ·
 [Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).

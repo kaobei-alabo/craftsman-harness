@@ -393,6 +393,15 @@ id, hash and capabilities. Rebuilds at that same source inherit a grant only
 when their capabilities are equal or narrower. Wider capabilities ask again.
 First-load "always" approval never becomes global permission bypass.
 
+A separate private call path exists for a detector that host code selects by
+id and by the SHA-256 of its component and manifest. It reads only the
+user-level source, refuses a project gadget of the same id, requires no
+declared capability and requires a stored grant for those exact component
+bytes; rebuild inheritance, allow-list entries and workspace trust do not count
+there, and it never prompts. Ordinary gadget calls, approval and grants are
+unchanged, and nothing selects that path yet. See
+[privacy-admission.md](privacy-admission.md).
+
 Wasmtime is pinned to **48.0.8**, not the plan's historical48.0.5/48.0.6 pins.
 The reviewed48.x patches include the AArch64/br_table sandbox-escape fix
 (GHSA-mghf-wjfp-p5xm, fixed from48.0.7), later component/WASI fixes in48.0.8,

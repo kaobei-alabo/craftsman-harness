@@ -21,6 +21,10 @@ use std::time::{Duration, Instant, SystemTime};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Engine, Store, Trap, UpdateDeadline};
 
+// Additive host-selected call path. Nothing above or below it is changed.
+mod pinned;
+pub(crate) use pinned::PinnedSource;
+
 #[derive(Clone)]
 pub struct RuntimeOptions {
     pub timeout: Duration,

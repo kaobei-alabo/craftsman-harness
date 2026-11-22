@@ -8,6 +8,13 @@ Normal Craftsman sessions do not select this hook yet. Actual key ownership,
 required-hook policy and model/file integration remain open. Existing gadget
 grants and permissions remain in force.
 
+A private [detector contract and admission core](privacy-admission.md) now
+exists as a local, unmerged slice: a source-pinned detector call on the gadget
+engine and an owner that saves mappings and admits them to the send guard
+before releasing admitted text. It is not connected to any provider, tool,
+display, file, key source or policy, and it does not yet handle text the model
+produced or mixed text.
+
 The selected behavior is to replace supported personal data before a model
 request and restore known replacements in **displayed replies and file edits**.
 For example, a model can edit a document containing an email alias; Craftsman

@@ -960,6 +960,10 @@ async fn source_built_privacy_detector_passes_marked_actual_native_runtime() {
     assert!(!stdout.contains("NOT-SELECTED"));
 }
 
+// Additive: the production pinned call path and admission owner, run against
+// this module's source-built detector. Nothing above or below is changed.
+mod pinned_hook;
+
 mod offline_lock_tests {
     use super::root;
     use serde::Deserialize;

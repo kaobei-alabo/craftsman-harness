@@ -1508,3 +1508,76 @@ async fn resolve_worker(
         }
     }
 }
+
+/// Additive whole-scope read for a host owner of this same live session. It
+/// follows the resolve path exactly: one owned slot, one deferred transaction,
+/// the existing authenticated scope reader and the same refusal handling.
+pub(super) async fn scope_records(live: Arc<SessionLife>) -> Result<ResolutionRecords> {
+    let mut guard = RequestGuard {
+        live: live.clone(),
+        accepted: false,
+    };
+    live.check()?;
+    let mut slot = OwnedSlot::reserve(&live.vault)?;
+    let worker_live = live.clone();
+    let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
+    let started = Instant::now();
+    let returned = tokio::task::spawn_blocking(move || {
+        let mut budget = Budget::new(worker_live.vault.limits, Some(worker_live.clone()));
+        budget.started = started;
+        let result = runtime.block_on(scope_records_worker(&worker_live, &mut budget));
+        if let Err(error) = &result {
+            slot.inner.fail_storage(*error);
+        }
+        slot.returned = true;
+        drop(slot);
+        result
+    })
+    .await
+    .map_err(|_| PrivacyError::Worker);
+    let result = match returned {
+        Ok(result) => result,
+        Err(error) => {
+            live.vault.fail_storage(error);
+            Err(error)
+        }
+    }?;
+    live.check()?;
+    guard.accepted = true;
+    Ok(result)
+}
+
+async fn scope_records_worker(
+    live: &Arc<SessionLife>,
+    budget: &mut Budget,
+) -> Result<ResolutionRecords> {
+    let inner = &live.vault;
+    inner.native.recheck(budget)?;
+    let conn = inner.conn.lock().map_err(|_| PrivacyError::Integrity)?;
+    begin(&conn, "BEGIN DEFERRED", budget).await?;
+    let prepared = async {
+        let mappings = read_scope(inner, &conn, &live.scope, budget).await?;
+        inner.native.recheck(budget)?;
+        Ok(ResolutionRecords {
+            live: live.clone(),
+            mappings,
+        })
+    }
+    .await;
+    match prepared {
+        Err(error) => {
+            rollback(&conn, budget).await?;
+            Err(error)
+        }
+        Ok(records) => {
+            if let Err(error) = execute(&conn, "COMMIT", vec![], budget).await {
+                if !conn.is_autocommit() {
+                    rollback(&conn, budget).await?;
+                }
+                return Err(error);
+            }
+            inner.native.recheck(budget)?;
+            Ok(records)
+        }
+    }
+}
