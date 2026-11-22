@@ -1,7 +1,11 @@
 use super::state::{FileObservation, InputOmission, InputRecord, Stored};
 use super::{ContextOptions, context_error};
-use craftsman_harness::{AgentError, AgentState, ModelRequest, Msg, TodoStatus};
+use craftsman_harness::{
+    AgentError, AgentState, ModelRequest, Msg, PartFrom, SourcePart, SourceRef, TodoStatus,
+    TrackedPrepare,
+};
 use serde::Serialize;
+use std::sync::Arc;
 
 const MAX_TODO_SCAN: usize = 128;
 const MAX_TODOS: usize = 16;
@@ -365,6 +369,307 @@ pub(super) fn render(
             } else {
                 payload = None;
             }
+        } else {
+            return Err(context_error());
+        }
+    }
+}
+
+// ---- the same context for a conversation with a source view ------------------
+
+/// The source of one recorded input, kept in memory by the controller of a
+/// conversation with a source view. It is handed over by the adapter that
+/// received the agent's own event for that input.
+pub(super) struct RetainedInput {
+    pub event: u64,
+    pub source: SourceRef,
+}
+
+/// The call that named an observed file path, kept in memory.
+pub(super) struct RetainedPath {
+    pub selector: String,
+    pub call_id: String,
+}
+
+/// Fixed pieces of the context section, each kept as one owned piece so that
+/// an unchanged line is the same piece in every round.
+#[derive(Default)]
+pub(super) struct FixedPieces(Vec<Arc<str>>);
+
+impl FixedPieces {
+    const MOST: usize = 256;
+
+    fn piece(&mut self, text: &str) -> Arc<str> {
+        if let Some(known) = self.0.iter().find(|known| &***known == text) {
+            return known.clone();
+        }
+        if self.0.len() >= Self::MOST {
+            self.0.clear();
+        }
+        let piece: Arc<str> = Arc::from(text);
+        self.0.push(piece.clone());
+        piece
+    }
+}
+
+#[derive(Serialize)]
+struct ViewHeader<'a> {
+    version: u8,
+    known_compactions: u64,
+    uncertain_compaction_observations: u64,
+    omissions: &'a CompiledCounts,
+}
+
+struct QuotedInput {
+    heading: &'static str,
+    event: u64,
+    /// The whole recorded text and where it came from.
+    text: Option<(Arc<str>, SourceRef)>,
+    omission: &'static str,
+}
+
+struct QuotedTodo {
+    status: TodoStatus,
+    text: Arc<str>,
+    from: PartFrom,
+}
+
+struct QuotedFile {
+    path: SourcePart,
+    line: String,
+}
+
+fn status_word(status: TodoStatus) -> &'static str {
+    match status {
+        TodoStatus::InProgress => "in_progress",
+        TodoStatus::Pending => "pending",
+        TodoStatus::Completed => "completed",
+    }
+}
+
+fn label<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// The context section of [`compile`] for a conversation with a source view,
+/// as parts. The guidance, headings, counters and observation facts are the
+/// application's own fixed text. What a person typed, what a todo says and a
+/// file path are parts that name where their text came from, so each is seen
+/// as its own source is seen. An entry whose text has no such source is left
+/// out and counted. Digests and sizes of recorded text are not part of this
+/// section. The byte limit applies to the text as recorded.
+pub(super) fn compile_parts(
+    record: &Stored,
+    prepare: &TrackedPrepare<'_>,
+    options: ContextOptions,
+    inputs: &[RetainedInput],
+    paths: &[RetainedPath],
+    fixed: &mut FixedPieces,
+) -> Result<(Vec<SourcePart>, CompiledCounts), AgentError> {
+    let state = prepare.state();
+    let quoted = |heading: &'static str, input: &InputRecord| {
+        let source = inputs.iter().rev().find(|kept| kept.event == input.event);
+        let text = match (&input.text, source) {
+            (Some(text), Some(kept)) => Some((Arc::from(text.as_str()), kept.source.clone())),
+            _ => None,
+        };
+        let omission = match (&input.omission, &input.text, source) {
+            (Some(InputOmission::TooLarge), _, _) => "too_large",
+            (Some(InputOmission::StorageBudget), _, _) => "storage_budget",
+            (None, Some(_), None) => "no_source",
+            _ => "",
+        };
+        QuotedInput {
+            heading,
+            event: input.event,
+            text,
+            omission,
+        }
+    };
+    let mut initial = record
+        .initial_input
+        .as_ref()
+        .map(|input| quoted("Initial request", input));
+    let mut updates: Vec<QuotedInput> = record
+        .updates
+        .iter()
+        .map(|input| quoted("Recent user input", input))
+        .collect();
+
+    // The same selection and order as the ordinary section. A todo is listed
+    // only when the agent saw a call store its text.
+    let mut order: Vec<_> = state
+        .todos
+        .iter()
+        .enumerate()
+        .rev()
+        .take(MAX_TODO_SCAN)
+        .filter(|(_, todo)| todo.content.len() <= MAX_TODO_BYTES)
+        .collect();
+    order.sort_by_key(|(index, todo)| {
+        (
+            match todo.status {
+                TodoStatus::InProgress => 0,
+                TodoStatus::Pending => 1,
+                TodoStatus::Completed => 2,
+            },
+            *index,
+        )
+    });
+    order.truncate(MAX_TODOS);
+    let mut todos: Vec<QuotedTodo> = order
+        .into_iter()
+        .filter_map(|(index, todo)| {
+            Some(QuotedTodo {
+                status: todo.status,
+                text: Arc::from(todo.content.as_str()),
+                from: prepare.todo_origin(index)?,
+            })
+        })
+        .collect();
+
+    // A path is the text the call of a committed reply carried. The reply is
+    // found through the agent's own retained event for it.
+    let path_part = |selector: &str| -> Option<SourcePart> {
+        let kept = paths.iter().rev().find(|kept| kept.selector == selector)?;
+        let index = state.messages.iter().rposition(|message| {
+            matches!(message, Msg::Assistant { tool_calls, .. }
+                if tool_calls.iter().any(|call| call.id == kept.call_id
+                    && call.args.get("file_path").and_then(serde_json::Value::as_str)
+                        == Some(selector)))
+        })?;
+        let reply = prepare.retained_message(index)?;
+        Some(SourcePart {
+            text: Arc::from(selector),
+            from: PartFrom::Call {
+                reply: reply.source().clone(),
+                call_id: kept.call_id.clone(),
+                pointer: "/file_path".into(),
+            },
+        })
+    };
+    let mut files: Vec<QuotedFile> = Vec::with_capacity(record.files.len());
+    let mut omitted_file_records = 0usize;
+    for file in &record.files {
+        let Some(path) = path_part(&file.selector) else {
+            omitted_file_records += 1;
+            continue;
+        };
+        let mut line = format!(
+            " | event {} | {} | completed={} | {}",
+            file.event,
+            label(&file.operation),
+            file.completed,
+            label(&file.freshness),
+        );
+        if let Some(read) = &file.read {
+            line.push_str(&format!(
+                " | read at event {}, offset {}, limit {}",
+                read.event, read.offset, read.limit
+            ));
+        }
+        line.push('\n');
+        files.push(QuotedFile { path, line });
+    }
+
+    let mut omitted_input_records = 0usize;
+    loop {
+        let listed = || initial.iter().chain(updates.iter());
+        let counts = CompiledCounts {
+            included_input_texts: listed().filter(|input| input.text.is_some()).count(),
+            omitted_input_texts: listed().filter(|input| input.text.is_none()).count()
+                + omitted_input_records,
+            included_files: files.len(),
+            omitted_files: omitted_file_records,
+            included_todos: todos.len(),
+            omitted_todos: state.todos.len().saturating_sub(todos.len()),
+            omitted_input_events: record.omissions.input_events,
+            omitted_selector_events: record.omissions.file_selectors,
+            unindexed_large_results: record.omissions.large_results,
+            bytes: 0,
+        };
+        let header = serde_json::to_string(&ViewHeader {
+            version: 1,
+            known_compactions: record.compactions,
+            uncertain_compaction_observations: record.uncertain_compactions,
+            omissions: &counts,
+        })
+        .map_err(|_| context_error())?;
+        let mut parts = vec![
+            SourcePart::fixed(fixed.piece(CONTEXT_PREFIX)),
+            SourcePart::fixed(fixed.piece(&format!("{header}\n"))),
+        ];
+        for input in listed() {
+            match &input.text {
+                Some((text, source)) => {
+                    parts.push(SourcePart::fixed(
+                        fixed.piece(&format!("{} (event {}):\n", input.heading, input.event)),
+                    ));
+                    parts.push(SourcePart {
+                        text: text.clone(),
+                        from: PartFrom::Source {
+                            source: source.clone(),
+                        },
+                    });
+                    parts.push(SourcePart::fixed(fixed.piece("\n")));
+                }
+                None => parts.push(SourcePart::fixed(fixed.piece(&format!(
+                    "{} (event {}): text omitted ({}).\n",
+                    input.heading, input.event, input.omission
+                )))),
+            }
+        }
+        if !todos.is_empty() {
+            parts.push(SourcePart::fixed(fixed.piece("Current todos:\n")));
+            for todo in &todos {
+                parts.push(SourcePart::fixed(
+                    fixed.piece(&format!("- [{}] ", status_word(todo.status))),
+                ));
+                parts.push(SourcePart {
+                    text: todo.text.clone(),
+                    from: todo.from.clone(),
+                });
+                parts.push(SourcePart::fixed(fixed.piece("\n")));
+            }
+        }
+        if !files.is_empty() {
+            parts.push(SourcePart::fixed(fixed.piece(
+                "File observations (historical, not a freshness guarantee):\n",
+            )));
+            for file in &files {
+                parts.push(SourcePart::fixed(fixed.piece("- ")));
+                parts.push(file.path.clone());
+                parts.push(SourcePart::fixed(fixed.piece(&file.line)));
+            }
+        }
+        let bytes = parts
+            .iter()
+            .try_fold(0usize, |bytes, part| bytes.checked_add(part.text.len()))
+            .ok_or_else(context_error)?;
+        if bytes <= options.max_bytes {
+            return Ok((parts, CompiledCounts { bytes, ..counts }));
+        }
+        // The ordinary section's order of omission.
+        if !files.is_empty() {
+            files.remove(0);
+            omitted_file_records += 1;
+        } else if !todos.is_empty() {
+            todos.pop();
+        } else if let Some(input) = initial.as_mut().filter(|input| input.text.is_some()) {
+            input.text = None;
+            input.omission = "storage_budget";
+        } else if let Some(input) = updates.iter_mut().find(|input| input.text.is_some()) {
+            input.text = None;
+            input.omission = "storage_budget";
+        } else if initial.is_some() {
+            initial = None;
+            omitted_input_records += 1;
+        } else if !updates.is_empty() {
+            updates.remove(0);
+            omitted_input_records += 1;
         } else {
             return Err(context_error());
         }

@@ -28,7 +28,7 @@ what is written to disk are separate views derived from that record.
 | Typing a turn into a privacy conversation in the terminal, the secret and bootstrap interface, `/clear` | not implemented here; another owner's |
 | Memory files, MCP, gadget, shell, web and every other tool argument | not restored |
 | Delete, rename, batch plans | unchanged; no restoration |
-| A sealed human input for a decision taken at an inline prompt, without a parked call | not available: such a decision is the operation's own record; see "Decisions" |
+| A sealed human input for a decision taken at an inline prompt, without a parked call | local registered producer and opaque UI request/presentation/decision core; A's real receiver/modal/choice consumer and independent validation remain pending |
 
 ## What a person reads
 
@@ -279,9 +279,10 @@ wrote it, and goes back to the model through its ordinary projection.
 - A delegated agent's text is not drawn by a frontend, so it has no human
   view; its final answer returns to the root agent as a tool result.
 - No normal session can reach any of this: the user's policy has no owner
-  outside fixtures, the terminal has no entry for a privacy turn, and the
-  builder still refuses a selection together with verification, context
-  and failure controls or local gadgets.
+  outside fixtures, and the terminal has no entry for a privacy turn.
+  Declared verification, context compilation and failure controls are now
+  installed behind the conversation's adapters; see
+  [privacy-provenance.md](privacy-provenance.md), "Controller adapters".
 
 ## What is still to supply
 
@@ -365,3 +366,14 @@ pub struct SessionExtras { pub human_reply_sink: Option<HumanReplySink>, .. }
 the agent issued, before anything reviewed it. It approves nothing and is
 distinct from `ApprovedOperation`, the operation the boundary checks when the
 call reaches its terminal.
+
+
+The canonical local core now retains inline decisions in independently
+registered input/policy owners. The actual UI request binds its private issuer,
+plan, lane, review source, preview and shown digest; only the original recorded
+reply can be consumed. The application must still bind the genuine receiver,
+modal and choice events—these private data objects alone prove no human input
+or file/application permission. Earlier operation-owned decision descriptions
+above record the incomplete candidate; no such record grants current authority.
+The real final file/source/destination checks and all remaining activation/native
+gates stay required.

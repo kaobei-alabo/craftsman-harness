@@ -25,6 +25,7 @@
 //! its own owner and is not changed here. A node's model view is a separate
 //! projection of it.
 
+mod control;
 #[cfg(test)]
 mod deadline_tests;
 mod file_view;
@@ -38,9 +39,10 @@ mod view_tests;
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
+pub(crate) use control::{SelectedControls, SelectedVerification};
 pub use file_view::{
-    DecidedBy, DerivedFileOperation, FileChange, FileDecision, FilePreview, FileRefusal,
-    FileReview, RestoredFileTool, ReviewedFile,
+    DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, RestoredFileTool,
+    ReviewedFile,
 };
 pub(crate) use file_view::{authorized_write, call_to_show};
 pub use human::{
@@ -382,6 +384,17 @@ impl PrivacyView {
         }
     }
 
+    /// Same actual view/lane/input owner for the owned terminal's task.
+    /// This clones only existing owners; it mints no source, policy or agent.
+    pub(crate) fn clone_for_terminal(&self) -> Self {
+        Self {
+            session: self.session.clone(),
+            human_source: self.human_source.clone(),
+            boundary: self.boundary.clone(),
+            policy: self.policy.clone(),
+        }
+    }
+
     pub(crate) fn with_policy(mut self, policy: Option<Arc<dyn CapturedUserPolicy>>) -> Self {
         self.policy = policy;
         self
@@ -569,6 +582,8 @@ impl Ledger {
 }
 
 struct Inner {
+    inline_issuers:
+        std::sync::Mutex<Vec<std::sync::Weak<crate::privacy_entry::InlineDecisionProducer>>>,
     binding: FreshConversationBinding,
     session: Arc<MappingSession>,
     guard: Arc<SendGuard>,
@@ -617,6 +632,26 @@ pub struct PrivacySession {
 }
 
 impl PrivacySession {
+    pub(crate) fn register_inline_issuer(
+        &self,
+        issuer: &Arc<crate::privacy_entry::InlineDecisionProducer>,
+    ) {
+        let mut issuers = self.inner.inline_issuers.lock().unwrap();
+        issuers.retain(|issuer| issuer.strong_count() != 0);
+        issuers.push(Arc::downgrade(issuer));
+    }
+    pub(crate) fn owns_inline_issuer(
+        &self,
+        issuer: &Arc<crate::privacy_entry::InlineDecisionProducer>,
+    ) -> bool {
+        self.inner
+            .inline_issuers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|issuer| issuer.upgrade())
+            .any(|registered| Arc::ptr_eq(&registered, issuer))
+    }
     /// Opens the reserved conversation's scope in an already open vault and
     /// binds the guard to it. The vault, its key and its location are the
     /// caller's; this function opens no file and reads no configuration. The
@@ -640,6 +675,7 @@ impl PrivacySession {
         let guard = SendGuard::from_vault(session.clone(), &records).map_err(SessionStop::Guard)?;
         Ok(Self {
             inner: Arc::new(Inner {
+                inline_issuers: std::sync::Mutex::new(Vec::new()),
                 binding,
                 session,
                 guard,

@@ -15,7 +15,11 @@
 //! - a message the agent appended itself, with the event that produced it;
 //! - text of a call's arguments that a tool handed to a delegated agent;
 //! - a message the agent appended from parts: its own framing around what
-//!   another agent of the conversation sent.
+//!   another agent of the conversation sent;
+//! - an input a person typed, for a section that quotes it whole after the
+//!   controller installed on the agent accepted it;
+//! - the message that carries a call the installed completion controller
+//!   scheduled.
 //!
 //! A conversation has one root agent and the agents it delegates tasks to.
 //! Each has a lane of its own: its replies and results are its own, and a
@@ -31,7 +35,8 @@
 
 use super::*;
 use craftsman_harness::provenance::{
-    ActualAgentOwner, ActualModelInput, ActualPlannedInvocation, ActualRetainedCommit,
+    ActualAgentOwner, ActualBoundaryInput, ActualControllerBindings, ActualHostScheduledCall,
+    ActualIdleCompaction, ActualModelInput, ActualPlannedInvocation, ActualRetainedCommit,
     ActualStagedHostMessage, ActualStagedSummary, ActualToolFact, ActualToolInvocation,
     BoxedBoundaryFuture, FrameworkCommit, ModelViewBoundary, ObservedToolResult, PartFrom,
     ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef, TrackedModelRequest,
@@ -88,6 +93,28 @@ enum ViewSource {
         stage: ActualStagedHostMessage,
         commit: Option<ActualRetainedCommit>,
     },
+    /// What a person typed and the agent retained as an input, for a
+    /// section of that agent that quotes it whole. Made only from the
+    /// agent's own event for the input, in the callback of the controller
+    /// installed on the agent.
+    Input {
+        node: AdmittedNode,
+        commit: ActualRetainedCommit,
+    },
+    /// The message that carries a call the installed completion controller
+    /// scheduled: the agent's own fixed text and that call. Neither is text
+    /// of a model, and the call is no reply's.
+    Hosted {
+        node: AdmittedNode,
+        scheduled: ActualHostScheduledCall,
+    },
+}
+
+/// The call the installed completion controller scheduled, as it was
+/// checked right before it ran. It is not an operation a reply asked for.
+struct HostedOperation {
+    invocation: ActualToolInvocation,
+    scheduled: ActualHostScheduledCall,
 }
 
 /// One agent's side of a conversation: the root agent's, or that of an
@@ -157,6 +184,9 @@ enum AdditionPart {
         node: CommittedModelNode,
         text: Arc<str>,
     },
+    /// The whole text of an input a person typed and the agent retained. It
+    /// goes out as the view of that admitted input.
+    Quoted(AdmittedNode),
 }
 
 /// The most owned host parts one conversation keeps admitted at a time.
@@ -824,12 +854,20 @@ impl PrivacySession {
             };
             // Parts that are, in order, exactly `content`: host text goes
             // out as its view, and model text goes out as the model wrote it.
+            // The whole text of a retained input, as its own view.
+            let quoted = |node: &AdmittedNode| -> Result<String, SessionStop> {
+                if !node.admitted_by(self) {
+                    return Err(SessionStop::Unbound);
+                }
+                node.model_view().map(str::to_owned)
+            };
             let pieces = |parts: &[AdditionPart], content: &str| -> Result<String, SessionStop> {
                 let mut at = 0;
                 let mut seen = String::new();
                 for part in parts {
                     let (length, piece) = match part {
                         AdditionPart::Admitted(node) => (node.captured_len(), host(node)?),
+                        AdditionPart::Quoted(node) => (node.captured_len(), quoted(node)?),
                         AdditionPart::Model { node, text } => {
                             if !written(node) {
                                 return Err(SessionStop::Unbound);
@@ -840,7 +878,9 @@ impl PrivacySession {
                     let fits = content
                         .get(at..at + length)
                         .is_some_and(|recorded| match part {
-                            AdditionPart::Admitted(node) => node.captured_text_is(recorded),
+                            AdditionPart::Admitted(node) | AdditionPart::Quoted(node) => {
+                                node.captured_text_is(recorded)
+                            }
                             AdditionPart::Model { text, .. } => **text == *recorded,
                         });
                     if !fits {
@@ -867,6 +907,7 @@ impl PrivacySession {
                         for part in parts {
                             match part {
                                 AdditionPart::Admitted(node) => system.push_str(&host(node)?),
+                                AdditionPart::Quoted(node) => system.push_str(&quoted(node)?),
                                 AdditionPart::Model { node, text } => {
                                     if !written(node) {
                                         return Err(SessionStop::Unbound);
@@ -1007,7 +1048,7 @@ impl PrivacySession {
                         },
                         ViewSource::Framework {
                             node,
-                            event: FrameworkCommit::CancelNote,
+                            event: FrameworkCommit::CancelNote | FrameworkCommit::CompletionStop,
                             commit,
                         },
                     ) if tool_calls.is_empty()
@@ -1017,6 +1058,25 @@ impl PrivacySession {
                         Msg::Assistant {
                             content: view(node, content)?,
                             tool_calls: Vec::new(),
+                        }
+                    }
+                    // The message that carries a call the installed
+                    // completion controller scheduled: the agent's fixed
+                    // text as its view, and the call as it was scheduled.
+                    (
+                        Msg::Assistant {
+                            content,
+                            tool_calls,
+                        },
+                        ViewSource::Hosted { node, scheduled },
+                    ) if scheduled.commit().message() == message
+                        && retained_input_is(input, scheduled.commit())
+                        && scheduled.owner().same_agent(&actor)
+                        && tool_calls.as_slice() == std::slice::from_ref(scheduled.call()) =>
+                    {
+                        Msg::Assistant {
+                            content: view(node, content)?,
+                            tool_calls: tool_calls.clone(),
                         }
                     }
                     (Msg::Assistant { .. }, ViewSource::Model(node))
@@ -1170,6 +1230,7 @@ impl PrivacySession {
             family: Arc::default(),
             replies: std::sync::OnceLock::new(),
             files: Arc::default(),
+            controls: Default::default(),
         });
         boundary.join_family();
         Ok(boundary)
@@ -1193,7 +1254,15 @@ struct Dispatch {
     decided: Option<Decided>,
     /// The operation checked for the call that is running now.
     in_flight: Option<Arc<ApprovedOperation>>,
+    /// The call the installed completion controller scheduled and that has
+    /// no recorded result yet.
+    hosted: Option<ActualHostScheduledCall>,
+    /// The latest schedules a source was given for. Each gets one.
+    scheduled: Vec<ActualHostScheduledCall>,
 }
+
+/// The most schedules a boundary remembers having given a source for.
+const SCHEDULES: usize = 32;
 
 /// The framework's boundary for one agent of a privacy conversation: the
 /// root agent's, which the session hands out once, or one that a boundary of
@@ -1223,9 +1292,14 @@ pub struct ConversationBoundary {
     /// The file review of the conversation, shared by every boundary of
     /// it. Absent until the host that builds the session sets it.
     files: Arc<std::sync::OnceLock<Arc<super::FileReview>>>,
+    /// The controller adapters made for this boundary's agent, if any.
+    controls: super::control::Installed,
 }
 
 impl ConversationBoundary {
+    pub(crate) fn session_owner(&self) -> Arc<PrivacySession> {
+        self.session.clone()
+    }
     pub(crate) fn require_agent(&self, owner: &ActualAgentOwner) -> Result<(), AgentError> {
         self.session.check().map_err(fault)?;
         if !self
@@ -1300,6 +1374,193 @@ impl ConversationBoundary {
             open,
             text,
             close,
+        })))
+    }
+
+    /// Whether a controller adapter can be made for this boundary now: the
+    /// conversation is live, this is its root agent's boundary and that
+    /// agent is not built yet.
+    fn takes_controls(&self) -> bool {
+        self.session.check().is_ok() && self.is_root() && self.agent.lock().unwrap().is_none()
+    }
+
+    /// Keeps `adapter` as the context and failure controller of this
+    /// boundary's agent. Once, before that agent is built.
+    pub(super) fn install_controls(&self, adapter: &Arc<super::control::SelectedControls>) -> bool {
+        self.takes_controls() && self.controls.set_policy(adapter)
+    }
+
+    /// Keeps `adapter` as the completion check of this boundary's agent.
+    /// Once, before that agent is built.
+    pub(super) fn install_verification(
+        &self,
+        adapter: &Arc<super::control::SelectedVerification>,
+    ) -> bool {
+        self.takes_controls() && self.controls.set_completion(adapter)
+    }
+
+    /// Whether the conversation an adapter was made for is still live.
+    pub(super) fn controls_live(&self) -> Result<(), AgentError> {
+        self.session.check().map_err(fault)
+    }
+
+    /// The source of what a person typed, for a section of this agent that
+    /// quotes it whole. It is given only for the agent's own event of an
+    /// accepted input: an event of this boundary's agent, issued for the
+    /// controller adapter this boundary holds, still in its callback, for a
+    /// retained input whose source is text this conversation admitted for
+    /// exactly the recorded message. A role, a position, equal text or a
+    /// value of the custom state gives none.
+    pub(super) fn accepted_input(
+        &self,
+        event: &ActualBoundaryInput,
+        installed: &Arc<dyn craftsman_harness::AgentBoundaryPolicy>,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(event.owner())?;
+        let commit = event.input().commit();
+        self.require_agent(commit.owner())?;
+        let held = event.input().source().downcast::<ViewSource>();
+        let node = match (held.as_deref(), commit.message()) {
+            (Some(ViewSource::Admitted(node)), Msg::User { content })
+                if node.admitted_by(&self.session) && node.captured_text_is(content) =>
+            {
+                node.clone()
+            }
+            _ => return Err(fault(SessionStop::Unbound)),
+        };
+        if !event.in_callback()
+            || !event.same_controller(installed)
+            || !self.controls.policy_is(installed)
+            || commit.event() != RetainedEvent::Input
+        {
+            return Err(fault(SessionStop::Unbound));
+        }
+        self.session.inner.live().map_err(fault)?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Input {
+            node,
+            commit: commit.clone(),
+        })))
+    }
+
+    /// Whether `event` is this agent's own idle compaction for the
+    /// controller adapter this boundary holds: issued for that adapter with
+    /// its own source, still in its callback, with every message of the
+    /// record before and after it this agent's. What is recorded after it
+    /// is, in the order it had, what was recorded before with the very same
+    /// event and source, and at least one new summary, each beside the
+    /// source this conversation gave when the agent staged exactly that
+    /// summary. Equal text, a role or a count gives nothing.
+    pub(super) fn idle_compaction(
+        &self,
+        event: &ActualIdleCompaction,
+        installed: &Arc<dyn craftsman_harness::AgentBoundaryPolicy>,
+        own: &SourceRef,
+    ) -> Result<(), AgentError> {
+        self.require_agent(event.owner())?;
+        let refuse = || fault(SessionStop::Unbound);
+        if !event.in_callback()
+            || !event.same_controller(installed)
+            || !self.controls.policy_is(installed)
+            || !event.source().is(own)
+        {
+            return Err(refuse());
+        }
+        for message in event.before().iter().chain(event.after()) {
+            self.require_agent(message.commit().owner())?;
+        }
+        let mut next = 0;
+        let mut summaries = 0;
+        for message in event.after() {
+            let kept = event.before()[next..].iter().position(|before| {
+                before.commit().same_commit(message.commit())
+                    && before.source().is(message.source())
+            });
+            if let Some(place) = kept {
+                next += place + 1;
+                continue;
+            }
+            let held = message.source().downcast::<ViewSource>();
+            let staged = matches!(
+                (message.commit().event(), message.commit().summary(), held.as_deref()),
+                (
+                    RetainedEvent::Summary,
+                    Some(actual),
+                    Some(ViewSource::Summary { stage, commit: None, .. }),
+                ) if actual.same_stage(stage) && actual.message() == message.commit().message()
+            );
+            if !staged {
+                return Err(refuse());
+            }
+            summaries += 1;
+        }
+        if summaries == 0 {
+            return Err(refuse());
+        }
+        self.session.inner.live().map_err(fault)
+    }
+
+    /// The source of the message that carries a call the installed
+    /// completion controller scheduled. The event is this agent's, for the
+    /// completion adapter this boundary holds and with that adapter's own
+    /// source; the call is the check the original controller directed last,
+    /// taken once; and the message is the agent's retained carrier of
+    /// exactly that call. The call's arguments are structure only.
+    async fn hosted_source(
+        &self,
+        scheduled: &ActualHostScheduledCall,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(scheduled.owner())?;
+        let inner = &self.session.inner;
+        let commit = scheduled.commit();
+        self.require_agent(commit.owner())?;
+        let adapter = self
+            .controls
+            .completion()
+            .ok_or_else(|| fault(SessionStop::Unbound))?;
+        let installed: Arc<dyn craftsman_harness::CompletionCheck> = adapter.clone();
+        let own = scheduled.same_controller(&installed)
+            && scheduled
+                .source()
+                .is_some_and(|source| adapter.has_source(source))
+            && commit.event() == RetainedEvent::Framework(FrameworkCommit::CompletionCheck);
+        let call = scheduled.call();
+        let content = match commit.message() {
+            Msg::Assistant {
+                content,
+                tool_calls,
+            } if tool_calls.as_slice() == std::slice::from_ref(call) => content,
+            _ => return Err(fault(SessionStop::Unbound)),
+        };
+        let mut strings = Vec::new();
+        string_leaves(&call.args, String::new(), &mut strings);
+        // The check is taken whether or not the rest fits: a directive
+        // schedules one call.
+        let directed = adapter.take_directed();
+        let directed =
+            matches!(&directed, Some((tool, args)) if *tool == call.name && *args == call.args);
+        let again = self
+            .dispatch
+            .lock()
+            .unwrap()
+            .scheduled
+            .iter()
+            .any(|known| known.same_schedule(scheduled));
+        if !own || !directed || again || !strings.is_empty() || self.asked_for(call).is_some() {
+            return Err(fault(SessionStop::Unbound));
+        }
+        let node = self.admit(RawOrigin::HostStatic, content).await?;
+        inner.live().map_err(fault)?;
+        {
+            let mut dispatch = self.dispatch.lock().unwrap();
+            if dispatch.scheduled.len() >= SCHEDULES {
+                dispatch.scheduled.remove(0);
+            }
+            dispatch.scheduled.push(scheduled.clone());
+            dispatch.hosted = Some(scheduled.clone());
+        }
+        Ok(SourceRef::new(Arc::new(ViewSource::Hosted {
+            node,
+            scheduled: scheduled.clone(),
         })))
     }
 
@@ -1534,6 +1795,16 @@ impl ConversationBoundary {
                         {
                             AdditionPart::Admitted(node.clone())
                         }
+                        // The whole text of an input this very agent
+                        // retained, from the source its own controller's
+                        // accepted-input event gave.
+                        Some(ViewSource::Input { node, commit })
+                            if node.admitted_by(&self.session)
+                                && self.require_agent(commit.owner()).is_ok()
+                                && node.captured_text_is(&part.text) =>
+                        {
+                            AdditionPart::Quoted(node.clone())
+                        }
                         _ => return Err(fault(unbound(inner))),
                     }
                 }
@@ -1546,6 +1817,35 @@ impl ConversationBoundary {
 
 #[async_trait::async_trait]
 impl ModelViewBoundary for ConversationBoundary {
+    /// The controllers the agent's builder installed are accepted only when
+    /// they are the very adapters that were made for this boundary, each
+    /// with the source it was made with, on this boundary's own agent, while
+    /// the conversation is live. An agent without controllers needs none.
+    fn validate_controller_sources(
+        &self,
+        bindings: &ActualControllerBindings,
+    ) -> Result<(), AgentError> {
+        self.require_agent(bindings.owner())?;
+        if !self.controls.fit(bindings) {
+            return Err(AgentError::State(
+                "This conversation has no verified controller sources.".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn observe_host_scheduled<'a, 'b, 'f>(
+        &'a self,
+        scheduled: &'b ActualHostScheduledCall,
+    ) -> BoxedBoundaryFuture<'f, SourceRef>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        Box::pin(self.hosted_source(scheduled))
+    }
+
     fn bind_task_parent(&self, parent: &ActualToolInvocation) -> Result<(), AgentError> {
         self.session.check().map_err(fault)?;
         if !self
@@ -1799,6 +2099,7 @@ impl ModelViewBoundary for ConversationBoundary {
             family: self.family.clone(),
             replies: std::sync::OnceLock::new(),
             files: self.files.clone(),
+            controls: Default::default(),
         });
         boundary.join_family();
         Ok(boundary)
@@ -1944,6 +2245,8 @@ impl ModelViewBoundary for ConversationBoundary {
             dispatch.model = Some(node.clone());
             dispatch.decided = None;
             dispatch.in_flight = None;
+            // A scheduled call belongs to the round that scheduled it.
+            dispatch.hosted = None;
         }
         let source = SourceRef::new(Arc::new(ViewSource::Model(node)));
         // The reply is retained. A frontend that shows this agent's replies
@@ -1976,8 +2279,25 @@ impl ModelViewBoundary for ConversationBoundary {
             return Err(fault(SessionStop::Unbound));
         }
         let mut operations = Vec::new();
+        let mut hosted_ran = false;
         for terminal in fact.terminals() {
             self.require_agent(terminal.invocation().owner())?;
+            // A run of the call the completion controller scheduled was
+            // checked as that, and is no operation of a reply.
+            if let Some(hosted) = terminal
+                .operation_source()
+                .and_then(|source| source.downcast::<HostedOperation>())
+            {
+                let scheduled = terminal.invocation().planned().host_scheduled();
+                if !hosted.invocation.same_invocation(terminal.invocation())
+                    || !scheduled.is_some_and(|actual| actual.same_schedule(&hosted.scheduled))
+                    || fact.proposed_call() != hosted.scheduled.call()
+                {
+                    return Err(fault(SessionStop::Unbound));
+                }
+                hosted_ran = true;
+                continue;
+            }
             let operation = terminal
                 .operation_source()
                 .and_then(|source| source.downcast::<ApprovedOperation>())
@@ -2030,6 +2350,16 @@ impl ModelViewBoundary for ConversationBoundary {
         }) {
             dispatch.in_flight = None;
         }
+        // The scheduled call has its recorded result now, whether its tool
+        // ran or a gate answered for it.
+        if hosted_ran
+            || dispatch
+                .hosted
+                .as_ref()
+                .is_some_and(|scheduled| scheduled.call() == fact.proposed_call())
+        {
+            dispatch.hosted = None;
+        }
         Ok(SourceRef::new(Arc::new(ViewSource::Result {
             view,
             actual,
@@ -2081,8 +2411,11 @@ impl ModelViewBoundary for ConversationBoundary {
                 | FrameworkCommit::UnrecordedCall,
                 Msg::Tool { content, .. },
             ) => (RawOrigin::HostStatic, content),
+            // The agent's fixed closing note of a cancelled turn, and its
+            // fixed note that the completion check did not accept a turn.
+            // Each is known by the agent's own event for its append.
             (
-                FrameworkCommit::CancelNote,
+                FrameworkCommit::CancelNote | FrameworkCommit::CompletionStop,
                 Msg::Assistant {
                     content,
                     tool_calls,
@@ -2134,7 +2467,16 @@ impl ModelViewBoundary for ConversationBoundary {
                 .as_ref()
                 .is_some_and(|decided| decided.call == *call)
         } else {
+            // A reply asked for the call, or the installed completion
+            // controller scheduled it and the agent said so with its event.
             self.asked_for(call).is_some()
+                || self
+                    .dispatch
+                    .lock()
+                    .unwrap()
+                    .hosted
+                    .as_ref()
+                    .is_some_and(|scheduled| scheduled.call() == call)
         };
         if !allowed {
             return Err(fault(unbound(&self.session.inner)));
@@ -2149,7 +2491,76 @@ impl ModelViewBoundary for ConversationBoundary {
         let inner = &self.session.inner;
         inner.live().map_err(fault)?;
         let call = invocation.call();
-        let (model, edited) = if invocation.resumed() {
+        if let Some(scheduled) = invocation.planned().host_scheduled() {
+            // The agent planned this run from the completion controller's
+            // schedule. It runs as that schedule, exactly and unresumed, and
+            // only while it is the one this conversation took a source for.
+            let held = self.dispatch.lock().unwrap().hosted.clone();
+            if let Some(input) = invocation
+                .decision_source()
+                .and_then(|source| source.downcast::<crate::privacy_entry::InlineDecisionInput>())
+            {
+                input
+                    .validate_terminal(&self.session, invocation)
+                    .map_err(|_| fault(unbound(inner)))?;
+            }
+            if invocation.resumed()
+                || invocation.human_edited()
+                || call != scheduled.call()
+                || !held.is_some_and(|held| held.same_schedule(scheduled))
+            {
+                return Err(fault(unbound(inner)));
+            }
+            self.dispatch.lock().unwrap().in_flight = None;
+            return Ok(Some(SourceRef::new(Arc::new(HostedOperation {
+                invocation: invocation.clone(),
+                scheduled: scheduled.clone(),
+            }))));
+        }
+        let parent_operation = match (invocation.parent(), invocation.parent_source()) {
+            (None, None) => None,
+            (Some(parent), Some(source)) => {
+                self.require_agent(parent.owner())?;
+                let operation = source
+                    .downcast::<ApprovedOperation>()
+                    .filter(|operation| {
+                        operation.is_for(parent) && Arc::ptr_eq(&operation.owner, inner)
+                    })
+                    .ok_or_else(|| fault(unbound(inner)))?;
+                Some(operation)
+            }
+            _ => return Err(fault(unbound(inner))),
+        };
+        let inline = invocation
+            .decision_source()
+            .and_then(|source| source.downcast::<crate::privacy_entry::InlineDecisionInput>());
+        let (model, edited) = if let Some(input) = inline {
+            match input.validate_terminal(&self.session, invocation) {
+                Ok(()) => (
+                    self.asked_for(invocation.planned().call())
+                        .ok_or_else(|| fault(unbound(inner)))?,
+                    input.edited(),
+                ),
+                Err(super::FileRefusal::NotApproved)
+                    if !invocation.was_planned_as(input.planned()) =>
+                {
+                    // Unaccepted annotation is no grant and changes no source.
+                    // Only the unchanged actual committed model call can keep
+                    // its origin here. The real file/permission consumer must
+                    // still reject the copied or spent decision before effects.
+                    (
+                        self.asked_for(call).ok_or_else(|| fault(unbound(inner)))?,
+                        false,
+                    )
+                }
+                Err(_) => return Err(fault(unbound(inner))),
+            }
+        } else if let Some(parent) = &parent_operation {
+            if parent.call().map_err(fault)? != call {
+                return Err(fault(unbound(inner)));
+            }
+            (parent.model.clone(), parent.edited)
+        } else if invocation.resumed() {
             let decided = self.dispatch.lock().unwrap().decided.take();
             let model = self.dispatch.lock().unwrap().model.clone();
             match (decided, model) {

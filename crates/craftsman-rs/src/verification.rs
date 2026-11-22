@@ -7,8 +7,8 @@ use crate::{
 use async_trait::async_trait;
 use craftsman_harness::{
     AgentError, AgentMiddleware, AgentState, CompletionAction, CompletionAfterCheck,
-    CompletionCheck, Tool, ToolCall, ToolCtx, ToolDef, ToolErrorKind, ToolMeta, ToolNext,
-    ToolOutcome,
+    CompletionCheck, SourcePart, Tool, ToolCall, ToolCtx, ToolDef, ToolErrorKind, ToolMeta,
+    ToolNext, ToolOutcome, TrackedPrepare, ViewSupport,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -520,6 +520,8 @@ fn state_error(text: &'static str) -> AgentError {
     AgentError::State(text.into())
 }
 
+const ENABLED_NOTE: &str = "Declared verification is enabled. Use the verify tool for actual check results. Existing protected paths require approval of their current changes. Completion is checked against the declared source scopes.";
+
 #[async_trait]
 impl AgentMiddleware for VerificationController {
     fn name(&self) -> &str {
@@ -540,8 +542,24 @@ impl AgentMiddleware for VerificationController {
         Ok(())
     }
     async fn prepare_model(&self, state: &mut AgentState) -> Result<(), AgentError> {
-        state.system_extras.push("Declared verification is enabled. Use the verify tool for actual check results. Existing protected paths require approval of their current changes. Completion is checked against the declared source scopes.".into());
+        state.system_extras.push(ENABLED_NOTE.into());
         Ok(())
+    }
+
+    /// In a conversation with a source view the same note is added as the
+    /// application's own fixed text. The other hooks keep this controller's
+    /// state and change nothing of the recorded state.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        static PIECE: std::sync::OnceLock<Arc<str>> = std::sync::OnceLock::new();
+        let note = PIECE.get_or_init(|| Arc::from(ENABLED_NOTE)).clone();
+        prepare.add_system(vec![SourcePart::fixed(note)])
     }
     async fn around_tool(
         &self,

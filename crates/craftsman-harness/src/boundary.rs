@@ -19,6 +19,17 @@ pub enum HumanInputKind {
 /// Frontend-selected, bounded local bookkeeping and sampling admission.
 /// Default builders have no policy; all existing loop behavior stays unchanged.
 pub trait AgentBoundaryPolicy: Send + Sync {
+    /// Source-bound real idle replacement; the original callback must run
+    /// once before final save after private controller/event validation.
+    fn idle_compaction_committed_with_view(
+        &self,
+        _state: &mut AgentState,
+        _event: &crate::provenance::ActualIdleCompaction,
+    ) -> Result<(), AgentError> {
+        Err(AgentError::State(
+            "This controller has no source for its idle compaction.".into(),
+        ))
+    }
     /// Compatibility only; a declaration cannot grant application authority.
     fn view_support(&self) -> crate::provenance::ViewSupport {
         crate::provenance::ViewSupport::Unadapted

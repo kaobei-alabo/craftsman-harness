@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub struct SubagentGate {
+    inline_source: Option<Arc<crate::privacy_entry::InlineDecisionProducer>>,
+    privacy_prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
     inner: Arc<dyn Tool>,
     approval: Arc<Mutex<ApprovalState>>,
     approval_prompt: Option<ApprovalPrompt>,
@@ -61,6 +63,26 @@ impl SubagentGate {
         workspace_root: &Path,
         correlated: Option<(CallApprovalPrompt, ToolActivitySink)>,
     ) -> Vec<Arc<dyn Tool>> {
+        Self::wrap_all_at_correlated_with_sources(
+            tools,
+            approval,
+            approval_prompt,
+            workspace_root,
+            correlated,
+            None,
+            None,
+        )
+    }
+
+    pub(crate) fn wrap_all_at_correlated_with_sources(
+        tools: Vec<Arc<dyn Tool>>,
+        approval: &Arc<Mutex<ApprovalState>>,
+        approval_prompt: Option<ApprovalPrompt>,
+        workspace_root: &Path,
+        correlated: Option<(CallApprovalPrompt, ToolActivitySink)>,
+        boundary: Option<&Arc<crate::privacy_session::ConversationBoundary>>,
+        privacy_prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
+    ) -> Vec<Arc<dyn Tool>> {
         use crate::tools::{GATED_TOOLS, NETWORK_TOOLS};
         tools
             .into_iter()
@@ -70,13 +92,18 @@ impl SubagentGate {
                     || GATED_TOOLS.contains(&name.as_str())
                     || NETWORK_TOOLS.contains(&name.as_str())
                 {
-                    Arc::new(SubagentGate {
-                        inner: t,
-                        approval: approval.clone(),
-                        approval_prompt: approval_prompt.clone(),
-                        workspace_root: workspace_root.to_path_buf(),
-                        correlated: correlated.clone(),
-                    }) as Arc<dyn Tool>
+                    Arc::new(
+                        SubagentGate {
+                            inline_source: None,
+                            privacy_prompt: privacy_prompt.clone(),
+                            inner: t,
+                            approval: approval.clone(),
+                            approval_prompt: approval_prompt.clone(),
+                            workspace_root: workspace_root.to_path_buf(),
+                            correlated: correlated.clone(),
+                        }
+                        .with_privacy_boundary(boundary),
+                    ) as Arc<dyn Tool>
                 } else {
                     t
                 }
@@ -110,6 +137,21 @@ impl Tool for SubagentGate {
 }
 
 impl SubagentGate {
+    fn with_privacy_boundary(
+        mut self,
+        boundary: Option<&Arc<crate::privacy_session::ConversationBoundary>>,
+    ) -> Self {
+        self.inline_source = boundary.map(|boundary| {
+            crate::privacy_entry::InlineDecisionProducer::register(
+                boundary,
+                self.approval.clone(),
+                self.workspace_root.clone(),
+                self.privacy_prompt.clone(),
+                None,
+            )
+        });
+        self
+    }
     async fn call_tracked(
         &self,
         args: Value,
@@ -197,6 +239,63 @@ impl SubagentGate {
         reviewed: Option<(Arc<crate::privacy_session::ReviewedFile>, Value)>,
     ) -> Result<ToolOutcome, AgentError> {
         let name = self.inner.def().name;
+        if let Some(tracked) = tracked {
+            let Some(producer) = &self.inline_source else {
+                return Ok(ToolOutcome::err(
+                    "This selected delegated call has no registered input/policy producer.",
+                ));
+            };
+            if let Some(invocation) = tracked
+                .invocation()
+                .filter(|invocation| invocation.resumed())
+            {
+                return match producer.resumed_permission(tracked)? {
+                    ToolPermission::Allow => {
+                        tracked
+                            .run_inner_tool(self.inner.as_ref(), invocation.call().clone(), ctx)
+                            .await
+                    }
+                    ToolPermission::Deny(reason) => Ok(ToolOutcome::err(rejection_result(&reason))),
+                    ToolPermission::Prompt => Ok(ToolOutcome::err(
+                        "This call has no accepted parked decision.",
+                    )),
+                };
+            }
+            let resolution = match producer
+                .receive_inline(tracked, call.map(|call| call.id.as_str()))
+                .await
+            {
+                Ok(resolution) => resolution,
+                Err(error @ AgentError::Cancelled) => return Err(error),
+                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+            };
+            return match resolution.permission {
+                ToolPermission::Allow => {
+                    let Some(_invocation) = tracked.invocation() else {
+                        return Ok(ToolOutcome::err(
+                            "This delegated call has no actual terminal invocation.",
+                        ));
+                    };
+                    let Some(_session) = resolution.input.registered_session() else {
+                        return Ok(ToolOutcome::err(
+                            "This delegated decision has no actual issuer.",
+                        ));
+                    };
+                    tracked
+                        .run_inner_tool(self.inner.as_ref(), resolution.call, ctx)
+                        .await
+                }
+                ToolPermission::Deny(_) if resolution.input.was_absent() => {
+                    Ok(ToolOutcome::err(format!(
+                        "Tool '{name}' requires user approval. Ask the main agent to approve or perform this action."
+                    )))
+                }
+                ToolPermission::Deny(reason) => Ok(ToolOutcome::err(rejection_result(&reason))),
+                ToolPermission::Prompt => Ok(ToolOutcome::err(
+                    "This delegated call has no actual answered approval.",
+                )),
+            };
+        }
         // What the gate decides on and shows: the call's arguments, or for a
         // reviewed file operation the same arguments with the real content.
         let reviewed = reviewed.zip(tracked);
@@ -209,10 +308,7 @@ impl SubagentGate {
         // synchronous only (never held across the await below). For a
         // reviewed file operation the same policy is evaluated by the
         // operation, which records an approval where it is taken.
-        let permission = match &reviewed {
-            Some(((reviewed, _), tracked)) => reviewed.policy_decides(&self.approval, tracked),
-            None => self.approval.lock().unwrap().permission(&name, &args),
-        };
+        let permission = self.approval.lock().unwrap().permission(&name, &args);
         match permission {
             ToolPermission::Allow => self.run(args, ctx, tracked).await,
             ToolPermission::Deny(reason) => Ok(ToolOutcome::err(reason)),
@@ -233,28 +329,7 @@ impl SubagentGate {
                         ApprovalPromptResult::Reject("no correlated approval channel".into())
                     }
                 };
-                let decision = match &reviewed {
-                    // The person's decision on a reviewed file operation is
-                    // recorded by the operation when this prompt returns.
-                    Some(((reviewed, _), tracked)) => {
-                        let asked = reviewed.person_decides(tracked, |_| {
-                            let decision = ask();
-                            (
-                                matches!(
-                                    decision,
-                                    ApprovalPromptResult::Approve
-                                        | ApprovalPromptResult::ApproveAlways
-                                ),
-                                decision,
-                            )
-                        });
-                        match asked {
-                            Ok(decision) => decision,
-                            Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
-                        }
-                    }
-                    None => ask(),
-                };
+                let decision = ask();
                 match decision {
                     ApprovalPromptResult::Approve => self.run(args, ctx, tracked).await,
                     ApprovalPromptResult::ApproveAlways => {

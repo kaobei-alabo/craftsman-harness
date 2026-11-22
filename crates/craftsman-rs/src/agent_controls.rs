@@ -13,7 +13,8 @@ use crate::failure_control::{
 use async_trait::async_trait;
 use craftsman_harness::{
     Agent, AgentBoundaryPolicy, AgentError, AgentMiddleware, AgentState, HumanInputKind,
-    ModelBoundaryAction, Msg, Tool, ToolCall, ToolCtx, ToolNext, ToolOutcome,
+    ModelBoundaryAction, Msg, SourcePart, Tool, ToolCall, ToolCtx, ToolNext, ToolOutcome,
+    TrackedPrepare, ViewSupport,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -107,6 +108,22 @@ impl AppControls {
         Arc::new(ControlPrepare {
             controls: self.clone(),
         })
+    }
+
+    /// The custom-state keys this controller keeps its own bookkeeping
+    /// under: the context record and, with failure controls, the input
+    /// stamp. It writes no other part of the recorded state.
+    pub(crate) fn own_keys(&self) -> Vec<&'static str> {
+        let mut keys = vec![ContextController::own_key()];
+        if self.governor.is_some() {
+            keys.push(INPUT_KEY);
+        }
+        keys
+    }
+
+    /// The stamp of the input the last accepted-input callback recorded.
+    pub(crate) fn recorded_input(&self) -> Option<InputStamp> {
+        self.input.lock().ok().and_then(|input| *input)
     }
 
     pub(crate) fn confirmed_pause(&self) -> Option<PauseReceipt> {
@@ -329,6 +346,35 @@ impl AgentMiddleware for ControlPrepare {
         }
         Ok(())
     }
+
+    /// In a conversation with a source view: the runtime observation goes
+    /// to the context controller's own key, and the advisory is added as the
+    /// application's own fixed text.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        if self.controls.runtime_changed.swap(false, Ordering::SeqCst) {
+            self.controls.context.on_own_key(prepare, |context, own| {
+                context.observe_runtime_activity(own)
+            })?;
+        }
+        if self
+            .controls
+            .governor
+            .as_ref()
+            .is_some_and(FailureGovernor::advisory_repeated)
+        {
+            static PIECE: std::sync::OnceLock<Arc<str>> = std::sync::OnceLock::new();
+            let advisory = PIECE.get_or_init(|| Arc::from(ADVISORY)).clone();
+            prepare.add_system(vec![SourcePart::fixed(advisory)])?;
+        }
+        Ok(())
+    }
 }
 
 struct ControlObserver {
@@ -338,6 +384,13 @@ struct ControlObserver {
 impl AgentMiddleware for ControlObserver {
     fn name(&self) -> &str {
         "failure_observations"
+    }
+
+    /// The observer passes the call and its outcome on as they are and
+    /// keeps what it saw in the governor. It changes nothing of the
+    /// recorded state, and the agent checks that on every dispatch.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
     }
     async fn around_tool(
         &self,

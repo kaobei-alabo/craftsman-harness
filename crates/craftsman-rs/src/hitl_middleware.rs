@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub struct ApprovalMiddleware {
+    inline_source: Option<Arc<crate::privacy_entry::InlineDecisionProducer>>,
+    privacy_prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
     approval: Arc<Mutex<ApprovalState>>,
     /// Route activity lines to stderr (one-shot) instead of stdout (REPL), so
     /// the streamed answer on stdout stays clean in headless mode.
@@ -63,6 +65,8 @@ impl ApprovalMiddleware {
         workspace_root: PathBuf,
     ) -> Self {
         Self {
+            inline_source: None,
+            privacy_prompt: None,
             approval,
             activity_to_stderr,
             activity_sink,
@@ -76,6 +80,30 @@ impl ApprovalMiddleware {
 
     pub fn with_call_prompt(mut self, prompt: Option<CallApprovalPrompt>) -> Self {
         self.call_approval_prompt = prompt;
+        self
+    }
+    pub(crate) fn with_privacy_prompt(
+        mut self,
+        prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
+    ) -> Self {
+        self.privacy_prompt = prompt;
+        self
+    }
+    pub(crate) fn with_privacy_boundary(
+        mut self,
+        boundary: Option<&Arc<crate::privacy_session::ConversationBoundary>>,
+    ) -> Self {
+        // Registration belongs to the installed gate's own retained policy
+        // and input callback, not a caller's operation or decision tuple.
+        self.inline_source = boundary.map(|boundary| {
+            crate::privacy_entry::InlineDecisionProducer::register(
+                boundary,
+                self.approval.clone(),
+                self.workspace_root.clone(),
+                self.privacy_prompt.clone(),
+                self.verification.clone(),
+            )
+        });
         self
     }
 
@@ -121,44 +149,6 @@ impl ApprovalMiddleware {
             ToolPermission::Prompt => {}
         }
         Some(self.prompt_approval(call, summary, details))
-    }
-
-    /// The same decision for a call whose file operation was derived before
-    /// this review, in a privacy conversation. The policy is evaluated on
-    /// what will really be written and a person is shown it; whichever
-    /// decides, the decision is recorded by the operation where it is taken
-    /// and carried to the call's terminal. Modes, switches, allow-lists and
-    /// the effect of "always" are the ones above.
-    fn reviewed_decision(
-        &self,
-        reviewed: &Arc<crate::privacy_session::ReviewedFile>,
-        tracked: &craftsman_harness::provenance::TrackedDispatch,
-        call: &ToolCall,
-        summary: &str,
-    ) -> Result<Option<Decision>, crate::privacy_session::FileRefusal> {
-        match reviewed.policy_decides(&self.approval, tracked) {
-            ToolPermission::Allow => return Ok(None),
-            ToolPermission::Deny(reason) => return Ok(Some(Decision::Reject(reason))),
-            ToolPermission::Prompt => {}
-        }
-        // A refusal here is the operation's own, not the person's answer.
-        reviewed
-            .person_decides(tracked, |preview| {
-                // What the person is asked about is the preview itself.
-                let shown = ToolCall {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    args: preview.arguments.clone(),
-                };
-                let details = crate::tools::approval_details_at(
-                    &shown.name,
-                    &shown.args,
-                    &self.workspace_root,
-                );
-                let decision = self.prompt_approval(&shown, summary, &details);
-                (matches!(decision, Decision::Approve), decision)
-            })
-            .map(Some)
     }
 
     fn prompt_approval(&self, call: &ToolCall, summary: &str, details: &str) -> Decision {
@@ -267,7 +257,30 @@ impl AgentMiddleware for ApprovalMiddleware {
             details: details.clone(),
         });
 
-        let decision = if let (Some(controller), Some(review)) = (&self.verification, &review) {
+        let mut running_call = call.clone();
+        let decision = if let Some(tracked) = &tracked {
+            let Some(producer) = &self.inline_source else {
+                return Ok(ToolOutcome::err(
+                    "This selected call has no registered input/policy producer.",
+                ));
+            };
+            match producer.receive_inline(tracked, None).await {
+                Ok(resolution) => {
+                    running_call = resolution.call;
+                    match resolution.permission {
+                        ToolPermission::Allow => None,
+                        ToolPermission::Deny(reason) => Some(Decision::Reject(reason)),
+                        ToolPermission::Prompt => {
+                            return Ok(ToolOutcome::err(
+                                "This call has no actual answered approval.",
+                            ));
+                        }
+                    }
+                }
+                Err(error @ AgentError::Cancelled) => return Err(error),
+                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+            }
+        } else if let (Some(controller), Some(review)) = (&self.verification, &review) {
             let (plan, allowed) = {
                 let state = self.approval.lock().unwrap();
                 (
@@ -291,24 +304,7 @@ impl AgentMiddleware for ApprovalMiddleware {
                 None
             }
         } else {
-            match (&reviewed, &tracked) {
-                (Some(reviewed), Some(tracked)) => {
-                    match self.reviewed_decision(reviewed, tracked, &call, &summary) {
-                        Ok(decision) => decision,
-                        Err(refusal) => {
-                            let content = refusal.to_string();
-                            self.emit_tool_event(ToolActivityEvent::Finished {
-                                call_id,
-                                tool,
-                                content: content.clone(),
-                                is_error: true,
-                            });
-                            return Ok(ToolOutcome::err(content));
-                        }
-                    }
-                }
-                _ => self.approval_decision(&call, &summary, &details),
-            }
+            self.approval_decision(&call, &summary, &details)
         };
         if let Some(Decision::Reject(feedback)) = decision {
             let content = rejection_result(&feedback);
@@ -321,7 +317,7 @@ impl AgentMiddleware for ApprovalMiddleware {
             return Ok(ToolOutcome::err(content));
         }
 
-        let outcome = match next.run(call, ctx).await {
+        let outcome = match next.run(running_call, ctx).await {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.emit_tool_event(ToolActivityEvent::Finished {

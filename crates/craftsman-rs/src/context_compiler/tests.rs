@@ -1075,3 +1075,77 @@ async fn disabled_actual_loop_keeps_default_requests_and_context_key_untouched()
     assert_eq!(requests[0].messages, vec![Msg::user("original input")]);
     assert!(!agent.state.lock().unwrap().custom.contains_key(state::KEY));
 }
+
+#[test]
+fn sources_for_a_source_view_are_kept_in_memory_within_their_bounds() {
+    let controller = controller(4096);
+    let stamp = |revision| InputStamp::for_input(revision, "typed").unwrap();
+    let source = |value: u64| SourceRef::new(Arc::new(value));
+    // The first input and the latest ones are kept; the others go.
+    let first = source(1);
+    controller.retain_input_source(stamp(1), first.clone());
+    let mut last = first.clone();
+    for revision in 2..=40 {
+        last = source(revision);
+        controller.retain_input_source(stamp(revision), last.clone());
+    }
+    let kept = controller.retained_input_sources();
+    assert_eq!(kept.len(), MAX_RETAINED_INPUTS);
+    assert!(kept[0].is(&first) && kept.last().unwrap().is(&last));
+    {
+        let runtime = controller.runtime.lock().unwrap();
+        let events: Vec<u64> = runtime.inputs.iter().map(|kept| kept.event).collect();
+        assert_eq!(events[0], 1);
+        assert_eq!(
+            events[1..],
+            (40 - MAX_RETAINED_INPUTS as u64 + 2..=40).collect::<Vec<_>>()
+        );
+    }
+
+    // A path is kept for a file tool's call with an id and a bounded path:
+    // the latest call per path, and a bounded number of paths.
+    let named = |id: &str, name: &str, path: &str| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        args: json!({"file_path": path}),
+    };
+    controller.retain_path_source(&named("a", "read_file", "one.txt"));
+    controller.retain_path_source(&named("b", "edit_file", "one.txt"));
+    controller.retain_path_source(&named("", "read_file", "no-id.txt"));
+    controller.retain_path_source(&named("c", "grep", "not-a-file-tool.txt"));
+    controller.retain_path_source(&named("d", "write_file", ""));
+    controller.retain_path_source(&named(&"i".repeat(513), "read_file", "long-id.txt"));
+    controller.retain_path_source(&named("e", "read_file", &"p".repeat(513)));
+    controller.retain_path_source(&ToolCall {
+        id: "f".into(),
+        name: "read_file".into(),
+        args: json!({"file_path": 7}),
+    });
+    {
+        let runtime = controller.runtime.lock().unwrap();
+        assert_eq!(runtime.paths.len(), 1);
+        assert_eq!(runtime.paths[0].selector, "one.txt");
+        assert_eq!(runtime.paths[0].call_id, "b");
+    }
+    for index in 0..200 {
+        controller.retain_path_source(&named("g", "read_file", &format!("file-{index}.txt")));
+    }
+    {
+        let runtime = controller.runtime.lock().unwrap();
+        assert_eq!(runtime.paths.len(), MAX_RETAINED_PATHS);
+        assert_eq!(runtime.paths.last().unwrap().selector, "file-199.txt");
+        assert!(runtime.paths.iter().all(|kept| kept.selector != "one.txt"));
+    }
+
+    // A fresh conversation starts without any of them, and a controller
+    // that is not enabled keeps none.
+    let mut state = AgentState::default();
+    controller.clear(&mut state).unwrap();
+    assert!(controller.retained_input_sources().is_empty());
+    assert!(controller.runtime.lock().unwrap().paths.is_empty());
+    let disabled = ContextController::new(ContextOptions::default(), workspace()).unwrap();
+    disabled.retain_input_source(stamp(1), source(1));
+    disabled.retain_path_source(&named("a", "read_file", "one.txt"));
+    assert!(disabled.retained_input_sources().is_empty());
+    assert!(disabled.runtime.lock().unwrap().paths.is_empty());
+}

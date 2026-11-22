@@ -129,13 +129,14 @@ impl Shown {
 /// The review before a file tool runs, as a gate does it: take the
 /// operation the agent carries for this dispatch, look, decide.
 struct Reviewer {
-    decide: Mutex<Decide>,
+    decide: Arc<Mutex<Decide>>,
     shown: Mutex<Vec<Shown>>,
     refusals: Mutex<Vec<FileRefusal>>,
     /// The decision of some other operation, for [`Decide::CarryAnother`].
     another: Mutex<Option<SourceRef>>,
     /// The policy state of this gate, for [`Decide::Policy`].
-    approval: Mutex<crate::hitl::ApprovalState>,
+    approval: Arc<Mutex<crate::hitl::ApprovalState>>,
+    source: Arc<crate::privacy_entry::InlineDecisionProducer>,
     dir: std::path::PathBuf,
 }
 
@@ -179,24 +180,21 @@ impl AgentMiddleware for Reviewer {
         let decide = *self.decide.lock().unwrap();
         match decide {
             Decide::Approve | Decide::ApproveThenDisturb => {
-                reviewed
-                    .person_decides(&tracked, |preview| {
-                        look(&preview);
-                        (true, ())
-                    })
-                    .unwrap();
+                derived.preview(|preview| look(&preview)).unwrap();
+                let resolution = self.source.receive_inline(&tracked, None).await.unwrap();
+                assert_eq!(resolution.permission, crate::hitl::ToolPermission::Allow);
                 if decide == Decide::ApproveThenDisturb {
                     let path = call.args["file_path"].as_str().unwrap();
                     std::fs::write(self.dir.join(path), "changed by someone else").unwrap();
                 }
             }
             Decide::Deny => {
-                reviewed
-                    .person_decides(&tracked, |preview| {
-                        look(&preview);
-                        (false, ())
-                    })
-                    .unwrap();
+                derived.preview(|preview| look(&preview)).unwrap();
+                let resolution = self.source.receive_inline(&tracked, None).await.unwrap();
+                assert!(matches!(
+                    resolution.permission,
+                    crate::hitl::ToolPermission::Deny(_)
+                ));
                 return Ok(ToolOutcome::err("Denied by the reviewer."));
             }
             Decide::LookOnly => derived.preview(|preview| look(&preview)).unwrap(),
@@ -216,7 +214,13 @@ impl AgentMiddleware for Reviewer {
             }
             Decide::Policy => {
                 derived.preview(|preview| look(&preview)).unwrap();
-                match reviewed.policy_decides(&self.approval, &tracked) {
+                match self
+                    .source
+                    .receive_inline(&tracked, None)
+                    .await
+                    .unwrap()
+                    .permission
+                {
                     crate::hitl::ToolPermission::Allow => {}
                     crate::hitl::ToolPermission::Deny(reason) => {
                         return Ok(ToolOutcome::err(reason));
@@ -269,6 +273,7 @@ struct Helper<'a> {
     side: &'a MockServer,
     prompt: Option<crate::agent::ApprovalPrompt>,
     approval: crate::hitl::ApprovalState,
+    private: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
 }
 
 async fn set_up(
@@ -277,6 +282,24 @@ async fn set_up(
     rule: Option<FileDataFormat>,
     sink: crate::agent::TokenSink,
     helper: Option<Helper<'_>>,
+) -> Files {
+    set_up_with_main_gate(vault, server, rule, sink, helper, None).await
+}
+
+struct MainGate {
+    approval: Arc<Mutex<crate::hitl::ApprovalState>>,
+    legacy: Option<crate::agent::ApprovalPrompt>,
+    private: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
+    store: Arc<craftsman_harness::testing::MemCheckpointer>,
+}
+
+async fn set_up_with_main_gate(
+    vault: &Vault,
+    server: &MockServer,
+    rule: Option<FileDataFormat>,
+    sink: crate::agent::TokenSink,
+    helper: Option<Helper<'_>>,
+    main: Option<MainGate>,
 ) -> Files {
     let source = LiteralSource::new(&[(EMAIL, "email"), (PHONE, "phone")]);
     let session = Arc::new(
@@ -311,17 +334,50 @@ async fn set_up(
     // for this agent and every agent it delegates to.
     let review = FileReview::new(&policy, dir.path().to_path_buf());
     boundary.review_files(review.clone());
+    let decision = Arc::new(Mutex::new(Decide::Approve));
+    let approval = Arc::new(Mutex::new(crate::hitl::ApprovalState::default()));
+    let received_decision = decision.clone();
+    let source = crate::privacy_entry::InlineDecisionProducer::register_reader(
+        &boundary,
+        approval.clone(),
+        dir.path().to_path_buf(),
+        Arc::new(move |_, _, _, _| match *received_decision.lock().unwrap() {
+            Decide::Deny => {
+                crate::privacy_entry::HumanChoice::Deny("Denied by the reviewer.".into())
+            }
+            Decide::Policy => crate::privacy_entry::HumanChoice::Absent,
+            _ => crate::privacy_entry::HumanChoice::Approve,
+        }),
+    );
     let reviewer = Arc::new(Reviewer {
-        decide: Mutex::new(Decide::Approve),
+        decide: decision,
         shown: Mutex::default(),
         refusals: Mutex::default(),
         another: Mutex::default(),
-        approval: Mutex::default(),
+        approval,
+        source,
         dir: dir.path().to_path_buf(),
     });
-    let mut builder = Agent::builder(Arc::new(provider))
-        .model_view_boundary(Some(boundary.clone()))
-        .middleware(reviewer.clone());
+    let mut builder =
+        Agent::builder(Arc::new(provider)).model_view_boundary(Some(boundary.clone()));
+    builder = match main {
+        None => builder.middleware(reviewer.clone()),
+        Some(main) => builder
+            .middleware(Arc::new(
+                crate::hitl_middleware::ApprovalMiddleware::new_at(
+                    main.approval,
+                    false,
+                    Some(Arc::new(|_| {})),
+                    None,
+                    main.legacy,
+                    dir.path().to_path_buf(),
+                )
+                .with_privacy_prompt(main.private)
+                .with_privacy_boundary(Some(&boundary)),
+            ))
+            .checkpointer(main.store)
+            .durable_turn_checkpoints(true),
+    };
     let around = Arc::new(Around::default());
     let mut plain: Vec<Arc<dyn Tool>> = Vec::new();
     for name in ["write_file", "edit_file"] {
@@ -342,16 +398,24 @@ async fn set_up(
         )
         .await
         .unwrap();
+        let bound_prompt = helper.private.or_else(|| {
+            helper
+                .prompt
+                .as_ref()
+                .map(|read| bound_test_ui(read.clone()))
+        });
         let spec = SubAgentSpec {
             name: "helper".into(),
             description: "Writes notes.".into(),
             system_prompt: "You write notes.".into(),
-            tools: crate::agent::gated_for_delegation(
+            tools: crate::agent::gated_for_delegation_with_privacy(
                 plain.clone(),
                 &Arc::new(Mutex::new(helper.approval)),
                 (&helper.prompt, &None),
                 dir.path(),
                 Some(&review),
+                Some(&boundary),
+                bound_prompt,
             ),
             model: Some(delegated),
             harness_profile: None,
@@ -1143,6 +1207,7 @@ async fn delegated_files(
         side,
         prompt: channel.then_some(prompt),
         approval,
+        private: None,
     };
     let f = set_up(vault, root, rule, Arc::new(|_: &str| {}), Some(helper)).await;
     let number = f
@@ -1192,6 +1257,54 @@ async fn told_the_helper(side: &MockServer) -> String {
         .as_str()
         .unwrap()
         .to_owned()
+}
+
+/// A synthetic actual receiver/modal/choice adapter for local source tests.
+/// Its production counterpart is A's real TUI owner, not an ordinary callback.
+fn bound_test_ui(
+    read: crate::agent::ApprovalPrompt,
+) -> Arc<crate::privacy_entry::PrivacyApprovalPrompt> {
+    bound_test_choice_ui(Arc::new(move |review| {
+        match read(&review.call.name, review.summary, review.details) {
+            crate::agent::ApprovalPromptResult::Approve => {
+                crate::privacy_entry::HumanChoice::Approve
+            }
+            crate::agent::ApprovalPromptResult::ApproveAlways => {
+                crate::privacy_entry::HumanChoice::ApproveAlways
+            }
+            crate::agent::ApprovalPromptResult::Reject(raw) => {
+                crate::privacy_entry::HumanChoice::Deny(raw)
+            }
+        }
+    }))
+}
+
+fn bound_test_choice_ui(
+    read: Arc<
+        dyn for<'a> Fn(
+                crate::privacy_entry::PrivacyApprovalView<'a>,
+            ) -> crate::privacy_entry::HumanChoice
+            + Send
+            + Sync,
+    >,
+) -> Arc<crate::privacy_entry::PrivacyApprovalPrompt> {
+    use crate::privacy_entry::{
+        PrivacyApprovalDecision, PrivacyApprovalPresentation, PrivacyApprovalRequest,
+        PrivacyApprovalUi, PrivacyApprovalView, register_privacy_approval_ui,
+    };
+    let owner = Arc::new(Mutex::new(None::<Arc<PrivacyApprovalUi>>));
+    let receiver = owner.clone();
+    let (prompt, ui) =
+        register_privacy_approval_ui(Arc::new(move |request: PrivacyApprovalRequest| {
+            let ui = receiver.lock().unwrap().clone()?;
+            let presentation: PrivacyApprovalPresentation = ui.present(&request).ok()?;
+            let review: PrivacyApprovalView<'_> = presentation.review();
+            let choice = read(review);
+            let decision: PrivacyApprovalDecision = ui.decide(presentation, choice).ok()?;
+            Some(decision)
+        }));
+    *owner.lock().unwrap() = Some(ui);
+    prompt
 }
 
 #[tokio::test]
@@ -1631,5 +1744,262 @@ async fn an_absent_or_unparsable_answer_writes_nothing_and_keeps_the_call_as_it_
         assert!(matches!(&messages[1], Msg::Assistant { tool_calls, .. }
             if tool_calls[0].args == arguments));
         nothing_original_sent(&server).await;
+    }
+}
+
+#[tokio::test]
+async fn registered_main_gate_keeps_actual_choice_policy_effect_result_and_save() {
+    use craftsman_harness::testing::MemCheckpointer;
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    // Actual approval, Always, denial, automatic permission, and legacy-only
+    // refusal. No callback/budget fault or replay scenario is injected.
+    for case in 0..6 {
+        let server = MockServer::start().await;
+        let state = Arc::new(Mutex::new(crate::hitl::ApprovalState {
+            auto_approve: case == 3,
+            ..Default::default()
+        }));
+        let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = read_count.clone();
+        let policy = state.clone();
+        let callback: crate::agent::ApprovalPrompt = Arc::new(move |_, _, details| {
+            assert!(policy.try_lock().is_ok());
+            assert!(details.contains(EMAIL));
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match case {
+                1 => crate::agent::ApprovalPromptResult::ApproveAlways,
+                2 => crate::agent::ApprovalPromptResult::Reject("actual person declined".into()),
+                _ => crate::agent::ApprovalPromptResult::Approve,
+            }
+        });
+        let mut absent_owner = None;
+        let private = if case == 5 {
+            let (prompt, ui) =
+                crate::privacy_entry::register_privacy_approval_ui(Arc::new(|_| None));
+            absent_owner = Some(ui);
+            Some(prompt)
+        } else {
+            (case < 3).then(|| bound_test_ui(callback.clone()))
+        };
+        let store = Arc::new(MemCheckpointer::default());
+        let f = set_up_with_main_gate(
+            &vault,
+            &server,
+            Some(FileDataFormat::PlainText),
+            Arc::new(|_| {}),
+            None,
+            Some(MainGate {
+                approval: state.clone(),
+                legacy: Some(callback),
+                private,
+                store: store.clone(),
+            }),
+        )
+        .await;
+        let mut script = vec![file_call(
+            "c1",
+            "write_file",
+            json!({
+                "file_path": "note.txt", "content": format!("Contact {}.", f.placeholder)
+            }),
+        )];
+        if case == 1 {
+            script.push(file_call(
+                "c2",
+                "write_file",
+                json!({
+                    "file_path": "second.txt", "content": format!("Contact {}.", f.placeholder)
+                }),
+            ));
+        }
+        script.push(answer("chat", &["done"]));
+        scripted(&server, script).await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        let writes = matches!(case, 0 | 1 | 3);
+        if writes {
+            assert_eq!(
+                std::fs::read_to_string(f.dir.path().join("note.txt")).unwrap(),
+                format!("Contact {EMAIL}.")
+            );
+            let invocation = last_invocation(&f.agent);
+            let input = invocation
+                .decision_source()
+                .unwrap()
+                .downcast::<crate::privacy_entry::InlineDecisionInput>()
+                .unwrap();
+            assert!(input.registered_session().is_some() && !input.edited());
+            assert_eq!(input.action(), Some(HitlAction::Approve));
+        } else {
+            assert!(!f.dir.path().join("note.txt").exists());
+            assert!(f.agent.actual_terminal_outcomes().unwrap().is_empty());
+            assert!(result_at(&f.agent, 2).1);
+        }
+        assert_eq!(
+            read_count.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(case < 3)
+        );
+        assert_eq!(state.lock().unwrap().auto_approve, matches!(case, 1 | 3));
+        if case == 1 {
+            assert_eq!(
+                std::fs::read_to_string(f.dir.path().join("second.txt")).unwrap(),
+                format!("Contact {EMAIL}.")
+            );
+        }
+        if case == 4 {
+            assert!(result_at(&f.agent, 2).0.contains("registered private UI"));
+        }
+        if case == 5 {
+            assert!(absent_owner.is_some());
+            assert!(
+                result_at(&f.agent, 2)
+                    .0
+                    .contains("no actual answered approval")
+            );
+        }
+        let state = f.agent.state.lock().unwrap().clone();
+        assert_eq!(
+            store.saves.lock().unwrap().last().unwrap().2.messages,
+            state.messages
+        );
+        assert!(
+            state
+                .messages
+                .iter()
+                .any(|msg| matches!(msg, Msg::Assistant { tool_calls, .. }
+            if tool_calls.iter().any(|call| call.args.to_string().contains(&f.placeholder))))
+        );
+        assert!(f.session.check().is_ok());
+        nothing_original_sent(&server).await;
+    }
+}
+
+#[tokio::test]
+async fn registered_inline_raw_edits_keep_human_origin_on_main_and_delegated_calls() {
+    use crate::privacy_entry::{HumanChoice, InlineDecisionInput};
+    use craftsman_harness::testing::MemCheckpointer;
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    for delegated in [false, true] {
+        for equal_json in [false, true] {
+            let root_server = MockServer::start().await;
+            let side = MockServer::start().await;
+            let raw = if equal_json {
+                json!({"file_path":"note.txt","content":"ordinary same bytes"}).to_string()
+            } else {
+                format!(" {{ \"file_path\": \"note.txt\", \"content\": \"Typed {EMAIL}.\" }} ")
+            };
+            let entered = raw.clone();
+            let private =
+                bound_test_choice_ui(Arc::new(move |_| HumanChoice::Edit(entered.clone())));
+            let store = Arc::new(MemCheckpointer::default());
+            let f = if delegated {
+                set_up_with_main_gate(
+                    &vault,
+                    &root_server,
+                    Some(FileDataFormat::PlainText),
+                    Arc::new(|_| {}),
+                    Some(Helper {
+                        side: &side,
+                        prompt: None,
+                        approval: Default::default(),
+                        private: Some(private),
+                    }),
+                    None,
+                )
+                .await
+            } else {
+                set_up_with_main_gate(
+                    &vault,
+                    &root_server,
+                    Some(FileDataFormat::PlainText),
+                    Arc::new(|_| {}),
+                    None,
+                    Some(MainGate {
+                        approval: Arc::new(Mutex::new(Default::default())),
+                        legacy: None,
+                        private: Some(private),
+                        store: store.clone(),
+                    }),
+                )
+                .await
+            };
+            let original = json!({"file_path":"note.txt","content": if equal_json {
+                "ordinary same bytes".to_owned()
+            } else { format!("Originally {}.", f.placeholder) }});
+            if delegated {
+                delegates_a_note(&root_server, &side, original["content"].as_str().unwrap()).await;
+            } else {
+                scripted(
+                    &root_server,
+                    vec![
+                        file_call("c1", "write_file", original.clone()),
+                        answer("chat", &["done"]),
+                    ],
+                )
+                .await;
+            }
+            f.agent
+                .run_turn_with_view(f.typed.clone(), f.source.clone())
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(f.dir.path().join("note.txt")).unwrap(),
+                if equal_json {
+                    "ordinary same bytes".to_owned()
+                } else {
+                    format!("Typed {EMAIL}.")
+                }
+            );
+            assert_eq!(
+                *f.around.steps.lock().unwrap(),
+                ["began note.txt", "finished note.txt"]
+            );
+            let all = if delegated {
+                let returned = f.agent.actual_task_returns().unwrap();
+                assert_eq!(returned.len(), 1);
+                assert!(returned[0].failure().is_none());
+                returned[0].terminal_outcomes().to_vec()
+            } else {
+                f.agent.actual_terminal_outcomes().unwrap()
+            };
+            let actual = all
+                .iter()
+                .find(|event| {
+                    event.invocation().call().name == "write_file"
+                        && (!delegated || event.invocation().parent().is_some())
+                })
+                .unwrap();
+            let invocation = actual.invocation();
+            assert!(invocation.human_edited());
+            let input = invocation
+                .decision_source()
+                .unwrap()
+                .downcast::<InlineDecisionInput>()
+                .unwrap();
+            assert_eq!(input.raw_edit(), Some(raw.as_str()));
+            assert!(input.edited());
+            assert_eq!(
+                invocation.call().args,
+                serde_json::from_str::<Value>(&raw).unwrap()
+            );
+            assert_eq!(invocation.planned().call().args, original);
+            if equal_json {
+                assert_eq!(invocation.call().args, invocation.planned().call().args);
+            }
+            if !delegated {
+                assert_eq!(
+                    store.saves.lock().unwrap().last().unwrap().2.messages,
+                    recorded(&f.agent)
+                );
+            }
+            nothing_original_sent(&root_server).await;
+            if delegated {
+                nothing_original_sent(&side).await;
+            }
+        }
     }
 }

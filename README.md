@@ -42,9 +42,10 @@ normal-session integration is still pending. See [development status](docs/priva
 A private [restoration candidate](docs/privacy-restore.md) supplies a separate
 human view of a committed reply and derived content for file writes or edits,
 for the main agent and delegated agents behind their own gate. Its actual
-pre-review source is wired, while independently registered human/automatic
-decision producers remain incomplete; a
-digest or gate-owned approval is insufficient. The file tool still runs
+pre-review source and independently registered inline policy/human producers now
+exist in the local correction branch. Human approval uses an opaque request,
+presentation and original reply from the registered UI; an ordinary callback,
+digest or operation-owned decision is insufficient. The file tool still runs
 its own checkpoint and diagnostics around such a write, and the terminal's
 bridge draws a committed reply once through its safe backend. Nothing selects
 any of it yet: the user's policy has no owner outside test fixtures and the
@@ -65,9 +66,20 @@ either. The local core correction retains actual input/reply/tool facts and
 sealed human decisions, with a separate sourced model view and actual child/
 notification owners. It adds actual pre-review/terminal events, retained end/save
 failures and stop checks for new selected invocations. Kept native items remain exact through compaction; changed
-native replies refuse replay. Real policy/frontend/restore adapters and
-independent validation remain required before activation. Failed local checks
-and the unresolved native linker warning remain recorded.
+native replies refuse replay. Declared verification, context compilation and
+failure controls now have private
+[controller adapters](docs/privacy-provenance.md#controller-adapters): the
+session's original controllers run behind them, the context section is sent as
+source parts, and a declared check runs with its real commands and result,
+whether the model asks for it or the verification controller schedules it. A
+stop by that controller is recorded with its source and ends the conversation,
+and a compaction tells the original controller. These consume the framework's
+controller, completion and compaction events; they do not supply the key,
+policy or actual terminal receiver/modal/choice/shutdown ownership. The local
+inline core supplies its own opaque decision producers; real
+policy/frontend/restore adapters and independent validation remain required
+before activation. Failed local checks and the unresolved native linker warning
+remain recorded.
 
 ## Planned WASM enhancement
 
