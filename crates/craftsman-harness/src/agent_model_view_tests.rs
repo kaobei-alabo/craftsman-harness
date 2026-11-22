@@ -329,11 +329,16 @@ async fn a_selected_agent_with_a_part_that_has_no_source_path_refuses() {
     let boundary = Arc::new(Boundary::default());
     let model = ViewModel::new(vec![Msg::assistant("unused")]);
     let base = || Agent::builder(model.clone()).model_view_boundary(Some(boundary.clone()));
-    // System text outside the boundary, and any middleware.
+    // System text outside the boundary, and a middleware whose author made
+    // no statement for the boundary.
+    struct Unstated;
+    impl crate::AgentMiddleware for Unstated {
+        fn name(&self) -> &str {
+            "unstated"
+        }
+    }
     let with_system = base().system_prompt("untracked system text").build();
-    let with_middleware = base()
-        .middleware(Arc::new(crate::builtin::todos::TodoListMiddleware::new()))
-        .build();
+    let with_middleware = base().middleware(Arc::new(Unstated)).build();
     for agent in [&with_system, &with_middleware] {
         assert!(matches!(
             agent.run_turn_with_view("raw", source("input")).await,
@@ -484,6 +489,8 @@ use crate::{AgentMiddleware, ToolCtx, ToolOutcome};
 struct Frontiers {
     events: Mutex<Vec<String>>,
     refuse_dispatch: AtomicBool,
+    /// Every system addition it was asked about: (where from, text) per part.
+    additions: Mutex<Vec<Vec<(String, String)>>>,
 }
 
 impl Frontiers {
@@ -539,10 +546,60 @@ impl ModelViewBoundary for Frontiers {
         self.commit_model(receipt, committed).await
     }
 
+    async fn system_addition(
+        &self,
+        parts: &[crate::provenance::SourcePart],
+    ) -> Result<SourceRef, AgentError> {
+        use crate::provenance::PartFrom;
+        let mut additions = self.additions.lock().unwrap();
+        additions.push(
+            parts
+                .iter()
+                .map(|part| {
+                    let from = match &part.from {
+                        PartFrom::Fixed => "fixed".to_owned(),
+                        PartFrom::Read { what } => format!("read {what}"),
+                        PartFrom::Call {
+                            reply,
+                            call_id,
+                            pointer,
+                        } => format!("call {} {call_id} {pointer}", tag(reply)),
+                        PartFrom::CallJson {
+                            reply,
+                            call_id,
+                            pointer,
+                        } => format!("call json {} {call_id} {pointer}", tag(reply)),
+                    };
+                    (from, part.text.to_string())
+                })
+                .collect(),
+        );
+        Ok(source(&format!("addition:{}", additions.len() - 1)))
+    }
+
     async fn observe_tool_result(
         &self,
         result: ObservedToolResult<'_>,
     ) -> Result<SourceRef, AgentError> {
+        if !result.appended.is_empty() {
+            self.note(format!(
+                "appended {} part(s) to {}",
+                result.appended.len(),
+                result.call_id
+            ));
+        }
+        if !result.parts.is_empty() {
+            use crate::provenance::PartFrom;
+            let made: Vec<String> = result
+                .parts
+                .iter()
+                .map(|part| match &part.from {
+                    PartFrom::CallJson { pointer, .. } => format!("<{pointer}>"),
+                    _ => part.text.to_string(),
+                })
+                .collect();
+            self.note(format!("parts of {}: {}", result.call_id, made.join("")));
+        }
         self.note(format!(
             "result {} {:?} reached=[{}] returned={:?}",
             result.call_id,
@@ -1355,4 +1412,212 @@ async fn a_statement_does_not_cover_changes_to_todos_files_custom_state_or_a_rep
     assert!(matches!(result, Ok(TurnResult::Done(_))));
     assert_eq!(model.seen.lock().unwrap().len(), 2);
     assert_eq!(agent.state.lock().unwrap().custom["tool"], 1);
+}
+
+// ---- tracked system additions: todos, memory, reminders -----------------------
+
+fn todo_call(id: &str, items: &[(&str, &str)]) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        name: "write_todos".into(),
+        args: serde_json::json!({"todos": items
+            .iter()
+            .map(|(content, status)| serde_json::json!({"content": content, "status": status}))
+            .collect::<Vec<_>>()}),
+    }
+}
+
+fn memory_backend(text: &str) -> Arc<crate::StateFs> {
+    let state = Arc::new(Mutex::new(AgentState::default()));
+    state.lock().unwrap().files.insert(
+        "/memories/AGENTS.md".into(),
+        crate::FileData {
+            content: text.into(),
+            modified: false,
+        },
+    );
+    Arc::new(crate::StateFs::new(state))
+}
+
+fn normal_middleware() -> Vec<Arc<dyn AgentMiddleware>> {
+    use crate::builtin::{MemoryMiddleware, SystemRemindersMiddleware, TodoListMiddleware};
+    vec![
+        Arc::new(TodoListMiddleware::new()),
+        Arc::new(MemoryMiddleware::new(
+            memory_backend("prefers short answers"),
+            vec!["/memories/AGENTS.md".into()],
+        )),
+        Arc::new(SystemRemindersMiddleware::new(1)),
+    ]
+}
+
+#[tokio::test]
+async fn todos_memory_and_reminders_add_the_same_text_as_parts_with_their_origins() {
+    let script = || {
+        vec![
+            calls(vec![todo_call(
+                "c1",
+                &[("first step", "in_progress"), ("second step", "pending")],
+            )]),
+            calls(vec![echo_call("c2", "work")]),
+            Msg::assistant("done"),
+        ]
+    };
+    let model = ViewModel::new(script());
+    let boundary = Arc::new(Frontiers::default());
+    let mut builder = Agent::builder(model.clone())
+        .tool(Arc::new(Echo(AtomicUsize::new(0))))
+        .model_view_boundary(Some(boundary.clone()));
+    for entry in normal_middleware() {
+        builder = builder.middleware(entry);
+    }
+    let agent = builder.build();
+    agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+
+    // The same conversation on an agent without a boundary.
+    let plain_model = Arc::new(ScriptedModel::new(script()));
+    let mut builder = Agent::builder(plain_model.clone()).tool(Arc::new(Echo(AtomicUsize::new(0))));
+    for entry in normal_middleware() {
+        builder = builder.middleware(entry);
+    }
+    let plain = builder.build();
+    plain.run_turn("go").await.unwrap();
+    // The record is the same, the stale-list reminder on the second result
+    // and the round counters included.
+    assert_eq!(recorded(&agent), recorded(&plain));
+    assert_eq!(
+        agent.state.lock().unwrap().custom,
+        plain.state.lock().unwrap().custom
+    );
+    assert_eq!(
+        agent.state.lock().unwrap().todos,
+        plain.state.lock().unwrap().todos
+    );
+    assert!(matches!(&recorded(&agent)[4], Msg::Tool { content, .. }
+        if content.starts_with("work") && content.contains("<system-reminder>")));
+
+    // Every round added two sections, todos then memory, and joined they
+    // are exactly the system text the other agent sent.
+    let additions = boundary.additions.lock().unwrap().clone();
+    assert_eq!(additions.len(), 6);
+    let plain_requests = plain_model.requests.lock().unwrap();
+    for (round, request) in plain_requests.iter().enumerate() {
+        let joined: String = additions[round * 2..round * 2 + 2]
+            .iter()
+            .map(|parts| {
+                let text: String = parts.iter().map(|(_, text)| text.as_str()).collect();
+                format!("\n\n{text}")
+            })
+            .collect();
+        assert_eq!(joined, request.system, "round {round}");
+    }
+    assert_eq!(
+        model.seen.lock().unwrap()[2].system,
+        ["addition:4", "addition:5"]
+    );
+
+    // Before any todo exists the section is the fixed prompt alone. After the
+    // call it carries each todo's text as text of that call's arguments, in
+    // the reply that asked for it, between the application's own labels.
+    assert_eq!(
+        additions[0]
+            .iter()
+            .map(|(from, _)| from.as_str())
+            .collect::<Vec<_>>(),
+        ["fixed"]
+    );
+    let todo_parts: Vec<(&str, &str)> = additions[2]
+        .iter()
+        .skip(2)
+        .map(|(from, text)| (from.as_str(), text.as_str()))
+        .collect();
+    assert_eq!(
+        todo_parts,
+        [
+            ("fixed", "- [InProgress] "),
+            ("call model:receipt:0 c1 /todos/0/content", "first step"),
+            ("fixed", "\n"),
+            ("fixed", "- [Pending] "),
+            ("call model:receipt:0 c1 /todos/1/content", "second step"),
+            ("fixed", "\n"),
+        ]
+    );
+    // What was read from the memory store is a part of its own, named by
+    // what was read.
+    assert!(additions[1].contains(&(
+        "read /memories/AGENTS.md".to_owned(),
+        "prefers short answers".to_owned()
+    )));
+    assert!(
+        additions[1]
+            .iter()
+            .filter(|(from, _)| from != "fixed")
+            .count()
+            == 1
+    );
+    // The reminder the middleware appended was announced with the result.
+    assert!(
+        boundary
+            .events()
+            .contains(&"appended 1 part(s) to c2".to_owned())
+    );
+    // The todo tool said what its own outcome is made of: its fixed words
+    // around the JSON encoding of each content string of its arguments.
+    assert!(boundary.events().contains(
+        &r#"parts of c1: Updated todo list to [{"content":</todos/0/content>,"status":"in_progress"},{"content":</todos/1/content>,"status":"pending"}]"#
+            .to_owned()
+    ));
+}
+
+/// A tool that replaces the todo list without saying where its text came
+/// from.
+struct SilentTodos;
+
+#[async_trait::async_trait]
+impl Tool for SilentTodos {
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: "echo".into(),
+            description: "sets todos".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    async fn call(
+        &self,
+        _: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        ctx.state.todos = vec![crate::Todo {
+            content: "from nowhere".into(),
+            status: crate::TodoStatus::Pending,
+        }];
+        Ok(ToolOutcome::ok("set"))
+    }
+}
+
+#[tokio::test]
+async fn a_stored_todo_without_an_origin_stops_the_next_request() {
+    let model = ViewModel::new(vec![
+        calls(vec![echo_call("c1", "x")]),
+        Msg::assistant("never sent"),
+    ]);
+    let boundary = Arc::new(Frontiers::default());
+    let agent = Agent::builder(model.clone())
+        .tool(Arc::new(SilentTodos))
+        .middleware(Arc::new(crate::builtin::TodoListMiddleware::new()))
+        .model_view_boundary(Some(boundary.clone()))
+        .build();
+    let error = agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::State(_)));
+    // The tool ran and its result and effect are kept; one request was made.
+    assert_eq!(recorded(&agent).len(), 3);
+    assert_eq!(agent.state.lock().unwrap().todos.len(), 1);
+    assert_eq!(model.seen.lock().unwrap().len(), 1);
 }

@@ -36,7 +36,7 @@ impl AgentMiddleware for PatchToolCallsMiddleware {
     /// The same repair on an agent with a source view. It changes a received
     /// reply, so it goes through the tracked review.
     fn view_support(&self) -> ViewSupport {
-        ViewSupport::TrackedReply
+        ViewSupport::Tracked
     }
 
     async fn review_model_with_view(

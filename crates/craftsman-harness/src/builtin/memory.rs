@@ -10,6 +10,7 @@
 use crate::backend::{Backend, EMPTY_FILE_REMINDER};
 use crate::error::AgentError;
 use crate::middleware::AgentMiddleware;
+use crate::provenance::{SourcePart, TrackedPrepare, ViewSupport};
 use crate::state::AgentState;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -69,6 +70,10 @@ pub struct MemoryMiddleware {
     /// the NEXT turn — the guidelines tell the model its writes take effect,
     /// so a session-frozen cache would contradict the protocol.
     loaded: std::sync::Mutex<Option<Vec<(String, String)>>>,
+    /// The section of the current load as parts, for an agent with a source
+    /// view. Made once per load, so every round of a turn hands over the same
+    /// owned pieces, and a new load makes new ones.
+    tracked: std::sync::Mutex<Option<Vec<SourcePart>>>,
 }
 
 impl MemoryMiddleware {
@@ -80,6 +85,7 @@ impl MemoryMiddleware {
             sources,
             guidelines: MEMORY_GUIDELINES,
             loaded: std::sync::Mutex::new(None),
+            tracked: std::sync::Mutex::new(None),
         }
     }
 
@@ -117,6 +123,24 @@ impl MemoryMiddleware {
         };
         format!("<agent_memory>\n{body}\n</agent_memory>\n\n{guidelines}")
     }
+
+    /// [`section`](Self::section) as parts. What was read from a memory file
+    /// is one part per file, named by its path; the tags, the paths and the
+    /// guidance are the application's.
+    fn section_parts(contents: &[(String, String)], guidelines: &str) -> Vec<SourcePart> {
+        let fixed = |text: String| SourcePart::fixed(Arc::from(text));
+        let mut parts = vec![fixed("<agent_memory>\n".into())];
+        if contents.is_empty() {
+            parts.push(fixed("(No memory loaded)".into()));
+        }
+        for (index, (path, content)) in contents.iter().enumerate() {
+            let before = if index == 0 { "" } else { "\n\n" };
+            parts.push(fixed(format!("{before}{path}\n")));
+            parts.push(SourcePart::read(path.clone(), Arc::from(content.as_str())));
+        }
+        parts.push(fixed(format!("\n</agent_memory>\n\n{guidelines}")));
+        parts
+    }
 }
 
 #[async_trait]
@@ -131,6 +155,7 @@ impl AgentMiddleware for MemoryMiddleware {
     async fn turn_start(&self, _st: &mut AgentState) -> Result<(), AgentError> {
         let fresh = self.load().await;
         *self.loaded.lock().unwrap() = Some(fresh);
+        *self.tracked.lock().unwrap() = None;
         Ok(())
     }
 
@@ -149,6 +174,38 @@ impl AgentMiddleware for MemoryMiddleware {
         st.system_extras
             .push(Self::section(&contents, self.guidelines));
         Ok(())
+    }
+
+    /// On an agent with a source view the same section is added as parts.
+    /// The turn-start load is the same; it reads the store and changes
+    /// nothing the agent records.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        let made = self.tracked.lock().unwrap().clone();
+        let parts = match made {
+            Some(parts) => parts,
+            None => {
+                let cached = self.loaded.lock().unwrap().clone();
+                let contents = match cached {
+                    Some(contents) => contents,
+                    None => {
+                        let fresh = self.load().await;
+                        *self.loaded.lock().unwrap() = Some(fresh.clone());
+                        fresh
+                    }
+                };
+                let parts = Self::section_parts(&contents, self.guidelines);
+                *self.tracked.lock().unwrap() = Some(parts.clone());
+                parts
+            }
+        };
+        prepare.add_system(parts)
     }
 }
 

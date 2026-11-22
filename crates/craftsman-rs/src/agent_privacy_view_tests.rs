@@ -8,6 +8,7 @@ use crate::privacy_entry::PrivateEntryError;
 use crate::privacy_hook::Detector;
 use crate::privacy_hook::tests::{LiteralSource, PHONE};
 use crate::privacy_send::tests::{EMAIL, answer, open};
+use crate::privacy_session::wire_fixtures::{config, reply};
 use crate::privacy_session::{
     AdmitRefusal, BuildRefusal, FixturePolicy, FreshConversationBinding, PrivacySession,
     PrivacyViewSelection, RawOrigin, SessionStop,
@@ -24,13 +25,6 @@ const HELPER: &str = "agent::privacy_view_tests::privacy_view_builder_fixture";
 const MARKER: &str = "craftsman-privacy-view=";
 const DONE: &str =
     "actual builder, loopback HTTP, checkpoint store and private view assertions completed";
-
-fn config(protocol: &str, server: &MockServer) -> Config {
-    if protocol == "chat" {
-        return serde_json::from_value(json!({"base_url":server.uri(),"api_key":"fixture-key","model":"fixture-model","harness_profile":"general","voice":{"enabled":false},"gadgets":{"enabled":false},"mcp_servers":[],"lsp_servers":{}})).unwrap();
-    }
-    serde_json::from_value(json!({"model":"test/fixture-model","providers":{"test":{"protocol":"openai_responses","base_url":server.uri(),"api_key":"fixture-key","models":{"fixture-model":{"settings":{"reasoning":null}}}}},"harness_profile":"general","voice":{"enabled":false},"gadgets":{"enabled":false},"mcp_servers":[],"lsp_servers":{}})).unwrap()
-}
 
 async fn privacy(vault: &Vault, directory: &std::path::Path) -> Arc<PrivacySession> {
     let source = LiteralSource::new(&[(EMAIL, "email"), (PHONE, "phone")]);
@@ -80,11 +74,11 @@ async fn build(
 }
 
 fn asks_to_read(path: &std::path::Path) -> ResponseTemplate {
-    let arguments = json!({"file_path": path}).to_string();
-    let body = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","type":"function","function":{"name":"read_file","arguments":arguments}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}});
-    ResponseTemplate::new(200).set_body_raw(
-        format!("data: {body}\n\ndata: [DONE]\n\n"),
-        "text/event-stream",
+    reply(
+        "chat",
+        0,
+        Some(("call-read", "read_file", &json!({"file_path": path}))),
+        "",
     )
 }
 
@@ -118,6 +112,7 @@ async fn privacy_view_builder_fixture() {
     let activity = Arc::new(Mutex::new(Vec::new()));
     conversation(&directory, &vault, &activity).await;
     repair(&directory, &vault, &activity).await;
+    normal_parts(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -169,11 +164,12 @@ async fn conversation(
         .find(|line| line.starts_with("This private conversation runs without: "))
         .cloned()
         .expect("the frontend is told what is left out");
-    for part in ["todo", "compaction"] {
-        assert!(named.contains(part), "{named}");
+    assert!(named.contains("compaction"), "{named}");
+    // The protected call repair, the todo list, memory and the reminders are
+    // not among them: they run, tracked.
+    for kept in ["patch_tool_calls", "todos", "memory", "system_reminders"] {
+        assert!(!named.contains(kept), "{named}");
     }
-    // The protected call repair is not among them: it runs, tracked.
-    assert!(!named.contains("patch_tool_calls"), "{named}");
     // The untyped entry is refused before anything is recorded.
     assert!(session.agent.run_turn("untyped").await.is_err());
     assert!(session.agent.state.lock().unwrap().messages.is_empty());
@@ -360,6 +356,112 @@ async fn repair(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex
     session.lsp.shutdown().await;
 }
 
+/// The todo list, the memory section and the system prompt in a built
+/// session: each is added as parts, and the request carries the same text an
+/// ordinary session sends, with the one supported value replaced.
+async fn normal_parts(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    use craftsman_harness::Backend;
+    const CONTACT: &str = "bob@example.invalid";
+    let script = || async {
+        let server = MockServer::start().await;
+        let arguments =
+            json!({"todos": [{"content": "review notes", "status": "in_progress"}]}).to_string();
+        let body = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-todos","type":"function","function":{"name":"write_todos","arguments":arguments}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}});
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                format!("data: {body}\n\ndata: [DONE]\n\n"),
+                "text/event-stream",
+            ))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(answer("chat", &["fixture answer"]))
+            .mount(&server)
+            .await;
+        server
+    };
+    let system_of = |body: &str| -> String {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        body["messages"][0]["content"].as_str().unwrap().to_owned()
+    };
+
+    let server = script().await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let session = build(&cfg, directory, Some(&owner), None, activity, |_| {})
+        .await
+        .unwrap();
+    // What the memory store holds is read at the start of the turn.
+    session
+        .memories
+        .as_ref()
+        .expect("the memory store opened")
+        .write("/memories/AGENTS.md", &format!("Office contact: {CONTACT}"))
+        .await
+        .unwrap();
+    let view = session.privacy_view.as_ref().unwrap();
+    let TurnResult::Done(output) = view.turn(&session.agent, "plan the work").await.unwrap() else {
+        panic!("the turn finishes");
+    };
+    assert_eq!(output.final_text(), "fixture answer");
+    assert_eq!(session.agent.state.lock().unwrap().todos.len(), 1);
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 2);
+    let first = system_of(&requests[0]);
+    let second = system_of(&requests[1]);
+    // The memory file's content went out as its view, inside the section
+    // the memory middleware always writes.
+    for system in [&first, &second] {
+        assert!(!system.contains(CONTACT));
+        assert!(system.contains("<agent_memory>\n/memories/AGENTS.md\nOffice contact: "));
+        assert!(system.contains("## `write_todos`"));
+    }
+    // After the call the todo the model wrote is in the system text, between
+    // the application's own heading and label.
+    assert!(!first.contains("Current todo list:"));
+    assert!(second.contains("Current todo list:\n- [InProgress] review notes\n"));
+
+    // An ordinary session with the same script sends the same system text
+    // for these parts, byte for byte, except for the one value.
+    let plain_server = script().await;
+    let plain_cfg = config("chat", &plain_server);
+    let plain = build(&plain_cfg, directory, None, None, activity, |_| {})
+        .await
+        .unwrap();
+    plain.agent.run_turn("plan the work").await.unwrap();
+    let plain_requests = sent(&plain_server).await;
+    let issued = second
+        .split("Office contact: ")
+        .nth(1)
+        .unwrap()
+        .split('\n')
+        .next()
+        .unwrap();
+    assert_ne!(issued, CONTACT);
+    for (selected, ordinary) in [&first, &second].into_iter().zip(&plain_requests) {
+        let (selected, ordinary) = (selected.replace(issued, CONTACT), system_of(ordinary));
+        // Everything the selected session sends is the ordinary text, byte
+        // for byte. The ordinary session goes on with the section of the
+        // delegated-agent middleware, which the fixture leaves out because
+        // it has no source path yet.
+        let rest = ordinary
+            .strip_prefix(selected.as_str())
+            .unwrap_or_else(|| panic!("not the ordinary text: {selected}"));
+        assert!(
+            rest.starts_with("\n\nLaunch an ephemeral subagent"),
+            "{rest}"
+        );
+    }
+    plain.lsp.shutdown().await;
+    session.lsp.shutdown().await;
+}
+
 /// Selections that are refused before a session exists, each with its
 /// typed reason for the host that made the selection.
 async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
@@ -497,7 +599,14 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
         missing.iter().any(|part| part == "compaction"),
         "{missing:?}"
     );
-    for kept in ["patch_tool_calls", "hitl", "result_budgets"] {
+    for kept in [
+        "patch_tool_calls",
+        "hitl",
+        "result_budgets",
+        "todos",
+        "memory",
+        "system_reminders",
+    ] {
         assert!(!missing.iter().any(|part| part == kept), "{missing:?}");
     }
     let line = activity

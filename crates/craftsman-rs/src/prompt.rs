@@ -59,14 +59,42 @@ pub fn build_system_prompt_with_extensions(
     workspace: &Path,
     extensions: &[crate::extensions::Extension],
 ) -> String {
-    let base = profile
-        .config
-        .base_system_prompt
-        .as_deref()
-        .unwrap_or("You are Craftsman, a capable general assistant.");
-    let mut chunks = vec![base.to_string()];
-    chunks.push(crate::platform_os::system_prompt_block());
-    chunks.push(MEMORY_PROTOCOL.to_string());
+    system_prompt_chunks(cfg, profile, extra_system, workspace, extensions)
+        .into_iter()
+        .map(|chunk| chunk.text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// One section of the system prompt, as its producer made it. The prompt is
+/// these sections joined by a blank line.
+pub struct SystemChunk {
+    pub text: String,
+    /// What the section was read from, when it is not fixed application
+    /// text: a profile, instruction files, discovered skills, extensions or
+    /// the frontend's own addition.
+    pub read: Option<&'static str>,
+}
+
+/// The sections of the system prompt, each still apart and with its origin.
+pub fn system_prompt_chunks(
+    cfg: &Config,
+    profile: &craftsman_harness::HarnessProfile,
+    extra_system: &str,
+    workspace: &Path,
+    extensions: &[crate::extensions::Extension],
+) -> Vec<SystemChunk> {
+    let fixed = |text: String| SystemChunk { text, read: None };
+    let read = |what: &'static str, text: String| SystemChunk {
+        text,
+        read: Some(what),
+    };
+    let mut chunks = vec![match profile.config.base_system_prompt.as_deref() {
+        Some(base) => read("harness profile", base.to_string()),
+        None => fixed("You are Craftsman, a capable general assistant.".to_string()),
+    }];
+    chunks.push(fixed(crate::platform_os::system_prompt_block()));
+    chunks.push(fixed(MEMORY_PROTOCOL.to_string()));
     let permission_guidance = match cfg.permission_mode {
         crate::config::PermissionMode::Plan => {
             "# Permission mode: plan\nInvestigate and produce a plan. Do not attempt to write or edit files. Use read-only tools and clearly describe proposed changes."
@@ -84,7 +112,7 @@ pub fn build_system_prompt_with_extensions(
             "# Permission mode: auto\nProceed autonomously with routine file and network actions. Shell commands require approval unless they are clearly read-only; prefer reversible operations."
         }
     };
-    chunks.push(permission_guidance.to_string());
+    chunks.push(fixed(permission_guidance.to_string()));
 
     let mut agents_md = String::new();
     let global = cfg.agent_dir().join("AGENTS.md");
@@ -98,26 +126,28 @@ pub fn build_system_prompt_with_extensions(
         ));
     }
     if !agents_md.trim().is_empty() {
-        chunks.push(format!("\n# AGENTS.md\n\n{}", agents_md.trim()));
+        chunks.push(read(
+            "instruction files",
+            format!("\n# AGENTS.md\n\n{}", agents_md.trim()),
+        ));
     }
 
     let found = skills::discover_at(&cfg.agent, workspace);
     let block = skills::skills_prompt_block(&found);
     if !block.is_empty() {
-        chunks.push(block);
+        chunks.push(read("discovered skills", block));
     }
     let plugin_block = crate::extensions::prompt_block(extensions);
     if !plugin_block.is_empty() {
-        chunks.push(plugin_block);
+        chunks.push(read("extensions", plugin_block));
     }
     if !extra_system.trim().is_empty() {
-        chunks.push(extra_system.trim().to_string());
+        chunks.push(read("frontend addition", extra_system.trim().to_string()));
     }
     if let Some(suffix) = &profile.config.system_prompt_suffix {
-        chunks.push(suffix.clone());
+        chunks.push(read("harness profile", suffix.clone()));
     }
-
-    chunks.join("\n\n")
+    chunks
 }
 
 #[cfg(test)]

@@ -434,9 +434,13 @@ impl Agent {
 
             // Rebuild the per-turn system additions from scratch each round.
             working.system_extras.clear();
-            let kept = self.view_phase_start(&working);
-            self.chain.prepare_model(&mut working).await?;
-            self.view_phase_end(kept, &working)?;
+            let additions = match &self.model_view {
+                Some(view) => self.prepare_with_view(view, &mut working).await?,
+                None => {
+                    self.chain.prepare_model(&mut working).await?;
+                    Vec::new()
+                }
+            };
 
             let mut system = self.system_prompt.clone();
             for extra in &working.system_extras {
@@ -458,7 +462,8 @@ impl Agent {
             };
             let mut view_receipt = None;
             let response = if let Some(view) = &self.model_view {
-                let Some(delivery) = self.deliver_with_view(view, &working).await? else {
+                let Some(delivery) = self.deliver_with_view(view, &working, additions).await?
+                else {
                     return self.finish_cancelled().await;
                 };
                 view_receipt = Some(delivery.receipt);
@@ -1042,6 +1047,7 @@ impl Agent {
             view.boundary.before_dispatch(&call, bypass_chain).await?;
         }
         let id = call.id.clone();
+        let call_id = call.id.clone();
         let tool_name = call.name.clone();
         // t0 = the committed state snapshot the tool starts from. Keep it so the
         // commit can distinguish the tool's `ctx.state` file deltas from the
@@ -1079,8 +1085,9 @@ impl Agent {
                             // before any middleware sees the outcome.
                             Some(record) => {
                                 record.lock().unwrap().entering(ctx.state);
+                                let tracked = record.lock().unwrap().tracked.clone();
                                 let given = call.clone();
-                                let result = tool.call(call.args, ctx).await;
+                                let result = tool.call_with_view(call.args, ctx, &tracked).await;
                                 record.lock().unwrap().left(given, &result, ctx.state);
                                 result
                             }
@@ -1093,8 +1100,15 @@ impl Agent {
                     }
                 })
             });
+            let tracked = reached
+                .as_ref()
+                .map(|record| record.lock().unwrap().tracked.clone());
             if bypass_chain {
                 terminal(call, &mut ctx).await
+            } else if let Some(tracked) = &tracked {
+                self.chain
+                    .around_tool_with_view(call, &mut ctx, &terminal, tracked)
+                    .await
             } else {
                 self.chain.around_tool(call, &mut ctx, &terminal).await
             }
@@ -1137,10 +1151,29 @@ impl Agent {
         if let (Some(view), Some(observed)) = (&self.model_view, observed) {
             // The actual result is journaled and committed above, and saved
             // there when durable turn checkpoints are selected.
-            let (reached, changed) = watched.unwrap_or_default();
-            self.record_tool_source(view, &tool_name, &observed, &reached, returned.as_ref())
-                .await?;
-            if changed {
+            let dispatched = watched.unwrap_or_default();
+            // The stored todo list keeps its origins only when the tool said
+            // which of its own arguments it stored.
+            let reply = self.reply_source(view, &call_id);
+            let stored = self.state.lock().unwrap().todos.len();
+            let parts = match &observed {
+                Msg::Tool { content, .. } => {
+                    dispatched.outcome_parts(content, reply.as_ref(), &call_id)
+                }
+                _ => Vec::new(),
+            };
+            view.note_todos(&dispatched, reply, &call_id, stored);
+            self.record_tool_source(
+                view,
+                &tool_name,
+                &observed,
+                &dispatched.reached,
+                returned.as_ref(),
+                &dispatched.appended,
+                &parts,
+            )
+            .await?;
+            if dispatched.changed {
                 // The result and the tool's own effects are kept. A middleware
                 // changed recorded state outside the tool, which no statement
                 // allows, so the turn stops here.

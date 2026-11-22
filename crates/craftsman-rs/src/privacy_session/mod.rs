@@ -31,6 +31,8 @@ mod transport;
 mod view;
 #[cfg(test)]
 mod view_tests;
+#[cfg(test)]
+pub(crate) mod wire_fixtures;
 
 pub use transport::{ViewChatProvider, ViewNativeProvider};
 pub use view::{

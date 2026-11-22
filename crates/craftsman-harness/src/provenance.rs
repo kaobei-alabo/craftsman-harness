@@ -87,6 +87,13 @@ pub struct ObservedToolResult<'a> {
     /// What the dispatch chain returned, with its metadata. `None` when the
     /// chain failed and the recorded content is the text of that failure.
     pub returned: Option<&'a ToolOutcome>,
+    /// Fixed text that middleware announced it appended to the outcome, in
+    /// order.
+    pub appended: &'a [SourcePart],
+    /// The tool's own content as the pieces the tool said it is made of.
+    /// Empty when the tool said nothing, or when the recorded content is not
+    /// exactly those pieces followed by the appended text.
+    pub parts: &'a [SourcePart],
 }
 
 /// A message the agent itself appended to the conversation, by the event
@@ -131,11 +138,182 @@ pub enum ViewSupport {
     /// is checked after every hook phase and around every tool call, where
     /// only the tool itself may change that state.
     Preserving,
-    /// As `Preserving`, except that its review of a received reply changes
-    /// that reply. On a selected agent its `review_model` is not called;
-    /// `review_model_with_view` is, and every change it makes goes through
-    /// [`TrackedReply`] and is recorded as a derivation of what was received.
-    TrackedReply,
+    /// Its hooks that change what the agent carries have tracked
+    /// counterparts, and on a selected agent only those run:
+    ///
+    /// - `prepare_model` is not called. `prepare_model_with_view` is, and
+    ///   adds system text only as [`SourcePart`]s through [`TrackedPrepare`].
+    /// - `review_model` is not called. `review_model_with_view` is, and
+    ///   changes the received reply only through [`TrackedReply`].
+    /// - `around_tool` runs, and announces through [`TrackedDispatch`] every
+    ///   change it makes outside the tool: a bookkeeping key of its own in
+    ///   the custom state, or fixed text appended to the outcome.
+    ///
+    /// Everything else is held to the `Preserving` statement and checked the
+    /// same way.
+    Tracked,
+}
+
+/// One piece of text on its way into a request, with where it came from.
+/// Pieces stay apart until the host composes the request. The text is owned
+/// by its producer: the same owned piece, handed over again, is the same
+/// source, while equal text in another piece is not.
+#[derive(Clone)]
+pub struct SourcePart {
+    pub text: Arc<str>,
+    pub from: PartFrom,
+}
+
+/// Where a [`SourcePart`] came from, as its producer knows it.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum PartFrom {
+    /// Fixed text of the application: headings, labels, instructions.
+    Fixed,
+    /// Text the producer read from a store, a file or configuration. `what`
+    /// names what was read.
+    Read { what: String },
+    /// Text a tool call carried in its arguments, which the tool stored. The
+    /// agent recorded the reply that asked for the call, the call and the
+    /// place in its arguments when it saw the tool store it.
+    Call {
+        reply: SourceRef,
+        call_id: String,
+        pointer: String,
+    },
+    /// The JSON encoding of a value a tool call carried at this place of its
+    /// arguments, which the tool repeated in its own outcome.
+    CallJson {
+        reply: SourceRef,
+        call_id: String,
+        pointer: String,
+    },
+}
+
+/// One piece of a tool's own outcome, as the tool says it made it.
+#[derive(Clone)]
+#[non_exhaustive]
+pub enum OutcomePart {
+    /// Fixed text of the tool.
+    Fixed(Arc<str>),
+    /// The JSON encoding of the value at `pointer` of the call's own
+    /// arguments.
+    ArgumentJson { pointer: String, text: Arc<str> },
+}
+
+impl SourcePart {
+    pub fn fixed(text: Arc<str>) -> Self {
+        Self {
+            text,
+            from: PartFrom::Fixed,
+        }
+    }
+
+    pub fn read(what: impl Into<String>, text: Arc<str>) -> Self {
+        Self {
+            text,
+            from: PartFrom::Read { what: what.into() },
+        }
+    }
+}
+
+impl fmt::Debug for SourcePart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SourcePart([opaque])")
+    }
+}
+
+/// The most sections one round may add, and the most parts and bytes of one
+/// section.
+pub const MAX_SYSTEM_ADDITIONS: usize = 64;
+pub const MAX_ADDITION_PARTS: usize = 1024;
+pub const MAX_ADDITION_BYTES: usize = 1_048_576;
+
+/// What a middleware with a tracked prepare sees on a selected agent: the
+/// state, read-only, and one way to add system text.
+pub struct TrackedPrepare<'a> {
+    pub(crate) state: &'a crate::AgentState,
+    pub(crate) todos: Option<&'a [PartFrom]>,
+    pub(crate) additions: &'a mut Vec<Vec<SourcePart>>,
+}
+
+impl TrackedPrepare<'_> {
+    pub fn state(&self) -> &crate::AgentState {
+        self.state
+    }
+
+    /// Where the text of the stored todo at `index` came from. `None` when
+    /// the agent did not see a tool store that todo from its own arguments.
+    pub fn todo_origin(&self, index: usize) -> Option<PartFrom> {
+        self.todos?.get(index).cloned()
+    }
+
+    /// Adds one section to this round's system text, as parts in order.
+    pub fn add_system(&mut self, parts: Vec<SourcePart>) -> Result<(), AgentError> {
+        let bytes: usize = parts.iter().map(|part| part.text.len()).sum();
+        if self.additions.len() >= MAX_SYSTEM_ADDITIONS
+            || parts.len() > MAX_ADDITION_PARTS
+            || bytes > MAX_ADDITION_BYTES
+        {
+            return Err(AgentError::State(
+                "A system addition of this conversation exceeds its bound.".into(),
+            ));
+        }
+        self.additions.push(parts);
+        Ok(())
+    }
+}
+
+/// What a tool or a middleware announces during one dispatch on a selected
+/// agent. Only the tool may change recorded state; anything else that does
+/// must say so here, or the turn stops.
+#[derive(Clone, Default)]
+pub struct TrackedDispatch {
+    pub(crate) notes: Arc<std::sync::Mutex<DispatchNotes>>,
+}
+
+#[derive(Default)]
+pub(crate) struct DispatchNotes {
+    pub(crate) custom_keys: Vec<String>,
+    pub(crate) appended: Vec<SourcePart>,
+    pub(crate) todos: Option<Vec<String>>,
+    pub(crate) outcome: Option<Vec<OutcomePart>>,
+}
+
+impl TrackedDispatch {
+    /// A middleware keeps bookkeeping of its own under `key` of the custom
+    /// state and changes it during this dispatch.
+    pub fn owns_custom_key(&self, key: &str) {
+        let mut notes = self.notes.lock().unwrap();
+        if notes.custom_keys.len() < 16 && !notes.custom_keys.iter().any(|known| known == key) {
+            notes.custom_keys.push(key.to_owned());
+        }
+    }
+
+    /// A middleware appended this fixed text to the end of the outcome it
+    /// returns.
+    pub fn appended_to_outcome(&self, part: SourcePart) {
+        let mut notes = self.notes.lock().unwrap();
+        if notes.appended.len() < 16 {
+            notes.appended.push(part);
+        }
+    }
+
+    /// The tool replaced the stored todo list with strings of its own call
+    /// arguments: one JSON pointer into those arguments per stored todo, in
+    /// order.
+    pub fn todos_from_arguments(&self, pointers: Vec<String>) {
+        self.notes.lock().unwrap().todos = Some(pointers);
+    }
+
+    /// The tool's own outcome content is exactly these pieces, in order.
+    /// The agent uses them only if they join to the content the tool
+    /// returned; the last statement of a dispatch counts.
+    pub fn outcome_is(&self, parts: Vec<OutcomePart>) {
+        if parts.len() <= MAX_ADDITION_PARTS {
+            self.notes.lock().unwrap().outcome = Some(parts);
+        }
+    }
 }
 
 /// One change a middleware made to a received reply during its tracked
@@ -242,6 +420,16 @@ pub trait ModelViewBoundary: Send + Sync {
         }
         Err(AgentError::State(
             "This conversation has no source for a reply that was changed in review.".into(),
+        ))
+    }
+
+    /// One section a middleware adds to this round's system text, as parts.
+    /// Returns the source of the section. The default refuses: a boundary
+    /// that does not know parts has no view of them.
+    async fn system_addition(&self, parts: &[SourcePart]) -> Result<SourceRef, AgentError> {
+        let _ = parts;
+        Err(AgentError::State(
+            "This conversation has no source for a system addition.".into(),
         ))
     }
 

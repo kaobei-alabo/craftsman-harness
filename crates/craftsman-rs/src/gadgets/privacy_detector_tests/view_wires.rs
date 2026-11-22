@@ -9,11 +9,12 @@
 
 use super::super::grants::GrantStore;
 use super::super::manifest::Capabilities;
-use super::{build_fixture, compiler_environment, hash, root};
+use super::{build_fixture, hash, root};
 use crate::agent::{Session, SessionExtras, build_session_ext};
 use crate::config::Config;
 use crate::hitl::ApprovalState;
 use crate::privacy_hook::{Detector, DetectorPin, PinnedDetector};
+use crate::privacy_session::wire_fixtures::{config, reply};
 use crate::privacy_session::{
     FreshConversationBinding, PrivacySession, PrivacyViewSelection, RawOrigin,
 };
@@ -24,10 +25,8 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio::io::AsyncReadExt;
 use wiremock::matchers::method;
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer};
 use zeroize::Zeroizing;
 
 const ID: &str = "privacy-detector";
@@ -56,88 +55,6 @@ impl HostKeySource for SyntheticKey {
     fn acquire_privacy_key(&self) -> crate::privacy_vault::Result<HostKey> {
         Ok(HostKey::supplied_by_host(Zeroizing::new([11; 32])))
     }
-}
-
-fn config(wire: &str, server: &MockServer) -> Config {
-    let protocol = match wire {
-        "chat" => {
-            return serde_json::from_value(json!({"base_url":server.uri(),"api_key":"fixture-key","model":"fixture-model","harness_profile":"general","voice":{"enabled":false},"gadgets":{"enabled":false},"mcp_servers":[],"lsp_servers":{}})).unwrap();
-        }
-        "responses" => "openai_responses",
-        "claude" => "anthropic_messages",
-        _ => "gemini_generate_content",
-    };
-    serde_json::from_value(json!({"model":"test/fixture-model","providers":{"test":{"protocol":protocol,"base_url":server.uri(),"api_key":"fixture-key","models":{"fixture-model":{"settings":{"reasoning":null}}}}},"harness_profile":"general","voice":{"enabled":false},"gadgets":{"enabled":false},"mcp_servers":[],"lsp_servers":{}})).unwrap()
-}
-
-/// One reply of the wire's own stream. The first reply of a native wire
-/// carries an item only the provider can read: encrypted reasoning, a signed
-/// thinking block or a thought signature.
-fn reply(wire: &str, index: usize, tool: Option<Value>, text: &str) -> ResponseTemplate {
-    let raw = match wire {
-        "responses" => {
-            let mut output = Vec::new();
-            if index == 0 {
-                output.push(json!({"type":"reasoning","id":"wire-reasoning","encrypted_content":"wire-original-opaque","summary":[]}));
-            }
-            output.push(match &tool {
-                Some(args) => json!({"type":"function_call","id":format!("wire-function-{index}"),"call_id":format!("wire-call-{index}"),"name":"read_file","arguments":args.to_string(),"status":"completed"}),
-                None => json!({"type":"message","id":format!("wire-message-{index}"),"role":"assistant","status":"completed","content":[{"type":"output_text","text":text,"annotations":[]}]}),
-            });
-            let value = json!({"type":"response.completed","response":{"id":format!("wire-response-{index}"),"status":"completed","output":output,"usage":{"input_tokens":3,"output_tokens":2}}});
-            format!("event: response.completed\ndata: {value}\n\n")
-        }
-        "claude" => {
-            let mut events =
-                vec![json!({"type":"message_start","message":{"usage":{"input_tokens":3}}})];
-            if index == 0 {
-                events.push(json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}));
-                events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"wire fixture reasoning"}}));
-                events.push(json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"wire-original-signature"}}));
-                events.push(json!({"type":"content_block_stop","index":0}));
-            }
-            let block = usize::from(index == 0);
-            events.push(json!({"type":"content_block_start","index":block,"content_block":match &tool {
-                Some(_) => json!({"type":"tool_use","id":format!("wire-call-{index}"),"name":"read_file","input":{}}),
-                None => json!({"type":"text","text":""}),
-            }}));
-            events.push(json!({"type":"content_block_delta","index":block,"delta":match &tool {
-                Some(args) => json!({"type":"input_json_delta","partial_json":args.to_string()}),
-                None => json!({"type":"text_delta","text":text}),
-            }}));
-            events.push(json!({"type":"content_block_stop","index":block}));
-            events.push(json!({"type":"message_delta","delta":{"stop_reason":if tool.is_some(){"tool_use"}else{"end_turn"}},"usage":{"output_tokens":2}}));
-            events.push(json!({"type":"message_stop"}));
-            events
-                .iter()
-                .map(|event| format!("data: {event}\n\n"))
-                .collect()
-        }
-        "gemini" => {
-            let mut part = match &tool {
-                Some(args) => {
-                    json!({"functionCall":{"id":format!("wire-call-{index}"),"name":"read_file","args":args}})
-                }
-                None => json!({"text":text}),
-            };
-            if index == 0 {
-                part["thoughtSignature"] = json!("wire-original-signature");
-            }
-            let value = json!({"candidates":[{"content":{"parts":[part]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}});
-            format!("data: {value}\n\n")
-        }
-        _ => {
-            let delta = match &tool {
-                Some(args) => {
-                    json!({"tool_calls":[{"index":0,"id":format!("wire-call-{index}"),"type":"function","function":{"name":"read_file","arguments":args.to_string()}}]})
-                }
-                None => json!({"content":text}),
-            };
-            let value = json!({"choices":[{"delta":delta,"finish_reason":if tool.is_some(){"tool_calls"}else{"stop"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}});
-            format!("data: {value}\n\ndata: [DONE]\n\n")
-        }
-    };
-    ResponseTemplate::new(200).set_body_raw(raw, "text/event-stream")
 }
 
 /// The first reply's provider item, exactly as it must come back.
@@ -272,7 +189,7 @@ async fn view_wires_native_fixture() {
     for wire in WIRES {
         let server = MockServer::start().await;
         for (priority, template) in [
-            reply(wire, 0, Some(args.clone()), ""),
+            reply(wire, 0, Some(("wire-call-0", "read_file", &args)), ""),
             reply(wire, 1, None, "fixture answer"),
         ]
         .into_iter()
@@ -359,7 +276,12 @@ async fn view_wires_native_fixture() {
             let raw = String::from_utf8(request.body.clone()).unwrap();
             assert!(!raw.contains(EMAIL) && !raw.contains(PHONE), "{wire}");
             assert!(raw.contains("Who handles "), "{wire}");
-            assert!(!system_text(wire, body).is_empty(), "{wire}");
+            // The system text carries the prompt's sections and the sections
+            // the todo and memory middleware add, each admitted as its own
+            // part through the detector.
+            let system = system_text(wire, body);
+            assert!(system.contains("## `write_todos`"), "{wire}");
+            assert!(system.contains("<agent_memory>"), "{wire}");
             assert!(raw.contains("read_file"), "{wire}");
         }
         // The second request carries the first reply back exactly, signed
@@ -441,74 +363,29 @@ async fn run_helper(
     marker: Option<&str>,
     home: &Path,
 ) -> (std::process::ExitStatus, String, String) {
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo").into_os_string())
-        })
-        .expect("explicit readonly Cargo source cache for trusted fixture build");
-    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
-    command.args(["--ignored", "--exact", HELPER, "--nocapture"]);
-    if let Some(marker) = marker {
-        command.arg(format!("{MARKER}{marker}"));
-    }
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    compiler_environment::isolated_supervisor_environment(
-        command.as_std_mut(),
-        home,
-        &cargo_home,
-        &std::env::var_os("PATH").expect("actual toolchain PATH"),
-        compiler_environment::system_root(),
-        compiler_environment::host_discovery(),
-    );
-    if marker == Some("suite") {
+    let selected = marker == Some("suite");
+    if selected {
         // The selected run owns a workspace and a configuration root of its
         // own under the isolated home.
-        let workspace = home.join("workspace");
-        let config = home.join("config");
-        std::fs::create_dir(&workspace).unwrap();
-        std::fs::create_dir(&config).unwrap();
-        command
-            .current_dir(&workspace)
-            .env("CRAFTSMAN_CONFIG_DIR", &config);
-    } else {
-        command.current_dir(home);
+        std::fs::create_dir(home.join("workspace")).unwrap();
+        std::fs::create_dir(home.join("config")).unwrap();
     }
-    let mut child = command.spawn().unwrap();
-    let mut stdout_reader = child.stdout.take().unwrap().take(65537);
-    let mut stderr_reader = child.stderr.take().unwrap().take(65537);
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let completed = tokio::time::timeout(Duration::from_secs(240), async {
-        tokio::join!(
-            stdout_reader.read_to_end(&mut stdout),
-            stderr_reader.read_to_end(&mut stderr),
-            child.wait()
-        )
-    })
-    .await;
-    let (out_read, err_read, status) = match completed {
-        Ok(completed) => completed,
-        Err(_) => {
-            child.start_kill().unwrap();
-            tokio::time::timeout(Duration::from_secs(5), child.wait())
-                .await
-                .expect("view wires fixture cleanup did not return")
-                .unwrap();
-            panic!("view wires fixture exceeded its setup and call bound");
-        }
-    };
-    out_read.unwrap();
-    err_read.unwrap();
-    assert!(stdout.len() <= 64 * 1024 && stderr.len() <= 64 * 1024);
-    (
-        status.unwrap(),
-        String::from_utf8(stdout).unwrap(),
-        String::from_utf8_lossy(&stderr).into_owned(),
+    super::pinned_hook::run_marked_helper(
+        HELPER,
+        marker.map(|marker| format!("{MARKER}{marker}")),
+        home,
+        "view wires fixture",
+        |command| {
+            if selected {
+                command
+                    .current_dir(home.join("workspace"))
+                    .env("CRAFTSMAN_CONFIG_DIR", home.join("config"));
+            } else {
+                command.current_dir(home);
+            }
+        },
     )
+    .await
 }
 
 #[tokio::test]
