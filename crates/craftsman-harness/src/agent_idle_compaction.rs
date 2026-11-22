@@ -17,6 +17,7 @@ impl Agent {
         &self,
         compaction: &CompactionMiddleware,
     ) -> Result<Option<(usize, usize)>, AgentError> {
+        self.refuse_untracked_entry()?;
         if !self.durable_turn_checkpoints {
             return Err(AgentError::State(
                 "Durable idle compaction is not enabled for this agent.".into(),

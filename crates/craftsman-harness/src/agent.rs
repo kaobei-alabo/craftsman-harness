@@ -153,6 +153,8 @@ pub struct Agent {
     finish_on_round_limit: bool,
     completion_check: Option<Arc<dyn crate::CompletionCheck>>,
     boundary_policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
+    /// Optional source view boundary. `None` keeps every existing path.
+    model_view: Option<Arc<ModelView>>,
     completion_sequence: Arc<AtomicU64>,
     /// Shared subagent registry: the `task` tool records spawned children here so
     /// the app (and peers) can list/poll them. Every dispatched `ToolCtx` clones
@@ -261,9 +263,11 @@ impl Agent {
     /// Returns [`TurnResult::Suspended`] if a gated tool call pauses the turn;
     /// finish it with [`resume`](Agent::resume).
     pub async fn run_turn(&self, user_input: impl Into<String>) -> Result<TurnResult, AgentError> {
+        self.refuse_untracked_entry()?;
         let _turn_activity = self.begin_turn()?;
         let user_input = user_input.into();
-        self.in_turn_scope(self.run_turn_inner(user_input)).await
+        self.in_turn_scope(self.run_turn_inner(user_input, None))
+            .await
     }
 
     async fn in_turn_scope<F>(&self, work: F) -> Result<TurnResult, AgentError>
@@ -290,7 +294,11 @@ impl Agent {
         }
     }
 
-    async fn run_turn_inner(&self, user_input: String) -> Result<TurnResult, AgentError> {
+    async fn run_turn_inner(
+        &self,
+        user_input: String,
+        source: Option<crate::provenance::SourceRef>,
+    ) -> Result<TurnResult, AgentError> {
         if self.durable_turn_checkpoints && self.pending.lock().unwrap().is_some() {
             return Err(AgentError::State(
                 "Resolve the pending approval before starting another turn.".into(),
@@ -310,6 +318,9 @@ impl Agent {
             }
             let message_index = committed.messages.len();
             committed.messages.push(user_msg);
+            if let (Some(view), Some(source)) = (&self.model_view, source) {
+                view.sources.lock().unwrap().push(source);
+            }
             self.boundary_policy.as_ref().and_then(|policy| {
                 policy
                     .user_input(
@@ -436,7 +447,14 @@ impl Agent {
                 let model = model.clone();
                 Box::pin(async move { model.complete(req).await })
             };
-            let response = if self.interrupt_model_on_cancel {
+            let mut view_receipt = None;
+            let response = if let Some(view) = &self.model_view {
+                let Some(delivery) = self.deliver_with_view(view, &working).await? else {
+                    return self.finish_cancelled().await;
+                };
+                view_receipt = Some(delivery.receipt);
+                delivery.response
+            } else if self.interrupt_model_on_cancel {
                 // Only model sampling is dropped. Tool dispatch, prepare/review
                 // hooks and turn-end persistence retain their normal ownership.
                 tokio::select! {
@@ -491,6 +509,11 @@ impl Agent {
                 serde_json::to_value(&assistant).unwrap_or_default(),
             );
             self.save_checkpoint(None).await?;
+            if let (Some(view), Some(receipt)) = (&self.model_view, view_receipt) {
+                // The actual reply is committed, journaled and saved above.
+                self.record_model_source(view, receipt, &assistant, assistant_idx)
+                    .await?;
+            }
 
             // A response can complete in the same poll that requests a stop.
             // Keep its actual usage/transcript and balance calls without dispatch.
@@ -612,6 +635,7 @@ impl Agent {
         action: crate::interrupt::HitlAction,
         deny_default: &str,
     ) -> Result<TurnResult, AgentError> {
+        self.refuse_untracked_entry()?;
         let _turn_activity = self.begin_turn()?;
         self.in_turn_scope(self.resume_inner(action, deny_default))
             .await
@@ -992,6 +1016,7 @@ impl Agent {
         bypass_chain: bool,
     ) -> Result<(), AgentError> {
         let id = call.id.clone();
+        let tool_name = call.name.clone();
         // t0 = the committed state snapshot the tool starts from. Keep it so the
         // commit can distinguish the tool's `ctx.state` file deltas from the
         // backend's mid-dispatch writes to committed.files (see
@@ -1056,8 +1081,14 @@ impl Agent {
             },
         };
         self.journal("tool", serde_json::to_value(&msg).unwrap_or_default());
+        let observed = self.model_view.as_ref().map(|_| msg.clone());
         self.state.lock().unwrap().messages.push(msg);
         self.save_progress_checkpoint(None).await?;
+        if let (Some(view), Some(observed)) = (&self.model_view, observed) {
+            // The actual result is journaled and committed above, and saved
+            // there when durable turn checkpoints are selected.
+            self.record_tool_source(view, &tool_name, &observed).await?;
+        }
         Ok(())
     }
 
@@ -1067,7 +1098,7 @@ impl Agent {
     /// caller can queue it as a separate follow-up turn instead.
     pub fn steer(&self, message: impl Into<String>) -> bool {
         let message = message.into();
-        if message.trim().is_empty() {
+        if message.trim().is_empty() || self.model_view.is_some() {
             return false;
         }
         let mut input = self.turn_input.lock().unwrap();
@@ -1551,6 +1582,8 @@ impl Agent {
         if Arc::ptr_eq(&self.turn_input, &previous.turn_input) {
             return Err(refused());
         }
+        self.refuse_untracked_entry()?;
+        previous.refuse_untracked_entry()?;
         let mut old_input = previous.turn_input.lock().map_err(|_| refused())?;
         let input = self.turn_input.try_lock().map_err(|_| refused())?;
         if old_input.active || input.active {
@@ -1594,6 +1627,7 @@ impl Agent {
     /// can finish the interrupted turn, and returns `Ok(true)`. Switches the
     /// agent's active thread id to `thread_id`.
     pub async fn load_thread(&self, thread_id: &str) -> Result<bool, AgentError> {
+        self.refuse_untracked_entry()?;
         let cp = self
             .checkpointer
             .as_ref()
@@ -1808,6 +1842,7 @@ pub struct AgentBuilder {
     finish_on_round_limit: bool,
     completion_check: Option<Arc<dyn crate::CompletionCheck>>,
     boundary_policy: Option<Arc<dyn crate::AgentBoundaryPolicy>>,
+    model_view_boundary: Option<Arc<dyn crate::provenance::ModelViewBoundary>>,
     interrupt_model_on_cancel: bool,
     cancellation_session: Option<crate::SessionCancellation>,
     state: Option<Arc<Mutex<AgentState>>>,
@@ -1833,6 +1868,7 @@ impl AgentBuilder {
             finish_on_round_limit: false,
             completion_check: None,
             boundary_policy: None,
+            model_view_boundary: None,
             interrupt_model_on_cancel: false,
             cancellation_session: None,
             state: None,
@@ -1908,6 +1944,18 @@ impl AgentBuilder {
     /// tools finish their owned cleanup, compaction models observe the scope,
     /// and explicitly opted-in foreground children inherit it. It does not
     /// force-drop mutation hooks or imply remote generation/billing stopped.
+    /// Selects a source view boundary for this agent. The default is none,
+    /// which keeps every existing path. With one selected, the agent accepts
+    /// turns only through [`Agent::run_turn_with_view`], composes each request
+    /// from sources, and refuses whatever has no source-preserving path.
+    pub fn model_view_boundary(
+        mut self,
+        boundary: Option<Arc<dyn crate::provenance::ModelViewBoundary>>,
+    ) -> Self {
+        self.model_view_boundary = boundary;
+        self
+    }
+
     pub fn interrupt_model_on_cancel(mut self, enabled: bool) -> Self {
         self.interrupt_model_on_cancel = enabled;
         self
@@ -2032,6 +2080,12 @@ impl AgentBuilder {
             finish_on_round_limit: self.finish_on_round_limit,
             completion_check: self.completion_check,
             boundary_policy: self.boundary_policy,
+            model_view: self.model_view_boundary.map(|boundary| {
+                Arc::new(ModelView {
+                    boundary,
+                    sources: Mutex::new(Vec::new()),
+                })
+            }),
             completion_sequence: Arc::new(AtomicU64::new(0)),
             interrupt_model_on_cancel: self.interrupt_model_on_cancel,
             cancellation_session: self.cancellation_session,
@@ -2056,6 +2110,14 @@ impl AgentBuilder {
 
 #[path = "agent_idle_compaction.rs"]
 mod idle_compaction;
+
+#[path = "agent_model_view.rs"]
+mod model_view;
+use model_view::ModelView;
+
+#[cfg(test)]
+#[path = "agent_model_view_tests.rs"]
+mod model_view_tests;
 
 #[cfg(test)]
 #[path = "agent_boundary_tests.rs"]

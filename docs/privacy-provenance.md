@@ -43,12 +43,49 @@ not detection of everything a model writes or of opaque provider content.
 | Part | State |
 | --- | --- |
 | Raw captures, admitted nodes, conversation binding ([admission](privacy-admission.md)) | implemented, private |
-| Framework boundary for sources and views | not implemented |
+| Framework boundary for sources and views | first slice implemented, private; see below |
 | Producers that keep parts: system prompt, tools, memory, todos, context, tasks, compaction, human replies | not implemented |
 | Provider and native request composition from views, with receipts | not implemented |
 | Resumed, edited and denied approvals through the same checks | not implemented |
 | Session builder use of the reserved conversation | not implemented |
 | Restoration into replies and files | not implemented |
+
+## Framework boundary, first slice
+
+The framework crate has an optional boundary, `ModelViewBoundary`, selected
+per agent with `AgentBuilder::model_view_boundary`. The default is none, and an
+agent without it runs exactly its existing paths. The crate gained no
+dependency and knows nothing about what a source is: a `SourceRef` is opaque
+evidence that the selecting host supplies and checks itself.
+
+With a boundary selected:
+
+- A turn is accepted only through `Agent::run_turn_with_view(input, source)`.
+  The input is recorded exactly as an ordinary turn records it; the source is
+  kept beside it in memory and is never read from a checkpoint.
+- Each request is a `TrackedModelRequest`: the recorded messages and tool
+  definitions with one source per message and per definition, and the sources
+  of the system channel from the boundary. The provider receives it through
+  `ModelProvider::complete_with_view`. A provider that does not implement that
+  method refuses; the recorded text is not sent in its place.
+- A reply is committed, journaled and saved first, then reported to the
+  boundary with the provider's receipt, and its source is recorded.
+- A tool result is journaled and committed first, and saved there when the
+  agent saves after each result, then reported to the boundary.
+- If the boundary returns no source, the real reply or result stays recorded
+  with its usage, the turn stops, and no later request can be composed for
+  that conversation.
+
+Refused on a selected agent, before any effect: the ordinary turn entry,
+steering, resuming an approval, reopening a thread, transferring a
+conversation and idle compaction. Refused because they have no
+source-preserving path yet: any middleware, a boundary policy, a completion
+check, system text set on the agent, per-round system additions, and any
+recorded message that arrived without a source, such as a notification from
+another agent or the results appended when a turn is cancelled.
+
+No application provider implements the view path and no session selects the
+boundary. The admission core does not implement the boundary yet.
 
 ## Limits that will remain
 

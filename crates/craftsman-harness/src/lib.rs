@@ -28,6 +28,11 @@ pub use completion::{CompletionAction, CompletionAfterCheck, CompletionCheck};
 pub mod boundary;
 pub use boundary::{AgentBoundaryPolicy, HumanInputKind, ModelBoundaryAction};
 
+pub mod provenance;
+pub use provenance::{
+    ModelDelivery, ModelViewBoundary, ObservedToolResult, SourceRef, TrackedModelRequest,
+};
+
 pub mod interrupt;
 pub use interrupt::{HitlAction, HitlRequest, Suspension, SuspensionFrame};
 
