@@ -97,6 +97,91 @@ fn file_data_policy_requires_explicit_location_representation_and_operations() {
     ));
 }
 
+#[test]
+fn explicit_contact_application_is_strict_and_does_not_broaden_generic_format() {
+    let workspace = Path::new(if cfg!(windows) {
+        "C:/owned/workspace"
+    } else {
+        "/owned/workspace"
+    });
+    let generic = user_policy(workspace, &workspace.join("record.txt"));
+    assert!(matches!(
+        parse_user_source(&serde_json::to_vec(&generic).unwrap()),
+        Ok(Policy::Proposed(_))
+    ));
+    for (format, application) in [
+        ("plain_text", "contact_lines_v1"),
+        ("json_document", "contact_json_v1"),
+    ] {
+        let mut value = generic.clone();
+        value["privacy"]["file_data"][0]["format"] = json!(format);
+        value["privacy"]["file_data"][0]["application"] = json!(application);
+        assert!(matches!(
+            parse_user_source(&serde_json::to_vec(&value).unwrap()),
+            Ok(Policy::Proposed(_))
+        ));
+        value["privacy"]["file_data"][0]["format"] = json!(if format == "plain_text" {
+            "json_document"
+        } else {
+            "plain_text"
+        });
+        assert!(matches!(
+            parse_user_source(&serde_json::to_vec(&value).unwrap()),
+            Err(PolicyError::Invalid)
+        ));
+    }
+    for field in ["purpose", "schema", "pointer", "capability"] {
+        let mut bad = generic.clone();
+        bad["privacy"]["file_data"][0][field] = json!("contact_data");
+        assert!(matches!(
+            parse_user_source(&serde_json::to_vec(&bad).unwrap()),
+            Err(PolicyError::Invalid)
+        ));
+    }
+    let mut unknown = generic;
+    unknown["privacy"]["file_data"][0]["application"] = json!("generic_json");
+    assert!(matches!(
+        parse_user_source(&serde_json::to_vec(&unknown).unwrap()),
+        Err(PolicyError::Invalid)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn actual_configured_root_excludes_innocuously_named_contact_data_destinations() {
+    let root_owner = private_directory();
+    let workspace_owner = private_directory();
+    let root = root_owner.path().canonicalize().unwrap();
+    let workspace = workspace_owner.path().canonicalize().unwrap();
+    create_config(
+        &root,
+        &user_policy(&workspace, &workspace.join("record.txt")),
+    );
+    let captured =
+        CapturedPolicy::capture_from_root(ConfigRoot::capture_owned_test_root(&root).unwrap())
+            .unwrap();
+    assert!(!captured.permits_data_destination(&root.join("innocent-contact-record.txt")));
+    assert!(!captured.permits_data_destination(&root.join("other-name.json")));
+    for path in [
+        "AGENTS.md",
+        ".craftsman/AGENTS.md",
+        "instructions/owner.txt",
+        "schema/contact.json",
+        "src/contact.json",
+        "data/credentials.json",
+        "data/profile.schema.json",
+        "scripts/owner.txt",
+    ] {
+        assert!(
+            !captured.permits_data_destination(&workspace.join(path)),
+            "{path}"
+        );
+    }
+    assert!(captured.permits_data_destination(&workspace.join("record.txt")));
+    // Not excluded is only an eligibility predicate. No FileDataRequest,
+    // application/schema/range grant or retained final effect exists here.
+}
+
 #[cfg(unix)]
 fn private_directory() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;

@@ -49,6 +49,16 @@ impl FileDataRequest {
     pub(super) fn issued(value: DataRequest) -> Self {
         Self(Arc::new(value))
     }
+    /// Bind a policy provider to its own actual conversation, including every
+    /// delegated lane of that same Inner. Identity is only a refusal check;
+    /// it supplies no application/schema/permission/effect authority.
+    pub fn require_session(&self, session: &super::PrivacySession) -> Result<(), FileRefusal> {
+        if !Arc::ptr_eq(&self.0.owner, &session.inner) {
+            return Err(FileRefusal::Stopped(super::SessionStop::Unbound));
+        }
+        session.check().map_err(FileRefusal::Stopped)
+    }
+
     pub fn workspace_sha256(&self) -> &str {
         &self.0.workspace
     }

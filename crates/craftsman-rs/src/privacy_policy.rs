@@ -65,6 +65,24 @@ impl DetectorPolicy {
             .iter()
             .find_map(|rule| rule.format_for(workspace, destination))
     }
+    fn supported_data(
+        &self,
+        workspace: &std::path::Path,
+        request: &crate::privacy_session::FileDataRequest,
+    ) -> Option<crate::privacy_session::SupportedFileData> {
+        self.file_rules
+            .iter()
+            .find_map(|rule| rule.supported(workspace, request))
+    }
+    fn retained_data_effect(
+        &self,
+        workspace: &std::path::Path,
+        request: &crate::privacy_session::FileEffectRequest,
+    ) -> Option<crate::privacy_session::RetainedFileEffect> {
+        self.file_rules
+            .iter()
+            .find_map(|rule| rule.retained(workspace, request))
+    }
 }
 
 enum Policy {
@@ -144,6 +162,47 @@ impl CapturedPolicy {
             Policy::Proposed(_) => Err(PolicyError::NotYetAvailable),
             _ => Ok(()),
         }
+    }
+    /// The ACTUAL configured user root is a protected role, regardless of its
+    /// pathname or a model's declared purpose. User config/key/vault/detector/
+    /// grants/agent instructions and other sources under it cannot become data.
+    fn permits_data_destination(&self, destination: &std::path::Path) -> bool {
+        self.root
+            .with_captured_path(|root| Ok(!destination.starts_with(root)))
+            == Ok(true)
+            && !file_data::protected_role(destination)
+    }
+    pub(crate) fn supported_data(
+        &self,
+        workspace: &std::path::Path,
+        request: &crate::privacy_session::FileDataRequest,
+    ) -> Option<crate::privacy_session::SupportedFileData> {
+        self.recheck().ok()?;
+        if !self.permits_data_destination(request.destination()) {
+            return None;
+        }
+        let supported = self
+            .proposed_detector()
+            .ok()??
+            .supported_data(workspace, request)?;
+        self.recheck().ok()?;
+        Some(supported)
+    }
+    pub(crate) fn retained_data_effect(
+        &self,
+        workspace: &std::path::Path,
+        request: &crate::privacy_session::FileEffectRequest,
+    ) -> Option<crate::privacy_session::RetainedFileEffect> {
+        self.recheck().ok()?;
+        if !self.permits_data_destination(request.destination()) {
+            return None;
+        }
+        let retained = self
+            .proposed_detector()
+            .ok()??
+            .retained_data_effect(workspace, request)?;
+        self.recheck().ok()?;
+        Some(retained)
     }
 }
 

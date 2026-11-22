@@ -458,6 +458,38 @@ impl CapturedUserPolicy for PrivateConversation {
         // before this actual owner can authorize any data image.
         None
     }
+    fn supported_file_data(
+        &self,
+        request: &crate::privacy_session::FileDataRequest,
+    ) -> Option<crate::privacy_session::SupportedFileData> {
+        self.check_sources().ok()?;
+        request.require_session(&self.session).ok()?;
+        request.planned().check_live().ok()?;
+        if request.workspace_sha256() != self.session.workspace_sha256() {
+            return None;
+        }
+        let supported = self
+            .policy
+            .supported_data(&self.workspace.canonical, request)?;
+        self.check_sources().ok()?;
+        Some(supported)
+    }
+    fn retained_file_effect(
+        &self,
+        request: &crate::privacy_session::FileEffectRequest,
+    ) -> Option<crate::privacy_session::RetainedFileEffect> {
+        self.check_sources().ok()?;
+        request.data().require_session(&self.session).ok()?;
+        request.data().planned().check_live().ok()?;
+        if request.data().workspace_sha256() != self.session.workspace_sha256() {
+            return None;
+        }
+        let retained = self
+            .policy
+            .retained_data_effect(&self.workspace.canonical, request)?;
+        self.check_sources().ok()?;
+        Some(retained)
+    }
 }
 
 #[derive(Clone, thiserror::Error)]
