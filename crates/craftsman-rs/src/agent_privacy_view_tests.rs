@@ -139,13 +139,20 @@ async fn privacy_view_builder_fixture() {
                 .map(str::to_owned)
         })
         .collect();
-    if selected.len() != 1 || selected[0] != "chat" {
+    let on_a_pty = cfg!(unix) && selected.len() == 1 && selected[0] == "terminal";
+    if selected.len() != 1 || !(selected[0] == "chat" || on_a_pty) {
         return;
     }
     let directory = std::env::current_dir().unwrap();
     let vault_root = directory.parent().unwrap().join("vault");
     std::fs::create_dir(&vault_root).unwrap();
     let (vault, _) = open(&vault_root, "unused-thread").await;
+    #[cfg(unix)]
+    if on_a_pty {
+        terminal_on_a_pty(&directory, &vault).await;
+        eprintln!("{DONE}");
+        return;
+    }
     let activity = Arc::new(Mutex::new(Vec::new()));
     conversation(&directory, &vault, &activity).await;
     repair(&directory, &vault, &activity).await;
@@ -154,6 +161,9 @@ async fn privacy_view_builder_fixture() {
     repeated_arguments(&directory, &vault, &activity).await;
     compaction_lane(&directory, &vault, &activity).await;
     delegation(&directory, &vault, &activity).await;
+    restoration(&directory, &vault, &activity).await;
+    delegated_restoration(&directory, &vault, &activity).await;
+    terminal_display(&directory, &vault).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -1114,6 +1124,465 @@ async fn delegation(
     session.lsp.shutdown().await;
 }
 
+/// A user's policy with a rule for file content: plain text, for every file.
+struct PlainTextFiles;
+
+impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
+    fn enables_privacy_in(&self, _: &str) -> bool {
+        true
+    }
+
+    fn requires_inspectable_provider_items(&self) -> bool {
+        false
+    }
+
+    fn restorable_file_data(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Option<crate::privacy_restore::FileDataFormat> {
+        Some(crate::privacy_restore::FileDataFormat::PlainText)
+    }
+}
+
+/// A reply made from the placeholder the request carries for the address in
+/// its input.
+struct FromInput(Box<dyn Fn(&str) -> ResponseTemplate + Send + Sync>);
+
+impl wiremock::Respond for FromInput {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let input = content_at(request, 1);
+        let placeholder = input
+            .strip_prefix("Who handles ")
+            .and_then(|rest| rest.strip_suffix('?'))
+            .expect("the input carries the placeholder");
+        (self.0)(placeholder)
+    }
+}
+
+/// Restoration in a built session: the approval gate shows a person the
+/// real content of a file write, the file gets that content, the recorded
+/// call keeps the placeholder, and the person reads the reply with the value.
+async fn restoration(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let typed = format!("Who handles {EMAIL}?");
+    // What the approval prompt was shown, and what it answers.
+    let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let approve = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let run = |file: &'static str, with_rule: bool| {
+        let (shown, approve, typed) = (shown.clone(), approve.clone(), typed.clone());
+        let activity = activity.clone();
+        async move {
+            let note = directory.join(file);
+            let server = MockServer::start().await;
+            let path = note.clone();
+            mount_once(
+                &server,
+                1,
+                Mock::given(method("POST")).respond_with(FromInput(Box::new(move |placeholder| {
+                    reply(
+                        "chat",
+                        0,
+                        Some((
+                            "call-write",
+                            "write_file",
+                            &json!({"file_path": path, "content": format!("Contact {placeholder} today.")}),
+                        )),
+                        "",
+                    )
+                }))),
+            )
+            .await;
+            Mock::given(method("POST"))
+                .respond_with(FromInput(Box::new(|placeholder| {
+                    answer("chat", &[&format!("Saved it for {placeholder}.")])
+                })))
+                .mount(&server)
+                .await;
+            let cfg = config("chat", &server);
+            let owner = privacy(vault, directory).await;
+            let policy: Arc<dyn crate::privacy_session::CapturedUserPolicy> = match with_rule {
+                true => Arc::new(PlainTextFiles),
+                false => Arc::new(FixturePolicy::default()),
+            };
+            let selection = PrivacyViewSelection::from_user_policy(policy, owner.clone()).unwrap();
+            let prompt: ApprovalPrompt = Arc::new(move |_, _, details| {
+                shown.lock().unwrap().push(details.to_owned());
+                match approve.load(std::sync::atomic::Ordering::SeqCst) {
+                    true => ApprovalPromptResult::Approve,
+                    false => ApprovalPromptResult::Reject("not this one".into()),
+                }
+            });
+            let session = build(&cfg, directory, None, None, &activity, |extras| {
+                extras.privacy_view = Some(selection);
+                extras.approval_prompt = Some(prompt);
+            })
+            .await
+            .expect("a session with a file rule is built");
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(_) = view.turn(&session.agent, &typed).await.unwrap() else {
+                panic!("the turn finishes");
+            };
+            let requests = sent(&server).await;
+            assert!(requests.iter().all(|body| !body.contains(EMAIL)));
+            let messages = session.agent.state.lock().unwrap().messages.clone();
+            let sources = session.agent.recorded_sources().unwrap();
+            // The recorded call still holds the placeholder.
+            let recorded_content = match &messages[1] {
+                Msg::Assistant { tool_calls, .. } => {
+                    tool_calls[0].args["content"].as_str().unwrap().to_owned()
+                }
+                _ => panic!("the call is recorded"),
+            };
+            assert!(recorded_content.contains("pv1-") && !recorded_content.contains(EMAIL));
+            let result = match &messages[2] {
+                Msg::Tool { content, .. } => content.clone(),
+                _ => panic!("the result is recorded"),
+            };
+            // A person reads the reply with the value; the record keeps the
+            // placeholder.
+            let human = owner.human_reply(sources[3].as_ref().unwrap()).unwrap();
+            assert_eq!(
+                human.read(str::to_owned).unwrap(),
+                format!("Saved it for {EMAIL}.")
+            );
+            assert!(matches!(&messages[3], Msg::Assistant { content, .. }
+                if content.contains("pv1-") && !content.contains(EMAIL)));
+            assert!(owner.check().is_ok());
+            let undone = undo_last_write(&session, &note).await;
+            session.lsp.shutdown().await;
+            (note, result, undone)
+        }
+    };
+
+    // Approved by the person: the prompt showed the real content, and the
+    // file holds it. The file tool itself ran around the write: its
+    // workspace checkpoint knows the write and takes it back.
+    let (note, result, undone) = run("restored-note.txt", true).await;
+    assert_eq!(undone, Some(format!("Contact {EMAIL} today.")));
+    assert!(!note.exists());
+    assert_eq!(result, format!("Updated file {}", note.display()));
+    let details = shown.lock().unwrap().clone();
+    assert_eq!(details.len(), 1);
+    assert!(details[0].contains(&format!("Contact {EMAIL} today.")));
+    assert!(!details[0].contains("pv1-"));
+
+    // Rejected by the person: nothing is written.
+    approve.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (note, result, undone) = run("rejected-note.txt", true).await;
+    assert!(!note.exists() && undone.is_none());
+    assert!(result.contains("not this one"), "{result}");
+    assert_eq!(shown.lock().unwrap().len(), 2);
+
+    // No rule in the user's policy: the tool refuses before anyone is
+    // asked, and nothing is written.
+    approve.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (note, result, undone) = run("unruled-note.txt", false).await;
+    assert!(!note.exists() && undone.is_none());
+    assert_eq!(
+        result,
+        crate::privacy_session::FileRefusal::NoRule.to_string()
+    );
+    assert_eq!(shown.lock().unwrap().len(), 2);
+}
+
+/// What the file at `note` holds, if the last workspace checkpoint of the
+/// session is the file tool's own for a write to it and taking that
+/// checkpoint back removes the file again.
+async fn undo_last_write(session: &Session, note: &std::path::Path) -> Option<String> {
+    let written = std::fs::read_to_string(note).ok()?;
+    let workspace = session.workspace_checkpoints.as_ref()?;
+    let known = workspace.list().await.unwrap();
+    let last = known.first()?;
+    assert_eq!(last.file_count, 1);
+    let report = workspace.rewind(Some(&last.id), false).await.unwrap();
+    assert!(report.conflicts.is_empty() && report.unrestorable.is_empty());
+    assert_eq!(report.restored.len(), 1);
+    assert!(note.ends_with(&report.restored[0]));
+    (!note.exists()).then_some(written)
+}
+
+/// The delegated agent's first reply: it asks to write its own input, as
+/// its request carries it, to a file.
+struct WritesItsInput(std::path::PathBuf);
+
+impl wiremock::Respond for WritesItsInput {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        reply(
+            "chat",
+            1,
+            Some((
+                "call-note",
+                "write_file",
+                &json!({"file_path": self.0, "content": content_at(request, 1)}),
+            )),
+            "",
+        )
+    }
+}
+
+/// Restoration for a delegated agent in a built session: the builder's own
+/// delegated agent writes a file whose content names an address and a
+/// telephone alias. Its own gate shows a person the real content, the real
+/// file tool writes it with its workspace checkpoint, and the delegated
+/// agent's call keeps the placeholders.
+async fn delegated_restoration(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let typed = format!("Note that {EMAIL} answers {PHONE}.");
+    let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let approve = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let run = |file: &'static str, with_rule: bool| {
+        let (shown, approve, typed) = (shown.clone(), approve.clone(), typed.clone());
+        let activity = activity.clone();
+        async move {
+            let note = directory.join(file);
+            let server = MockServer::start().await;
+            mount_once(
+                &server,
+                1,
+                Mock::given(method("POST")).respond_with(AsksForATask { background: false }),
+            )
+            .await;
+            mount_once(
+                &server,
+                2,
+                Mock::given(method("POST")).respond_with(WritesItsInput(note.clone())),
+            )
+            .await;
+            mount_once(
+                &server,
+                3,
+                Mock::given(method("POST")).respond_with(answer("chat", &["Noted."])),
+            )
+            .await;
+            mount_once(
+                &server,
+                4,
+                Mock::given(method("POST")).respond_with(answer("chat", &["fixture answer"])),
+            )
+            .await;
+            let cfg = config("chat", &server);
+            let owner = privacy(vault, directory).await;
+            let policy: Arc<dyn crate::privacy_session::CapturedUserPolicy> = match with_rule {
+                true => Arc::new(PlainTextFiles),
+                false => Arc::new(FixturePolicy::default()),
+            };
+            let selection = PrivacyViewSelection::from_user_policy(policy, owner.clone()).unwrap();
+            let prompt: ApprovalPrompt = Arc::new(move |_, _, details| {
+                shown.lock().unwrap().push(details.to_owned());
+                match approve.load(std::sync::atomic::Ordering::SeqCst) {
+                    true => ApprovalPromptResult::Approve,
+                    false => ApprovalPromptResult::Reject("not this one".into()),
+                }
+            });
+            let session = build(&cfg, directory, None, None, &activity, |extras| {
+                extras.privacy_view = Some(selection);
+                extras.approval_prompt = Some(prompt);
+            })
+            .await
+            .expect("a session with delegated agents and a file rule is built");
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(_) = view.turn(&session.agent, &typed).await.unwrap() else {
+                panic!("the turn finishes");
+            };
+            let requests = sent(&server).await;
+            assert_eq!(requests.len(), 4);
+            for body in &requests {
+                assert!(!body.contains(EMAIL) && !body.contains(PHONE));
+            }
+            // What the delegated agent's model was told about its write,
+            // and the call it wrote, which keeps what it wrote.
+            let third: serde_json::Value = serde_json::from_str(&requests[2]).unwrap();
+            let told = third["messages"][3]["content"].as_str().unwrap().to_owned();
+            let call = third["messages"][2]["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(call.contains("pv1-"));
+            assert!(owner.check().is_ok());
+            let undone = undo_last_write(&session, &note).await;
+            session.lsp.shutdown().await;
+            (note, told, undone)
+        }
+    };
+
+    // Approved at the delegated agent's gate: the person was shown the real
+    // content, the address and the telephone number, and the file held it.
+    // The file tool's workspace checkpoint knows the write and takes it
+    // back.
+    let (note, told, undone) = run("delegated-note.txt", true).await;
+    let written = format!("Work on this: Note that {EMAIL} answers {PHONE}.");
+    assert_eq!(undone, Some(written.clone()));
+    assert!(!note.exists());
+    assert_eq!(told, format!("Updated file {}", note.display()));
+    let details = shown.lock().unwrap().clone();
+    assert_eq!(details.len(), 1);
+    assert!(details[0].contains(&written) && !details[0].contains("pv1-"));
+
+    // Refused by the person: nothing is written.
+    approve.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (note, told, undone) = run("delegated-rejected.txt", true).await;
+    assert!(!note.exists() && undone.is_none());
+    assert!(told.contains("not this one"), "{told}");
+    assert_eq!(shown.lock().unwrap().len(), 2);
+
+    // No rule in the user's policy: refused before the gate asks anyone.
+    // Neither alias reaches the file as it is.
+    approve.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (note, told, undone) = run("delegated-unruled.txt", false).await;
+    assert!(!note.exists() && undone.is_none());
+    assert_eq!(
+        told,
+        crate::privacy_session::FileRefusal::NoRule.to_string()
+    );
+    assert_eq!(shown.lock().unwrap().len(), 2);
+}
+
+/// A streamed reply whose placeholder arrives in two pieces, between text
+/// that is not ASCII.
+fn streams_in_pieces(placeholder: &str) -> ResponseTemplate {
+    let (first, second) = placeholder.split_at(placeholder.len() / 2);
+    let chunk = |text: &str| json!({"choices": [{"delta": {"content": text}}]});
+    let end = json!({"choices": [{"delta": {}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2}});
+    ResponseTemplate::new(200).set_body_raw(
+        format!(
+            "data: {}\n\ndata: {}\n\ndata: {end}\n\ndata: [DONE]\n\n",
+            chunk(&format!("Écris à {first}")),
+            chunk(&format!("{second} — merci.")),
+        ),
+        "text/event-stream",
+    )
+}
+
+/// The terminal's own sinks with a privacy conversation: the reply is held
+/// while it streams, drawn once from the committed reply as a person may
+/// read it, and never drawn for a turn that is stopping or that failed. The
+/// record and every request keep the placeholder.
+async fn terminal_display(directory: &std::path::Path, vault: &Vault) {
+    let typed = format!("Who handles {EMAIL}?");
+    let server = MockServer::start().await;
+    for turn in 1..=3 {
+        mount_once(
+            &server,
+            turn,
+            Mock::given(method("POST")).respond_with(FromInput(Box::new(streams_in_pieces))),
+        )
+        .await;
+    }
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("fixture failure"))
+        .mount(&server)
+        .await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let mut terminal =
+        crate::tui::PrivacyTerminal::build(&cfg, directory, selected_by_policy(&owner)).await;
+    let shown = format!("Écris à {EMAIL} — merci.");
+
+    // The first turn: both pieces were held, and the terminal was given the
+    // committed reply once, with the value.
+    let recorded = terminal.turn(&typed, false).await.unwrap();
+    assert!(recorded.contains("pv1-") && !recorded.contains(EMAIL));
+    let drawn = terminal.drawn();
+    assert_eq!(drawn.replies, [shown.clone()]);
+    assert_eq!(drawn.deltas, 0);
+    assert_eq!(drawn.screen.matches(EMAIL).count(), 1);
+    assert!(drawn.screen.contains("Écris à") && !drawn.screen.contains("pv1-"));
+
+    // The second turn is drawn once more, as its own item. What the person
+    // was shown did not go back to the model: no request holds the value.
+    terminal.turn("And again?", false).await.unwrap();
+    let drawn = terminal.drawn();
+    assert_eq!(drawn.replies, [shown.clone(), shown.clone()]);
+    assert_eq!(drawn.deltas, 0);
+
+    // A turn that is stopping draws nothing more, although its reply was
+    // committed and recorded.
+    let recorded = terminal.turn("And once more?", true).await.unwrap();
+    assert!(recorded.contains("pv1-"));
+    assert_eq!(terminal.drawn().replies.len(), 2);
+
+    // A view of the first reply, made while the conversation is live.
+    let first_reply = terminal.session().agent.recorded_sources().unwrap()[1]
+        .clone()
+        .unwrap();
+    let late = owner.human_reply(&first_reply).unwrap();
+
+    // A turn whose model request fails draws no reply.
+    assert!(terminal.turn("And now?", false).await.is_err());
+    let drawn = terminal.drawn();
+    assert_eq!(drawn.replies.len(), 2);
+    assert_eq!(drawn.deltas, 0);
+    assert!(!drawn.screen.contains("pv1-"));
+
+    // The record keeps what the model wrote, and no request held a value.
+    for message in terminal
+        .session()
+        .agent
+        .state
+        .lock()
+        .unwrap()
+        .messages
+        .iter()
+    {
+        if let Msg::Assistant { content, .. } = message {
+            assert!(content.contains("pv1-") && !content.contains(EMAIL));
+        }
+    }
+    for body in sent(&server).await {
+        assert!(!body.contains(EMAIL));
+    }
+
+    // Once the conversation has stopped, a view that was made earlier is
+    // not read any more, and a reply without a view shows nothing of
+    // itself: a fixed line stands where the text would be.
+    owner.stop();
+    use crate::privacy_session::{HumanRefusal, HumanReply};
+    terminal.show(HumanReply::Text(late));
+    terminal.show(HumanReply::Withheld(HumanRefusal::NotAReply));
+    let drawn = terminal.drawn();
+    assert_eq!(drawn.replies.len(), 2);
+    let fixed = "A reply of this private conversation could not be shown.";
+    assert_eq!(
+        drawn.notices.iter().filter(|line| *line == fixed).count(),
+        2
+    );
+    assert_eq!(drawn.screen.matches(EMAIL).count(), 2);
+    terminal.session().lsp.shutdown().await;
+}
+
+/// The same conversation drawn on the terminal this process was started
+/// on: one turn, then one frame by the application's own draw.
+#[cfg(unix)]
+async fn terminal_on_a_pty(directory: &std::path::Path, vault: &Vault) {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(FromInput(Box::new(streams_in_pieces)))
+        .mount(&server)
+        .await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let mut terminal =
+        crate::tui::PrivacyTerminal::build(&cfg, directory, selected_by_policy(&owner)).await;
+    let recorded = terminal
+        .turn(&format!("Who handles {EMAIL}?"), false)
+        .await
+        .unwrap();
+    assert!(recorded.contains("pv1-") && !recorded.contains(EMAIL));
+    terminal.draw_on_terminal(&cfg).unwrap();
+    for body in sent(&server).await {
+        assert!(!body.contains(EMAIL));
+    }
+    terminal.session().lsp.shutdown().await;
+}
+
 /// Selections that are refused before a session exists, each with its
 /// typed reason for the host that made the selection.
 async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
@@ -1309,6 +1778,108 @@ async fn actual_builder_runs_a_selected_privacy_conversation_on_the_chat_wire() 
     let error = std::str::from_utf8(&output.stderr).unwrap();
     assert!(output.status.success(), "{error}");
     assert_eq!(error.lines().filter(|line| *line == DONE).count(), 1);
+}
+
+/// Everything a child wrote to the terminal it was started on: a newly
+/// owned PTY, 40 rows of 120 columns, which is its input and its output.
+#[cfg(unix)]
+async fn run_on_a_pty(
+    arguments: &[String],
+    directory: &std::path::Path,
+    home: &std::path::Path,
+) -> (std::process::ExitStatus, Vec<u8>, Vec<u8>) {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    let (mut master, mut slave) = (-1, -1);
+    let mut size = libc::winsize {
+        ws_row: 40,
+        ws_col: 120,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let opened = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    assert_eq!(opened, 0);
+    let mut master = unsafe { std::fs::File::from_raw_fd(master) };
+    let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--ignored", "--exact", HELPER, "--nocapture"])
+        .args(arguments)
+        .current_dir(directory)
+        .env_clear()
+        .env("HOME", home)
+        .env("CRAFTSMAN_CONFIG_DIR", home.join("config"))
+        .env("TERM", "xterm-256color")
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave))
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    let mut child = command.spawn().unwrap();
+    // The child holds the only other ends of the PTY now.
+    drop(command);
+    let drawn = std::thread::spawn(move || {
+        let mut drawn = Vec::new();
+        let mut piece = [0u8; 4096];
+        while let Ok(count) = master.read(&mut piece) {
+            if count == 0 || drawn.len() > 1 << 20 {
+                break;
+            }
+            drawn.extend_from_slice(&piece[..count]);
+        }
+        drawn
+    });
+    let mut stderr = child.stderr.take().unwrap().take(65537);
+    let mut error = Vec::new();
+    let finished = tokio::time::timeout(Duration::from_secs(180), async {
+        tokio::try_join!(child.wait(), stderr.read_to_end(&mut error))
+    })
+    .await;
+    let Ok(Ok((status, _))) = finished else {
+        let _ = tokio::time::timeout(Duration::from_secs(5), child.kill()).await;
+        panic!("private terminal fixture exceeded its bound");
+    };
+    (status, drawn.join().unwrap(), error)
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_terminal_draws_a_committed_reply_once_on_a_pty_through_the_safe_backend() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(temp.path().join("config")).unwrap();
+    let (status, drawn, error) =
+        run_on_a_pty(&[format!("{MARKER}terminal")], &workspace, temp.path()).await;
+    let error = String::from_utf8_lossy(&error);
+    assert!(status.success(), "{error}");
+    assert_eq!(error.lines().filter(|line| *line == DONE).count(), 1);
+    // What reached the terminal: the reply as a person may read it, once,
+    // and no placeholder.
+    let drawn = String::from_utf8_lossy(&drawn);
+    assert_eq!(drawn.matches(EMAIL).count(), 1, "{drawn:?}");
+    assert!(drawn.contains("Écris à") && drawn.contains("merci."));
+    assert!(!drawn.contains("pv1-") && !drawn.contains("privacy.invalid"));
+    // The status reports beside it are fixed words: nothing of the reply.
+    let reports: Vec<&str> = drawn.split("\u{1b}]7501;").skip(1).collect();
+    assert!(!reports.is_empty());
+    for report in reports {
+        let report = report.split("\u{1b}\\").next().unwrap();
+        assert!(
+            !report.contains('@') && !report.contains("merci"),
+            "{report:?}"
+        );
+    }
 }
 
 #[tokio::test]

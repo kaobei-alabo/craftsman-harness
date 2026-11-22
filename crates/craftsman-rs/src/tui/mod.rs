@@ -15,6 +15,8 @@ mod render;
 mod session_bridge;
 #[cfg(feature = "gadgets")]
 pub(crate) use session_bridge::CaptureBuildOwner;
+#[cfg(test)]
+pub(crate) use session_bridge::privacy_display_tests::PrivacyTerminal;
 #[cfg(all(test, feature = "gadgets"))]
 pub(crate) use session_bridge::script_capture_tests::script_capture_fixture;
 mod shutdown;

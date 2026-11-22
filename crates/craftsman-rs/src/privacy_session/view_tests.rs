@@ -1599,3 +1599,6 @@ async fn compaction_asks_the_summarizer_with_views_and_keeps_its_text_as_model_t
 
 #[path = "delegation_tests.rs"]
 mod delegation;
+
+#[path = "restoration_tests.rs"]
+mod restoration;
