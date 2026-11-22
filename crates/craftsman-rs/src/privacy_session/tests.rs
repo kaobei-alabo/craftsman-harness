@@ -579,15 +579,24 @@ async fn admissions_started_together_run_one_at_a_time_and_a_full_owner_turns_dr
     // Hold the owner inside one detector call and fill every slot.
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     source.gate(gate.clone());
+    let admitted = Arc::new(AtomicUsize::new(0));
     let mut waiting = Vec::new();
     for index in 0..ADMISSION_SLOTS {
         let session = session.clone();
-        waiting.push(tokio::spawn(async move {
-            session
-                .admit_raw(&draft(&format!("queued {index}")))
-                .await
-                .is_ok()
-        }));
+        let admitted = admitted.clone();
+        // Spawned as the erased future type the runtime's task code already
+        // exists for; each admission counts itself when it succeeds.
+        let admission: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+            Box::pin(async move {
+                if session
+                    .admit_raw(&draft(&format!("queued {index}")))
+                    .await
+                    .is_ok()
+                {
+                    admitted.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        waiting.push(tokio::spawn(admission));
     }
     while session.inner.slots.available_permits() > 0 {
         tokio::task::yield_now().await;
@@ -599,8 +608,10 @@ async fn admissions_started_together_run_one_at_a_time_and_a_full_owner_turns_dr
     );
     gate.add_permits(ADMISSION_SLOTS);
     for task in waiting {
-        assert!(task.await.unwrap());
+        task.await.unwrap();
     }
+    // Every queued admission succeeded.
+    assert_eq!(admitted.load(Ordering::SeqCst), ADMISSION_SLOTS);
     assert!(session.check().is_ok());
 }
 
