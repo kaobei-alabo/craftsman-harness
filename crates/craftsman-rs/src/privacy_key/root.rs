@@ -65,17 +65,9 @@ impl ConfigRoot {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn capture_owned_test_root(path: &std::path::Path) -> Result<Self> {
-        #[cfg(unix)]
-        {
-            Self::capture(path.to_owned())
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = path;
-            Err(KeyError::SecureStorageUnsupported)
-        }
+        Self::capture(path.to_owned())
     }
 
     pub(super) fn vault_location(&self) -> Result<crate::privacy_vault::VaultLocation> {

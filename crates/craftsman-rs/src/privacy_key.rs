@@ -4,7 +4,7 @@ mod envelope;
 pub(crate) mod root;
 use crate::privacy_vault::{HostKey, HostKeySource, Limits, Vault};
 pub use envelope::{ENVELOPE_BYTES, ITERATIONS, Passphrase};
-pub use root::ConfigRoot;
+pub use root::{ConfigRoot, KEY_FILENAME};
 use std::{
     fmt,
     future::Future,

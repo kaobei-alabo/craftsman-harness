@@ -9,7 +9,7 @@ use std::fmt;
 use zeroize::Zeroizing;
 
 const POLICY_BYTES: usize = 32 * 1024;
-const USER_CONFIG_BYTES: usize = 1024 * 1024;
+const USER_CONFIG_BYTES: usize = crate::privacy_key::root::CONFIG_LIMIT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PolicyError {
