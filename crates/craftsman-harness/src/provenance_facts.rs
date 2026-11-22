@@ -3,23 +3,25 @@
 //! the host still validates its own source, transport and permission owners.
 
 use crate::{AgentError, AgentState, HitlAction, ModelResponse, Msg, ToolCall, ToolOutcome, Usage};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourcePart, SourceRef};
 
 #[derive(Clone)]
 pub struct ActualAgentOwner(Arc<()>);
 
-/// Issued when this agent actually parks a call. Reopening cannot recreate it.
+/// One actual dispatch proposal, issued before its approval/review chain.
+/// Equal call bytes cannot recreate the event. A plan is neither permission
+/// nor proof that a terminal ran; the final invocation retains it separately.
 #[derive(Clone)]
-pub struct ActualParkedCall(Arc<Parked>);
-struct Parked {
+pub struct ActualPlannedInvocation(Arc<PlannedInvocation>);
+struct PlannedInvocation {
     owner: ActualAgentOwner,
     call: ToolCall,
 }
-impl ActualParkedCall {
+impl ActualPlannedInvocation {
     pub(crate) fn issued(owner: &ActualAgentOwner, call: ToolCall) -> Self {
-        Self(Arc::new(Parked {
+        Self(Arc::new(PlannedInvocation {
             owner: owner.clone(),
             call,
         }))
@@ -29,6 +31,48 @@ impl ActualParkedCall {
     }
     pub fn call(&self) -> &ToolCall {
         &self.0.call
+    }
+    pub fn same_plan(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Issued when this agent actually parks a call. Reopening cannot recreate it.
+#[derive(Clone)]
+pub struct ActualParkedCall(Arc<Parked>);
+struct Parked {
+    planned: ActualPlannedInvocation,
+    review_source: Option<SourceRef>,
+    shown: Option<[u8; 32]>,
+}
+impl ActualParkedCall {
+    pub(crate) fn issued(
+        planned: ActualPlannedInvocation,
+        review_source: Option<SourceRef>,
+        shown: Option<[u8; 32]>,
+    ) -> Self {
+        Self(Arc::new(Parked {
+            planned,
+            review_source,
+            shown,
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        self.0.planned.owner()
+    }
+    pub fn call(&self) -> &ToolCall {
+        self.0.planned.call()
+    }
+    pub fn planned(&self) -> &ActualPlannedInvocation {
+        &self.0.planned
+    }
+    pub fn review_source(&self) -> Option<&SourceRef> {
+        self.0.review_source.as_ref()
+    }
+    /// The selected host's digest for this exact pre-review source. It is
+    /// carried to the registered human input callback; it grants no authority.
+    pub fn shown(&self) -> Option<[u8; 32]> {
+        self.0.shown
     }
     pub fn same_park(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -625,8 +669,14 @@ struct Invocation {
     owner: ActualAgentOwner,
     call: ToolCall,
     resumed: bool,
-    decision: Option<SourceRef>,
+    // A delegated gate can decide inside the actual terminal. Its source
+    // is attached once there, before its inner tool runs; never replaced.
+    decision: OnceLock<SourceRef>,
+    decision_open: Mutex<bool>,
     action: Option<HitlAction>,
+    planned: ActualPlannedInvocation,
+    review_source: Option<SourceRef>,
+    shown: Option<[u8; 32]>,
 }
 
 impl ActualToolInvocation {
@@ -636,13 +686,24 @@ impl ActualToolInvocation {
         resumed: bool,
         decision: Option<SourceRef>,
         action: Option<HitlAction>,
+        planned: ActualPlannedInvocation,
+        review_source: Option<SourceRef>,
+        shown: Option<[u8; 32]>,
     ) -> Self {
+        let held_decision = OnceLock::new();
+        if let Some(decision) = decision {
+            let _ = held_decision.set(decision);
+        }
         Self(Arc::new(Invocation {
             owner: owner.clone(),
             call,
             resumed,
-            decision,
+            decision: held_decision,
+            decision_open: Mutex::new(true),
             action,
+            planned,
+            review_source,
+            shown,
         }))
     }
 
@@ -656,7 +717,25 @@ impl ActualToolInvocation {
         self.0.resumed
     }
     pub fn decision_source(&self) -> Option<&SourceRef> {
-        self.0.decision.as_ref()
+        self.0.decision.get()
+    }
+    pub(crate) fn note_decision(&self, source: SourceRef) -> Result<(), AgentError> {
+        let open = self.0.decision_open.lock().unwrap();
+        if !*open {
+            return Err(AgentError::State(
+                "This invocation has ended its decision entry.".into(),
+            ));
+        }
+        self.0
+            .decision
+            .set(source)
+            .map_err(|_| AgentError::State("This invocation already has a decision source.".into()))
+    }
+    pub(crate) fn own_decision(&self) -> InvocationDecisionOwnership {
+        InvocationDecisionOwnership(self.clone())
+    }
+    pub(crate) fn seal_decision(&self) {
+        *self.0.decision_open.lock().unwrap() = false;
     }
     pub fn decision_action(&self) -> Option<&HitlAction> {
         self.0.action.as_ref()
@@ -665,8 +744,30 @@ impl ActualToolInvocation {
         matches!(self.0.action, Some(HitlAction::ApproveEdited { .. }))
     }
 
+    pub fn planned(&self) -> &ActualPlannedInvocation {
+        &self.0.planned
+    }
+    /// Event linkage only. Middleware and a human can change arguments;
+    /// consumers must also validate the exact final call and sealed decision.
+    pub fn was_planned_as(&self, planned: &ActualPlannedInvocation) -> bool {
+        self.0.planned.same_plan(planned)
+    }
+    pub fn review_source(&self) -> Option<&SourceRef> {
+        self.0.review_source.as_ref()
+    }
+    pub fn shown(&self) -> Option<[u8; 32]> {
+        self.0.shown
+    }
+
     pub fn same_invocation(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+pub(crate) struct InvocationDecisionOwnership(ActualToolInvocation);
+impl Drop for InvocationDecisionOwnership {
+    fn drop(&mut self) {
+        self.0.seal_decision();
     }
 }
 
@@ -801,6 +902,7 @@ macro_rules! opaque_debug {
 
 opaque_debug!(
     ActualAgentOwner,
+    ActualPlannedInvocation,
     ActualParkedCall,
     ActualReceivedReply,
     ActualRetainedCommit,

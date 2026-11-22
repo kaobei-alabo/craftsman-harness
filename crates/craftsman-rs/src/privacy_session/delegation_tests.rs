@@ -428,7 +428,7 @@ async fn a_description_a_person_changed_reaches_the_delegated_agent_as_a_view() 
     let raw = format!(r#"{{"description":"write to {PHONE}","subagent_type":"helper"}}"#);
     let producer = crate::privacy_entry::HumanDecisionProducer::register(
         d.session.clone(),
-        Arc::new(move |_| crate::privacy_entry::HumanChoice::Edit(raw.clone())),
+        Arc::new(move |_, _| crate::privacy_entry::HumanChoice::Edit(raw.clone())),
     );
     let parked = d.agent.actual_parked_call().unwrap();
     assert_eq!(parked.call(), &call);

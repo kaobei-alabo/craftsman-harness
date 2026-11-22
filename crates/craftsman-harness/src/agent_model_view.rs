@@ -318,9 +318,11 @@ pub(super) fn notification_envelope(
     parts
 }
 
+#[derive(Clone)]
 pub(super) struct AppliedDecision {
     pub(super) source: SourceRef,
     pub(super) action: crate::HitlAction,
+    pub(super) parked: ActualParkedCall,
 }
 
 pub(super) struct ModelView {
@@ -883,6 +885,7 @@ impl Agent {
         *view.decision.lock().unwrap() = Some(AppliedDecision {
             source: decision,
             action: action.clone(),
+            parked,
         });
         let future: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<TurnResult, AgentError>> + Send + '_>,

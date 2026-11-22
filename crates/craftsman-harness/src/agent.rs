@@ -649,13 +649,8 @@ impl Agent {
                                     round,
                                 });
                                 *self.parked_suspension.lock().unwrap() = Some((*s).clone());
-                                if let Some(view) = &self.model_view {
-                                    *view.parked.lock().unwrap() =
-                                        Some(crate::provenance::ActualParkedCall::issued(
-                                            &view.owner,
-                                            c.clone(),
-                                        ));
-                                }
+                                // The selected dispatch already retained the
+                                // exact pre-review event with this suspension.
                                 self.journal(
                                     "suspended",
                                     serde_json::to_value(s.as_ref()).unwrap_or_default(),
@@ -790,11 +785,7 @@ impl Agent {
                         round,
                     });
                     *self.parked_suspension.lock().unwrap() = Some((*s).clone());
-                    if let Some(view) = &self.model_view {
-                        *view.parked.lock().unwrap() = Some(
-                            crate::provenance::ActualParkedCall::issued(&view.owner, c.clone()),
-                        );
-                    }
+                    // The selected dispatch retained its actual planned event.
                     self.journal(
                         "suspended",
                         serde_json::to_value(s.as_ref()).unwrap_or_default(),
@@ -1128,10 +1119,36 @@ impl Agent {
         bypass_chain: bool,
     ) -> Result<(), AgentError> {
         let proposed_call = self.model_view.as_ref().map(|_| call.clone());
-        if let Some(view) = &self.model_view {
+        let decision = self.model_view.as_ref().and_then(|view| {
+            if bypass_chain {
+                view.decision.lock().unwrap().take()
+            } else {
+                None
+            }
+        });
+        let planned_review = if let Some(view) = &self.model_view {
+            view.live()?;
+            let review = if let Some(decision) = &decision {
+                (
+                    decision.parked.planned().clone(),
+                    decision.parked.review_source().cloned(),
+                    decision.parked.shown(),
+                )
+            } else {
+                let planned =
+                    crate::provenance::ActualPlannedInvocation::issued(&view.owner, call.clone());
+                let source = view.boundary.before_review(&planned).await?;
+                let shown = source.as_ref().map_or(Ok(None), |source| {
+                    view.boundary.reviewed_operation_digest(&planned, source)
+                })?;
+                (planned, source, shown)
+            };
             // Nothing has run yet. A refusal leaves the call without a result.
             view.boundary.before_dispatch(&call, bypass_chain).await?;
-        }
+            Some(review)
+        } else {
+            None
+        };
         let reached = self
             .model_view
             .as_ref()
@@ -1141,13 +1158,6 @@ impl Agent {
             .as_ref()
             .and_then(|view| self.reply_source(view, &call.id));
         let terminal_view = self.model_view.clone();
-        let decision = self.model_view.as_ref().and_then(|view| {
-            if bypass_chain {
-                view.decision.lock().unwrap().take()
-            } else {
-                None
-            }
-        });
         let id = call.id.clone();
         // t0 = the committed state snapshot the tool starts from. Keep it so the
         // commit can distinguish the tool's `ctx.state` file deltas from the
@@ -1155,10 +1165,15 @@ impl Agent {
         // `merge_dispatch_result` and the two-channel note atop this module).
         let t0 = self.snapshot();
         let mut working = t0.clone();
-        let dispatch_watch = self
-            .model_view
-            .as_ref()
-            .map(|_| Arc::new(Mutex::new(DispatchWatch::new(&t0))));
+        let dispatch_watch = self.model_view.as_ref().map(|_| {
+            let mut watch = DispatchWatch::new(&t0);
+            if let Some((planned, source, shown)) = &planned_review {
+                watch.tracked.planned = Some(planned.clone());
+                watch.tracked.review_source = source.clone();
+                watch.tracked.shown = *shown;
+            }
+            Arc::new(Mutex::new(watch))
+        });
         let backend = self.backend.clone();
         let tools = self.tools.clone();
         let names = self.tool_names();
@@ -1175,17 +1190,14 @@ impl Agent {
             // `as_tool_handler` so the higher-ranked return-lifetime resolves.
             let record = reached.clone();
             let terminal_watch = dispatch_watch.clone();
+            let terminal_review = planned_review.clone();
             let terminal = as_tool_handler(move |call: ToolCall, ctx: &mut ToolCtx<'_>| {
                 let found = tools.get(&call.name).cloned();
                 let names = names.clone();
                 let record = record.clone();
                 let view = terminal_view.clone();
-                let decision = decision
-                    .as_ref()
-                    .map(|decision| model_view::AppliedDecision {
-                        source: decision.source.clone(),
-                        action: decision.action.clone(),
-                    });
+                let decision = decision.clone();
+                let review = terminal_review.clone();
                 let watch = terminal_watch.clone();
                 let reply = origin_reply.clone();
                 Box::pin(async move {
@@ -1202,13 +1214,31 @@ impl Agent {
                                 let view =
                                     view.as_ref().expect("selected terminal has its view owner");
                                 view.live()?;
+                                let mut tracked = watch
+                                    .as_ref()
+                                    .expect("selected invocation has its watch")
+                                    .lock()
+                                    .unwrap()
+                                    .tracked
+                                    .clone();
+                                let (planned, review_source, shown) =
+                                    review.expect("selected terminal retains its planned review");
+                                let policy_decision =
+                                    tracked.notes.lock().unwrap().decision.clone();
                                 let invocation = ActualToolInvocation::issued(
                                     &view.owner,
                                     call.clone(),
                                     bypass_chain,
-                                    decision.as_ref().map(|decision| decision.source.clone()),
+                                    decision
+                                        .as_ref()
+                                        .map(|decision| decision.source.clone())
+                                        .or(policy_decision),
                                     decision.as_ref().map(|decision| decision.action.clone()),
+                                    planned,
+                                    review_source,
+                                    shown,
                                 );
+                                let _decision_ownership = invocation.own_decision();
                                 let source = match view.boundary.before_terminal(&invocation).await
                                 {
                                     Ok(source) => source,
@@ -1217,13 +1247,6 @@ impl Agent {
                                         return Err(error);
                                     }
                                 };
-                                let mut tracked = watch
-                                    .as_ref()
-                                    .expect("selected invocation has its watch")
-                                    .lock()
-                                    .unwrap()
-                                    .tracked
-                                    .clone();
                                 if let Some(reply) = reply {
                                     tracked.origin =
                                         Some(Arc::new(crate::provenance::DispatchOrigin {
@@ -1242,6 +1265,7 @@ impl Agent {
                                     return Err(error);
                                 }
                                 let result = tool.call_with_view(call.args, ctx, &tracked).await;
+                                invocation.seal_decision();
                                 let actual = ActualTerminalOutcome::issued(
                                     invocation,
                                     source,
@@ -1347,7 +1371,16 @@ impl Agent {
             },
             // A gated call raised a suspension: propagate it untouched so the
             // caller can pause the turn. No tool message is appended.
-            Err(e @ AgentError::Suspended(_)) => return Err(e),
+            Err(e @ AgentError::Suspended(_)) => {
+                if let (Some(view), Some((planned, source, shown))) =
+                    (&self.model_view, planned_review)
+                {
+                    *view.parked.lock().unwrap() = Some(
+                        crate::provenance::ActualParkedCall::issued(planned, source, shown),
+                    );
+                }
+                return Err(e);
+            }
             Err(e) => Msg::Tool {
                 tool_call_id: id,
                 content: e.to_string(),

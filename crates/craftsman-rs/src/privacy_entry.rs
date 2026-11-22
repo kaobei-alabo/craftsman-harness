@@ -128,7 +128,7 @@ pub enum HumanChoice {
     Edit(String),
 }
 
-type HumanReader = Arc<dyn Fn(&ActualParkedCall) -> HumanChoice + Send + Sync>;
+type HumanReader = Arc<dyn Fn(&ActualParkedCall, Option<[u8; 32]>) -> HumanChoice + Send + Sync>;
 type AcceptedHumanEffect = Arc<dyn Fn(&HumanChoice, &craftsman_harness::ToolCall) + Send + Sync>;
 
 /// Private registered input owner. Registration alone mints no receipt: only
@@ -146,6 +146,7 @@ pub struct HumanDecisionInput {
     choice: HumanChoice,
     action: Option<HitlAction>,
     edited_raw: Option<CapturedRaw>,
+    shown: Option<[u8; 32]>,
     accepted_effect: Option<AcceptedHumanEffect>,
     effect_applied: std::sync::atomic::AtomicBool,
 }
@@ -157,6 +158,12 @@ impl HumanDecisionInput {
     pub fn was_absent(&self) -> bool {
         matches!(self.choice, HumanChoice::Absent)
     }
+    /// The source-bound operation digest carried by the actual parked event
+    /// and delivered to the registered input callback. No caller digest is
+    /// accepted by this producer.
+    pub fn shown(&self) -> Option<[u8; 32]> {
+        self.shown
+    }
     pub(crate) fn binds(
         &self,
         session: &Arc<PrivacySession>,
@@ -167,6 +174,7 @@ impl HumanDecisionInput {
             .upgrade()
             .is_some_and(|owner| Arc::ptr_eq(&owner, session))
             && self.parked.same_park(parked)
+            && self.shown == parked.shown()
             && self.action.as_ref() == Some(action)
     }
     pub(crate) fn edited_raw(&self) -> Option<&CapturedRaw> {
@@ -222,7 +230,8 @@ impl HumanDecisionProducer {
         self.session
             .check_agent(parked.owner())
             .map_err(PrivateEntryError::Stopped)?;
-        let choice = (self.read)(parked);
+        let shown = parked.shown();
+        let choice = (self.read)(parked, shown);
         // The original source is retained before any parse/projection failure.
         let raw = match &choice {
             HumanChoice::Edit(text) if text.len() <= crate::privacy_hook::MAX_TEXT_BYTES => {
@@ -249,6 +258,7 @@ impl HumanDecisionProducer {
             choice,
             action,
             edited_raw: raw,
+            shown,
             accepted_effect: self.accepted_effect.clone(),
             effect_applied: std::sync::atomic::AtomicBool::new(false),
         });

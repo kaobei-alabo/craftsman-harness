@@ -141,7 +141,7 @@ fn fixture_human_input(
     };
     let producer = crate::privacy_entry::HumanDecisionProducer::register(
         session.clone(),
-        Arc::new(move |_| choice.clone()),
+        Arc::new(move |_, _| choice.clone()),
     );
     let parked = agent.actual_parked_call().unwrap();
     SourceRef::new(producer.receive(&parked).unwrap())

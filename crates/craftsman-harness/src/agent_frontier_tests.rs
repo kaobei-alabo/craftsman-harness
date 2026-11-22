@@ -2,6 +2,7 @@
 //! callback, budget fault, retry-boundary or close-between-retry scenario.
 
 use super::*;
+use crate::ToolNext;
 use crate::provenance::*;
 use crate::testing::{MemCheckpointer, NoopTool};
 
@@ -64,10 +65,52 @@ impl ModelProvider for Model {
 struct Boundary {
     owner: Mutex<Option<ActualAgentOwner>>,
     closed: AtomicU64,
+    plans: Mutex<Vec<ActualPlannedInvocation>>,
 }
 
 #[async_trait::async_trait]
 impl ModelViewBoundary for Boundary {
+    fn before_review<'a, 'b, 'f>(
+        &'a self,
+        planned: &'b ActualPlannedInvocation,
+    ) -> BoxedBoundaryFuture<'f, Option<SourceRef>>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        assert!(
+            self.owner
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .same_agent(planned.owner())
+        );
+        self.plans.lock().unwrap().push(planned.clone());
+        Box::pin(std::future::ready(Ok(Some(source(
+            "fixture actual review",
+        )))))
+    }
+    fn reviewed_operation_digest(
+        &self,
+        planned: &ActualPlannedInvocation,
+        source: &SourceRef,
+    ) -> Result<Option<[u8; 32]>, AgentError> {
+        assert!(
+            self.plans
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .same_plan(planned)
+        );
+        assert_eq!(
+            source.downcast::<String>().unwrap().as_str(),
+            "fixture actual review"
+        );
+        Ok(Some([42; 32]))
+    }
     fn bind_agent(&self, owner: &ActualAgentOwner) -> Result<(), AgentError> {
         let mut held = self.owner.lock().unwrap();
         assert!(held.is_none());
@@ -132,8 +175,105 @@ impl ModelViewBoundary for Boundary {
         assert_eq!(invocation.call().id, "actual-call");
         assert_eq!(invocation.call().name, "noop");
         assert!(!invocation.resumed());
+        assert!(invocation.was_planned_as(self.plans.lock().unwrap().last().unwrap()));
+        assert_eq!(invocation.shown(), Some([42; 32]));
         Ok(Some(source("checked actual invocation")))
     }
+}
+
+#[test]
+fn equal_call_bytes_cannot_reconstruct_a_planned_invocation() {
+    let owner = ActualAgentOwner::issued();
+    let call = ToolCall {
+        id: "reused".into(),
+        name: "noop".into(),
+        args: serde_json::json!({}),
+    };
+    let first = ActualPlannedInvocation::issued(&owner, call.clone());
+    let other = ActualPlannedInvocation::issued(&owner, call.clone());
+    assert_eq!(first.call(), other.call());
+    assert!(!first.same_plan(&other));
+    let invocation =
+        ActualToolInvocation::issued(&owner, call, false, None, None, first.clone(), None, None);
+    assert!(invocation.was_planned_as(&first));
+    assert!(!invocation.was_planned_as(&other));
+    assert!(invocation.decision_source().is_none());
+    let received = source("fixture actual nested-gate decision");
+    invocation.note_decision(received.clone()).unwrap();
+    assert!(invocation.decision_source().unwrap().is(&received));
+    assert!(invocation.note_decision(source("second")).is_err());
+    invocation.seal_decision();
+    let ended = ActualToolInvocation::issued(
+        &owner,
+        first.call().clone(),
+        false,
+        None,
+        None,
+        first,
+        None,
+        None,
+    );
+    {
+        let _ownership = ended.own_decision();
+    }
+    assert!(ended.note_decision(source("late")).is_err());
+}
+
+struct ParkingGate;
+#[async_trait::async_trait]
+impl AgentMiddleware for ParkingGate {
+    fn name(&self) -> &str {
+        "fixture ordinary review gate"
+    }
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
+    }
+    async fn around_tool(
+        &self,
+        call: ToolCall,
+        _: &mut ToolCtx<'_>,
+        next: ToolNext<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        let tracked = next
+            .tracked()
+            .expect("the actual review carries its source");
+        assert_eq!(tracked.planned().unwrap().call(), &call);
+        assert_eq!(tracked.shown(), Some([42; 32]));
+        assert!(tracked.invocation().is_none());
+        Err(AgentError::Suspended(Box::new(crate::Suspension {
+            frames: vec![],
+            request: crate::HitlRequest {
+                tool_call: call,
+                summary: "fixture review".into(),
+            },
+        })))
+    }
+}
+
+#[tokio::test]
+async fn parked_review_keeps_its_real_pre_review_event_and_shown_digest() {
+    let boundary = Arc::new(Boundary::default());
+    let agent = Agent::builder(Arc::new(Model(Mutex::new(0))))
+        .tool(Arc::new(NoopTool::new("noop")))
+        .middleware(Arc::new(ParkingGate))
+        .model_view_boundary(Some(boundary.clone()))
+        .build();
+    assert!(matches!(
+        agent
+            .run_turn_with_view("input", source("input"))
+            .await
+            .unwrap(),
+        TurnResult::Suspended(_)
+    ));
+    let parked = agent.actual_parked_call().unwrap();
+    let plans = boundary.plans.lock().unwrap();
+    assert_eq!(plans.len(), 1);
+    assert!(parked.planned().same_plan(&plans[0]));
+    assert_eq!(parked.call(), plans[0].call());
+    assert_eq!(parked.shown(), Some([42; 32]));
+    assert!(parked.review_source().is_some());
+    assert!(agent.actual_terminal_outcomes().unwrap().is_empty());
+    // Ordinary approval parking only; no callback or budget fault is injected.
 }
 
 fn selected(boundary: &Arc<Boundary>) -> Agent {

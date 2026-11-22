@@ -100,6 +100,17 @@ terminal outcomes are retained before middleware can project or fail them.
 Source approval grants no execution permission. A refusal never invents effects
 or results for a tool that did not run.
 
+The framework also issues an `ActualPlannedInvocation` before the real review
+chain. Its source and the host's source-bound preview digest stay with a parked
+call and with each terminal that follows that review. Equal arguments or a reused
+call id cannot recreate the event. `was_planned_as` proves event linkage only;
+the terminal must still check its exact final arguments, real decision and live
+source. The registered human input callback receives that same optional digest
+and retains it with the actual decision variant. A middleware can carry a
+host-owned decision source to the terminal, but the annotation is no permission
+certificate: an application verifier must require its private actual human or
+policy producer. File and inline approval adapters remain separate pending work.
+
 **Approvals.** A parked call is resumed only through
 `resume_with_view(action, deny_default, decision)`. The boundary checks the
 host's evidence of the decision against the parked call and the action before

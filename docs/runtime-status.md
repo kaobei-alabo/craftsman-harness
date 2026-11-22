@@ -544,6 +544,15 @@ witness, with a synchronous live check immediately before the actual tool poll.
 That source check grants no tool permission. Completed tool and chain facts are
 kept independently of whether any model view can be published.
 
+A separate pre-review witness is now issued before the actual approval chain.
+It stays linked to a parked call and the later terminals, with the selecting
+host's source-bound preview digest carried unchanged to the registered human
+callback. An inline delegated gate can attach its private actual decision once
+before the inner tool runs; that entry closes at terminal return/drop. The
+generic annotation and digest grant no authority. Concrete derived-file and
+automatic-policy adapters must still validate their private real producers,
+exact preview, final call, source and destination before effects.
+
 The one 45-second admission-entry clock is checked after actual vault return,
 after guard work and immediately before node release. Completed map facts
 survive late refusal. The 16-slot admission bound, vault five-second/native busy

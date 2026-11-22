@@ -26,9 +26,10 @@ use std::sync::Arc;
 mod facts;
 pub use facts::{
     ActualAgentOwner, ActualBoundaryController, ActualHostScheduledCall, ActualModelInput,
-    ActualParkedCall, ActualProviderReturn, ActualReceivedReply, ActualRequestInput,
-    ActualRetainedCommit, ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary,
-    ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
+    ActualParkedCall, ActualPlannedInvocation, ActualProviderReturn, ActualReceivedReply,
+    ActualRequestInput, ActualRetainedCommit, ActualSourcedMessage, ActualStagedHostMessage,
+    ActualStagedSummary, ActualTaskReturn, ActualTerminalOutcome, ActualToolFact,
+    ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
@@ -380,6 +381,9 @@ impl TrackedPrepare<'_> {
 pub struct TrackedDispatch {
     pub(crate) notes: Arc<std::sync::Mutex<DispatchNotes>>,
     pub(crate) origin: Option<Arc<DispatchOrigin>>,
+    pub(crate) planned: Option<ActualPlannedInvocation>,
+    pub(crate) review_source: Option<SourceRef>,
+    pub(crate) shown: Option<[u8; 32]>,
 }
 
 /// Where the running call came from, as the agent recorded it.
@@ -398,9 +402,39 @@ pub(crate) struct DispatchNotes {
     pub(crate) appended: Vec<SourcePart>,
     pub(crate) todos: Option<Vec<String>>,
     pub(crate) outcome: Option<Vec<OutcomePart>>,
+    pub(crate) decision: Option<SourceRef>,
 }
 
 impl TrackedDispatch {
+    /// The real proposal whose review chain is running. It is present before
+    /// a terminal exists and is not reconstructed from the call's id or bytes.
+    pub fn planned(&self) -> Option<&ActualPlannedInvocation> {
+        self.planned.as_ref()
+    }
+    pub fn review_source(&self) -> Option<&SourceRef> {
+        self.review_source.as_ref()
+    }
+    pub fn shown(&self) -> Option<[u8; 32]> {
+        self.shown
+    }
+    /// Carries a host-owned actual decision to the following terminal. This
+    /// annotation mints no approval, human or policy authority: the selected
+    /// host must validate its private producer and exact proposal/preview.
+    pub fn note_decision(&self, decision: SourceRef) -> Result<(), AgentError> {
+        let mut notes = self.notes.lock().unwrap();
+        if notes.decision.is_some() {
+            return Err(AgentError::State(
+                "This dispatch already has a decision source.".into(),
+            ));
+        }
+        if let Some(origin) = &self.origin {
+            // A gate inside a delegated terminal can attach its private
+            // actual decision once, before calling the inner tool.
+            origin.invocation.note_decision(decision.clone())?;
+        }
+        notes.decision = Some(decision);
+        Ok(())
+    }
     /// Keeps a genuine child return before formatting, source or result
     /// projection. Its parent witness is retained, never guessed from a task
     /// name, call id, registry entry or equal text. This is data, not a grant.
@@ -546,6 +580,33 @@ fn refused<'f, T: Send + 'f>(why: &'static str) -> BoxedBoundaryFuture<'f, T> {
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    /// Issued by the agent before this actual proposal enters its review and
+    /// approval chain. Returning a source grants no tool permission. Written
+    /// with the existing boxed convention so the default adds one ready future.
+    fn before_review<'a, 'b, 'f>(
+        &'a self,
+        planned: &'b ActualPlannedInvocation,
+    ) -> BoxedBoundaryFuture<'f, Option<SourceRef>>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        let _ = planned;
+        Box::pin(std::future::ready(Ok(None)))
+    }
+
+    /// A digest from the host's actual source-bound review, not caller text or
+    /// a gate's own approval. The agent carries it unchanged to the real input
+    /// callback and final terminal. Hosts that have no such review return None.
+    fn reviewed_operation_digest(
+        &self,
+        _planned: &ActualPlannedInvocation,
+        _source: &SourceRef,
+    ) -> Result<Option<[u8; 32]>, AgentError> {
+        Ok(None)
+    }
+
     /// A real host-note stage; application boundaries validate actual owners
     /// and source parts. The default compatibility bridge grants no authority.
     async fn staged_host_message_source(

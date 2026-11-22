@@ -42,7 +42,7 @@ async fn equal_json_from_a_human_is_still_a_raw_human_edit() {
     );
     let producer = HumanDecisionProducer::register(
         g.c.session.clone(),
-        Arc::new(move |_| HumanChoice::Edit(raw.to_owned())),
+        Arc::new(move |_, _| HumanChoice::Edit(raw.to_owned())),
     );
     let input = producer.receive(&parked).unwrap();
     g.agent
@@ -73,7 +73,7 @@ async fn raw_issued_alias_in_an_edit_refuses_effects_and_keeps_actual_input() {
     let original = raw.clone();
     let producer = HumanDecisionProducer::register(
         g.c.session.clone(),
-        Arc::new(move |_| HumanChoice::Edit(raw.clone())),
+        Arc::new(move |_, _| HumanChoice::Edit(raw.clone())),
     );
     let input = producer
         .receive(&g.agent.actual_parked_call().unwrap())
@@ -106,7 +106,7 @@ async fn absent_input_does_not_become_an_approval_or_default_answer() {
     let g = parked_fixture(&vault, &server).await;
     let parked = g.agent.actual_parked_call().unwrap();
     let producer =
-        HumanDecisionProducer::register(g.c.session.clone(), Arc::new(|_| HumanChoice::Absent));
+        HumanDecisionProducer::register(g.c.session.clone(), Arc::new(|_, _| HumanChoice::Absent));
     let input = producer.receive(&parked).unwrap();
     assert!(input.was_absent());
     assert!(input.action().is_none());
@@ -127,7 +127,7 @@ async fn reading_always_does_not_apply_permission_until_its_real_decision_is_acc
     let actual_call = parked.call().clone();
     let producer = HumanDecisionProducer::register_with_effect(
         g.c.session.clone(),
-        Arc::new(|_| HumanChoice::ApproveAlways),
+        Arc::new(|_, _| HumanChoice::ApproveAlways),
         Arc::new(move |choice, call| {
             assert!(matches!(choice, HumanChoice::ApproveAlways));
             assert_eq!(call, &actual_call);

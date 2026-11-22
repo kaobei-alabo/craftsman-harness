@@ -3049,7 +3049,7 @@ async fn build_session_with_capture_profile(
             let effect_approval = approval;
             crate::privacy_entry::HumanDecisionProducer::register_with_effect(
                 privacy.clone(),
-                Arc::new(move |parked| {
+                Arc::new(move |parked, _shown| {
                     let call = parked.call();
                     let summary = crate::tools::summarize_call(&call.name, &call.args);
                     let details =
