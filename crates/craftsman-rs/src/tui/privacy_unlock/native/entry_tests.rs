@@ -10,6 +10,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::m
 
 const TYPED: &str = "  Handle alice@example.invalid and +886 912 345 678.  ";
 const FOLLOW: &str = "  Follow up for alice@example.invalid.  ";
+const CONTACT_FILE: &str = "Contact delivered alice@example.invalid";
 
 fn actual_alias(request: &Request) -> String {
     let value: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
@@ -104,7 +105,7 @@ impl Respond for ConversationReplies {
             1 => tool(
                 "write-real-data",
                 "write_file",
-                serde_json::json!({"file_path":"answer.txt","content":format!("delivered {alias}")}),
+                serde_json::json!({"file_path":"answer.txt","content":format!("Contact delivered {alias}")}),
             ),
             2 => serde_json::json!({"content":format!("Delivered for {alias}.")}),
             _ => serde_json::json!({"content":format!("Follow-up acknowledged for {alias}.")}),
@@ -125,6 +126,14 @@ fn tool(id: &str, name: &str, arguments: serde_json::Value) -> serde_json::Value
 }
 
 async fn source_and_user_policy(home: &Home, endpoint: &str) -> Vec<u8> {
+    source_and_user_policy_with_data(home, endpoint, None).await
+}
+
+async fn source_and_user_policy_with_data(
+    home: &Home,
+    endpoint: &str,
+    application: Option<&str>,
+) -> Vec<u8> {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/privacy-detector");
     let target = home.root.join("new-entry-source-build");
     let output = tokio::time::timeout(
@@ -177,7 +186,7 @@ async fn source_and_user_policy(home: &Home, endpoint: &str) -> Vec<u8> {
         file.write_all(bytes).unwrap();
         file.sync_all().unwrap();
     }
-    let user = serde_json::to_vec(&serde_json::json!({
+    let mut user = serde_json::json!({
         "base_url":endpoint, "api_key":"fixture-key", "model":"fixture-model",
         "harness_profile":"general", "voice":{"enabled":false}, "gadgets":{"enabled":true},
         "mcp_servers":[], "lsp_servers":{},
@@ -185,7 +194,14 @@ async fn source_and_user_policy(home: &Home, endpoint: &str) -> Vec<u8> {
             "gadget":"privacy-detector","function":"detect","component_sha256":image_hash,"manifest_sha256":manifest_hash
         },"file_data":[{"workspace":home.workspace,"destination":home.workspace.join("answer.txt"),
             "format":"plain_text","operations":["write_file","edit_file"]}]}
-    })).unwrap();
+    });
+    if let Some(application) = application {
+        // This writes a real declaration into the owned user-source file.
+        // The child must capture that source and invoke the actual typed
+        // policy/validator/effect path; no fixture DTO supplies a grant.
+        user["privacy"]["file_data"][0]["application"] = application.into();
+    }
+    let user = serde_json::to_vec(&user).unwrap();
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -235,7 +251,7 @@ async fn source_and_user_policy(home: &Home, endpoint: &str) -> Vec<u8> {
 }
 
 pub(super) async fn run_child() {
-    run_entry_child("delivered alice@example.invalid").await;
+    run_entry_child(CONTACT_FILE).await;
 }
 pub(super) async fn run_safe_child() {
     run_entry_child("delivered note").await;
@@ -574,7 +590,8 @@ fn actual_private_entry_owns_human_review_question_file_and_checkpoint_without_p
             .mount(&server)
             .await;
         let home = Home::new();
-        let original = source_and_user_policy(&home, &server.uri()).await;
+        let original =
+            source_and_user_policy_with_data(&home, &server.uri(), Some("contact_lines_v1")).await;
         let mut pty = Pty::start(&home, Case::FullEntry);
         pty.expect("Unlock private privacy key").await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
@@ -603,7 +620,7 @@ fn actual_private_entry_owns_human_review_question_file_and_checkpoint_without_p
         );
         assert_eq!(
             std::fs::read_to_string(home.workspace.join("answer.txt")).unwrap(),
-            "delivered alice@example.invalid"
+            CONTACT_FILE
         );
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 4);
