@@ -475,7 +475,7 @@ impl AgentSlot {
         let turn = self.cancellation.new_turn();
         let cancellation = turn.clone();
         let tx = self.bridge.tx.clone();
-        self.retired.spawn(async move {
+        crate::util::spawn_in(&mut self.retired, async move {
             let current = cfg.model.clone();
             let group_providers = !cfg.providers.is_empty();
             let result = tokio::select! {
@@ -499,7 +499,11 @@ impl AgentSlot {
                         .map(|models| (models, available))
                 } => result,
             };
-            let _ = tx.send(UiEvent::ModelCatalogLoaded { current, group_providers, result });
+            let _ = tx.send(UiEvent::ModelCatalogLoaded {
+                current,
+                group_providers,
+                result,
+            });
         });
         turn
     }
