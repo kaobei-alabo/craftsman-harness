@@ -73,6 +73,35 @@ impl<T: 'static> Future for Blocking<T> {
     }
 }
 
+/// `tokio::task::spawn_blocking` for a site that reports or inspects a failed
+/// join, through the same one closure type as [`blocking`]. Awaiting what it
+/// returns gives what the closure returned or tokio's own `JoinError` for
+/// that very work. It is not a `JoinHandle`: a site that stores, aborts or
+/// polls the handle keeps the direct call.
+pub(crate) fn spawn_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Joined<T> {
+    Joined(blocking(work))
+}
+
+/// The handle of work started by [`spawn_blocking`].
+pub(crate) struct Joined<T>(Blocking<T>);
+
+impl<T: 'static> Future for Joined<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let joined = match Pin::new(&mut self.0.handle).poll(cx) {
+            Poll::Ready(joined) => joined,
+            Poll::Pending => return Poll::Pending,
+        };
+        Poll::Ready(joined.map(|returned| match returned.downcast::<T>() {
+            Ok(value) => *value,
+            Err(_) => unreachable!("the box holds what this very closure returned"),
+        }))
+    }
+}
+
 /// A task that returns nothing, spawned through one future type.
 ///
 /// `tokio::spawn` is compiled again, with the runtime's task code behind it,
@@ -122,6 +151,42 @@ mod tests {
         // A panic in the work is a join that failed.
         let panicked: Result<u8, Unfinished> = blocking(|| panic!("fixture panic")).await;
         assert_eq!(panicked, Err(Unfinished));
+    }
+
+    #[tokio::test]
+    async fn spawned_blocking_work_returns_its_own_value_or_tokios_own_join_error() {
+        // Started at the call, like `blocking`: the work has run before its
+        // handle is first polled.
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let handle = spawn_blocking(move || {
+            done.send(()).unwrap();
+            7u8
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the work ran before its handle was polled");
+        assert!(matches!(handle.await, Ok(7)));
+        let own: Result<Result<u8, &'static str>, tokio::task::JoinError> =
+            spawn_blocking(|| Err("the work's own error")).await;
+        assert!(matches!(own, Ok(Err("the work's own error"))));
+
+        // A panic in the work is tokio's own join error: its kind, the text
+        // a site prints for it and the panic's payload.
+        let error = spawn_blocking(|| -> u8 { panic!("fixture panic") })
+            .await
+            .unwrap_err();
+        assert!(error.is_panic() && !error.is_cancelled());
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "task {} panicked with message \"fixture panic\"",
+                error.id()
+            )
+        );
+        assert_eq!(
+            error.into_panic().downcast_ref::<&str>(),
+            Some(&"fixture panic")
+        );
     }
 
     #[tokio::test]
