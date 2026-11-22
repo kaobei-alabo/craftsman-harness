@@ -54,6 +54,18 @@ impl ConfigRoot {
         Ok(result)
     }
 
+    /// Whether `directory` is this root's own final directory, by the device
+    /// and inode of the two held descriptors and by nothing a caller says.
+    /// It answers a refusal check for a proposed data location only: no
+    /// descriptor, path or identity value leaves this owner, and an identity
+    /// that cannot be read is an error, never a "no".
+    #[cfg(unix)]
+    pub(crate) fn is_final_directory(&self, directory: &std::fs::File) -> Result<bool> {
+        let own = self.ancestors.last().ok_or(KeyError::Root)?;
+        Ok(identity(&own.metadata().map_err(|_| KeyError::Io)?)
+            == identity(&directory.metadata().map_err(|_| KeyError::Io)?))
+    }
+
     pub(crate) fn verify_config_absent(&self) -> Result<()> {
         self.recheck()?;
         #[cfg(unix)]

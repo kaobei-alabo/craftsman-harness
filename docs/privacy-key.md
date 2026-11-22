@@ -176,6 +176,24 @@ pending the one canonical opaque interface. Config, credentials, key/vault,
 instructions, schema, source and executable application content must remain
 excluded. The successful ordinary file check is not restoration acceptance.
 
+The configured user root is refused as a data location by the directory its
+owner holds, not only by how a rule spells it. Each rule retains every
+directory on the way to its destination; if the device and inode of one of
+them are those of the root's own held final directory, the policy is invalid
+at capture and at every recheck, and a lookup for that rule's destination
+refuses. So the root in another letter case on a volume that ignores case, by
+the macOS data-volume path, or after it was renamed, is still the root. The
+pathname-prefix and protected-name refusals stay as further checks; a
+destination no rule names has no retained directory and keeps only those. The
+comparison reads two held descriptors: it hands out no descriptor, path or
+identity, opens nothing and grants nothing. A rule inside the root under the
+root's own spelling used to be captured and refused at each lookup; it now
+fails capture as an invalid policy. Where a platform has no second spelling
+that opens without following a link, only the renamed-root case exercises the
+comparison. The two helpers that read a format from a workspace and
+destination path alone exist in test builds only; a production build has no
+such answer, and the legacy restoration method still returns nothing.
+
 Normal init/status/enable and /privacy selectors, active-turn password
 reacquisition, guarded data restoration and full native/source/security
 validation remain pending. Reopen/transfer are unsupported; void setters
