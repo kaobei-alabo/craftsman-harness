@@ -421,6 +421,99 @@ fn actual_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
 }
 
 #[test]
+fn actual_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
+    run_owned(Box::pin(async {
+        for cancel in [b"\x1b".as_slice(), b"\x03".as_slice()] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ClearReplies(AtomicUsize::new(0)))
+                .mount(&server)
+                .await;
+            let home = Home::new();
+            let original = source_and_user_policy(&home, &server.uri()).await;
+            let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+            let mut pty = Pty::start(&home, Case::ClearCancel);
+            pty.expect("Unlock private privacy key").await;
+            pty.send(format!("{SECRET}\r").as_bytes()).await;
+            pty.expect("message · Ctrl+J newline").await;
+            pty.send(format!("{TYPED}\r").as_bytes()).await;
+            pty.expect("Clear-ready reply for alice@example.invalid.")
+                .await;
+            pty.send(b"/clear\r").await;
+            pty.expect("Unlock private privacy key").await;
+            pty.send(cancel).await;
+            pty.finish().await;
+            assert_eq!(
+                std::fs::read(home.config.join("config.json")).unwrap(),
+                original
+            );
+            assert_eq!(
+                std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+                key
+            );
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_absent(&requests[0].body);
+            assert!(
+                !std::str::from_utf8(&requests[0].body)
+                    .unwrap()
+                    .contains("alice@example.invalid")
+            );
+        }
+    }));
+}
+
+#[test]
+fn actual_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ClearReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        let mut pty = Pty::start(&home, Case::ClearEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Clear-ready reply for alice@example.invalid.")
+            .await;
+        // This is ordinary decoded input sent WITH the clear command, before
+        // the terminal asks for another password. It is not secret type-ahead.
+        pty.send(b"/clear\r  Follow up").await;
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.expect("  Follow up").await;
+        pty.send(b" for alice@example.invalid.  \r").await;
+        pty.expect("Fresh reply for alice@example.invalid.").await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+            key
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert_absent(&request.body);
+            assert!(
+                !std::str::from_utf8(&request.body)
+                    .unwrap()
+                    .contains("alice@example.invalid")
+            );
+        }
+    }));
+}
+
+#[test]
 fn actual_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
     run_owned(Box::pin(async {
         let server = MockServer::start().await;
