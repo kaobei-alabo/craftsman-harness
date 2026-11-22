@@ -370,7 +370,7 @@ impl Drop for LspManager {
             .collect::<Vec<_>>();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             for client in clients {
-                runtime.spawn(async move {
+                crate::util::spawn_unit_on(&runtime, async move {
                     client.stop().await;
                 });
             }

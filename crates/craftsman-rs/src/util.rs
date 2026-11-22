@@ -123,6 +123,43 @@ pub(crate) fn spawn_unit(
 
 type UnitTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
+/// [`spawn_unit`] on a runtime the caller already holds a handle of.
+///
+/// The future goes to that very handle's own `spawn`, as the same boxed
+/// future, when this is called. What comes back is that task's own
+/// `JoinHandle<()>`. Nothing looks for another runtime and no entered one is
+/// needed; joining, aborting, detaching by drop and the join error of a
+/// panic are tokio's, unchanged.
+#[track_caller]
+pub(crate) fn spawn_unit_on(
+    runtime: &tokio::runtime::Handle,
+    task: impl Future<Output = ()> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let erased: UnitTask = Box::pin(task);
+    runtime.spawn(erased)
+}
+
+/// A task of a `JoinSet`, spawned through one future type for its output.
+///
+/// `JoinSet::spawn` is compiled again, with the runtime's task code behind
+/// it, for every distinct future it is given. [`spawn_in`] hands the future
+/// to that very set's own `spawn` as the same boxed future, so that code
+/// exists once for every task with that output.
+///
+/// Nothing else differs from a direct `set.spawn(..)` at the same place: the
+/// task is spawned when this is called, on the same runtime, into the same
+/// set, and what comes back is that task's own `AbortHandle`. The set owns
+/// the task as before: its `join_next` gives this task's return or tokio's
+/// own join error for it, and dropping the set aborts it.
+#[track_caller]
+pub(crate) fn spawn_in<T: Send + 'static>(
+    set: &mut tokio::task::JoinSet<T>,
+    task: impl Future<Output = T> + Send + 'static,
+) -> tokio::task::AbortHandle {
+    let erased: Pin<Box<dyn Future<Output = T> + Send + 'static>> = Box::pin(task);
+    set.spawn(erased)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +287,177 @@ mod tests {
         let out = one_line(&"x".repeat(50), 10);
         assert_eq!(out.chars().count(), 10);
         assert!(out.ends_with('…'));
+    }
+
+    async fn panics_with_the_sets_output() -> Result<u8, &'static str> {
+        panic!("fixture panic")
+    }
+
+    #[tokio::test]
+    async fn a_task_spawned_in_a_set_is_that_sets_own_task_with_its_own_abort_handle() {
+        use tokio::sync::oneshot;
+        use tokio::task::JoinSet;
+        let wait = std::time::Duration::from_secs(30);
+
+        // Spawned at the call, into that set: the task runs although the set
+        // has not been polled, the set counts it, and what came back is the
+        // abort handle of that very task.
+        let mut set: JoinSet<Result<u8, &'static str>> = JoinSet::new();
+        let (ran, seen) = oneshot::channel();
+        let handle: tokio::task::AbortHandle = spawn_in(&mut set, async move {
+            ran.send(tokio::task::id()).unwrap();
+            Ok(7)
+        });
+        assert_eq!(set.len(), 1);
+        let inside = tokio::time::timeout(wait, seen)
+            .await
+            .expect("the task ran without a poll of its set")
+            .unwrap();
+        assert_eq!(inside, handle.id());
+
+        // The set gives that task's id and its own return, of its own type,
+        // an error of the task's own included.
+        let (joined, returned) = set.join_next_with_id().await.unwrap().unwrap();
+        assert_eq!(joined, handle.id());
+        assert_eq!(returned, Ok(7));
+        assert!(handle.is_finished() && set.is_empty());
+        spawn_in(&mut set, async { Err("the task's own error") });
+        assert_eq!(
+            set.join_next().await.unwrap().unwrap(),
+            Err("the task's own error")
+        );
+
+        // A panic is tokio's own join error for that task, with its payload.
+        let handle = spawn_in(&mut set, panics_with_the_sets_output());
+        let error = set.join_next().await.unwrap().unwrap_err();
+        assert!(error.is_panic() && !error.is_cancelled());
+        assert_eq!(error.id(), handle.id());
+        assert_eq!(
+            error.into_panic().downcast_ref::<&str>(),
+            Some(&"fixture panic")
+        );
+
+        // The handle aborts its own task where it waits, and no other. The
+        // set reports the cancellation, and what the task held is dropped.
+        let (held, released) = oneshot::channel::<()>();
+        let (started, entered) = oneshot::channel();
+        let aborted = spawn_in(&mut set, async move {
+            let _held = held;
+            started.send(()).unwrap();
+            std::future::pending::<Result<u8, &'static str>>().await
+        });
+        let (other_held, other_released) = oneshot::channel::<()>();
+        let (other_started, other_entered) = oneshot::channel();
+        let kept = spawn_in(&mut set, async move {
+            let _held = other_held;
+            other_started.send(()).unwrap();
+            std::future::pending::<Result<u8, &'static str>>().await
+        });
+        entered.await.unwrap();
+        other_entered.await.unwrap();
+        assert_ne!(aborted.id(), kept.id());
+        aborted.abort();
+        let error = set.join_next().await.unwrap().unwrap_err();
+        assert!(error.is_cancelled() && !error.is_panic());
+        assert_eq!(error.id(), aborted.id());
+        assert!(released.await.is_err());
+        assert!(!kept.is_finished());
+        assert_eq!(set.len(), 1);
+
+        // The set still owns what it was given: dropping it aborts the task
+        // that is left, which drops what that task holds.
+        drop(set);
+        assert!(
+            tokio::time::timeout(wait, other_released)
+                .await
+                .expect("dropping the set aborted its task")
+                .is_err()
+        );
+        assert!(kept.is_finished());
+    }
+
+    #[test]
+    fn a_unit_task_on_a_supplied_handle_runs_on_that_runtime_with_its_own_join_handle() {
+        use std::sync::mpsc;
+        let wait = std::time::Duration::from_secs(30);
+        let runtime = |name: &str| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name(name)
+                .build()
+                .unwrap()
+        };
+        let supplied = runtime("owned-supplied-runtime");
+        let entered_elsewhere = runtime("owned-other-runtime");
+        let handle = supplied.handle().clone();
+        let thread = || std::thread::current().name().map(str::to_owned);
+
+        // Spawned at the call, with no runtime entered here: the task runs
+        // on the supplied runtime although its handle has not been polled,
+        // and what came back is the join handle of that very task.
+        let (ran, seen) = mpsc::channel();
+        let join: tokio::task::JoinHandle<()> = spawn_unit_on(&handle, async move {
+            ran.send((tokio::task::id(), thread())).unwrap();
+        });
+        let (inside, ran_on) = seen
+            .recv_timeout(wait)
+            .expect("the task ran without a poll of its handle");
+        assert_eq!(inside, join.id());
+        assert_eq!(ran_on.as_deref(), Some("owned-supplied-runtime"));
+        assert!(matches!(supplied.block_on(join), Ok(())));
+
+        // Called inside another runtime, the task still goes to the supplied
+        // one, not to the runtime that happens to be entered.
+        let join = entered_elsewhere.block_on(async {
+            let (ran, seen) = tokio::sync::oneshot::channel();
+            let join = spawn_unit_on(&handle, async move {
+                ran.send(thread()).unwrap();
+            });
+            assert_eq!(
+                seen.await.unwrap().as_deref(),
+                Some("owned-supplied-runtime")
+            );
+            join
+        });
+        assert!(matches!(supplied.block_on(join), Ok(())));
+
+        // A dropped handle detaches the task; it still runs to its return.
+        let (ran, seen) = mpsc::channel();
+        drop(spawn_unit_on(&handle, async move {
+            tokio::task::yield_now().await;
+            ran.send(()).unwrap();
+        }));
+        seen.recv_timeout(wait)
+            .expect("the task returned after its handle was dropped");
+
+        // A panic is tokio's own join error and carries the panic's payload.
+        let error = supplied
+            .block_on(spawn_unit_on(&handle, async {
+                panic!("fixture panic");
+            }))
+            .unwrap_err();
+        assert!(error.is_panic() && !error.is_cancelled());
+        assert_eq!(
+            error.into_panic().downcast_ref::<&str>(),
+            Some(&"fixture panic")
+        );
+
+        // An abort cancels the task where it waits and drops what it holds.
+        let (held, released) = mpsc::channel::<()>();
+        let (started, entered) = mpsc::channel();
+        let join = spawn_unit_on(&handle, async move {
+            let _held = held;
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        entered.recv_timeout(wait).unwrap();
+        assert!(!join.is_finished());
+        join.abort();
+        let error = supplied.block_on(join).unwrap_err();
+        assert!(error.is_cancelled() && !error.is_panic());
+        assert_eq!(
+            released.recv_timeout(wait),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 }
