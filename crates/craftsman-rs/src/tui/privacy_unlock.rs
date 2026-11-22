@@ -35,11 +35,11 @@ impl SecretField {
         match key.code {
             KeyCode::Esc => {
                 self.cancel();
-                Ok(None)
+                Err(KeyError::Cancelled)
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cancel();
-                Ok(None)
+                Err(KeyError::Cancelled)
             }
             KeyCode::Enter => {
                 let owned = std::mem::take(&mut *self.text);
@@ -165,5 +165,26 @@ mod tests {
                 .is_err()
         );
         field.cancel();
+    }
+
+    #[test]
+    fn actual_secret_cancel_is_distinct_from_pending_or_empty_human_answer() {
+        let mut field = SecretField::default();
+        assert!(
+            field
+                .accept_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            field.accept_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Err(KeyError::Cancelled)
+        ));
+        assert_eq!(field.text.len(), 0);
+        let mut control = SecretField::default();
+        assert!(matches!(
+            control.accept_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Err(KeyError::Cancelled)
+        ));
     }
 }

@@ -126,6 +126,8 @@ actual TerminalGuard's retained terminal/input ownership, receive direct owned
 events, run the tracked worker and refuse before session construction. CLI
 selectors, that non-echoing reader/popup, initialization confirmation flow and
 the final activation gate still need coordinated implementation/review.
+Escape/Ctrl-C clears the owned secret and returns an explicit cancellation;
+it is distinct from pending editing and from an ordinary empty/no-answer event.
 
 The corrected source/view assignment requires the actual fresh app/checkpointer
 thread id and captured canonical workspace, one owner for main/delegated/

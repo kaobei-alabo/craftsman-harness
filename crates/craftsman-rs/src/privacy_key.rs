@@ -37,6 +37,8 @@ pub enum KeyError {
     Bounds,
     #[error("The private key operation is closed.")]
     Closed,
+    #[error("The private unlock was cancelled.")]
+    Cancelled,
     #[error("A private key operation is already in progress.")]
     Busy,
     #[error("The private key attempt allowance is exhausted.")]
