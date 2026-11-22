@@ -38,18 +38,18 @@ mod view_tests;
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
-pub(crate) use file_view::authorized_write;
 pub use file_view::{
-    DerivedFileOperation, FileChange, FilePreview, FileRefusal, FileReview, ReachedFileTool,
-    RestoredFileTool,
+    DecidedBy, DerivedFileOperation, FileChange, FileDecision, FilePreview, FileRefusal,
+    FileReview, RestoredFileTool, ReviewedFile,
 };
+pub(crate) use file_view::{authorized_write, call_to_show};
 pub use human::{
     HeldStream, HumanRefusal, HumanReply, HumanReplySink, HumanText, ReplyDisplay, Streamed,
 };
 pub use transport::{ViewChatProvider, ViewNativeProvider, delegated_provider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    NativeReplay, ProposedOperation, ReceivedModel, SourceField,
+    NativeReplay, PlannedOperation, ReceivedModel, SourceField,
 };
 
 use crate::checkpoints::LibsqlCheckpointer;
@@ -205,17 +205,20 @@ pub trait CapturedUserPolicy: Send + Sync {
     fn requires_inspectable_provider_items(&self) -> bool;
 
     /// The data format the user's policy names for content that the file
-    /// tools write to `path`, as the call wrote the path, in the workspace
-    /// with this digest. Private values are restored into a file's content
-    /// only under such a rule. `None`, the default, restores nothing. A
-    /// file's name or extension is not a rule: only what the user or the
-    /// host reviewed for that file is.
+    /// tools write to `destination`, in the workspace with this digest.
+    /// `destination` is the absolute path of the file the operation is bound
+    /// to, as the host resolved it when the operation was derived: the
+    /// opened file for an edit, the observed directory and the new name for
+    /// a create. It is never the path as a model wrote it. Private values
+    /// are restored into a file's content only under such a rule. `None`,
+    /// the default, restores nothing. A file's name or extension is not a
+    /// rule: only what the user or the host reviewed for that file is.
     fn restorable_file_data(
         &self,
         workspace_sha256: &str,
-        path: &str,
+        destination: &std::path::Path,
     ) -> Option<crate::privacy_restore::FileDataFormat> {
-        let _ = (workspace_sha256, path);
+        let _ = (workspace_sha256, destination);
         None
     }
 }
@@ -362,6 +365,11 @@ pub struct PrivacyView {
     session: Arc<PrivacySession>,
     pub(crate) human_source: Option<Arc<crate::privacy_entry::HumanDecisionProducer>>,
     boundary: Arc<ConversationBoundary>,
+    /// The user's captured policy, kept here for the life of the session
+    /// that was built for it. The file review and the file tools refer to
+    /// it weakly, so that nothing that outlives the session keeps the
+    /// policy's owner alive.
+    policy: Option<Arc<dyn CapturedUserPolicy>>,
 }
 
 impl PrivacyView {
@@ -370,7 +378,13 @@ impl PrivacyView {
             session,
             boundary,
             human_source: None,
+            policy: None,
         }
+    }
+
+    pub(crate) fn with_policy(mut self, policy: Option<Arc<dyn CapturedUserPolicy>>) -> Self {
+        self.policy = policy;
+        self
     }
 
     pub(crate) fn with_human_source(

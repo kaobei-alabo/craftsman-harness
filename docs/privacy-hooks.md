@@ -30,15 +30,18 @@ remain unwired.
 Sealed parked-call decisions have a private registered input producer and actual
 commit/invocation witnesses. Restoration has a private path of its own: a
 person's view of a committed reply, a hold on a streamed reply, and file writes
-and edits that are derived with the real content before a gate decides, bound
-to that decision and checked again where they run. This holds for the root
-agent at the approval gate and for each delegated agent in its own lane behind
-its own gate; the file tool keeps its workspace checkpoint, diagnostics and
-result around the derived write. The terminal's bridge registers a reply sink,
+and edits that are derived with the real content in the agent's own event
+before a call is reviewed, from the plan the agent issued. A gate's policy or
+a person at its prompt decides on that content; the decision is recorded by
+the operation where it is taken, carried to the terminal and checked again
+where the file is written. This holds for the root agent at the approval gate
+and for each delegated agent in its own lane at its own gate; the file tool
+keeps its workspace checkpoint, diagnostics and result around the derived
+write. The terminal's bridge registers a reply sink,
 and its application draws a committed reply once through the safe backend;
-see [privacy-restore.md](privacy-restore.md). A sealed decision that carries
-what a person was shown, a framework event for a planned call before its
-review, terminal input for a privacy turn, restoration for other tools, the
+see [privacy-restore.md](privacy-restore.md). A sealed human input for a
+decision at an inline prompt, anything that parks a call for the registered
+reader, terminal input for a privacy turn, restoration for other tools, the
 owner of the user's policy, key handling and activation are not built. The
 target diagram
 below predates that contract where it shows masked history: stored history

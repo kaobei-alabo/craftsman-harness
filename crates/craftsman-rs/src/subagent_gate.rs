@@ -116,8 +116,23 @@ impl SubagentGate {
         ctx: &mut ToolCtx<'_>,
         tracked: Option<&craftsman_harness::provenance::TrackedDispatch>,
     ) -> Result<ToolOutcome, AgentError> {
+        // In a privacy conversation, what a file write or edit will really
+        // do was derived when the agent planned the call. The gate then
+        // decides on, and shows, the arguments with the real content. The
+        // call that runs is unchanged.
+        let reviewed = tracked.and_then(crate::privacy_session::ReviewedFile::of);
+        let shown = match &reviewed {
+            Some(reviewed) => match reviewed.shown_arguments() {
+                Ok(arguments) => Some(arguments),
+                // A call that could not be derived is answered with the
+                // refusal, before anyone is asked and before any effect.
+                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+            },
+            None => None,
+        };
+        let reviewed = reviewed.zip(shown);
         let Some((_, sink)) = &self.correlated else {
-            return self.call_gated(args, ctx, None, tracked).await;
+            return self.call_gated(args, ctx, None, tracked, reviewed).await;
         };
         // Different specs own different wrappers. The shared process counter
         // prevents identity reuse across specs and concurrent child runs.
@@ -128,15 +143,24 @@ impl SubagentGate {
                 DELEGATED_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ),
             name: self.inner.def().name,
-            args: args.clone(),
+            args: match &reviewed {
+                Some((_, shown)) => shown.clone(),
+                None => args.clone(),
+            },
         };
         sink(ToolActivityEvent::Started {
             call_id: call.id.clone(),
             tool: call.name.clone(),
-            summary: crate::tools::summarize_call(&call.name, &args),
-            details: crate::tools::approval_details_at(&call.name, &args, &self.workspace_root),
+            summary: crate::tools::summarize_call(&call.name, &call.args),
+            details: crate::tools::approval_details_at(
+                &call.name,
+                &call.args,
+                &self.workspace_root,
+            ),
         });
-        let result = self.call_gated(args, ctx, Some(&call), tracked).await;
+        let result = self
+            .call_gated(args, ctx, Some(&call), tracked, reviewed)
+            .await;
         let (content, is_error) = match &result {
             Ok(outcome) => (outcome.content.clone(), outcome.is_error),
             Err(error) => (error.to_string(), true),
@@ -170,12 +194,25 @@ impl SubagentGate {
         ctx: &mut ToolCtx<'_>,
         call: Option<&ToolCall>,
         tracked: Option<&craftsman_harness::provenance::TrackedDispatch>,
+        reviewed: Option<(Arc<crate::privacy_session::ReviewedFile>, Value)>,
     ) -> Result<ToolOutcome, AgentError> {
         let name = self.inner.def().name;
+        // What the gate decides on and shows: the call's arguments, or for a
+        // reviewed file operation the same arguments with the real content.
+        let reviewed = reviewed.zip(tracked);
+        let gated = match &reviewed {
+            Some(((_, shown), _)) => shown,
+            None => &args,
+        };
         // Same decision the main gate makes — auto_approve, the network
         // switch, and the shell allow-list all apply. Lock scope is
-        // synchronous only (never held across the await below).
-        let permission = self.approval.lock().unwrap().permission(&name, &args);
+        // synchronous only (never held across the await below). For a
+        // reviewed file operation the same policy is evaluated by the
+        // operation, which records an approval where it is taken.
+        let permission = match &reviewed {
+            Some(((reviewed, _), tracked)) => reviewed.policy_decides(&self.approval, tracked),
+            None => self.approval.lock().unwrap().permission(&name, &args),
+        };
         match permission {
             ToolPermission::Allow => self.run(args, ctx, tracked).await,
             ToolPermission::Deny(reason) => Ok(ToolOutcome::err(reason)),
@@ -185,14 +222,38 @@ impl SubagentGate {
                         "'{name}' requires user approval, but this delegated run has no interactive approval channel. Do this step directly or use an explicit permission mode."
                     )));
                 }
-                let summary = crate::tools::summarize_call(&name, &args);
-                let details = crate::tools::approval_details_at(&name, &args, &self.workspace_root);
-                let decision = if let (Some((prompt, _)), Some(call)) = (&self.correlated, call) {
-                    prompt(call, &summary, &details)
-                } else if let Some(prompt) = &self.approval_prompt {
-                    prompt(&name, &summary, &details)
-                } else {
-                    ApprovalPromptResult::Reject("no correlated approval channel".into())
+                let summary = crate::tools::summarize_call(&name, gated);
+                let details = crate::tools::approval_details_at(&name, gated, &self.workspace_root);
+                let ask = || {
+                    if let (Some((prompt, _)), Some(call)) = (&self.correlated, call) {
+                        prompt(call, &summary, &details)
+                    } else if let Some(prompt) = &self.approval_prompt {
+                        prompt(&name, &summary, &details)
+                    } else {
+                        ApprovalPromptResult::Reject("no correlated approval channel".into())
+                    }
+                };
+                let decision = match &reviewed {
+                    // The person's decision on a reviewed file operation is
+                    // recorded by the operation when this prompt returns.
+                    Some(((reviewed, _), tracked)) => {
+                        let asked = reviewed.person_decides(tracked, |_| {
+                            let decision = ask();
+                            (
+                                matches!(
+                                    decision,
+                                    ApprovalPromptResult::Approve
+                                        | ApprovalPromptResult::ApproveAlways
+                                ),
+                                decision,
+                            )
+                        });
+                        match asked {
+                            Ok(decision) => decision,
+                            Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+                        }
+                    }
+                    None => ask(),
                 };
                 match decision {
                     ApprovalPromptResult::Approve => self.run(args, ctx, tracked).await,

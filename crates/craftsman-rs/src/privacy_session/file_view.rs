@@ -6,21 +6,25 @@
 //! the disk is derived from it, separately, as an execution view: the same
 //! call with the values put back into its content fields.
 //!
-//! The view is derived before anyone reviews the call, so that a person or a
-//! policy decides on the content that will really be written. The decision
-//! is bound to exactly that view by its digest. The view is checked again
-//! where the file is written, and the write goes through what the view held
-//! on to when it was derived: the open file for an edit, the absence of the
-//! file for a create.
+//! The view is derived once, in the agent's own event before a call is
+//! reviewed, from the plan the agent issued for that call. The agent keeps
+//! it as the source of that review and carries its digest beside the plan.
+//! Whoever then decides, the automatic policy of a gate or a person the
+//! gate asks, decides on the content that will really be written, and the
+//! decision is recorded where it is taken and carried to the call's
+//! terminal. There the file tool checks the plan, the source, the digest,
+//! the decision, the user's policy and the destination again, and the write
+//! goes through what the view held on to when it was derived: the open file
+//! for an edit, the absence of the file for a create.
 //!
 //! What is restored: the `content` of `write_file`, and `old_string` and
 //! `new_string` of `edit_file`, as plain text or as part of a complete JSON
 //! document, and only where the user's policy names that data format for the
-//! file. A path, a command, a URL, a tool or gadget argument, a credential,
-//! a setting, an instruction or a schema is never restored. A file's name or
-//! extension is not a rule. Where anything is missing or unclear, the tool
-//! answers with a fixed refusal before any effect, and the call stays as the
-//! model wrote it.
+//! file the operation is bound to. A path, a command, a URL, a tool or gadget
+//! argument, a credential, a setting, an instruction, a schema or a memory
+//! file is never restored. A file's name or extension is not a rule. Where
+//! anything is missing or unclear, the tool answers with a fixed refusal
+//! before any effect, and the call stays as the model wrote it.
 //!
 //! The file tool itself still runs. It notes the file for the workspace
 //! checkpoint, performs the write, finishes the checkpoint and asks for the
@@ -35,22 +39,26 @@
 //! for the write happens before the write. Delete and rename are untouched.
 
 use super::view::{
-    ApprovedOperation, ConversationBoundary, FieldPlace, ProposedOperation, SourceField,
+    ApprovedOperation, ConversationBoundary, FieldPlace, PlannedOperation, SourceField,
 };
 use super::{CapturedUserPolicy, Inner, PrivacySession, SessionStop};
 use crate::privacy_restore::{FileDataFormat, RestoreError, Restored, Restorer, file_candidate};
-use craftsman_harness::provenance::{OutcomePart, TrackedDispatch};
-use craftsman_harness::{AgentError, Tool, ToolCall, ToolCtx, ToolDef, ToolOutcome};
+use craftsman_harness::provenance::{
+    ActualParkedCall, ActualPlannedInvocation, ActualToolInvocation, OutcomePart, SourceRef,
+    TrackedDispatch,
+};
+use craftsman_harness::{AgentError, HitlAction, Tool, ToolCall, ToolCtx, ToolDef, ToolOutcome};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use zeroize::Zeroizing;
 
 /// The most bytes of a file an edit is derived for.
 const MAX_FILE: usize = 256 * 1024;
 
-/// Why an operation was not derived, approved or run. Every one of them is
+/// Why an operation was not derived, decided or run. Every one of them is
 /// decided before the file is touched.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FileRefusal {
@@ -128,31 +136,45 @@ enum Destination {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     Derived,
-    Approved,
     Refused,
     Done,
 }
 
-/// One derived operation. It is made by [`PrivacySession::derive_file_operation`]
-/// only, from what the committed reply proposed with the call.
-pub struct DerivedFileOperation {
-    owner: Arc<Inner>,
-    operation: Arc<ProposedOperation>,
-    /// The call's arguments with the content fields as they will be
-    /// written, for a review that shows a call by its arguments.
+/// What an operation holds until it is over: the real content, the call's
+/// arguments with it, and the destination. It is released when the
+/// operation has run or was refused, so that the source the agent keeps for
+/// the review afterwards holds no content and no open file.
+struct Held {
     arguments: serde_json::Value,
-    change: FileChange,
-    path: PathBuf,
-    destination: Mutex<Destination>,
+    destination: Destination,
     old: Option<Zeroizing<String>>,
     new: Zeroizing<String>,
+}
+
+/// One derived operation. It is made only inside a [`ReviewedFile`], from
+/// what the committed reply proposed with the plan the agent issued.
+pub struct DerivedFileOperation {
+    owner: Arc<Inner>,
+    change: FileChange,
+    /// The destination the operation is bound to, as the host resolved it
+    /// when the operation was derived. Never the model's spelling.
+    path: PathBuf,
+    format: FileDataFormat,
+    workspace: String,
+    policy: Weak<dyn CapturedUserPolicy>,
     digest: [u8; 32],
+    held: Mutex<Option<Held>>,
     state: Mutex<State>,
+    /// The one decision this operation issued, if a gate decided on it.
+    decision: Mutex<Option<Arc<FileDecision>>>,
+    /// Whether the preview was handed to whoever asks a person.
+    presented: AtomicBool,
 }
 
 /// What a reviewer is shown: the real content, never the placeholders.
 pub struct FilePreview<'a> {
     pub change: FileChange,
+    /// The destination the operation is bound to.
     pub path: &'a Path,
     /// The file as it is now. `None` for a create.
     pub old: Option<&'a str>,
@@ -220,17 +242,17 @@ fn restored_field(
 }
 
 impl PrivacySession {
-    /// Derives what a `write_file` or `edit_file` call will actually do,
-    /// from the operation that was checked for the running call. `policy` is
-    /// the user's captured policy and `root` the directory relative paths
-    /// are resolved against, as the file tools resolve them.
+    /// Derives what a planned `write_file` or `edit_file` will actually do.
+    /// `policy` is the user's captured policy and `root` the directory
+    /// relative paths are resolved against, as the file tools resolve them.
     ///
-    /// Nothing is written here. For an edit the file is opened and read, and
-    /// stays open in the result.
-    pub fn derive_file_operation(
+    /// Nothing is written here. The destination is resolved and observed
+    /// first, and the policy is asked about that resolved destination. For
+    /// an edit the file is opened and read, and stays open in the result.
+    pub(super) fn derive_file_operation(
         &self,
-        policy: &dyn CapturedUserPolicy,
-        operation: &Arc<ProposedOperation>,
+        policy: &Weak<dyn CapturedUserPolicy>,
+        operation: &Arc<PlannedOperation>,
         root: &Path,
     ) -> Result<DerivedFileOperation, FileRefusal> {
         self.inner.live().map_err(FileRefusal::Stopped)?;
@@ -272,11 +294,18 @@ impl PrivacySession {
         if path_text == memory.trim_end_matches('/') || path_text.starts_with(memory) {
             return Err(FileRefusal::Excluded("a memory file"));
         }
-        // The data format is the user's rule for this file, never a guess
-        // from its name.
-        let format = policy
-            .restorable_file_data(self.workspace_sha256(), path_text)
-            .ok_or(FileRefusal::NoRule)?;
+        // The user's policy, which the session keeps. A review that outlived
+        // its session has none, and so no rule.
+        let policy_owner = policy.upgrade().ok_or(FileRefusal::NoRule)?;
+        let workspace = self.workspace_sha256().to_owned();
+        // The data format is the user's rule for the file this operation is
+        // bound to, as the host resolved it. It is never a guess from a
+        // name, and never asked about the model's spelling of the path.
+        let rule = |bound: &Path| {
+            policy_owner
+                .restorable_file_data(&workspace, bound)
+                .ok_or(FileRefusal::NoRule)
+        };
         let path = match Path::new(path_text).is_absolute() {
             true => PathBuf::from(path_text),
             false => root.join(path_text),
@@ -288,11 +317,8 @@ impl PrivacySession {
                 members.insert(name.to_owned(), serde_json::Value::String(text.to_owned()));
             }
         };
-        let (change, destination, old, new) = match call.name.as_str() {
+        let (change, destination, bound, format, old, new) = match call.name.as_str() {
             "write_file" => {
-                let new =
-                    restored_field(format, true, argument(&call.args, "content")?, &by_field[0])?;
-                shown("content", &new);
                 // A create binds the absence of the file, as the tool does.
                 match std::fs::symlink_metadata(&path) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -307,7 +333,7 @@ impl PrivacySession {
                     .parent()
                     .filter(|parent| !parent.as_os_str().is_empty())
                     .unwrap_or(root);
-                let parent = std::fs::metadata(parent)
+                let held = std::fs::metadata(parent)
                     .ok()
                     .filter(std::fs::Metadata::is_dir)
                     .ok_or_else(|| {
@@ -316,16 +342,58 @@ impl PrivacySession {
                             path.display()
                         ))
                     })?;
+                // The destination: the directory as the host resolves it,
+                // which must be the directory just observed, and the file's
+                // own name in it.
+                let name = path.file_name().ok_or(FileRefusal::Unsupported)?;
+                let resolved = std::fs::canonicalize(parent).map_err(|_| FileRefusal::Stale)?;
+                let again = std::fs::metadata(&resolved).map_err(|_| FileRefusal::Stale)?;
+                if !again.is_dir() || identity(&again) != identity(&held) {
+                    return Err(FileRefusal::Stale);
+                }
+                let bound = resolved.join(name);
+                let format = rule(&bound)?;
+                let new =
+                    restored_field(format, true, argument(&call.args, "content")?, &by_field[0])?;
+                shown("content", &new);
                 (
                     FileChange::Create,
                     Destination::Absent {
-                        parent: identity(&parent),
+                        parent: identity(&held),
                     },
+                    bound,
+                    format,
                     None,
                     new,
                 )
             }
             _ => {
+                // An update binds the file itself: a regular file, opened
+                // once, and read through that handle.
+                let unreadable = |error: std::io::Error| {
+                    FileRefusal::Tool(format!("Error reading {}: {error}", path.display()))
+                };
+                let named = std::fs::symlink_metadata(&path).map_err(unreadable)?;
+                if !named.is_file() {
+                    return Err(FileRefusal::Unsupported);
+                }
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .map_err(unreadable)?;
+                let opened = file.metadata().map_err(unreadable)?;
+                if identity(&opened) != identity(&named) || opened.len() > MAX_FILE as u64 {
+                    return Err(FileRefusal::Stale);
+                }
+                // The destination: the opened file as the host resolves its
+                // path, which must name that same file.
+                let bound = std::fs::canonicalize(&path).map_err(|_| FileRefusal::Stale)?;
+                let again = std::fs::symlink_metadata(&bound).map_err(|_| FileRefusal::Stale)?;
+                if !again.is_file() || identity(&again) != identity(&opened) {
+                    return Err(FileRefusal::Stale);
+                }
+                let format = rule(&bound)?;
                 let old_string = restored_field(
                     format,
                     false,
@@ -349,24 +417,6 @@ impl PrivacySession {
                     return Err(FileRefusal::Tool(
                         "Error: old_string must not be empty".into(),
                     ));
-                }
-                // An update binds the file itself: a regular file, opened
-                // once, and read through that handle.
-                let unreadable = |error: std::io::Error| {
-                    FileRefusal::Tool(format!("Error reading {}: {error}", path.display()))
-                };
-                let named = std::fs::symlink_metadata(&path).map_err(unreadable)?;
-                if !named.is_file() {
-                    return Err(FileRefusal::Unsupported);
-                }
-                let mut file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path)
-                    .map_err(unreadable)?;
-                let opened = file.metadata().map_err(unreadable)?;
-                if identity(&opened) != identity(&named) || opened.len() > MAX_FILE as u64 {
-                    return Err(FileRefusal::Stale);
                 }
                 let mut text = Zeroizing::new(String::new());
                 file.read_to_string(&mut text).map_err(unreadable)?;
@@ -401,6 +451,8 @@ impl PrivacySession {
                         file,
                         identity: identity(&opened),
                     },
+                    bound,
+                    format,
                     Some(text),
                     new,
                 )
@@ -408,17 +460,17 @@ impl PrivacySession {
         };
 
         // What a decision is bound to: the call as the model wrote it, the
-        // data format, the destination and both contents. The call's id
-        // alone names nothing.
+        // data format, the bound destination and both contents. The call's
+        // id alone names nothing.
         let mut hasher = Sha256::new();
-        hasher.update(b"craftsman-privacy-file-operation-v2\0");
+        hasher.update(b"craftsman-privacy-file-operation-v3\0");
         hasher.update([change as u8, format as u8]);
         let written = call.args.to_string();
         for piece in [
             call.id.as_bytes(),
             call.name.as_bytes(),
             written.as_bytes(),
-            path.as_os_str().as_encoded_bytes(),
+            bound.as_os_str().as_encoded_bytes(),
         ] {
             hasher.update((piece.len() as u64).to_le_bytes());
             hasher.update(piece);
@@ -431,15 +483,21 @@ impl PrivacySession {
         self.inner.live().map_err(FileRefusal::Stopped)?;
         Ok(DerivedFileOperation {
             owner: self.inner.clone(),
-            operation: operation.clone(),
-            arguments,
             change,
-            path,
-            destination: Mutex::new(destination),
-            old,
-            new,
+            path: bound,
+            format,
+            workspace,
+            policy: policy.clone(),
             digest: hasher.finalize().into(),
+            held: Mutex::new(Some(Held {
+                arguments,
+                destination,
+                old,
+                new,
+            })),
             state: Mutex::new(State::Derived),
+            decision: Mutex::new(None),
+            presented: AtomicBool::new(false),
         })
     }
 }
@@ -449,119 +507,52 @@ impl DerivedFileOperation {
         self.change
     }
 
-    /// The call this was derived from, which stays as the model wrote it.
-    pub fn operation(&self) -> &Arc<ProposedOperation> {
-        &self.operation
-    }
-
-    /// What a reviewer is shown, for the duration of `read`.
-    pub fn preview<T>(&self, read: impl FnOnce(FilePreview<'_>) -> T) -> Result<T, SessionStop> {
-        self.owner.live()?;
+    /// What a reviewer is shown, for the duration of `read`. An operation
+    /// that is over shows nothing.
+    pub fn preview<T>(&self, read: impl FnOnce(FilePreview<'_>) -> T) -> Result<T, FileRefusal> {
+        self.owner.live().map_err(FileRefusal::Stopped)?;
+        let held = self.held.lock().unwrap();
+        let held = held.as_ref().ok_or(FileRefusal::Spent)?;
         let result = read(FilePreview {
             change: self.change,
             path: &self.path,
-            old: self.old.as_ref().map(|old| old.as_str()),
-            new: &self.new,
-            arguments: &self.arguments,
+            old: held.old.as_ref().map(|old| old.as_str()),
+            new: &held.new,
+            arguments: &held.arguments,
             digest: self.digest,
         });
-        self.owner.live()?;
+        self.owner.live().map_err(FileRefusal::Stopped)?;
         Ok(result)
     }
 
-    /// The decision that was actually taken on this operation. `shown` is
-    /// the digest of the preview the decision was about. A decision about
-    /// anything else approves nothing, and a refused or finished operation
-    /// cannot be approved.
-    pub(crate) fn approve(&self, shown: [u8; 32]) -> Result<(), FileRefusal> {
+    /// The operation is over in `state`. What it held is released: the
+    /// content, the arguments with it and the open file.
+    fn finish(&self, state: State) {
+        let mut current = self.state.lock().unwrap();
+        if *current != State::Done {
+            *current = state;
+        }
+        self.held.lock().unwrap().take();
+    }
+
+    /// The write itself, once. The user's policy must still name the same
+    /// data format for the bound destination, and the destination must be
+    /// what it was: for a create the directory and the absence of the file,
+    /// for an edit the opened file and what was read from it.
+    fn write(&self) -> Result<usize, FileRefusal> {
         self.owner.live().map_err(FileRefusal::Stopped)?;
-        let mut state = self.state.lock().unwrap();
-        if *state != State::Derived || shown != self.digest {
-            return Err(FileRefusal::NotApproved);
+        let mut held = self.held.lock().unwrap().take().ok_or(FileRefusal::Spent)?;
+        let rule = self
+            .policy
+            .upgrade()
+            .and_then(|policy| policy.restorable_file_data(&self.workspace, &self.path));
+        if rule != Some(self.format) {
+            return Err(FileRefusal::NoRule);
         }
-        *state = State::Approved;
-        Ok(())
-    }
-
-    /// The decision of a gate that stands between the file tool and its
-    /// handler: the call reached the handler with exactly the arguments this
-    /// operation shows. A gate that refuses never lets the call get there,
-    /// and arguments that are not the ones shown approve nothing.
-    pub(crate) fn approve_reached(&self, arguments: &serde_json::Value) -> Result<(), FileRefusal> {
-        if *arguments != self.arguments {
-            return Err(FileRefusal::NotApproved);
-        }
-        self.approve(self.digest)
-    }
-
-    /// The call's arguments with the real content in its content fields, for
-    /// a gate that reviews a call by the arguments it is handed.
-    pub(crate) fn shown_arguments(&self) -> Result<serde_json::Value, SessionStop> {
-        self.owner.live()?;
-        Ok(self.arguments.clone())
-    }
-
-    /// Whether the operation has written its file.
-    pub fn is_done(&self) -> bool {
-        *self.state.lock().unwrap() == State::Done
-    }
-
-    /// Whether this was derived from exactly `call`.
-    fn is_for(&self, call: &ToolCall) -> bool {
-        matches!(self.operation.call(), Ok(derived) if derived == call)
-    }
-
-    /// Whether the operation was refused or has run. Nothing can come of it
-    /// any more.
-    fn is_over(&self) -> bool {
-        matches!(*self.state.lock().unwrap(), State::Refused | State::Done)
-    }
-
-    /// The operation was refused: by a person, a policy or a mode. It can
-    /// no longer be approved or run.
-    pub fn refuse(&self) {
-        let mut state = self.state.lock().unwrap();
-        if *state != State::Done {
-            *state = State::Refused;
-        }
-    }
-
-    /// Writes the file. Called where the tool runs, with the operation that
-    /// is checked for the call running now. Everything is checked again
-    /// first: the conversation is live, this was approved as shown, the
-    /// running call is the one this was derived from, and the destination is
-    /// what it was. The write goes through what was held on to. It runs
-    /// once. Returns the number of bytes written.
-    pub fn execute(
-        &self,
-        in_flight: Option<&Arc<ApprovedOperation>>,
-    ) -> Result<usize, FileRefusal> {
-        self.owner.live().map_err(FileRefusal::Stopped)?;
-        let mut state = self.state.lock().unwrap();
-        match *state {
-            State::Approved => {}
-            State::Done => return Err(FileRefusal::Spent),
-            State::Derived | State::Refused => return Err(FileRefusal::NotApproved),
-        }
-        // The call that runs now is the call this was derived from: asked
-        // for by the same committed reply, with the same arguments, and not
-        // changed by a person since.
-        let same = in_flight.is_some_and(|running| {
-            running.model().is(self.operation.model())
-                && !running.edited_by_human()
-                && matches!((running.call(), self.operation.call()),
-                    (Ok(running), Ok(derived)) if running == derived)
-        });
-        if !same {
-            return Err(FileRefusal::NotApproved);
-        }
-        // From here on the operation is spent, whatever happens.
-        *state = State::Refused;
-        let mut destination = self.destination.lock().unwrap();
         let failed = |error: std::io::Error| {
             FileRefusal::Tool(format!("Error writing {}: {error}", self.path.display()))
         };
-        match &mut *destination {
+        match &mut held.destination {
             Destination::Absent { parent } => {
                 let now = self
                     .path
@@ -579,176 +570,446 @@ impl DerivedFileOperation {
                         std::io::ErrorKind::AlreadyExists => FileRefusal::Stale,
                         _ => failed(error),
                     })?;
-                file.write_all(self.new.as_bytes()).map_err(failed)?;
+                file.write_all(held.new.as_bytes()).map_err(failed)?;
                 file.flush().map_err(failed)?;
             }
             Destination::Existing {
                 file,
-                identity: held,
+                identity: bound,
             } => {
                 // The path still names the file that was opened, and the
                 // file still holds what was read and shown.
                 let named =
                     std::fs::symlink_metadata(&self.path).map_err(|_| FileRefusal::Stale)?;
-                if !named.is_file() || identity(&named) != *held {
+                if !named.is_file() || identity(&named) != *bound {
                     return Err(FileRefusal::Stale);
                 }
                 let mut current = Zeroizing::new(String::new());
                 file.seek(SeekFrom::Start(0)).map_err(failed)?;
                 file.read_to_string(&mut current)
                     .map_err(|_| FileRefusal::Stale)?;
-                if Some(current.as_str()) != self.old.as_ref().map(|old| old.as_str()) {
+                if Some(current.as_str()) != held.old.as_ref().map(|old| old.as_str()) {
                     return Err(FileRefusal::Stale);
                 }
                 file.seek(SeekFrom::Start(0)).map_err(failed)?;
                 file.set_len(0).map_err(failed)?;
-                file.write_all(self.new.as_bytes()).map_err(failed)?;
+                file.write_all(held.new.as_bytes()).map_err(failed)?;
                 file.flush().map_err(failed)?;
             }
         }
-        *state = State::Done;
-        Ok(self.new.len())
+        Ok(held.new.len())
     }
 }
 
-/// The most derived operations that wait for their call to run.
-const MAX_WAITING: usize = 16;
+/// What one planned write or edit of this conversation will really do, as it
+/// was derived when the agent sent the plan to its review. It is the source
+/// the agent keeps for that review: the gate that decides, the person who is
+/// asked and the file tool all refer to this one object. It is made only by
+/// the conversation's boundary, in the agent's own event before a review,
+/// for the plan the agent issued. Holding it approves nothing.
+///
+/// Where the operation could not be derived, this holds the refusal, which
+/// is the tool's answer before anyone is asked and before any effect.
+pub struct ReviewedFile {
+    owner: Arc<Inner>,
+    operation: Arc<PlannedOperation>,
+    outcome: Result<DerivedFileOperation, FileRefusal>,
+}
+
+impl std::fmt::Debug for ReviewedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReviewedFile([private])")
+    }
+}
+
+/// Who decided on a reviewed operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecidedBy {
+    /// The automatic policy of the gate the call went through.
+    Policy,
+    /// A person, asked by that gate and shown the operation.
+    Person,
+}
+
+/// One decision on a reviewed operation, recorded where it was taken: by the
+/// automatic policy of a gate when that policy was evaluated on what will
+/// really be written, or by a person when the gate's own prompt returned
+/// after showing it. It names the plan, the digest of what was shown and the
+/// choice. It is made nowhere else, it is kept by the operation it is about,
+/// and it is used once.
+///
+/// The agent carries it to the terminal of the call. Carrying it grants
+/// nothing: the file tool checks it against the operation that issued it.
+pub struct FileDecision {
+    plan: ActualPlannedInvocation,
+    shown: [u8; 32],
+    by: DecidedBy,
+    approved: bool,
+    used: AtomicBool,
+}
+
+impl std::fmt::Debug for FileDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FileDecision([actual decision])")
+    }
+}
+
+impl ReviewedFile {
+    /// The reviewed operation of the dispatch a gate is deciding, from the
+    /// source the agent kept for that dispatch's review. `None` for every
+    /// call that has none, which a gate then decides as it always does.
+    pub(crate) fn of(tracked: &TrackedDispatch) -> Option<Arc<Self>> {
+        tracked.review_source()?.downcast::<Self>()
+    }
+
+    /// The reviewed operation of a parked call, for the reader that asks a
+    /// person about it.
+    pub(crate) fn of_parked(parked: &ActualParkedCall) -> Option<Arc<Self>> {
+        parked.review_source()?.downcast::<Self>()
+    }
+
+    /// The derived operation, or the refusal that is the tool's answer.
+    pub fn derived(&self) -> Result<&DerivedFileOperation, FileRefusal> {
+        self.owner.live().map_err(FileRefusal::Stopped)?;
+        self.outcome.as_ref().map_err(Clone::clone)
+    }
+
+    /// The call's arguments with the real content in its content fields, for
+    /// a gate that decides on a call by its arguments and shows them. The
+    /// recorded call is not changed.
+    pub(crate) fn shown_arguments(&self) -> Result<serde_json::Value, FileRefusal> {
+        self.derived()?.preview(|preview| preview.arguments.clone())
+    }
+
+    /// The automatic policy of the gate this call goes through decides on
+    /// what will really be written. The policy is evaluated here, on the
+    /// arguments with the real content, and an approval is recorded here,
+    /// where it is taken, and handed to the agent to carry to the terminal.
+    /// A policy that neither allows nor denies asks a person next.
+    pub(crate) fn policy_decides(
+        self: &Arc<Self>,
+        approval: &Mutex<crate::hitl::ApprovalState>,
+        tracked: &TrackedDispatch,
+    ) -> crate::hitl::ToolPermission {
+        use crate::hitl::ToolPermission;
+        let refused = |refusal: FileRefusal| ToolPermission::Deny(refusal.to_string());
+        let Ok(call) = self.operation.call() else {
+            return refused(FileRefusal::NotApproved);
+        };
+        let arguments = match self.shown_arguments() {
+            Ok(arguments) => arguments,
+            Err(refusal) => return refused(refusal),
+        };
+        // Never held while anything waits: only the evaluation itself.
+        let permission = approval.lock().unwrap().permission(&call.name, &arguments);
+        match permission {
+            ToolPermission::Allow => match self.decide(tracked, DecidedBy::Policy, true) {
+                Ok(()) => ToolPermission::Allow,
+                Err(refusal) => refused(refusal),
+            },
+            ToolPermission::Deny(reason) => {
+                self.over();
+                ToolPermission::Deny(reason)
+            }
+            ToolPermission::Prompt => ToolPermission::Prompt,
+        }
+    }
+
+    /// A person decides. `ask` is the gate's own prompt: it is handed the
+    /// preview, shows it, and returns whether the person approved, with
+    /// whatever else the gate needs of the answer. The decision is recorded
+    /// when `ask` returns, and an approval is handed to the agent to carry
+    /// to the terminal. A refusal ends the operation.
+    pub(crate) fn person_decides<T>(
+        self: &Arc<Self>,
+        tracked: &TrackedDispatch,
+        ask: impl FnOnce(FilePreview<'_>) -> (bool, T),
+    ) -> Result<T, FileRefusal> {
+        let derived = self.derived()?;
+        let (approved, answer) = derived.preview(ask)?;
+        derived.presented.store(true, Ordering::Release);
+        self.decide(tracked, DecidedBy::Person, approved)?;
+        Ok(answer)
+    }
+
+    /// Records one decision. An approval is carried by the dispatch; a
+    /// refusal ends the operation. An operation is decided once.
+    fn decide(
+        self: &Arc<Self>,
+        tracked: &TrackedDispatch,
+        by: DecidedBy,
+        approved: bool,
+    ) -> Result<(), FileRefusal> {
+        let derived = self.derived()?;
+        // The dispatch that decides is the dispatch of this plan.
+        let same = tracked
+            .planned()
+            .is_some_and(|planned| planned.same_plan(self.operation.plan()))
+            && Self::of(tracked).is_some_and(|carried| Arc::ptr_eq(&carried, self));
+        if !same {
+            return Err(FileRefusal::NotApproved);
+        }
+        let decision = Arc::new(FileDecision {
+            plan: self.operation.plan().clone(),
+            shown: derived.digest,
+            by,
+            approved,
+            used: AtomicBool::new(false),
+        });
+        {
+            let mut issued = derived.decision.lock().unwrap();
+            if issued.is_some() {
+                return Err(FileRefusal::NotApproved);
+            }
+            *issued = Some(decision.clone());
+        }
+        if !approved {
+            self.over();
+            return Ok(());
+        }
+        if tracked.note_decision(SourceRef::new(decision)).is_err() {
+            self.over();
+            return Err(FileRefusal::NotApproved);
+        }
+        Ok(())
+    }
+
+    /// For the reader that asks a person about a parked call: the preview
+    /// to show, if `shown` is the digest the agent carried for this very
+    /// operation. A reader that does not take the preview has shown nothing,
+    /// and the decision it returns is then not a decision on this operation.
+    pub(crate) fn shown_to_reader<T>(
+        &self,
+        shown: Option<[u8; 32]>,
+        read: impl FnOnce(FilePreview<'_>) -> T,
+    ) -> Result<T, FileRefusal> {
+        let derived = self.derived()?;
+        if shown != Some(derived.digest) {
+            return Err(FileRefusal::NotApproved);
+        }
+        let result = derived.preview(read)?;
+        derived.presented.store(true, Ordering::Release);
+        Ok(result)
+    }
+
+    /// Whether the operation has written its file.
+    pub fn is_done(&self) -> bool {
+        matches!(&self.outcome, Ok(derived) if *derived.state.lock().unwrap() == State::Done)
+    }
+
+    /// The operation is over: refused, failed or replaced by what a person
+    /// wrote. Nothing can come of it any more, and what it held is released.
+    pub(crate) fn over(&self) {
+        if let Ok(derived) = &self.outcome {
+            derived.finish(State::Refused);
+        }
+    }
+
+    /// The decision the invocation carries is a decision on this operation:
+    /// one this operation issued itself, approving, unused; or the sealed
+    /// input of a person who was asked about the parked call, was shown this
+    /// operation and approved it as it is.
+    fn decided(
+        &self,
+        derived: &DerivedFileOperation,
+        invocation: &ActualToolInvocation,
+    ) -> Result<(), FileRefusal> {
+        let source = invocation
+            .decision_source()
+            .ok_or(FileRefusal::NotApproved)?;
+        let plan = self.operation.plan();
+        if let Some(decision) = source.downcast::<FileDecision>() {
+            let issued = derived.decision.lock().unwrap().clone();
+            let ours = issued.is_some_and(|issued| Arc::ptr_eq(&issued, &decision));
+            let shown_to_person =
+                decision.by == DecidedBy::Policy || derived.presented.load(Ordering::Acquire);
+            if !ours
+                || !decision.approved
+                || !shown_to_person
+                || !decision.plan.same_plan(plan)
+                || decision.shown != derived.digest
+                || invocation.resumed()
+            {
+                return Err(FileRefusal::NotApproved);
+            }
+            if decision.used.swap(true, Ordering::AcqRel) {
+                return Err(FileRefusal::Spent);
+            }
+            return Ok(());
+        }
+        if let Some(input) = source.downcast::<crate::privacy_entry::HumanDecisionInput>() {
+            let approved = invocation.resumed()
+                && invocation.decision_action() == Some(&HitlAction::Approve)
+                && input.action() == Some(&HitlAction::Approve)
+                && input.planned().same_plan(plan)
+                && input.shown() == Some(derived.digest)
+                && derived.presented.load(Ordering::Acquire);
+            return match approved {
+                true => Ok(()),
+                false => Err(FileRefusal::NotApproved),
+            };
+        }
+        Err(FileRefusal::NotApproved)
+    }
+
+    /// Writes the file. Called where the file tool performs its write, with
+    /// the invocation the agent issued for the running call and the
+    /// operation the boundary checked for it. Everything is checked again
+    /// first: the conversation is live; the invocation is this plan's, with
+    /// this source and this digest; the call runs exactly as it was planned
+    /// and no person changed it; the decision is one on this operation; the
+    /// user's policy still names the same data format for the destination;
+    /// and the destination is what it was. The write goes through what was
+    /// held on to, and runs once. Returns the number of bytes written.
+    fn execute(
+        self: &Arc<Self>,
+        invocation: &ActualToolInvocation,
+        running: &ApprovedOperation,
+    ) -> Result<usize, FileRefusal> {
+        let derived = self.derived()?;
+        match *derived.state.lock().unwrap() {
+            State::Derived => {}
+            State::Done => return Err(FileRefusal::Spent),
+            State::Refused => return Err(FileRefusal::NotApproved),
+        }
+        let plan = self.operation.plan();
+        let this_source = invocation
+            .review_source()
+            .and_then(|source| source.downcast::<Self>())
+            .is_some_and(|carried| Arc::ptr_eq(&carried, self));
+        let as_planned = invocation.was_planned_as(plan)
+            && this_source
+            && invocation.shown() == Some(derived.digest)
+            && running.is_for(invocation)
+            && running.model().is(self.operation.model())
+            && !running.edited_by_human()
+            && !invocation.human_edited()
+            && invocation.call() == plan.call();
+        if !as_planned {
+            return Err(FileRefusal::NotApproved);
+        }
+        self.decided(derived, invocation)?;
+        // From here on the operation is over, whatever happens.
+        let result = derived.write();
+        derived.finish(match result {
+            Ok(_) => State::Done,
+            Err(_) => State::Refused,
+        });
+        self.owner.live().map_err(FileRefusal::Stopped)?;
+        result
+    }
+}
+
+/// For the reader that asks a person about a parked call: the call to show.
+/// For a file operation that was derived for the parked plan, that is the
+/// call with the real content, taken from the operation's preview under the
+/// digest the agent handed over with the parked call; taking it is what
+/// makes the person's answer a decision on that operation. A call without
+/// such an operation, and one whose operation could not be derived, is
+/// shown as the model wrote it; the tool answers the latter with its
+/// refusal. `None` when the digest is not the operation's: nobody is asked.
+pub(crate) fn call_to_show(parked: &ActualParkedCall, shown: Option<[u8; 32]>) -> Option<ToolCall> {
+    let call = parked.call();
+    let Some(reviewed) = ReviewedFile::of_parked(parked) else {
+        return Some(call.clone());
+    };
+    let taken = reviewed.shown_to_reader(shown, |preview| ToolCall {
+        id: call.id.clone(),
+        name: call.name.clone(),
+        args: preview.arguments.clone(),
+    });
+    match taken {
+        Ok(shown) => Some(shown),
+        Err(_) if reviewed.outcome.is_err() => Some(call.clone()),
+        Err(_) => None,
+    }
+}
+
+/// The digest of the reviewed operation behind `source`, if `source` is one
+/// and was made for exactly `planned`. For the boundary, which hands it to
+/// the agent to carry beside the plan.
+pub(super) fn reviewed_digest(
+    planned: &ActualPlannedInvocation,
+    source: &SourceRef,
+) -> Option<[u8; 32]> {
+    let reviewed = source.downcast::<ReviewedFile>()?;
+    if !reviewed.operation.plan().same_plan(planned) {
+        return None;
+    }
+    reviewed.derived().ok().map(|derived| derived.digest)
+}
 
 /// The file review of a privacy conversation, for its root agent and for
-/// every agent it delegates to. Whoever reviews a write or an edit asks it
-/// what the call will really do, and the file tools run what was derived
-/// and approved. An agent is found by its own boundary; the review of one
-/// agent's call is never used for another's. Holding a review, a session or
-/// a record grants no access to a file and approves nothing.
+/// every agent it delegates to. The conversation's boundaries ask it, in the
+/// agent's event before a review, what a planned write or edit will really
+/// do. It holds the user's policy only weakly: the session that was built
+/// for the conversation keeps the policy, and a review, a tool or a
+/// delegated agent that outlives that session keeps nothing of it alive.
+/// Holding a review grants no access to a file and approves nothing.
 pub struct FileReview {
-    session: Arc<PrivacySession>,
-    /// The root agent's boundary. Every other agent's is one of its family.
-    boundary: Arc<ConversationBoundary>,
-    policy: Arc<dyn CapturedUserPolicy>,
+    policy: Weak<dyn CapturedUserPolicy>,
     root: PathBuf,
-    /// Derived operations by agent, from the review of a call until that
-    /// call runs. A parked call keeps its entry across the suspension.
-    waiting: Mutex<Vec<(Weak<ConversationBoundary>, Arc<DerivedFileOperation>)>>,
+    /// The root agent's boundary, once the review is set on it. Every other
+    /// agent's boundary is one of its family.
+    conversation: OnceLock<Weak<ConversationBoundary>>,
 }
 
 impl FileReview {
-    pub fn new(
-        session: Arc<PrivacySession>,
-        boundary: Arc<ConversationBoundary>,
-        policy: Arc<dyn CapturedUserPolicy>,
-        root: PathBuf,
-    ) -> Arc<Self> {
+    /// `policy` is the user's captured policy, which the caller keeps for
+    /// the life of the session. `root` is the directory relative paths are
+    /// resolved against, as the file tools resolve them.
+    pub fn new(policy: &Arc<dyn CapturedUserPolicy>, root: PathBuf) -> Arc<Self> {
         Arc::new(Self {
-            session,
-            boundary,
-            policy,
+            policy: Arc::downgrade(policy),
             root,
-            waiting: Mutex::new(Vec::new()),
+            conversation: OnceLock::new(),
         })
+    }
+
+    pub(super) fn attach(&self, boundary: &Arc<ConversationBoundary>) {
+        let _ = self.conversation.set(Arc::downgrade(boundary));
     }
 
     /// The boundary of the agent a call runs in, from what its dispatch
     /// carries.
     fn boundary_for(&self, tracked: &TrackedDispatch) -> Option<Arc<ConversationBoundary>> {
         let conversation = tracked.boundary()?.conversation()?;
-        self.boundary.member(&conversation)
+        self.conversation.get()?.upgrade()?.member(&conversation)
     }
 
-    /// Called for the root agent before anything reviews `call`. For a file
-    /// write or edit that names a placeholder it derives what will really be
-    /// written and keeps it for the review and for the tool. `None` for
-    /// every other call, which runs as it always does. A refusal is the
-    /// tool's answer: nothing was touched, and the call stays as the model
-    /// wrote it.
-    pub async fn propose(
+    /// Called by a boundary of the conversation for a planned write or
+    /// edit. `None` when the call names no placeholder: it then has nothing
+    /// to derive and runs as it always does. Whether it names one is what
+    /// the conversation recorded for the reply that wrote it, not how a
+    /// string looks: an alias need not carry a marker.
+    pub(super) fn review(
         &self,
-        call: &ToolCall,
-    ) -> Result<Option<Arc<DerivedFileOperation>>, FileRefusal> {
-        self.propose_in(&self.boundary, call).await
-    }
-
-    /// As [`propose`](Self::propose), for the agent whose boundary this is.
-    async fn propose_in(
-        &self,
-        boundary: &Arc<ConversationBoundary>,
-        call: &ToolCall,
-    ) -> Result<Option<Arc<DerivedFileOperation>>, FileRefusal> {
-        if !matches!(call.name.as_str(), "write_file" | "edit_file") {
-            return Ok(None);
-        }
-        let proposed = boundary
-            .proposed_operation(call)
-            .await
-            .map_err(|_| FileRefusal::Stopped(SessionStop::Unbound))?;
-        // Whether the call names a placeholder is what the conversation
-        // recorded for the reply that wrote it, not how a string looks: an
-        // alias need not carry a marker. A call that names none has nothing
-        // to derive.
-        let names_one = match proposed.fields() {
+        session: &PrivacySession,
+        operation: Arc<PlannedOperation>,
+    ) -> Option<Arc<ReviewedFile>> {
+        let names_one = match operation.fields() {
             Ok(Some(fields)) => !fields.is_empty(),
             _ => true,
         };
-        if !names_one && !call.args.to_string().contains("pv1-") {
-            return Ok(None);
+        let marked = operation
+            .call()
+            .is_ok_and(|call| call.args.to_string().contains("pv1-"));
+        if !names_one && !marked {
+            return None;
         }
-        let derived = Arc::new(self.session.derive_file_operation(
-            self.policy.as_ref(),
-            &proposed,
-            &self.root,
-        )?);
-        let mut waiting = self.waiting.lock().unwrap();
-        // What is over, what belongs to an agent that is gone and what was
-        // derived for this call before are dropped, with the files they
-        // hold open.
-        waiting.retain(|(agent, known)| {
-            agent.strong_count() > 0
-                && !known.is_over()
-                && !(is_agent(agent, boundary) && known.is_for(call))
-        });
-        if waiting.len() >= MAX_WAITING {
-            waiting.remove(0).1.refuse();
-        }
-        waiting.push((Arc::downgrade(boundary), derived.clone()));
-        Ok(Some(derived))
-    }
-
-    /// The derived operation that waits for the root agent's call `id`, for
-    /// the interface that shows it to a person.
-    pub fn waiting(&self, id: &str) -> Option<Arc<DerivedFileOperation>> {
-        let waiting = self.waiting.lock().unwrap();
-        for (agent, derived) in waiting.iter() {
-            let named = matches!(derived.operation.call(), Ok(call) if call.id == id);
-            if named && is_agent(agent, &self.boundary) {
-                return Some(derived.clone());
-            }
-        }
-        None
-    }
-
-    /// The operation that waits for exactly `call` of the agent whose
-    /// boundary this is.
-    fn take(
-        &self,
-        boundary: &Arc<ConversationBoundary>,
-        call: &ToolCall,
-    ) -> Option<Arc<DerivedFileOperation>> {
-        let mut waiting = self.waiting.lock().unwrap();
-        let at = waiting
-            .iter()
-            .position(|(agent, derived)| is_agent(agent, boundary) && derived.is_for(call))?;
-        Some(waiting.remove(at).1)
+        let outcome = session.derive_file_operation(&self.policy, &operation, &self.root);
+        Some(Arc::new(ReviewedFile {
+            owner: session.inner.clone(),
+            operation,
+            outcome,
+        }))
     }
 }
 
-/// Whether `agent` is this boundary: the same object, not an equal one. The
-/// list keeps the object's place alive, so its address names nothing else.
-fn is_agent(agent: &Weak<ConversationBoundary>, boundary: &Arc<ConversationBoundary>) -> bool {
-    std::ptr::eq(agent.as_ptr(), Arc::as_ptr(boundary))
-}
-
-/// The write of one derived operation, for the handler that performs it.
+/// The write of one reviewed operation, for the handler that performs it.
 struct DerivedWrite {
-    derived: Arc<DerivedFileOperation>,
+    reviewed: Arc<ReviewedFile>,
+    invocation: ActualToolInvocation,
     running: Arc<ApprovedOperation>,
 }
 
@@ -759,14 +1020,14 @@ tokio::task_local! {
 }
 
 /// For the handler of a file tool: the write of the operation that was
-/// derived and approved for the call running now, performed here in place of
-/// the handler's own write, through what the derivation held on to. `None`
-/// when the call has no derived operation; the handler then writes as it
+/// derived, reviewed and decided for the call running now, performed here in
+/// place of the handler's own write, through what the derivation held on to.
+/// `None` when the call has no such operation; the handler then writes as it
 /// always does. Everything the handler does around its write stays its own:
 /// its checkpoints, its diagnostics and its result.
 pub(crate) fn authorized_write() -> Option<Result<usize, FileRefusal>> {
     DERIVED_WRITE
-        .try_with(|write| write.derived.execute(Some(&write.running)))
+        .try_with(|write| write.reviewed.execute(&write.invocation, &write.running))
         .ok()
 }
 
@@ -805,20 +1066,13 @@ fn state_outcome(tracked: &TrackedDispatch, call: &ToolCall, outcome: &ToolOutco
 }
 
 /// A file tool of a privacy conversation: `write_file` or `edit_file`, for
-/// the root agent or a delegated one. A call that names no placeholder runs
-/// the wrapped tool as always. A call that names one runs only as it was
-/// derived, shown and approved: the wrapped tool does everything it always
-/// does, and takes its write from [`authorized_write`].
+/// the root agent or a delegated one. It stands directly on the tool, behind
+/// every gate. A call that names no placeholder runs the wrapped tool as
+/// always. A call that names one runs only as the operation that was derived
+/// for its plan, reviewed and decided: the wrapped tool does everything it
+/// always does, and takes its write from [`authorized_write`].
 ///
-/// For the root agent the approval gate derives and decides before the tool
-/// runs. A delegated agent's gate is inside its tool, so the operation is
-/// derived here, before that gate, and the gate is handed the arguments
-/// with the real content: its rules, its prompt and its activity line are
-/// about what will really be written. [`ReachedFileTool`] stands behind that
-/// gate and records that the gate let the call through. The recorded call
-/// is not changed in either case.
-///
-/// A call whose derived operation did not write is answered with a refusal.
+/// A call whose operation did not write is answered with a refusal.
 pub struct RestoredFileTool {
     inner: Arc<dyn Tool>,
     review: Arc<FileReview>,
@@ -836,16 +1090,23 @@ impl Tool for RestoredFileTool {
         self.inner.def()
     }
 
-    /// Without a source view there is no checked operation, so nothing can
-    /// be restored. A call that names a placeholder, with a marker or
-    /// without one, is refused; any other runs as always.
+    /// Without a source view there is no plan, no review and no checked
+    /// operation, so nothing can be restored. A call that names a
+    /// placeholder of this conversation, with a marker or without one, is
+    /// refused; so is every call once the conversation's root boundary is
+    /// gone. Any other runs as always.
     async fn call(
         &self,
         args: serde_json::Value,
         ctx: &mut ToolCtx<'_>,
     ) -> Result<ToolOutcome, AgentError> {
         let name = self.inner.def().name;
-        if self.review.boundary.names_placeholder(&name, &args).await {
+        let conversation = self.review.conversation.get().and_then(Weak::upgrade);
+        let clear = match conversation {
+            Some(boundary) => !boundary.names_placeholder(&name, &args).await,
+            None => false,
+        };
+        if !clear {
             return Ok(ToolOutcome::err(FileRefusal::NotApproved.to_string()));
         }
         self.inner.call(args, ctx).await
@@ -858,75 +1119,74 @@ impl Tool for RestoredFileTool {
         tracked: &TrackedDispatch,
     ) -> Result<ToolOutcome, AgentError> {
         let refused = |refusal: FileRefusal| Ok(ToolOutcome::err(refusal.to_string()));
-        let review = &self.review;
-        // The agent this call runs in, the invocation the agent issued for
-        // it, and the operation that was checked for that invocation.
-        // Without all three, nothing about the call is known, and a file
-        // tool does not run on that.
-        let Some(boundary) = review.boundary_for(tracked) else {
+        // The invocation the agent issued for this call, the agent it runs
+        // in, and the operation that agent's boundary checked for exactly
+        // this invocation. Without all three, nothing about the call is
+        // known, and a file tool does not run on that.
+        let Some(invocation) = tracked.invocation() else {
             return refused(FileRefusal::NotApproved);
         };
-        let running = tracked.invocation().and_then(|invocation| {
-            boundary
-                .operation_in_flight()
-                .filter(|running| running.is_for(invocation))
-        });
+        let Some(boundary) = self.review.boundary_for(tracked) else {
+            return refused(FileRefusal::NotApproved);
+        };
+        let running = boundary
+            .operation_in_flight()
+            .filter(|running| running.is_for(invocation));
         let Some(running) = running else {
             return refused(FileRefusal::NotApproved);
         };
         let Ok(call) = running.call().cloned() else {
             return refused(FileRefusal::NotApproved);
         };
-        let waiting = review.take(&boundary, &call);
-        if running.edited_by_human() {
+        let reviewed = invocation
+            .review_source()
+            .and_then(|source| source.downcast::<ReviewedFile>());
+        if running.edited_by_human() || invocation.human_edited() {
             // What a person wrote in place of the arguments is that
-            // person's text. Nothing is restored into it, and it runs as it
-            // is. The conversation does not accept a person's text that
-            // holds one of its aliases; should one stand here all the same,
-            // it is not written to a file.
-            if let Some(derived) = waiting {
-                derived.refuse();
+            // person's text. Nothing is restored into it, what was derived
+            // from the model's call is over, and it runs as it is. The
+            // conversation does not accept a person's text that holds one
+            // of its aliases; should one stand here all the same, it is not
+            // written to a file.
+            if let Some(reviewed) = reviewed {
+                reviewed.over();
             }
             if boundary.names_placeholder(&call.name, &args).await {
                 return refused(FileRefusal::Excluded("arguments a person edited"));
             }
             return self.inner.call_with_view(args, ctx, tracked).await;
         }
-        // The conversation's own record of the reply says whether the call
-        // names a placeholder.
-        let names_one = !matches!(running.fields(), Ok(Some(fields)) if fields.is_empty())
-            || args.to_string().contains("pv1-");
-        let (derived, handed) = match waiting {
-            Some(derived) => (derived, args),
-            None if !names_one => return self.inner.call_with_view(args, ctx, tracked).await,
-            // The root agent's gate derives before the tool runs. A call
-            // that got here without that was not reviewed as it would run.
-            None if boundary.is_root() => return refused(FileRefusal::NotApproved),
-            // A delegated agent's gate is inside this tool: derive now,
-            // before it, and hand that gate what will really be written.
-            None => match review.propose_in(&boundary, &call).await {
-                Ok(Some(_)) => match review.take(&boundary, &call) {
-                    Some(derived) => match derived.shown_arguments() {
-                        Ok(shown) => (derived, shown),
-                        Err(stop) => return refused(FileRefusal::Stopped(stop)),
-                    },
-                    None => return refused(FileRefusal::NotApproved),
-                },
-                Ok(None) => return refused(FileRefusal::NotApproved),
-                Err(refusal) => return refused(refusal),
-            },
+        let Some(reviewed) = reviewed else {
+            // Nothing was derived for this call. The conversation's own
+            // record of the reply says whether it names a placeholder; if
+            // it does, it was not reviewed as it would run, and does not.
+            let names_one = !matches!(running.fields(), Ok(Some(fields)) if fields.is_empty())
+                || args.to_string().contains("pv1-");
+            if names_one {
+                return refused(FileRefusal::NotApproved);
+            }
+            return self.inner.call_with_view(args, ctx, tracked).await;
         };
+        // The operation was derived in this agent's own lane, and a refusal
+        // of the derivation is the answer, before any effect.
+        if !reviewed.operation.in_lane_of(&boundary) {
+            return refused(FileRefusal::NotApproved);
+        }
+        if let Err(refusal) = reviewed.derived() {
+            return refused(refusal);
+        }
         let write = DerivedWrite {
-            derived: derived.clone(),
+            reviewed: reviewed.clone(),
+            invocation: invocation.clone(),
             running,
         };
         let outcome = DERIVED_WRITE
-            .scope(write, self.inner.call_with_view(handed, ctx, tracked))
+            .scope(write, self.inner.call_with_view(args, ctx, tracked))
             .await;
-        if !derived.is_done() {
-            // A gate refused, the handler refused, or the write failed.
-            // Whatever it was, this operation is over.
-            derived.refuse();
+        if !reviewed.is_done() {
+            // The handler refused or the write failed. Whatever it was,
+            // this operation is over.
+            reviewed.over();
             return match outcome {
                 Ok(outcome) if !outcome.is_error => refused(FileRefusal::NotApproved),
                 other => other,
@@ -935,39 +1195,5 @@ impl Tool for RestoredFileTool {
         let outcome = outcome?;
         state_outcome(tracked, &call, &outcome);
         Ok(outcome)
-    }
-}
-
-/// A delegated agent's file tool as that agent's gate reaches it. It stands
-/// directly behind the gate. When the gate lets through a call for which an
-/// operation was derived, with exactly the arguments that operation shows,
-/// that is the gate's decision on what was shown, and it is recorded here.
-/// A gate that refuses never calls this. Every other call passes through.
-pub struct ReachedFileTool {
-    inner: Arc<dyn Tool>,
-}
-
-impl ReachedFileTool {
-    pub fn new(inner: Arc<dyn Tool>) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for ReachedFileTool {
-    fn def(&self) -> ToolDef {
-        self.inner.def()
-    }
-
-    async fn call(
-        &self,
-        args: serde_json::Value,
-        ctx: &mut ToolCtx<'_>,
-    ) -> Result<ToolOutcome, AgentError> {
-        let reached = DERIVED_WRITE.try_with(|write| write.derived.approve_reached(&args));
-        if let Ok(Err(refusal)) = reached {
-            return Ok(ToolOutcome::err(refusal.to_string()));
-        }
-        self.inner.call(args, ctx).await
     }
 }

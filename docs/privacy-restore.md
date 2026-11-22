@@ -19,15 +19,16 @@ what is written to disk are separate views derived from that record.
 | Human view of a committed reply (`PrivacySession::human_reply`) | implemented, private |
 | Hold on a streamed reply until it is committed (`HeldStream`) | implemented, private |
 | A frontend's display of committed replies (`ReplyDisplay`, `SessionExtras::human_reply_sink`) | implemented, private; the terminal's bridge and application use it |
-| Derived file operation for `write_file` and `edit_file` (`DerivedFileOperation`) | implemented, private |
-| Review of the derived operation in the approval gate, for the root agent in the shared session builder | implemented, private |
-| The same for every delegated agent, in its own lane and behind its own gate | implemented, private |
+| Derived file operation for `write_file` and `edit_file` (`ReviewedFile`, `DerivedFileOperation`), made in the agent's own event before a call is reviewed, from the plan the agent issued | implemented, private |
+| Decision on it by the approval gate's policy or a person at its prompt, for the root agent, recorded where it is taken and carried to the terminal | implemented, private |
+| The same for every delegated agent, in its own lane and at its own gate | implemented, private |
+| A parked call: the registered reader shows the operation's preview under the digest the agent carries, and the person's sealed input is checked at the file | implemented, private; nothing in the application parks a call yet |
 | The file tool's own workspace checkpoint, language diagnostics and result around a derived write | kept; the tool takes only its write from the derived operation |
 | The user's rule for file content (`CapturedUserPolicy::restorable_file_data`) | interface only; nothing implements the policy outside owned test fixtures, so no normal session can select any of this |
 | Typing a turn into a privacy conversation in the terminal, the secret and bootstrap interface, `/clear` | not implemented here; another owner's |
 | Memory files, MCP, gadget, shell, web and every other tool argument | not restored |
 | Delete, rename, batch plans | unchanged; no restoration |
-| A framework event for a planned call before its review, and a sealed decision that carries the digest a person was shown | not in this base; see "What the framework still has to supply" |
+| A sealed human input for a decision taken at an inline prompt, without a parked call | not available: such a decision is the operation's own record; see "Decisions" |
 
 ## What a person reads
 
@@ -120,47 +121,106 @@ argument, a credential, a setting, an instruction, a schema. An alias in the
 path or in any other argument refuses the operation.
 
 **The rule.** Content is restored only if the user's captured policy names a
-data format for that file (`CapturedUserPolicy::restorable_file_data`). A
-file's name or extension is not a rule. Without a rule the tool answers with
-a fixed refusal and nothing is written.
+data format for that file (`CapturedUserPolicy::restorable_file_data`). The
+policy is asked about the file the operation is bound to, as an absolute
+path the host resolved when the operation was derived: the opened file for
+an edit, the observed directory and the new name for a create. It is never
+asked about the path as the model spelled it, and it is asked again at the
+write. A file's name or extension is not a rule. Without a rule the tool
+answers with a fixed refusal and nothing is written.
 
-**Derived before review.** For the root agent the approval gate asks for the
-derived operation before it looks at the call (`FileReview::propose`, from
-`ConversationBoundary::proposed_operation`). A person, the policy and the
-permission mode then decide on the real content:
+The session that is built for the conversation keeps the user's policy. The
+file review, the boundaries and the file tools refer to it weakly, so a tool
+or a delegated agent that outlives the session keeps nothing of the policy's
+owner alive; without the policy there is no rule.
 
-- a create binds the absence of the file and shows the full new content;
-- an edit opens the file once, reads it through that handle, and shows the
+**Derived at the agent's own event.** Before the agent sends a call through
+its review, it issues a plan for that call and hands it to the
+conversation's boundary (`before_review`). For a `write_file` or `edit_file`
+that the last committed reply asked for and that names a placeholder, the
+boundary of that agent's lane derives there, once, what the call will
+really do:
+
+- a create binds the absence of the file and holds the full new content;
+- an edit opens the file once, reads it through that handle, and holds the
   real old file and the real new file. A file that changed is not edited as
   if it had not.
 
-The decision is bound to exactly what was shown, by a digest over the call
-as the model wrote it, the data format, the destination and both contents.
-The call's id alone names nothing. A decision about anything else approves
-nothing. Restoration grants no permission: plan mode, a denial and every
-existing rule apply to the derived operation as to any other call. A policy
-that already approves file changes without asking still does; nobody is
-asked again merely because the content has values.
+The result, a `ReviewedFile`, is the source the agent keeps for that review,
+and the agent carries its digest beside the plan. The digest covers the call
+as the model wrote it, the data format, the bound destination and both
+contents. Nothing else makes such an operation: not a call, an id, equal
+bytes, a digest or a label. An operation that cannot be derived holds the
+refusal, which is the tool's answer before anyone is asked.
 
 **Whether a call names a placeholder** is what the conversation recorded
 for the reply that wrote the call, never how a string looks. An alias for a
 telephone number is a number and carries no marker; it is found like any
 other. No file tool of a privacy conversation decides this by a marker.
 
+### Decisions
+
+A gate that reviews the call takes the operation from the dispatch it is
+deciding, shows the real content and decides on it. Restoration grants no
+permission: the gate's permission mode, its switches, its allow-lists and
+the effect of "always" are the existing ones and apply as to any other
+call. A policy that already approves file changes without asking still
+does; nobody is asked again merely because the content has values.
+
+Whoever decides, the decision is recorded by the operation itself, where it
+is taken, as a `FileDecision`:
+
+- **The gate's automatic policy.** The operation evaluates the gate's own
+  policy state on the arguments with the real content. An approval is
+  recorded then; a denial ends the operation; otherwise a person is asked.
+- **A person at the gate's prompt.** The operation hands the gate's prompt
+  its preview, and records the answer when the prompt returns.
+
+An approval is handed to the agent, which carries it to the call's terminal
+(`TrackedDispatch::note_decision`). Carrying it approves nothing.
+
+- **The root agent's** gate is the approval gate in the dispatch chain.
+- **A delegated agent** has the same two file tools in its own lane of the
+  same conversation, behind the gate every delegated tool has. That gate
+  decides inside the call's terminal, on the operation the delegated agent's
+  own boundary derived, and its decision is carried in the delegated lane. A
+  gate that cannot ask anyone refuses, as for any delegated write.
+- **A parked call** carries its operation and digest with it. The reader
+  registered for a person's input takes the operation's preview under the
+  digest the agent hands it and shows that; the person's sealed input then
+  carries the same digest. A reader that does not take the preview has
+  shown nothing, and its answer is not a decision on the operation. Nothing
+  in the application parks a call today.
+
+A decision at an inline prompt is the operation's own record, not a sealed
+human input: that input exists only for a parked call.
+
 **Checked again where it runs.** The file tool of a privacy conversation
-(`RestoredFileTool`) runs a call that names a placeholder only through the
-operation that was derived and approved for it. It finds the agent the call
-runs in by that agent's own boundary, requires the operation the boundary
-checked for exactly the invocation the agent issued, and then lets the
-wrapped tool run. Before the write, the operation checks that the
-conversation is live, that it was approved as shown and has not run, that
-the call running now was asked for by the same committed reply with the same
-arguments and was not changed by a person, and that the destination is what
-it was. A create is made with the host's own refusal of
-an existing file, after the directory is checked against what it was. An edit
-checks that the path still names the opened file and that the file still
-holds what was read, and writes through the same handle. This also holds for
-a call that was parked and resumed. An operation runs once.
+(`RestoredFileTool`) stands directly on the tool, behind every gate. It
+requires the invocation the agent issued for the call, the agent's own
+boundary and the operation that boundary checked for exactly that
+invocation, and then lets the wrapped tool run. Before the write, the
+operation checks that:
+
+- the conversation is live;
+- the invocation is the one that was planned, with this operation as its
+  review source and this operation's digest;
+- the call runs exactly as it was planned, was asked for by the same
+  committed reply, and no person changed it;
+- the decision the invocation carries is a decision on this operation: one
+  this operation issued itself, approving and not used before; or the sealed
+  input of a person about the parked call, approving it as it is, with this
+  digest, after the preview was taken;
+- the user's policy still names the same data format for the bound
+  destination;
+- the destination is what it was. A create is made with the host's own
+  refusal of an existing file, after the directory is checked against what
+  it was. An edit checks that the path still names the opened file and that
+  the file still holds what was read, and writes through the same handle.
+
+An operation runs once. When it is over, written or refused, it releases the
+content and the open file; what the agent keeps of it afterwards holds
+neither.
 
 **The file tool itself runs.** The wrapped tool is the ordinary one. It
 notes the file and begins its workspace checkpoint, performs the write,
@@ -173,30 +233,10 @@ always did. What the tool adds to its result after the path, such as
 diagnostics that quote the file, is host text: the record keeps it as the
 tool returned it and the model is given its view.
 
-**A delegated agent** has the same two tools, in its own lane of the same
-conversation and with the same record of placeholders. Its gate is inside
-its tools, so the order is: derive, gate, tool.
-
-- The operation is derived from the delegated agent's own committed reply
-  and checked call, before its gate is asked.
-- The gate is handed the call's arguments with the real content. Its
-  permission rules, its prompt and its activity line are the existing ones
-  and are about what will really be written. A gate that cannot ask anyone
-  refuses, as for any delegated write.
-- Directly behind the gate, `ReachedFileTool` records that the gate let the
-  call through with exactly the arguments that were shown. A gate that
-  refuses never gets there.
-- Then the ordinary file tool runs, as above.
-
-One `FileReview` serves the root agent and every delegated agent. It finds
-each agent by its own boundary, and an operation derived for one agent is
-never used for another. Holding the review, the session or its record grants
-no access to a file and approves nothing.
-
 **Refusals** are the tool's answer, before any effect, and the call stays as
 the model wrote it: no rule, an alias where it is not restored, an alias
-nobody validated, content that is not the named format, a decision that is
-not about what was shown, a destination that changed. The tool's ordinary
+nobody validated, content that is not the named format, no decision or a
+decision of another operation, a destination that changed. The tool's ordinary
 answers stay as they are: the file exists, the text to replace is not there.
 
 **The result** is the tool's own success text, with the path as the call
@@ -222,10 +262,15 @@ wrote it, and goes back to the model through its ordinary projection.
   store, as for any write. Nothing here encrypts or redacts stored data.
 - Language diagnostics were proven with a file tool of the fixtures that
   reports what a checker says; no fixture runs a real language server.
-- The approval that is bound to a derived operation is the gate's own
-  decision: the approval gate's for the root agent, the delegated agent's
-  gate letting the call through for a delegated one. It is not yet a sealed
-  witness of what a person did.
+- A decision at an inline prompt is recorded by the operation when the
+  gate's prompt returns. It is that operation's own record of what the gate
+  did, not a sealed human input, which exists only for a parked call.
+- Nothing in the application parks a call. The registered reader's part is
+  proven with a gate of the fixtures that parks, through the same function
+  the application's reader uses.
+- The policy is asked about a resolved path. Between that resolution and
+  the write a directory above the file can still be replaced by the same
+  user; the checks at the write are the ones listed above.
 - A person who replaces the arguments at an approval writes their own text;
   nothing is restored into it, what was derived from the model's call is
   over, and the person's arguments run as they are. The conversation does
@@ -238,60 +283,26 @@ wrote it, and goes back to the model through its ordinary projection.
   builder still refuses a selection together with verification, context
   and failure controls or local gadgets.
 
-## What the framework still has to supply
+## What is still to supply
 
-Two things are not in this base and are not made up here.
+The agent's event for a planned call (`before_review`,
+`ActualPlannedInvocation`), the digest it carries, the parked call's
+`shown()` and `TrackedDispatch::note_decision` are in the base now and are
+used as described above. What remains:
 
-**An event for a planned call before its review.** The agent issues its
-`ActualToolInvocation` only when a call is about to run, after every review.
-`ProposedOperation` is therefore made from the committed reply and the call,
-and the binding to the invocation happens at the tool
-(`ApprovedOperation::is_for`). What is needed:
-
-```rust
-// craftsman_harness::provenance::ModelViewBoundary
-/// Called before the dispatch chain reviews a call, with the invocation
-/// the agent will run if the review lets it through.
-fn before_review<'a>(&'a self, planned: &'a ActualPlannedInvocation)
-    -> BoxFuture<'a, Result<Option<SourceRef>, AgentError>>;
-
-// craftsman_harness::provenance_facts
-pub struct ActualPlannedInvocation { /* owner, call; made only by the agent */ }
-impl ActualPlannedInvocation {
-    pub fn owner(&self) -> &ActualAgentOwner;
-    pub fn call(&self) -> &ToolCall;
-}
-impl ActualToolInvocation {
-    /// Whether this is the invocation that was planned as `planned`.
-    pub fn was_planned_as(&self, planned: &ActualPlannedInvocation) -> bool;
-}
-```
-
-With it, `ProposedOperation` holds the planned invocation and
-`DerivedFileOperation::execute` requires
-`running.invocation.was_planned_as(..)` in place of comparing the reply and
-the call.
-
-**A sealed decision that carries what was shown.** `approve(digest)` is
-called by the gate with the decision it took. What is needed:
-
-```rust
-// the sealed human input of the conversation (privacy_entry)
-impl HumanInput {
-    /// The digest of the derived operation the person was shown when they
-    /// decided, as the registered input callback was given it.
-    pub fn shown(&self) -> Option<[u8; 32]>;
-}
-// craftsman_harness::provenance_facts::ActualToolInvocation
-/// The sealed decision this invocation runs under, for a call that was
-/// reviewed by a person. Already present for a resumed call.
-pub fn decision_source(&self) -> Option<&SourceRef>;
-```
-
-With it, `execute` requires the decision of the running invocation to carry
-this operation's digest, and `approve` goes away. For an approval a policy
-gives without asking, the gate needs the same kind of sealed record of the
-policy's decision.
+- **A sealed human input for an inline decision.** `HumanDecisionInput` is
+  made from an `ActualParkedCall`. The approval gate and a delegated agent's
+  gate ask a person without parking, so the person's decision there is the
+  operation's own `FileDecision`. To make it the same sealed input, its
+  producer needs an entry for a planned call that was not parked, for
+  example
+  `HumanDecisionProducer::receive_planned(&ActualPlannedInvocation, Option<&SourceRef>, Option<[u8; 32]>)`,
+  and the two gates need that producer.
+- **The owner of the user's policy** and its rule for file data
+  (`restorable_file_data`), which now takes the bound destination.
+- **A terminal entry for a privacy turn**, and a caller for the registered
+  reader: something that parks a call and asks through
+  `PrivacyView::request_decision`.
 
 ## Interfaces this adds
 
@@ -306,35 +317,51 @@ pub fn file_candidate(format: FileDataFormat, text: &str, restored: &[Restored])
 // privacy_session
 impl PrivacySession {
     pub fn human_reply(&self, source: &SourceRef) -> Result<HumanText, HumanRefusal>;
-    pub fn derive_file_operation(&self, policy: &dyn CapturedUserPolicy,
-        operation: &Arc<ProposedOperation>, root: &Path)
-        -> Result<DerivedFileOperation, FileRefusal>;
 }
 impl ConversationBoundary {
-    pub async fn proposed_operation(&self, call: &ToolCall)
-        -> Result<Arc<ProposedOperation>, AgentError>;
-    /// The boundary of this conversation that `conversation` is the evidence of.
+    // ModelViewBoundary::before_review and reviewed_operation_digest are implemented here.
+    pub(crate) fn review_files(self: &Arc<Self>, review: Arc<FileReview>);
     pub fn member(&self, conversation: &SourceRef) -> Option<Arc<ConversationBoundary>>;
     pub fn is_root(&self) -> bool;
     pub(crate) fn show_replies(&self, display: Arc<ReplyDisplay>);
 }
+pub struct PlannedOperation;   // made only by the boundary, from the agent's plan
+pub struct ReviewedFile;       // the review source: the derived operation or its refusal
+impl ReviewedFile {
+    pub(crate) fn of(tracked: &TrackedDispatch) -> Option<Arc<Self>>;
+    pub(crate) fn of_parked(parked: &ActualParkedCall) -> Option<Arc<Self>>;
+    pub fn derived(&self) -> Result<&DerivedFileOperation, FileRefusal>;
+    pub(crate) fn shown_arguments(&self) -> Result<Value, FileRefusal>;
+    pub(crate) fn policy_decides(self: &Arc<Self>, approval: &Mutex<ApprovalState>,
+        tracked: &TrackedDispatch) -> ToolPermission;
+    pub(crate) fn person_decides<T>(self: &Arc<Self>, tracked: &TrackedDispatch,
+        ask: impl FnOnce(FilePreview<'_>) -> (bool, T)) -> Result<T, FileRefusal>;
+    pub(crate) fn shown_to_reader<T>(&self, shown: Option<[u8; 32]>,
+        read: impl FnOnce(FilePreview<'_>) -> T) -> Result<T, FileRefusal>;
+}
+pub struct FileDecision;       // made only by the operation it is about
+pub(crate) fn call_to_show(parked: &ActualParkedCall, shown: Option<[u8; 32]>) -> Option<ToolCall>;
+impl FileReview { pub fn new(policy: &Arc<dyn CapturedUserPolicy>, root: PathBuf) -> Arc<Self>; }
 impl ApprovedOperation { pub fn is_for(&self, invocation: &ActualToolInvocation) -> bool; }
 impl CommittedModelNode { pub fn is(&self, other: &CommittedModelNode) -> bool; }
-trait CapturedUserPolicy { fn restorable_file_data(&self, workspace_sha256: &str, path: &str)
-    -> Option<FileDataFormat>; /* default: None */ }
+trait CapturedUserPolicy { fn restorable_file_data(&self, workspace_sha256: &str,
+    destination: &Path) -> Option<FileDataFormat>; /* default: None */ }
+impl PrivacyView { pub(crate) fn with_policy(self, policy: Option<Arc<dyn CapturedUserPolicy>>) -> Self; }
 
 pub enum HumanReply { Text(HumanText), Withheld(HumanRefusal) }
 pub type HumanReplySink = Arc<dyn Fn(HumanReply) + Send + Sync>;
 pub struct ReplyDisplay; // token_sink(), round_started()
-pub struct RestoredFileTool; // new(inner, review): before a gate, or directly on the tool
-pub struct ReachedFileTool;  // new(inner): directly behind a delegated agent's gate
+pub struct RestoredFileTool; // new(inner, review): directly on the file tool
 pub(crate) fn authorized_write() -> Option<Result<usize, FileRefusal>>; // for a file tool's handler
+
+// privacy_entry
+impl HumanDecisionInput { pub(crate) fn planned(&self) -> &ActualPlannedInvocation; }
 
 // agent
 pub struct SessionExtras { pub human_reply_sink: Option<HumanReplySink>, .. }
 ```
 
-`ProposedOperation` is what the last committed reply proposes with a call,
-before anything reviewed it. It approves nothing. It exists because the
-checked operation of a call is made only when the call is about to run,
-which is after the review.
+`PlannedOperation` is what the last committed reply proposes with one plan
+the agent issued, before anything reviewed it. It approves nothing and is
+distinct from `ApprovedOperation`, the operation the boundary checks when the
+call reaches its terminal.

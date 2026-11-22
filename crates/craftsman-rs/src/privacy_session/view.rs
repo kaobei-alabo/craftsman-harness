@@ -31,10 +31,10 @@
 
 use super::*;
 use craftsman_harness::provenance::{
-    ActualAgentOwner, ActualModelInput, ActualRetainedCommit, ActualStagedHostMessage,
-    ActualStagedSummary, ActualToolFact, ActualToolInvocation, FrameworkCommit, ModelViewBoundary,
-    ObservedToolResult, PartFrom, ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef,
-    TrackedModelRequest,
+    ActualAgentOwner, ActualModelInput, ActualPlannedInvocation, ActualRetainedCommit,
+    ActualStagedHostMessage, ActualStagedSummary, ActualToolFact, ActualToolInvocation,
+    BoxedBoundaryFuture, FrameworkCommit, ModelViewBoundary, ObservedToolResult, PartFrom,
+    ReachedTool, ReplyEdit, RetainedEvent, SourcePart, SourceRef, TrackedModelRequest,
 };
 use craftsman_harness::{
     AgentError, HitlAction, ModelRequest, Msg, ToolCall, ToolDef, ToolOutcome,
@@ -438,24 +438,31 @@ impl ApprovedOperation {
     }
 }
 
-/// What the last committed reply proposes with one of its calls, before
-/// anything has reviewed that call: the call exactly as the reply wrote it,
-/// the reply, and where the call's arguments name issued placeholders. It
-/// approves nothing and is not the checked operation of a running call. It
-/// exists so that what a call will really do can be derived and shown before
-/// a person or a policy decides on it.
-pub struct ProposedOperation {
+/// What the last committed reply proposes with one planned invocation,
+/// before anything has reviewed it: the plan the agent issued, the reply that
+/// asked for its call, the lane it was planned in, and where the call's
+/// arguments name issued placeholders. It is made only by the boundary of
+/// that lane, in the agent's own event before a review, from the plan the
+/// agent handed over. A call, an id, equal bytes or a label cannot make one.
+/// It approves nothing and is not the checked operation of a running call.
+pub struct PlannedOperation {
     owner: Arc<Inner>,
+    plan: ActualPlannedInvocation,
     model: CommittedModelNode,
-    call: ToolCall,
+    lane: Arc<Lane>,
     fields: Option<Vec<SourceField>>,
 }
 
-impl ProposedOperation {
-    /// The call as the committed reply wrote it.
+impl PlannedOperation {
+    /// The call as the committed reply wrote it and the agent planned it.
     pub fn call(&self) -> Result<&ToolCall, SessionStop> {
         self.owner.live()?;
-        Ok(&self.call)
+        Ok(self.plan.call())
+    }
+
+    /// The agent's own event for this proposal.
+    pub fn plan(&self) -> &ActualPlannedInvocation {
+        &self.plan
     }
 
     /// The committed reply that asked for the call.
@@ -469,11 +476,17 @@ impl ProposedOperation {
         self.owner.live()?;
         Ok(self.fields.as_deref())
     }
+
+    /// Whether this was planned in the lane of `boundary`: the same lane
+    /// object, not an equal one.
+    pub(super) fn in_lane_of(&self, boundary: &ConversationBoundary) -> bool {
+        Arc::ptr_eq(&self.lane, &boundary.lane)
+    }
 }
 
-impl std::fmt::Debug for ProposedOperation {
+impl std::fmt::Debug for PlannedOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ProposedOperation([private])")
+        f.write_str("PlannedOperation([private])")
     }
 }
 
@@ -1156,6 +1169,7 @@ impl PrivacySession {
             lanes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             family: Arc::default(),
             replies: std::sync::OnceLock::new(),
+            files: Arc::default(),
         });
         boundary.join_family();
         Ok(boundary)
@@ -1206,6 +1220,9 @@ pub struct ConversationBoundary {
     family: Arc<std::sync::Mutex<Vec<std::sync::Weak<ConversationBoundary>>>>,
     /// The frontend's display of this agent's replies, if it has one.
     replies: std::sync::OnceLock<Arc<super::ReplyDisplay>>,
+    /// The file review of the conversation, shared by every boundary of
+    /// it. Absent until the host that builds the session sets it.
+    files: Arc<std::sync::OnceLock<Arc<super::FileReview>>>,
 }
 
 impl ConversationBoundary {
@@ -1336,26 +1353,58 @@ impl ConversationBoundary {
         !matches!(fields, Some(fields) if fields.is_empty())
     }
 
-    /// What the last committed reply proposes with `call`, for a review that
-    /// has to know what the call will really do before it decides. Refused
-    /// when that reply did not ask for exactly this call.
-    pub async fn proposed_operation(
+    /// Reviews the file writes and edits of this conversation from now on:
+    /// for the agent of this boundary and for every agent it delegates to.
+    /// Set once, by the host that builds the session.
+    pub(crate) fn review_files(self: &Arc<Self>, review: Arc<super::FileReview>) {
+        review.attach(self);
+        let _ = self.files.set(review);
+    }
+
+    /// What the last committed reply proposes with the invocation the agent
+    /// planned, or `None` when that reply did not ask for exactly its call.
+    async fn planned_operation(
         &self,
-        call: &ToolCall,
-    ) -> Result<Arc<ProposedOperation>, AgentError> {
+        planned: &ActualPlannedInvocation,
+    ) -> Result<Option<Arc<PlannedOperation>>, AgentError> {
+        self.require_agent(planned.owner())?;
         let inner = &self.session.inner;
         inner.live().map_err(fault)?;
-        let model = self
-            .asked_for(call)
-            .ok_or_else(|| fault(SessionStop::Unbound))?;
+        let call = planned.call();
+        let Some(model) = self.asked_for(call) else {
+            return Ok(None);
+        };
         let fields = inner.argument_fields(&call.name, &call.args).await;
         inner.live().map_err(fault)?;
-        Ok(Arc::new(ProposedOperation {
+        Ok(Some(Arc::new(PlannedOperation {
             owner: inner.clone(),
+            plan: planned.clone(),
             model,
-            call: call.clone(),
+            lane: self.lane.clone(),
             fields,
-        }))
+        })))
+    }
+
+    /// The agent is about to send `planned` through its review. For a file
+    /// write or edit that names a placeholder, what the call will really do
+    /// is derived here, once, and returned as the source the review, the
+    /// decision and the file tool all refer to. `None` for every other call.
+    async fn review_planned(
+        &self,
+        planned: &ActualPlannedInvocation,
+    ) -> Result<Option<SourceRef>, AgentError> {
+        let Some(files) = self.files.get() else {
+            return Ok(None);
+        };
+        if !matches!(planned.call().name.as_str(), "write_file" | "edit_file") {
+            return Ok(None);
+        }
+        let Some(operation) = self.planned_operation(planned).await? else {
+            return Ok(None);
+        };
+        Ok(files
+            .review(&self.session, operation)
+            .map(|reviewed| SourceRef::new(reviewed)))
     }
 
     /// The last committed reply, if it asked for exactly this call.
@@ -1749,6 +1798,7 @@ impl ModelViewBoundary for ConversationBoundary {
             agent: std::sync::Mutex::new(None),
             family: self.family.clone(),
             replies: std::sync::OnceLock::new(),
+            files: self.files.clone(),
         });
         boundary.join_family();
         Ok(boundary)
@@ -2051,6 +2101,27 @@ impl ModelViewBoundary for ConversationBoundary {
             event,
             commit: commit.clone(),
         })))
+    }
+
+    fn before_review<'a, 'b, 'f>(
+        &'a self,
+        planned: &'b ActualPlannedInvocation,
+    ) -> BoxedBoundaryFuture<'f, Option<SourceRef>>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        Box::pin(self.review_planned(planned))
+    }
+
+    fn reviewed_operation_digest(
+        &self,
+        planned: &ActualPlannedInvocation,
+        source: &SourceRef,
+    ) -> Result<Option<[u8; 32]>, AgentError> {
+        self.session.check().map_err(fault)?;
+        Ok(super::file_view::reviewed_digest(planned, source))
     }
 
     async fn before_dispatch(&self, call: &ToolCall, approved: bool) -> Result<(), AgentError> {

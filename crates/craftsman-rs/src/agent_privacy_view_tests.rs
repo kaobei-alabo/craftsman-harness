@@ -163,6 +163,7 @@ async fn privacy_view_builder_fixture() {
     delegation(&directory, &vault, &activity).await;
     restoration(&directory, &vault, &activity).await;
     delegated_restoration(&directory, &vault, &activity).await;
+    automatic_policy(&directory, &vault, &activity).await;
     terminal_display(&directory, &vault).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
@@ -1139,8 +1140,10 @@ impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
     fn restorable_file_data(
         &self,
         _: &str,
-        _: &str,
+        destination: &std::path::Path,
     ) -> Option<crate::privacy_restore::FileDataFormat> {
+        // The rule is asked about a resolved destination, never a spelling.
+        assert!(destination.is_absolute());
         Some(crate::privacy_restore::FileDataFormat::PlainText)
     }
 }
@@ -1442,6 +1445,110 @@ async fn delegated_restoration(
         crate::privacy_session::FileRefusal::NoRule.to_string()
     );
     assert_eq!(shown.lock().unwrap().len(), 2);
+}
+
+/// The gates' automatic policy in a built session. A person approves the
+/// first write with "always", which is the gate's existing switch. After
+/// that the policy allows file changes: the root agent's next write and a
+/// delegated agent's write are decided by that policy on their real content,
+/// nobody is asked again, and the files hold the value.
+async fn automatic_policy(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let typed = format!("Who handles {EMAIL}?");
+    let files = [
+        "always-first.txt",
+        "always-second.txt",
+        "always-delegated.txt",
+    ]
+    .map(|name| directory.join(name));
+    let server = MockServer::start().await;
+    let writes = |path: std::path::PathBuf| {
+        FromInput(Box::new(move |placeholder| {
+            reply(
+                "chat",
+                0,
+                Some((
+                    "call-write",
+                    "write_file",
+                    &json!({"file_path": path, "content": format!("Contact {placeholder} today.")}),
+                )),
+                "",
+            )
+        }))
+    };
+    let answers = || answer("chat", &["fixture answer"]);
+    let post = || Mock::given(method("POST"));
+    mount_once(&server, 1, post().respond_with(writes(files[0].clone()))).await;
+    mount_once(&server, 2, post().respond_with(answers())).await;
+    mount_once(&server, 3, post().respond_with(writes(files[1].clone()))).await;
+    mount_once(&server, 4, post().respond_with(answers())).await;
+    mount_once(
+        &server,
+        5,
+        post().respond_with(AsksForATask { background: false }),
+    )
+    .await;
+    mount_once(
+        &server,
+        6,
+        post().respond_with(WritesItsInput(files[2].clone())),
+    )
+    .await;
+    mount_once(&server, 7, post().respond_with(answer("chat", &["Noted."]))).await;
+    mount_once(&server, 8, post().respond_with(answers())).await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let selection =
+        PrivacyViewSelection::from_user_policy(Arc::new(PlainTextFiles), owner.clone()).unwrap();
+    let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let asked = shown.clone();
+    let prompt: ApprovalPrompt = Arc::new(move |_, _, details| {
+        asked.lock().unwrap().push(details.to_owned());
+        ApprovalPromptResult::ApproveAlways
+    });
+    let session = build(&cfg, directory, None, None, activity, |extras| {
+        extras.privacy_view = Some(selection);
+        extras.approval_prompt = Some(prompt);
+    })
+    .await
+    .expect("a session with a file rule is built");
+    let view = session.privacy_view.as_ref().unwrap();
+    for input in [typed.as_str(), "And again?", "And with a helper?"] {
+        let TurnResult::Done(_) = view.turn(&session.agent, input).await.unwrap() else {
+            panic!("the turn finishes");
+        };
+    }
+    // The person was asked once, about the real content of the first file.
+    let details = shown.lock().unwrap().clone();
+    assert_eq!(details.len(), 1);
+    assert!(details[0].contains(&format!("Contact {EMAIL} today.")));
+    // All three files hold the value: the first by the person's decision,
+    // the other two by the policy's.
+    let content = format!("Contact {EMAIL} today.");
+    assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), content);
+    assert_eq!(std::fs::read_to_string(&files[1]).unwrap(), content);
+    assert_eq!(
+        std::fs::read_to_string(&files[2]).unwrap(),
+        format!("Work on this: Who handles {EMAIL}?")
+    );
+    // The root agent's two writes each carried a decision to their terminal.
+    let terminals = session.agent.actual_terminal_outcomes().unwrap();
+    let decided: Vec<bool> = terminals
+        .iter()
+        .filter(|outcome| outcome.invocation().call().name == "write_file")
+        .map(|outcome| outcome.invocation().decision_source().is_some())
+        .collect();
+    assert_eq!(decided, [true, true]);
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 8);
+    for body in &requests {
+        assert!(!body.contains(EMAIL));
+    }
+    assert!(owner.check().is_ok());
+    session.lsp.shutdown().await;
 }
 
 /// A streamed reply whose placeholder arrives in two pieces, between text
