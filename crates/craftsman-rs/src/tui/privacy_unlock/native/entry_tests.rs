@@ -46,6 +46,24 @@ fn actual_alias(request: &Request) -> String {
 
 struct ConversationReplies(AtomicUsize);
 struct SafeReplies(AtomicUsize);
+struct ClearReplies(AtomicUsize);
+impl Respond for ClearReplies {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let alias = actual_alias(request);
+        let index = self.0.fetch_add(1, Ordering::SeqCst);
+        let content = if index == 0 {
+            format!("Clear-ready reply for {alias}.")
+        } else {
+            format!("Fresh reply for {alias}.")
+        };
+        let event = serde_json::json!({"choices":[{"delta":{"content":content},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":2}});
+        ResponseTemplate::new(200).set_body_raw(
+            format!("data: {event}\n\ndata: [DONE]\n\n"),
+            "text/event-stream",
+        )
+    }
+}
 impl Respond for SafeReplies {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let alias = actual_alias(request);
@@ -222,6 +240,73 @@ pub(super) async fn run_child() {
 pub(super) async fn run_safe_child() {
     run_entry_child("delivered note").await;
 }
+pub(super) async fn run_clear_child(cancelled: bool) {
+    let root = crate::config::config_dir();
+    let workspace = std::env::current_dir().unwrap();
+    let before = modes(0);
+    let user = std::fs::read(root.join("config.json")).unwrap();
+    let key = std::fs::read(root.join("privacy-key.v1")).unwrap();
+    let cfg: crate::config::Config = serde_json::from_slice(&user).unwrap();
+    let bootstrap = PrivateBootstrap::capture_actual(&workspace).unwrap();
+    let terminal = OwnedSecretTerminal::enter().unwrap();
+    let result = terminal
+        .run_private(
+            bootstrap,
+            cfg,
+            Arc::new(Mutex::new(crate::hitl::ApprovalState::default())),
+        )
+        .await;
+    if cancelled {
+        assert!(matches!(
+            result,
+            Err(crate::tui::privacy_unlock::PrivateTerminalError::Source(
+                BootstrapError::Key(KeyError::Cancelled)
+            ))
+        ));
+    } else {
+        assert_eq!(result.unwrap(), 0);
+    }
+    let restored = modes(0);
+    assert_modes(&before, &restored);
+    assert_eq!(std::fs::read(root.join("config.json")).unwrap(), user);
+    assert_eq!(std::fs::read(root.join("privacy-key.v1")).unwrap(), key);
+    assert!(!workspace.join("answer.txt").exists());
+    assert!(root.join("threads.db").is_file());
+    let checkpoint = crate::checkpoints::LibsqlCheckpointer::open_for_workspace(&workspace)
+        .await
+        .unwrap();
+    let threads = checkpoint.list_threads().await.unwrap();
+    assert_eq!(threads.len(), if cancelled { 1 } else { 2 });
+    if !cancelled {
+        assert_ne!(threads[0].id, threads[1].id);
+    }
+    let mut actual_inputs = Vec::new();
+    for thread in &threads {
+        let (_, state, _) = checkpoint.load_latest(&thread.id).await.unwrap().unwrap();
+        assert_absent(&serde_json::to_vec(&state).unwrap());
+        actual_inputs.push(
+            state
+                .messages
+                .iter()
+                .filter_map(|message| match message {
+                    Msg::User { content }
+                        if content.as_str() == TYPED || content.as_str() == FOLLOW =>
+                    {
+                        Some(content.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert!(actual_inputs.contains(&vec![TYPED.to_owned()]));
+    if !cancelled {
+        assert!(actual_inputs.contains(&vec![FOLLOW.to_owned()]));
+    }
+    absent_secrets(&root);
+    eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
+    eprintln!("{COMPLETE}");
+}
 async fn run_entry_child(expected_file: &str) {
     // Called only AFTER the parent's exact registered argv decision. It reads
     // the genuine owned user file; no merged Config.extra mints the policy.
@@ -289,6 +374,50 @@ async fn run_entry_child(expected_file: &str) {
     absent_secrets(&root);
     eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
     eprintln!("{COMPLETE}");
+}
+
+#[test]
+fn actual_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ClearReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        let mut pty = Pty::start(&home, Case::ClearEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Clear-ready reply for alice@example.invalid.")
+            .await;
+        pty.send(b"/clear\r").await;
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{FOLLOW}\r").as_bytes()).await;
+        pty.expect("Fresh reply for alice@example.invalid.").await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+            key
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert_absent(&request.body);
+            let body = std::str::from_utf8(&request.body).unwrap();
+            assert!(!body.contains("alice@example.invalid"));
+        }
+    }));
 }
 
 #[test]
