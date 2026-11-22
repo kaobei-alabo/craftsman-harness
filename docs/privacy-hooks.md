@@ -12,6 +12,9 @@ and builds a separate masked model view. This is no at-rest history or complete
 privacy claim. Full expected-set Agent construction, producer/native/HITL/
 display/file adapters, activation and native validation remain pending;
 reopen/transfer are explicitly unsupported.
+The local key/UI A+B340 test binary has a retained macOS unwind encoding
+warning. Source reductions keep the original limits and ownership behavior;
+that warning remains a validation blocker, not evidence for another union.
 
 Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under

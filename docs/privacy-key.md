@@ -78,6 +78,10 @@ time, with no reset/queue. A process-wide private gate allows only one started
 KDF. Started blocking KDF/IO cannot be interrupted; dropping a waiter closes
 future admission and the worker retains its owned data through return. The
 manager retains pending join handles, including if cleanup waiting is dropped.
+The admission mutex now ends in a lexical scope at the same point before the
+waiter is created and its receiver is awaited. This permits Send erasure of
+the new owned fixture futures without changing checks, attempts or KDF work,
+and starts no extra secret worker.
 `close_and_wait` waits for actual handles; it makes no absolute time, rollback,
 OS quiescence or billing promise. Returned unlocked vault/key owners are closed
 separately on their explicit close or Drop. No lifecycle/concurrency probe is

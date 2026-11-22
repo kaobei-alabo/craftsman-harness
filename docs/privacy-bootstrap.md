@@ -130,10 +130,18 @@ also exercises the captured-policy full-builder refusal. Unmarked/unknown/
 duplicate helper startup returns before environment/config/stdin. Restricted
 private MAIN callback/budget/interleaving probes remain uninspected/unexecuted.
 
-Only the new fixture runtime wrappers and private KDF wait are type-erased to
-avoid duplicating generic runtime code in the large native test binary. This
-changes no existing test, compiler flag, dependency, warning setting or bound.
-First fixture/interface/format failures and linker warnings are retained.
+The new fixture runtime wrappers and reader tasks use erased types to avoid
+duplicating generic runtime code in the large native test binary. The private
+key admission lock now ends in a lexical scope at the same point before its
+waiter and receiver await. Its checks, three-attempt ceiling, owned handles,
+KDF and file work stay identical. The modal still runs on its owning thread;
+the erased future's Send bound starts no extra task. No existing assertion,
+deadline, compiler flag, dependency, warning setting or bound changes.
+First fixture/interface/format failures, the failed Send attempt and compiler
+incremental error, and linker warnings are retained. The local A+B340 gadget
+test binary still exceeds the unchanged 16 MiB unwind encoding threshold,
+which blocks warning acceptance. It is not evidence of the later core50e
+union's size or a portable native performance bound.
 
 This key/B union has no hosted or Linux/Windows validation. The independently
 validated installed guard main a903 and its separate main run cover that

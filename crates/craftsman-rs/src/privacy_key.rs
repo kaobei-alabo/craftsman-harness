@@ -215,34 +215,35 @@ impl KeyManager {
     async fn perform(&self, passphrase: Passphrase, operation: Operation) -> Result<UnlockedVault> {
         let runtime = Handle::try_current().map_err(|_| KeyError::Worker)?;
         let (sender, receiver) = oneshot::channel();
-        let mut state = self.state.lock().map_err(|_| KeyError::Closed)?;
-        if state.closed {
-            return Err(KeyError::Closed);
+        {
+            let mut state = self.state.lock().map_err(|_| KeyError::Closed)?;
+            if state.closed {
+                return Err(KeyError::Closed);
+            }
+            if state.active || state.handles.iter().any(|handle| !handle.is_finished()) {
+                return Err(KeyError::Busy);
+            }
+            if state.attempts >= 3 {
+                state.closed = true;
+                return Err(KeyError::Attempts);
+            }
+            state.attempts += 1;
+            state.active = true;
+            let shared = self.state.clone();
+            let root = self.root.clone();
+            let handle = tokio::task::spawn_blocking(move || {
+                let _activity = Activity(shared.clone());
+                let result = execute(root, &shared, passphrase, operation, runtime);
+                let result = if check_open(&shared).is_ok() {
+                    result
+                } else {
+                    drop(result);
+                    Err(KeyError::Closed)
+                };
+                let _ = sender.send(result);
+            });
+            state.handles.push(handle);
         }
-        if state.active || state.handles.iter().any(|handle| !handle.is_finished()) {
-            return Err(KeyError::Busy);
-        }
-        if state.attempts >= 3 {
-            state.closed = true;
-            return Err(KeyError::Attempts);
-        }
-        state.attempts += 1;
-        state.active = true;
-        let shared = self.state.clone();
-        let root = self.root.clone();
-        let handle = tokio::task::spawn_blocking(move || {
-            let _activity = Activity(shared.clone());
-            let result = execute(root, &shared, passphrase, operation, runtime);
-            let result = if check_open(&shared).is_ok() {
-                result
-            } else {
-                drop(result);
-                Err(KeyError::Closed)
-            };
-            let _ = sender.send(result);
-        });
-        state.handles.push(handle);
-        drop(state);
         let mut waiter = Waiter {
             state: self.state.clone(),
             accepted: false,

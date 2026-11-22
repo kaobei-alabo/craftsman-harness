@@ -357,7 +357,7 @@ impl PrivateConversation {
         // Erasing its concrete type avoids duplicating its runtime/drop graph
         // in this caller; it changes no decision, ordering or cancellation.
         let build: std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<crate::agent::Session>> + '_>,
+            Box<dyn std::future::Future<Output = Option<crate::agent::Session>> + Send + '_>,
         > = Box::pin(crate::agent::build_session_ext(
             cfg, approval, "", false, false, None, extras,
         ));

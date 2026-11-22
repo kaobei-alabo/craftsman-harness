@@ -28,7 +28,7 @@ const CAPTURE: usize = 1024 * 1024;
 // One runtime/block_on implementation for new fixture futures. Type erasure
 // avoids duplicating its generic runtime scaffolding in the app test binary;
 // it changes no existing test, deadline, compiler option or limit.
-fn run_owned(future: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {
+fn run_owned(future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>) {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -300,7 +300,7 @@ async fn ordinary_builder_without_password(workspace: &Path) {
     }))
     .unwrap();
     let build: std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<crate::agent::Session>> + '_>,
+        Box<dyn std::future::Future<Output = Option<crate::agent::Session>> + Send + '_>,
     > = Box::pin(build_session_ext(
         &cfg,
         Arc::new(Mutex::new(crate::hitl::ApprovalState::default())),

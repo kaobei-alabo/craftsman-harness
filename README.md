@@ -45,6 +45,8 @@ Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrap
 vault key and existing-only unlock backend. An unselected
 [owned password popup and private bootstrap](docs/privacy-bootstrap.md) compose
 those owners with a pinned detector and fresh conversation; normal activation remains unavailable.
+The local key/UI union still has a retained macOS test-binary unwind warning;
+warning and native integration gates remain open.
 A private [detector contract and admission core](docs/privacy-admission.md)
 and a private way to compose model requests from
 [views of sources](docs/privacy-provenance.md), for all four model wires, are

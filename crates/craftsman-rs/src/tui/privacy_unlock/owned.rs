@@ -280,7 +280,7 @@ impl UnixPopup {
     async fn work(
         &mut self,
         mut operation: std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<UnlockedVault>> + '_>,
+            Box<dyn std::future::Future<Output = Result<UnlockedVault>> + Send + '_>,
         >,
     ) -> Result<UnlockedVault> {
         self.terminal
