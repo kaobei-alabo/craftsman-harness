@@ -26,7 +26,7 @@ It is local, unmerged and not installed.
 | Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
 | Mixed text from memory, todos, context, tasks and compaction | not implemented |
 | Display and file restoration | not implemented |
-| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. This work does not consume it yet: `PrivacyViewSelection` is a placeholder made by host code, not policy or key authority |
+| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
 
 ## Detector contract
@@ -223,8 +223,10 @@ boundary.operation_in_flight()                    -> Option<Arc<ApprovedOperatio
 operation.call() / .model() / .edited_by_human() / .fields()
 committed_model.message() / .fields()
 field.place() / .range() / .with_record(|scope, records, index| ...)
-PrivacyViewSelection::for_conversation(session)   // SessionExtras.privacy_view
-    .requiring_inspectable_provider_items()       // optional; refuses native wires
+trait CapturedUserPolicy { enables_privacy_in(workspace_sha256); requires_inspectable_provider_items() }
+PrivacyViewSelection::from_user_policy(policy, session)   -> Result<Self, BuildRefusal>   // SessionExtras.privacy_view
+selection.report().refusal()                      -> Option<BuildRefusal>   // why the builder refused
+session.workspace_sha256()
 view.turn(&agent, typed) / view.steer(&agent, typed) / view.decide(&agent, &shown, action, deny_default)
 
 // crate::privacy_provider

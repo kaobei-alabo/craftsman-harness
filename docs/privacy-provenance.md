@@ -55,7 +55,7 @@ not detection of everything a model writes or of opaque provider content.
 | Verification, context and failure controls, local gadgets | not implemented; a selection that asks for one is refused |
 | Reopening, transferring or rebinding a privacy conversation | refused |
 | Restoration into replies, files and tool arguments | not implemented; separate work |
-| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. This work does not consume it yet: `PrivacyViewSelection` is a placeholder made by host code, not policy or key authority |
+| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
 
 ## Framework boundary
@@ -278,15 +278,27 @@ results, system text, tool descriptions. What is checked last is the existing
 guard: the final bytes, provider items included, must not contain an original
 this conversation already holds. Encrypted reasoning, signed thinking and
 thought signatures cannot be inspected, and nothing here claims to know what
-is inside them. A selection made with
-`requiring_inspectable_provider_items` therefore refuses a native wire at
-build.
+is inside them. A user policy that requires inspectable provider items
+therefore refuses a native wire at build.
 
 ## Session builder selection
 
 The shared session builder accepts one private selection,
-`PrivacyViewSelection::for_conversation`, which only host code can make from a
-live `PrivacySession`. No frontend, configuration key or command makes one.
+`PrivacyViewSelection::from_user_policy(policy, session)`: the user's captured
+policy and the live conversation that was opened under it. The policy comes in
+through the `CapturedUserPolicy` trait, which the application's policy owner
+implements for the policy it captured from the user's own configuration before
+any project file was merged. It answers two questions: whether the policy
+enables privacy for the conversation's workspace, and whether everything a
+provider is sent must be inspectable. A flag, a label or a digest is not a
+policy. Nothing in this branch implements the trait outside tests, and no
+frontend, configuration key or command makes a selection.
+
+Making the selection is refused when the policy does not enable privacy for
+the workspace or the conversation has ended. The builder's own result has no
+room for a reason, so the selection carries a report: when the builder refuses,
+`selection.report().refusal()` gives the host a typed `BuildRefusal`, including
+the names of the parts that have no source path.
 
 The selection carries no permission to run with fewer parts than the user
 configured. Before configuration, stores or providers are touched, the builder
@@ -302,7 +314,7 @@ Then it:
 - uses the conversation's reserved thread id for the agent and the checkpoint
   store, and the conversation's own guard for every model client it makes;
 - builds the provider for the configured wire, and refuses a native wire when
-  the selection requires inspectable provider items;
+  the policy requires inspectable provider items;
 - captures the complete system text it built as one host capture, admits it
   and gives the agent no system text of its own;
 - requires a statement from every middleware it would install. If one has
@@ -311,9 +323,11 @@ Then it:
 Today the statement exists for the approval gate, the result size limit and
 the protected call repair. Todos, memory, compaction and system reminders are
 installed in every ordinary session and have none. **So no privacy session can
-be built outside tests yet.** Test fixtures alone use a second constructor,
-compiled only into test builds, that leaves those parts out and names them in
-one line. It is not a user policy and gives no production path.
+be built outside tests yet**: a selection made from a real policy is refused
+with the list of those parts. Test fixtures alone use a fixture policy and a
+second constructor, both compiled only into test builds, that leave those
+parts out and name them in one line. Neither is a user policy and neither
+gives a production path.
 
 The session keeps the view. `Session::set_thread_id` on such a session closes
 the privacy owner and changes nothing else; reopening and transfer are refused

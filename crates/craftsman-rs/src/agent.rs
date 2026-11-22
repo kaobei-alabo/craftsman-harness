@@ -1539,15 +1539,27 @@ async fn build_session_with_capture_profile(
             let gadgets_requested = extras.local_gadgets || extras.script_capture.is_some();
             #[cfg(not(feature = "gadgets"))]
             let gadgets_requested = false;
-            if construction.prepared().is_some()
+            use crate::privacy_session::BuildRefusal;
+            let refusal = if selection.session().check().is_err() {
+                Some(BuildRefusal::Ended)
+            } else if !selection.policy_holds() {
+                Some(BuildRefusal::PolicyDisabled)
+            } else if construction.prepared().is_some()
                 || thread_id.is_some()
                 || send_guard.is_some()
-                || extras.verification
+            {
+                Some(BuildRefusal::NotFresh)
+            } else if extras.verification
                 || extras.context_compilation
                 || extras.failure_controls
                 || gadgets_requested
-                || selection.session().check().is_err()
             {
+                Some(BuildRefusal::RequestedPart)
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                selection.report().refuse(refusal);
                 if let Some(sink) = &extras.activity_sink {
                     sink("The private conversation view is not available for this session.");
                 }
@@ -1878,7 +1890,15 @@ async fn build_session_with_capture_profile(
                 .privacy_view
                 .as_ref()
                 .is_some_and(|selection| selection.requires_inspectable_items());
-            let built: Result<Arc<dyn ModelProvider>, &str> = if client.native.is_none() {
+            use crate::privacy_session::BuildRefusal;
+            let unavailable = (
+                BuildRefusal::Provider,
+                "The model connection of this session has no private view.",
+            );
+            let built: Result<Arc<dyn ModelProvider>, (BuildRefusal, &str)> = if client
+                .native
+                .is_none()
+            {
                 crate::privacy_provider::ViewChatProvider::new(
                     client,
                     session,
@@ -1892,11 +1912,12 @@ async fn build_session_with_capture_profile(
                             .with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
                     ) as Arc<dyn ModelProvider>
                 })
-                .map_err(|_| "The model connection of this session has no private view.")
+                .map_err(|_| unavailable.clone())
             } else if inspectable {
-                Err(
+                Err((
+                    BuildRefusal::OpaqueProviderItems,
                     "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected.",
-                )
+                ))
             } else {
                 crate::privacy_provider::ViewNativeProvider::new(
                     client,
@@ -1909,11 +1930,14 @@ async fn build_session_with_capture_profile(
                     Arc::new(provider.with_round_sink(extras.round_sink.clone()))
                         as Arc<dyn ModelProvider>
                 })
-                .map_err(|_| "The model connection of this session has no private view.")
+                .map_err(|_| unavailable.clone())
             };
             match built {
                 Ok(provider) => provider,
-                Err(line) => {
+                Err((refusal, line)) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection.report().refuse(refusal);
+                    }
                     if let Some(sink) = &extras.activity_sink {
                         sink(line);
                     }
@@ -2021,6 +2045,11 @@ async fn build_session_with_capture_profile(
                 Err(_) => None,
             };
             let Some(boundary) = boundary else {
+                if let Some(selection) = &extras.privacy_view {
+                    selection
+                        .report()
+                        .refuse(crate::privacy_session::BuildRefusal::SystemText);
+                }
                 if let Some(sink) = &extras.activity_sink {
                     sink("The system text of this session has no private view.");
                 }
@@ -2682,6 +2711,13 @@ async fn build_session_with_capture_profile(
                     });
                 }
                 if !leave_out {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection.report().refuse(
+                            crate::privacy_session::BuildRefusal::MissingSourcePaths(
+                                names.iter().map(|name| (*name).to_owned()).collect(),
+                            ),
+                        );
+                    }
                     return None;
                 }
             }
