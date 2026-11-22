@@ -537,8 +537,9 @@ fn actual_private_terminal_question_review_and_save_refusal_without_restoration_
         pty.expect("Delivered for alice@example.invalid.").await;
         pty.send(b"\x1b[Z").await;
         pty.expect("Settings cannot be saved").await;
-        pty.send(b"/clear\r").await;
-        pty.expect("In-place private clear").await;
+        pty.send(b"/reopen\r").await;
+        pty.expect("This command has no reviewed private entry adapter")
+            .await;
         pty.send(format!("{FOLLOW}\r").as_bytes()).await;
         pty.expect("Follow-up acknowledged for alice@example.invalid.")
             .await;
@@ -588,8 +589,9 @@ fn actual_private_entry_owns_human_review_question_file_and_checkpoint_without_p
         pty.expect("Delivered for alice@example.invalid.").await;
         pty.send(b"\x1b[Z").await;
         pty.expect("Settings cannot be saved").await;
-        pty.send(b"/clear\r").await;
-        pty.expect("In-place private clear").await;
+        pty.send(b"/reopen\r").await;
+        pty.expect("This command has no reviewed private entry adapter")
+            .await;
         pty.send(format!("{FOLLOW}\r").as_bytes()).await;
         pty.expect("Follow-up acknowledged for alice@example.invalid.")
             .await;
