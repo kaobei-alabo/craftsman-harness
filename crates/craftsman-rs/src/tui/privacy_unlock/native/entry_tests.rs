@@ -24,12 +24,16 @@ impl Respond for ConversationReplies {
             .unwrap()["content"]
             .as_str()
             .unwrap();
-        let alias = regex::Regex::new(r"pv1-[a-z0-9]+@privacy\.invalid")
-            .unwrap()
-            .find(user)
-            .expect("the actual model request carries its issued email alias")
-            .as_str()
-            .to_owned();
+        // Borrow the exact issued alias from the actual request. This is a
+        // model echo, not a host reconstruction/normalization of a raw alias.
+        let end = user
+            .find("@privacy.invalid")
+            .expect("actual issued email alias")
+            + "@privacy.invalid".len();
+        let start = user[..end]
+            .rfind("pv1-")
+            .expect("actual issued email alias prefix");
+        let alias = user[start..end].to_owned();
         let index = self.0.fetch_add(1, Ordering::SeqCst);
         let delta = match index {
             0 => tool(
