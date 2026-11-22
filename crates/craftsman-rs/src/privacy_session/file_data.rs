@@ -18,6 +18,83 @@ pub enum SupportedDataApplication {
     ContactJsonV1,
 }
 
+/// Actual target of one source-bound planned operation, before private
+/// values are read, restored or compared. It has no caller constructor.
+#[derive(Clone)]
+pub struct FileTargetRequest(Arc<TargetRequest>);
+pub(super) struct TargetRequest {
+    pub(super) owner: Arc<Inner>,
+    pub(super) operation: Arc<PlannedOperation>,
+    pub(super) workspace: String,
+    pub(super) destination: PathBuf,
+    pub(super) change: FileChange,
+}
+
+/// Refusal-only target eligibility from the selected actual policy. It
+/// grants no preview, restored image, effect or tool permission. All whole
+/// image/range and retained-effect records remain separately mandatory.
+pub struct FileTargetPrecheck {
+    request: Weak<TargetRequest>,
+    application: SupportedDataApplication,
+}
+
+impl FileTargetRequest {
+    pub(super) fn issued(request: TargetRequest) -> Self {
+        Self(Arc::new(request))
+    }
+    pub fn require_session(&self, session: &super::PrivacySession) -> Result<(), FileRefusal> {
+        if !Arc::ptr_eq(&self.0.owner, &session.inner) {
+            return Err(FileRefusal::Stopped(super::SessionStop::Unbound));
+        }
+        session.check().map_err(FileRefusal::Stopped)
+    }
+    pub fn workspace_sha256(&self) -> &str {
+        &self.0.workspace
+    }
+    pub fn destination(&self) -> &Path {
+        &self.0.destination
+    }
+    pub fn operation(&self) -> FileChange {
+        self.0.change
+    }
+    pub fn planned(&self) -> &craftsman_harness::provenance::ActualPlannedInvocation {
+        self.0.operation.plan()
+    }
+    /// Compiled refusal checks only. The actual captured provider must first
+    /// validate its source, declared target/application/operation and native
+    /// role, and return this record to its selecting consumer. This is not a
+    /// supported data image or a write grant.
+    pub fn check_application(
+        &self,
+        application: SupportedDataApplication,
+    ) -> Result<FileTargetPrecheck, FileRefusal> {
+        self.0.owner.live().map_err(FileRefusal::Stopped)?;
+        if forbidden_destination(&self.0.destination) {
+            return Err(FileRefusal::Unsupported);
+        }
+        Ok(FileTargetPrecheck {
+            request: Arc::downgrade(&self.0),
+            application,
+        })
+    }
+}
+impl FileTargetPrecheck {
+    pub(super) fn matches(&self, request: &FileTargetRequest) -> bool {
+        self.request
+            .upgrade()
+            .is_some_and(|actual| Arc::ptr_eq(&actual, &request.0))
+    }
+    pub(super) fn application(&self) -> SupportedDataApplication {
+        self.application
+    }
+    pub(super) fn format(&self) -> FileDataFormat {
+        match self.application {
+            SupportedDataApplication::ContactLinesV1 => FileDataFormat::PlainText,
+            SupportedDataApplication::ContactJsonV1 => FileDataFormat::JsonDocument,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FileDataRequest(Arc<DataRequest>);
 pub(super) struct DataRequest {
@@ -322,8 +399,6 @@ fn permitted_values(
                 let line_value = line.strip_suffix('\n').unwrap_or(line);
                 let prefix = [
                     "Contact ",
-                    "Work on this: Note that ",
-                    "Work on this: Who handles ",
                     "Call ",
                     "call ",
                     "to ",
@@ -384,6 +459,8 @@ macro_rules! opaque_debug { ($($name:ident),+) => {$(impl std::fmt::Debug for $n
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(concat!(stringify!($name), "([source-bound private])")) }
 })+}; }
 opaque_debug!(
+    FileTargetRequest,
+    FileTargetPrecheck,
     FileDataRequest,
     SupportedFileData,
     FileEffectRequest,

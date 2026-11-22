@@ -16,6 +16,27 @@ struct Rule(
 );
 
 impl CapturedUserPolicy for Rule {
+    fn precheck_file_target(
+        &self,
+        request: &crate::privacy_session::FileTargetRequest,
+    ) -> Option<crate::privacy_session::FileTargetPrecheck> {
+        use crate::privacy_session::SupportedDataApplication;
+        let parent = request.destination().parent()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let held = self.2.metadata().ok()?;
+            let named = std::fs::metadata(parent).ok()?;
+            if held.dev() != named.dev() || held.ino() != named.ino() {
+                return None;
+            }
+        }
+        let application = match self.0? {
+            FileDataFormat::PlainText => SupportedDataApplication::ContactLinesV1,
+            FileDataFormat::JsonDocument => SupportedDataApplication::ContactJsonV1,
+        };
+        request.check_application(application).ok()
+    }
     fn retained_file_effect(
         &self,
         request: &crate::privacy_session::FileEffectRequest,

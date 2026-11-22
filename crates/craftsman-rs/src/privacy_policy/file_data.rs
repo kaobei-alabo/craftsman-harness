@@ -4,8 +4,8 @@ use super::{PolicyError, Result};
 use crate::privacy_key::ConfigRoot;
 use crate::privacy_restore::FileDataFormat;
 use crate::privacy_session::{
-    FileChange, FileDataRequest, FileEffectRequest, RetainedFileEffect, SupportedDataApplication,
-    SupportedFileData,
+    FileChange, FileDataRequest, FileEffectRequest, FileTargetPrecheck, FileTargetRequest,
+    RetainedFileEffect, SupportedDataApplication, SupportedFileData,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
@@ -254,6 +254,25 @@ pub(super) fn validate_rules(raw: Vec<RawFileRule>) -> Result<Vec<CapturedFileRu
 }
 
 impl CapturedFileRule {
+    pub(super) fn precheck(
+        &self,
+        workspace: &Path,
+        request: &FileTargetRequest,
+    ) -> Option<FileTargetPrecheck> {
+        if workspace != self.workspace
+            || request.destination() != self.destination
+            || self.recheck().is_err()
+            || !self.native_data_role(request.operation())
+        {
+            return None;
+        }
+        let precheck = request.check_application(self.application?).ok()?;
+        self.recheck().ok()?;
+        if !self.native_data_role(request.operation()) {
+            return None;
+        }
+        Some(precheck)
+    }
     fn native_data_role(&self, change: FileChange) -> bool {
         #[cfg(unix)]
         {

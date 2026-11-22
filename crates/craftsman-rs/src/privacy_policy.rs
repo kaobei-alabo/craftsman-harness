@@ -68,6 +68,15 @@ impl DetectorPolicy {
             .iter()
             .find_map(|rule| rule.format_for(workspace, destination))
     }
+    fn precheck_data_target(
+        &self,
+        workspace: &std::path::Path,
+        request: &crate::privacy_session::FileTargetRequest,
+    ) -> Option<crate::privacy_session::FileTargetPrecheck> {
+        self.file_rules
+            .iter()
+            .find_map(|rule| rule.precheck(workspace, request))
+    }
     fn supported_data(
         &self,
         workspace: &std::path::Path,
@@ -195,6 +204,22 @@ impl CapturedPolicy {
                 .any(|rule| rule.names(destination) && rule.reaches_root(&self.root)),
             _ => false,
         }
+    }
+    pub(crate) fn precheck_data_target(
+        &self,
+        workspace: &std::path::Path,
+        request: &crate::privacy_session::FileTargetRequest,
+    ) -> Option<crate::privacy_session::FileTargetPrecheck> {
+        self.recheck().ok()?;
+        if !self.permits_data_destination(request.destination()) {
+            return None;
+        }
+        let precheck = self
+            .proposed_detector()
+            .ok()??
+            .precheck_data_target(workspace, request)?;
+        self.recheck().ok()?;
+        Some(precheck)
     }
     pub(crate) fn supported_data(
         &self,

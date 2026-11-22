@@ -38,7 +38,10 @@
 //! other. Copied content cannot be taken back, so every check that matters
 //! for the write happens before the write. Delete and rename are untouched.
 
-use super::file_data::{DataRequest, FileDataRequest, FileEffectRequest, SupportedDataApplication};
+use super::file_data::{
+    DataRequest, FileDataRequest, FileEffectRequest, FileTargetRequest, SupportedDataApplication,
+    TargetRequest,
+};
 use super::view::{
     ApprovedOperation, ConversationBoundary, FieldPlace, PlannedOperation, SourceField,
 };
@@ -426,24 +429,31 @@ impl PrivacySession {
         // its session has none, and so no rule.
         let policy_owner = policy.upgrade().ok_or(FileRefusal::NoRule)?;
         let workspace = self.workspace_sha256().to_owned();
-        // The data format is the user's rule for the file this operation is
-        // bound to, as the host resolved it. It is never a guess from a
-        // name, and never asked about the model's spelling of the path.
-        let proposed_format = |bound: &Path, text: &str| {
-            // The old fixture hook supplies only error classification in
-            // tests. Production never consults it. Complete actual bytes
-            // select a candidate decoder; only the selected source-bound
-            // typed provider's validation of both images authorizes it.
+        // Source-bound target eligibility precedes private data reads and
+        // selector restoration/comparison. It refuses only; whole images,
+        // ranges, retained effects and tool permission remain mandatory.
+        // The same compiled application selects the decoder in every build.
+        let precheck_target = |bound: &Path, change| {
+            let request = FileTargetRequest::issued(TargetRequest {
+                owner: self.inner.clone(),
+                operation: operation.clone(),
+                workspace: workspace.clone(),
+                destination: bound.to_owned(),
+                change,
+            });
+            let precheck = policy_owner
+                .precheck_file_target(&request)
+                .filter(|precheck| precheck.matches(&request))
+                .ok_or(FileRefusal::NoRule)?;
+            let format = precheck.format();
             #[cfg(test)]
-            if let Some(format) = policy_owner.restorable_file_data(&workspace, bound) {
-                return format;
+            if let Some(legacy) = policy_owner.restorable_file_data(&workspace, bound) {
+                if legacy != format {
+                    return Err(FileRefusal::NoRule);
+                }
             }
-            let _ = bound;
-            if serde_json::from_str::<serde_json::Value>(text).is_ok() {
-                FileDataFormat::JsonDocument
-            } else {
-                FileDataFormat::PlainText
-            }
+            self.inner.live().map_err(FileRefusal::Stopped)?;
+            Ok((format, precheck.application()))
         };
         let path = match Path::new(path_text).is_absolute() {
             true => PathBuf::from(path_text),
@@ -456,10 +466,17 @@ impl PrivacySession {
                 members.insert(name.to_owned(), serde_json::Value::String(text.to_owned()));
             }
         };
-        let (change, destination, bound, format, old, new, selectors, replacements) = match call
-            .name
-            .as_str()
-        {
+        let (
+            change,
+            destination,
+            bound,
+            format,
+            selected_application,
+            old,
+            new,
+            selectors,
+            replacements,
+        ) = match call.name.as_str() {
             "write_file" => {
                 // A create binds the absence of the file, as the tool does.
                 match std::fs::symlink_metadata(&path) {
@@ -494,7 +511,7 @@ impl PrivacySession {
                     return Err(FileRefusal::Stale);
                 }
                 let bound = resolved.join(name);
-                let format = proposed_format(&bound, argument(&call.args, "content")?);
+                let (format, application) = precheck_target(&bound, FileChange::Create)?;
                 let new =
                     restored_field(format, true, argument(&call.args, "content")?, &by_field[0])?;
                 shown("content", &new.value);
@@ -505,6 +522,7 @@ impl PrivacySession {
                     },
                     bound,
                     format,
+                    application,
                     None,
                     new.value,
                     Vec::new(),
@@ -527,7 +545,7 @@ impl PrivacySession {
                     .open(&path)
                     .map_err(unreadable)?;
                 let opened = file.metadata().map_err(unreadable)?;
-                if identity(&opened) != identity(&named) || opened.len() > MAX_FILE as u64 {
+                if identity(&opened) != identity(&named) {
                     return Err(FileRefusal::Stale);
                 }
                 // The destination: the opened file as the host resolves its
@@ -537,9 +555,18 @@ impl PrivacySession {
                 if !again.is_file() || identity(&again) != identity(&opened) {
                     return Err(FileRefusal::Stale);
                 }
+                let (format, application) = precheck_target(&bound, FileChange::Update)?;
+                if opened.len() > MAX_FILE as u64 {
+                    return Err(FileRefusal::Stale);
+                }
                 let mut text = Zeroizing::new(String::new());
-                file.read_to_string(&mut text).map_err(unreadable)?;
-                let format = proposed_format(&bound, &text);
+                (&mut file)
+                    .take(MAX_FILE as u64 + 1)
+                    .read_to_string(&mut text)
+                    .map_err(unreadable)?;
+                if text.len() > MAX_FILE {
+                    return Err(FileRefusal::Stale);
+                }
                 let old_string = restored_field(
                     format,
                     false,
@@ -595,6 +622,7 @@ impl PrivacySession {
                     },
                     bound,
                     format,
+                    application,
                     Some(text),
                     new,
                     selectors,
@@ -617,7 +645,9 @@ impl PrivacySession {
         });
         let supported = policy_owner
             .supported_file_data(&data_request)
-            .filter(|supported| supported.matches(&data_request))
+            .filter(|supported| {
+                supported.matches(&data_request) && supported.application() == selected_application
+            })
             .ok_or(FileRefusal::NoRule)?;
         let application = supported.application();
 
@@ -947,6 +977,29 @@ impl ReviewedFile {
         }
     }
 
+    /// End only this dispatch's actual still-derived review when a gate
+    /// refuses before the producer receives it. A foreign, ended or spent
+    /// operation keeps its own state and owners.
+    pub(crate) fn refused_before_receive(self: &Arc<Self>, tracked: &TrackedDispatch) {
+        let Some(plan) = tracked.planned() else {
+            return;
+        };
+        if !plan.in_review()
+            || !plan.same_plan(self.operation.plan())
+            || !Self::of(tracked).is_some_and(|actual| Arc::ptr_eq(&actual, self))
+        {
+            return;
+        }
+        if let Ok(derived) = &self.outcome {
+            let mut state = derived.state.lock().unwrap();
+            if *state != State::Derived {
+                return;
+            }
+            *state = State::Refused;
+            derived.held.lock().unwrap().take();
+        }
+    }
+
     /// The decision comes from an independently registered actual inline
     /// input/policy producer, or the sealed
     /// input of a person who was asked about the parked call, was shown this
@@ -1025,7 +1078,9 @@ impl ReviewedFile {
             Ok(_) => State::Done,
             Err(_) => State::Refused,
         });
-        self.owner.live().map_err(FileRefusal::Stopped)?;
+        // Completed IO keeps its actual return even if closure follows it.
+        // Pre-effect liveness was checked by write; later stop is reported
+        // separately through the real tool/fact/end/save path.
         result
     }
 }

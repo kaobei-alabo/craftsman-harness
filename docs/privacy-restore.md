@@ -132,7 +132,11 @@ value.
 argument, a credential, a setting, an instruction, a schema. An alias in the
 path or in any other argument refuses the operation.
 
-**The rule.** Content is restored only when the actual captured-user policy
+**The rule.** A source-bound refusal-only target precheck from the actual
+selected user policy must precede reading/restoring/comparing private data.
+An undeclared target gives uniform `NoRule` before private selectors can expose
+not-found/count/size/JSON distinctions. It grants no image, effect or tool
+permission. Content is restored only when the actual captured-user policy
 returns a supported-data record for the real full-image request, and a retained
 effect record for the final effect. The request binds the planned source,
 resolved destination, operation and every changed range. The policy validates

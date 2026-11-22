@@ -1196,6 +1196,24 @@ impl PlainTextFiles {
 }
 
 impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
+    fn precheck_file_target(
+        &self,
+        request: &crate::privacy_session::FileTargetRequest,
+    ) -> Option<crate::privacy_session::FileTargetPrecheck> {
+        let parent = request.destination().parent()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let held = self.0.metadata().ok()?;
+            let named = std::fs::metadata(parent).ok()?;
+            if held.dev() != named.dev() || held.ino() != named.ino() {
+                return None;
+            }
+        }
+        request
+            .check_application(crate::privacy_session::SupportedDataApplication::ContactLinesV1)
+            .ok()
+    }
     fn retained_file_effect(
         &self,
         request: &crate::privacy_session::FileEffectRequest,
@@ -1435,7 +1453,14 @@ impl wiremock::Respond for WritesItsInput {
             Some((
                 "call-note",
                 "write_file",
-                &json!({"file_path": self.0, "content": content_at(request, 1)}),
+                &json!({"file_path": self.0, "content": {
+                    let input = content_at(request, 1);
+                    if let Some(data) = input.strip_prefix("Work on this: Note that ") {
+                        format!("Contact {data}")
+                    } else if let Some(data) = input.strip_prefix("Work on this: Who handles ") {
+                        format!("Contact {data}")
+                    } else { input }
+                }}),
             )),
             "",
         )
@@ -1546,7 +1571,7 @@ async fn delegated_restoration(
     // The file tool's workspace checkpoint knows the write and takes it
     // back.
     let (note, told, undone) = run("delegated-note.txt", true).await;
-    let written = format!("Work on this: Note that {EMAIL} answers {PHONE}.");
+    let written = format!("Contact {EMAIL} answers {PHONE}.");
     assert_eq!(undone, Some(written.clone()));
     assert!(!note.exists());
     assert_eq!(told, format!("Updated file {}", note.display()));
@@ -1664,7 +1689,7 @@ async fn automatic_policy(
     assert_eq!(std::fs::read_to_string(&files[1]).unwrap(), content);
     assert_eq!(
         std::fs::read_to_string(&files[2]).unwrap(),
-        format!("Work on this: Who handles {EMAIL}?")
+        format!("Contact {EMAIL}?")
     );
     // The root agent's two writes each carried a decision to their terminal.
     let terminals = session.agent.actual_terminal_outcomes().unwrap();

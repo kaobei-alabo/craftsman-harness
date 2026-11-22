@@ -464,6 +464,22 @@ impl PrivateConversation {
 }
 
 impl CapturedUserPolicy for PrivateConversation {
+    fn precheck_file_target(
+        &self,
+        request: &crate::privacy_session::FileTargetRequest,
+    ) -> Option<crate::privacy_session::FileTargetPrecheck> {
+        self.check_sources().ok()?;
+        request.require_session(&self.session).ok()?;
+        request.planned().check_live().ok()?;
+        if request.workspace_sha256() != self.session.workspace_sha256() {
+            return None;
+        }
+        let precheck = self
+            .policy
+            .precheck_data_target(&self.workspace.canonical, request)?;
+        self.check_sources().ok()?;
+        Some(precheck)
+    }
     fn enables_privacy_in(&self, workspace_sha256: &str) -> bool {
         workspace_sha256 == self.session.workspace_sha256()
             && self.check_sources().is_ok()

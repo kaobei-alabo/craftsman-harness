@@ -251,12 +251,18 @@ impl SubagentGate {
                     .permission(&name, permission_args)
                     == ToolPermission::Prompt
                 {
+                    if let Some((reviewed, _)) = &reviewed {
+                        reviewed.refused_before_receive(tracked);
+                    }
                     return Ok(ToolOutcome::err(format!(
                         "'{name}' requires user approval, but this delegated run has no interactive approval channel. Do this step directly or use an explicit permission mode."
                     )));
                 }
             }
             let Some(producer) = &self.inline_source else {
+                if let Some((reviewed, _)) = &reviewed {
+                    reviewed.refused_before_receive(tracked);
+                }
                 return Ok(ToolOutcome::err(
                     "This selected delegated call has no registered input/policy producer.",
                 ));

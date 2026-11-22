@@ -45,8 +45,8 @@ pub(crate) mod wire_fixtures;
 
 pub(crate) use control::{SelectedControls, SelectedVerification};
 pub use file_data::{
-    FileDataRequest, FileEffectRequest, RetainedFileEffect, SupportedDataApplication,
-    SupportedFileData,
+    FileDataRequest, FileEffectRequest, FileTargetPrecheck, FileTargetRequest, RetainedFileEffect,
+    SupportedDataApplication, SupportedFileData,
 };
 pub(crate) use file_view::authorized_write;
 #[cfg(test)]
@@ -208,6 +208,11 @@ impl FreshConversationBinding {
 /// its owned terminal entry is unselected by normal routes. Data-file format
 /// proposals remain inert until the supported-field/effect guard exists.
 pub trait CapturedUserPolicy: Send + Sync {
+    /// Refusal-only actual target eligibility, before any private selector
+    /// restoration/comparison. No image, effect or tool permission is granted.
+    fn precheck_file_target(&self, _request: &FileTargetRequest) -> Option<FileTargetPrecheck> {
+        None
+    }
     /// Actual supported whole-object/schema/application/field validator record.
     /// A format/path proposal alone remains inert; absence is refusal.
     fn supported_file_data(&self, _request: &FileDataRequest) -> Option<SupportedFileData> {

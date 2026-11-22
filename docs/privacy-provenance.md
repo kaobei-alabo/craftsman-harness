@@ -1037,14 +1037,20 @@ The consumer now retains every actual selector and replacement range, including
 all nonoverlapping `replace_all` matches. The private bounded JSON index checks
 the complete before/after documents, duplicate decoded keys, value paths and
 whole escape/scalar boundaries. `ContactJsonV1` permits only root `owner` and
-`note` string values. `ContactLinesV1` permits fixed contact-note field prefixes,
-including the retained fixture's fixed task wrapper; those prefixes do not
-establish resource/application authority. The actual captured-user provider
+`note` string values. `ContactLinesV1` permits fixed contact-note data-field
+prefixes and refuses imperative task wrappers; no prefix establishes
+resource/application authority. The actual captured-user provider
 must still exclude configuration, credentials, schemas, instructions, skills,
 source and every unsupported application regardless of filename or extension.
-Production no longer consults the old format-only policy hook; the hook remains
-test-only compatibility/error classification. Complete actual bytes choose a
-candidate decoder, and the typed policy must validate its full images.
+Before private data is read, restored or compared, the actual selected provider
+must return a refusal-only `FileTargetPrecheck` for the source-bound
+`FileTargetRequest`. It rechecks its actual user source, workspace, declared
+target/application/operations and native role. Absence yields uniform `NoRule`
+before a private selector can influence not-found/count/size/JSON errors. This
+precheck grants no preview, image, effect or tool permission; complete image,
+schema/range, current-policy and retained-effect records remain mandatory.
+The same compiled application selects the representation in production and
+tests. The legacy format fixture can check agreement but cannot override it.
 
 On Unix, creates use exclusive/no-follow `openat` under the actual policy's
 retained directory. Updates use the original held file, with its exact content
@@ -1052,6 +1058,15 @@ rechecked and a final regular/single-link/effective-user/non-executable metadata
 observation whose identity must equal no-follow `fstatat` of the name in that
 directory. Non-Unix effects refuse at this slice. No external-writer CAS,
 rollback, secure deletion or Windows native acceptance is claimed.
+
+An early absent-delegated-channel refusal ends only that dispatch's actual
+still-derived review; foreign, ended and spent operations keep their own state.
+Actual completed file IO retains its successful original return when closure
+follows completion. Liveness checks precede effects; later stop is handled
+separately by the real tool/fact/end/save path, with no replay or fabricated
+result. Restricted private MAIN/budget/UI-close/close-between-retry scenarios
+remain unexecuted and uninspected; direct file/policy and ordinary approved
+effect checks provide the allowed scope.
 
 Ordinary main/delegated activity receives model arguments; the decoded preview
 belongs only to the registered opaque private UI request. Production parked
