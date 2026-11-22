@@ -1269,7 +1269,7 @@ pub async fn run(
     let bridge = UiBridge { tx: ui_tx };
     let (voice_event_tx, mut voice_event_rx) = mpsc::unbounded_channel();
     let voice_ui_tx = bridge.tx.clone();
-    tokio::spawn(async move {
+    crate::util::spawn_unit(async move {
         while let Some(event) = voice_event_rx.recv().await {
             if voice_ui_tx.send(UiEvent::Voice(event)).is_err() {
                 break;
