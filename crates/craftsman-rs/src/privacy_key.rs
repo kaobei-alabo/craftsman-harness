@@ -321,15 +321,15 @@ fn execute(
     check_open(state)?;
     let key = UnlockedKey::new(bytes, root.clone(), lease);
     let location = root.vault_location()?;
-    let opened = match operation {
-        Operation::Initialize => {
-            runtime.block_on(Vault::create_new(location, &key, Limits::default()))
-        }
-        Operation::Unlock => {
-            runtime.block_on(Vault::open_existing(location, &key, Limits::default()))
-        }
-    }
-    .map_err(|_| KeyError::Vault)?;
+    // Both existing-only/create-only futures stay lazy and owned by the same
+    // blocking worker. One erased type reaches Handle::block_on; its returned
+    // vault/error and the original mapping/check order remain unchanged.
+    let opening: Pin<Box<dyn Future<Output = crate::privacy_vault::Result<Vault>> + '_>> =
+        match operation {
+            Operation::Initialize => Box::pin(Vault::create_new(location, &key, Limits::default())),
+            Operation::Unlock => Box::pin(Vault::open_existing(location, &key, Limits::default())),
+        };
+    let opened = runtime.block_on(opening).map_err(|_| KeyError::Vault)?;
     let result = UnlockedVault { key, vault: opened };
     root.recheck()?;
     check_open(state)?;
