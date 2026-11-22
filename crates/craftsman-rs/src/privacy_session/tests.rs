@@ -16,7 +16,7 @@ impl HostKeySource for SyntheticKey {
     }
 }
 
-async fn vault(root: &tempfile::TempDir) -> Vault {
+pub(super) async fn vault(root: &tempfile::TempDir) -> Vault {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -32,7 +32,7 @@ async fn vault(root: &tempfile::TempDir) -> Vault {
     .unwrap()
 }
 
-fn rules() -> Arc<LiteralSource> {
+pub(super) fn rules() -> Arc<LiteralSource> {
     LiteralSource::new(&[(EMAIL, "email"), (PHONE, "phone")])
 }
 
@@ -46,7 +46,7 @@ async fn session(vault: &Vault, source: &Arc<LiteralSource>) -> PrivacySession {
     .unwrap()
 }
 
-fn draft(text: &str) -> CapturedRaw {
+pub(super) fn draft(text: &str) -> CapturedRaw {
     CapturedRaw::from_producer(RawOrigin::TerminalDraft, text)
 }
 

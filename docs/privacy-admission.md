@@ -23,7 +23,8 @@ It is local, unmerged and not installed.
 | Admission owner for one conversation (`privacy_session`) | implemented, private |
 | Session builder use of the reserved thread id | not implemented |
 | Producers that create raw captures at real ingress points | not implemented |
-| Model-origin nodes, mixed text, request composition | not implemented here; see provenance |
+| Conversation boundary, model-origin nodes and request composition for the Chat wire | implemented, private; see provenance |
+| Mixed text from memory, todos, context, tasks and compaction | not implemented |
 | Display and file restoration | not implemented |
 | Key envelope, unlock, user policy, activation | not implemented; separate work |
 
@@ -210,6 +211,13 @@ CapturedRaw::from_producer(origin, text)          // at the real producer only
 session.admit_raw(&raw).await                     -> Result<AdmittedNode, AdmitError>
 node.model_view() / node.admits(&raw) / node.with_records(|scope, records| ...)
 session.thread_id() / session.send_guard() / session.check() / session.stop()
+session.source(&node)                             -> Result<SourceRef, SessionStop>
+session.boundary(&system_nodes)                   -> Arc<ConversationBoundary>
+session.model_view(&tracked_request)              -> Result<ModelRequest, SessionStop>
+session.admitted(&source) / session.committed_model(&source)
+
+// crate::privacy_provider
+ViewChatProvider::new(chat_client, session, usage, sink)
 
 // crate::privacy_vault, additive
 Category::admits(value)
@@ -235,8 +243,10 @@ call was made. Runs are recorded with their own head under
 
 ## Known gaps
 
-- Nothing reaches a model, a tool, a display or a file through this core.
-- No producer creates captures yet; the constructor is called only by tests.
+- Only tests drive a conversation through this core to a model request. No
+  session is built with it, and nothing reaches a display or a file through it.
+- Besides the conversation boundary, which captures tool results and tool
+  text, no producer creates captures yet.
 - Detection is the detector's plus the narrow floor. Everything else is not
   detected.
 - Declared identifiers are not wired; admission passes none.

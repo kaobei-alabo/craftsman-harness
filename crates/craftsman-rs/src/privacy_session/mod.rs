@@ -27,6 +27,11 @@
 
 #[cfg(test)]
 mod tests;
+mod view;
+#[cfg(test)]
+mod view_tests;
+
+pub use view::{CommittedModelNode, ConversationBoundary, ReceivedModel};
 
 use crate::checkpoints::LibsqlCheckpointer;
 use crate::privacy_hook::{Detector, HookError, MAX_TEXT_BYTES, TextSpan};
@@ -93,6 +98,10 @@ pub enum SessionStop {
     /// answer, has no model view. The fact itself is not changed.
     #[error("An accepted input or result could not be given a model view.")]
     Projection(AdmitRefusal),
+    /// A part of a request has no source of this conversation, or its source
+    /// does not fit it.
+    #[error("A part of the conversation has no source that fits it.")]
+    Unbound,
 }
 
 /// A draft was refused and may be changed, or the session has stopped.

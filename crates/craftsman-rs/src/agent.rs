@@ -378,7 +378,7 @@ impl ModelProvider for StreamingLlmProvider {
 /// Framework messages → the OpenAI chat message list the SSE client speaks.
 /// The system prompt (kept separate by the framework) becomes the leading
 /// `system` message.
-fn to_llm_messages(system: &str, msgs: &[Msg]) -> Vec<LlmMessage> {
+pub(crate) fn to_llm_messages(system: &str, msgs: &[Msg]) -> Vec<LlmMessage> {
     let mut out = vec![LlmMessage::System {
         content: system.to_string(),
     }];
@@ -426,7 +426,7 @@ fn to_llm_messages(system: &str, msgs: &[Msg]) -> Vec<LlmMessage> {
 }
 
 /// Framework `ToolDef`s → OpenAI `tools` array entries.
-fn to_openai_tools(tools: &[ToolDef]) -> Vec<Value> {
+pub(crate) fn to_openai_tools(tools: &[ToolDef]) -> Vec<Value> {
     tools
         .iter()
         .map(|d| {

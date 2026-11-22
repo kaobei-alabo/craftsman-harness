@@ -44,8 +44,10 @@ not detection of everything a model writes or of opaque provider content.
 | --- | --- |
 | Raw captures, admitted nodes, conversation binding ([admission](privacy-admission.md)) | implemented, private |
 | Framework boundary for sources and views | first slice implemented, private; see below |
-| Producers that keep parts: system prompt, tools, memory, todos, context, tasks, compaction, human replies | not implemented |
-| Provider and native request composition from views, with receipts | not implemented |
+| Conversation boundary: sources for input, replies, tool results, system text and tool definitions | implemented, private; see below |
+| Chat provider that sends the view through the existing client and guard | implemented, private; see below |
+| Native wires (Responses, Claude Messages, Gemini) with receipts | not implemented; such a client is refused |
+| Producers that keep parts: memory, todos, context, tasks, compaction, human replies | not implemented |
 | Resumed, edited and denied approvals through the same checks | not implemented |
 | Session builder use of the reserved conversation | not implemented |
 | Restoration into replies and files | not implemented |
@@ -84,8 +86,54 @@ check, system text set on the agent, per-round system additions, and any
 recorded message that arrived without a source, such as a notification from
 another agent or the results appended when a turn is cancelled.
 
-No application provider implements the view path and no session selects the
-boundary. The admission core does not implement the boundary yet.
+## Conversation boundary and Chat provider
+
+The application now has the other side of that boundary for one privacy
+conversation, and one provider that uses it. Both are private: no session
+builder, frontend or configuration constructs either.
+
+**Sources.** `PrivacySession::boundary(system)` returns the boundary for the one
+agent of a conversation. A source it hands to the framework is one of three
+private objects:
+
+| Source | Minted when | Sent as |
+| --- | --- | --- |
+| Admitted node | raw text was captured and admitted: typed input, a tool result, system text, a tool description | the node's view |
+| Committed model node | this conversation's provider received a reply and the agent committed exactly that reply | the recorded reply, unchanged |
+| Tool definition | a tool's description and schema text were captured and admitted | the description's view; the schema as recorded |
+
+A committed model node is model-origin text. It is not an admitted node and
+gives no right to restore anything.
+
+**Composition.** `PrivacySession::model_view` turns a tracked request into the
+request a model may see. Each recorded text is replaced by the view of its own
+source. Roles, order, names, call ids, the model's own text and the arguments
+of its tool calls are the recorded ones. A source is used only when it is this
+session's own object and still fits the item beside it: the captured text
+equals the recorded text, a reply equals the reply that was received. Anything
+else stops the session before a request exists. That includes a source from
+another conversation, a draft in the system channel, a recorded message that
+was changed after its source was made, and a tool schema in which admission
+found a value, because a schema cannot be changed without changing what the
+tool accepts.
+
+**Tool results.** The agent commits the returned result first. The boundary
+then captures that content as raw text and admits it. If it cannot be admitted,
+the session stops; the result stays recorded exactly as returned, and nothing
+is put in its place.
+
+**Chat provider.** `ViewChatProvider` is the existing Chat client and request
+encoding. It composes the view, encodes it with the functions the ordinary
+provider uses, and sends it through a client bound to the conversation's send
+guard, so the final bytes of every attempt still pass the guard under the
+existing retry policy. It makes the receipt from the reply as received, before
+the agent reviews or commits it, and keeps the real usage. It refuses the
+ordinary `complete` call, so recorded text cannot be sent through it, and it
+refuses a client that speaks a native wire.
+
+Still missing for a real session: the session builder does not select any of
+this, and the selected agent still refuses every middleware and the other
+entries listed above.
 
 ## Limits that will remain
 
