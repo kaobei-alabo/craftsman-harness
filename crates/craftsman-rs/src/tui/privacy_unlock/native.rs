@@ -48,10 +48,17 @@ fn run_owned(future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Se
 #[derive(Clone, Copy)]
 enum Case {
     Init,
+    TailInit,
     Unlock,
+    TailUnlock,
     Cancel,
+    TailCancel,
     Mismatch,
+    TailMismatch,
+    TailInvalidUtf8,
+    TailInvalidPaste,
     Wrong,
+    TailWrong,
     PartialInit,
     MissingExisting,
     Builder,
@@ -64,10 +71,17 @@ impl Case {
     fn name(self) -> &'static str {
         match self {
             Self::Init => "init",
+            Self::TailInit => "tail-init",
             Self::Unlock => "unlock",
+            Self::TailUnlock => "tail-unlock",
             Self::Cancel => "cancel",
+            Self::TailCancel => "tail-cancel",
             Self::Mismatch => "mismatch",
+            Self::TailMismatch => "tail-mismatch",
+            Self::TailInvalidUtf8 => "tail-invalid-utf8",
+            Self::TailInvalidPaste => "tail-invalid-paste",
             Self::Wrong => "wrong",
+            Self::TailWrong => "tail-wrong",
             Self::PartialInit => "partial-init",
             Self::MissingExisting => "missing-existing",
             Self::Builder => "builder",
@@ -78,7 +92,18 @@ impl Case {
         }
     }
     fn selected(arguments: impl Iterator<Item = std::ffi::OsString>) -> Option<Self> {
+        let arguments: Vec<_> = arguments.collect();
+        if [HELPER, "--exact", "--ignored"].iter().any(|required| {
+            arguments
+                .iter()
+                .filter(|argument| argument.as_os_str() == std::ffi::OsStr::new(required))
+                .count()
+                != 1
+        }) {
+            return None;
+        }
         let markers: Vec<_> = arguments
+            .into_iter()
             .filter(|argument| argument.as_encoded_bytes().starts_with(MARKER.as_bytes()))
             .collect();
         let [argument] = markers.as_slice() else {
@@ -86,10 +111,17 @@ impl Case {
         };
         Some(match argument.to_str()?.strip_prefix(MARKER)? {
             "init" => Self::Init,
+            "tail-init" => Self::TailInit,
             "unlock" => Self::Unlock,
+            "tail-unlock" => Self::TailUnlock,
             "cancel" => Self::Cancel,
+            "tail-cancel" => Self::TailCancel,
             "mismatch" => Self::Mismatch,
+            "tail-mismatch" => Self::TailMismatch,
+            "tail-invalid-utf8" => Self::TailInvalidUtf8,
+            "tail-invalid-paste" => Self::TailInvalidPaste,
             "wrong" => Self::Wrong,
+            "tail-wrong" => Self::TailWrong,
             "partial-init" => Self::PartialInit,
             "missing-existing" => Self::MissingExisting,
             "builder" => Self::Builder,
@@ -129,7 +161,7 @@ async fn private_key_ui_child(case: Case) {
     let presence = operations.status().unwrap();
     let mut terminal = OwnedSecretTerminal::enter().unwrap();
     match case {
-        Case::Init => {
+        Case::Init | Case::TailInit => {
             assert_eq!(presence, FilePresence::Missing);
             let unlocked = terminal.initialize(&operations).await.unwrap();
             assert!(unlocked.key_source().acquire_privacy_key().is_ok());
@@ -139,7 +171,7 @@ async fn private_key_ui_child(case: Case) {
                 ENVELOPE_BYTES
             );
         }
-        Case::Unlock | Case::Builder => {
+        Case::Unlock | Case::TailUnlock | Case::Builder => {
             assert_eq!(presence, FilePresence::FilesPresent);
             let unlocked = terminal.unlock(&operations).await.unwrap();
             assert!(unlocked.key_source().acquire_privacy_key().is_ok());
@@ -151,7 +183,7 @@ async fn private_key_ui_child(case: Case) {
             }
             unlocked.close();
         }
-        Case::Cancel => {
+        Case::Cancel | Case::TailCancel => {
             assert!(matches!(
                 terminal.initialize(&operations).await,
                 Err(KeyError::Cancelled)
@@ -159,7 +191,7 @@ async fn private_key_ui_child(case: Case) {
             assert!(!config.join("privacy-key.v1").exists());
             assert!(!config.join("privacy-vault.db").exists());
         }
-        Case::Mismatch => {
+        Case::Mismatch | Case::TailMismatch | Case::TailInvalidUtf8 | Case::TailInvalidPaste => {
             assert!(matches!(
                 terminal.initialize(&operations).await,
                 Err(KeyError::Passphrase)
@@ -167,7 +199,7 @@ async fn private_key_ui_child(case: Case) {
             assert!(!config.join("privacy-key.v1").exists());
             assert!(!config.join("privacy-vault.db").exists());
         }
-        Case::Wrong => {
+        Case::Wrong | Case::TailWrong => {
             assert!(matches!(
                 terminal.unlock(&operations).await,
                 Err(KeyError::Unlock)
@@ -268,6 +300,28 @@ async fn private_key_ui_child(case: Case) {
         }
     }
     drop(terminal);
+    if matches!(
+        case,
+        Case::TailInit
+            | Case::TailUnlock
+            | Case::TailCancel
+            | Case::TailWrong
+            | Case::TailMismatch
+            | Case::TailInvalidUtf8
+            | Case::TailInvalidPaste
+    ) {
+        let mut next_reader = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&mut next_reader, 1, 0) },
+            0,
+            "no queued secret input may survive the owned popup for a next reader"
+        );
+        eprintln!("PRIVATE-KEY-TAIL-EMPTY");
+    }
     let restored = modes(0);
     assert_modes(&before, &restored);
     assert_eq!(app.input, "unrelated composer draft");
@@ -839,6 +893,73 @@ async fn initialize(home: &Home) {
     // A real backspace removes only the erroneous final scalar.
     pty.send(format!("{CONFIRMATION}x\x7f\r").as_bytes()).await;
     pty.finish().await;
+}
+
+#[test]
+fn owned_popup_errors_clear_decoder_and_queued_secret_tail() {
+    run_owned(Box::pin(async {
+        for case in [Case::TailInvalidUtf8, Case::TailInvalidPaste] {
+            let home = Home::new();
+            let mut pty = Pty::start(&home, case);
+            pty.expect("Initialize private privacy key").await;
+            let input = match case {
+                Case::TailInvalidUtf8 => {
+                    let mut input = SECRET.as_bytes().to_vec();
+                    input.push(0xff);
+                    input.extend_from_slice(format!("{SECRET}\rqueued-error-tail\r").as_bytes());
+                    input
+                }
+                _ => format!("\x1b[200~{SECRET}\n\x1b[201~{SECRET}\rqueued-error-tail\r")
+                    .into_bytes(),
+            };
+            pty.send(&input).await;
+            pty.finish().await;
+        }
+        let home = Home::new();
+        let mut pty = Pty::start(&home, Case::TailMismatch);
+        pty.expect("Initialize private privacy key").await;
+        pty.send(format!("{SECRET}\r{SECRET}\rqueued-first-tail\r").as_bytes())
+            .await;
+        pty.expect("Confirm private passphrase").await;
+        pty.send(format!("{WRONG}\r{SECRET}\rqueued-mismatch-tail\r").as_bytes())
+            .await;
+        pty.finish().await;
+    }));
+}
+
+#[test]
+fn owned_popup_discards_queued_multiline_and_typeahead_before_the_next_reader() {
+    run_owned(Box::pin(async {
+        let home = Home::new();
+        let mut pty = Pty::start(&home, Case::TailInit);
+        pty.expect("Initialize private privacy key").await;
+        pty.send(format!("{SECRET}\r{SECRET}\rqueued-tail\r").as_bytes())
+            .await;
+        pty.expect("Confirm private passphrase").await;
+        pty.send(format!("{CONFIRMATION}\r{SECRET}\rqueued-confirmation-tail\r").as_bytes())
+            .await;
+        pty.finish().await;
+        for (case, phrase) in [(Case::TailUnlock, SECRET), (Case::TailWrong, WRONG)] {
+            let mut pty = Pty::start(&home, case);
+            pty.expect("Unlock private privacy key").await;
+            pty.send(format!("{phrase}\r{SECRET}\rqueued-unlock-tail\r").as_bytes())
+                .await;
+            pty.finish().await;
+        }
+        for cancel in [b'\x03', b'\x1b'] {
+            let home = Home::new();
+            let mut pty = Pty::start(&home, Case::TailCancel);
+            pty.expect("Initialize private privacy key").await;
+            let mut input = format!("{SECRET}").into_bytes();
+            input.push(cancel);
+            // Escape must be lone; Ctrl-C can have an immediately queued tail.
+            if cancel == b'\x03' {
+                input.extend_from_slice(format!("{SECRET}\rqueued-cancel-tail\r").as_bytes());
+            }
+            pty.send(&input).await;
+            pty.finish().await;
+        }
+    }));
 }
 
 #[test]

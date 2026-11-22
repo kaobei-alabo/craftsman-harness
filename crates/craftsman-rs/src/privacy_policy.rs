@@ -7,6 +7,10 @@ use serde::{
 };
 use std::fmt;
 use zeroize::Zeroizing;
+mod file_data;
+use file_data::{CapturedFileRule, RawFileRule};
+#[cfg(test)]
+mod file_data_tests;
 
 const POLICY_BYTES: usize = 32 * 1024;
 const USER_CONFIG_BYTES: usize = crate::privacy_key::root::CONFIG_LIMIT;
@@ -29,6 +33,7 @@ pub struct DetectorPolicy {
     component: [u8; 32],
     manifest: [u8; 32],
     literals: Vec<Zeroizing<String>>,
+    file_rules: Vec<CapturedFileRule>,
 }
 impl fmt::Debug for DetectorPolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -50,6 +55,15 @@ impl DetectorPolicy {
     }
     pub fn literals(&self) -> impl Iterator<Item = &str> {
         self.literals.iter().map(|s| s.as_str())
+    }
+    pub(crate) fn file_data_format(
+        &self,
+        workspace: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> Option<crate::privacy_restore::FileDataFormat> {
+        self.file_rules
+            .iter()
+            .find_map(|rule| rule.format_for(workspace, destination))
     }
 }
 
@@ -86,11 +100,16 @@ impl CapturedPolicy {
             Some((bytes, source)) => (parse_user_source(&bytes)?, Some(source)),
             None => (Policy::Absent, None),
         };
-        let captured = Self {
+        let mut captured = Self {
             policy,
             root,
             source,
         };
+        if let Policy::Proposed(policy) = &mut captured.policy {
+            for rule in &mut policy.file_rules {
+                rule.capture()?;
+            }
+        }
         captured.recheck()?;
         Ok(captured)
     }
@@ -102,6 +121,11 @@ impl CapturedPolicy {
             self.root
                 .verify_config_absent()
                 .map_err(|_| PolicyError::Source)?;
+        }
+        if let Policy::Proposed(policy) = &self.policy {
+            for rule in &policy.file_rules {
+                rule.recheck()?;
+            }
         }
         Ok(())
     }
@@ -131,6 +155,8 @@ struct RawPolicy {
     detector: Option<RawDetector>,
     #[serde(default)]
     identifiers: Vec<String>,
+    #[serde(default)]
+    file_data: Vec<RawFileRule>,
 }
 #[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -248,10 +274,11 @@ fn parse_user_source(bytes: &[u8]) -> Result<Policy> {
                 gadget: detector.gadget,
                 function: detector.function,
                 literals: raw.identifiers.into_iter().map(Zeroizing::new).collect(),
+                file_rules: file_data::validate_rules(raw.file_data)?,
             })
         }
         None => {
-            if raw.enabled || !raw.identifiers.is_empty() {
+            if raw.enabled || !raw.identifiers.is_empty() || !raw.file_data.is_empty() {
                 return Err(PolicyError::Invalid);
             }
             None

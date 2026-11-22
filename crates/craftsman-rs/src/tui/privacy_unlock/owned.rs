@@ -77,6 +77,7 @@ impl OwnedSecretTerminal {
         crate::privacy_bootstrap::PrivateBuiltSession,
         crate::privacy_bootstrap::PrivateBuildError,
     > {
+        let _ = (&cfg, &approval);
         #[cfg(unix)]
         {
             use crate::privacy_bootstrap::{BootstrapError, PrivateBuildError};
@@ -84,8 +85,40 @@ impl OwnedSecretTerminal {
                 .check()
                 .map_err(|error| PrivateBuildError::Source(BootstrapError::Key(error)))?;
             owner.check_sources().map_err(PrivateBuildError::Source)?;
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            let bridge = crate::tui::session_bridge::UiBridge { tx };
+            // This historical private entry has no running UI receiver. It
+            // cannot manufacture a successful session with queued human data.
+            Err(PrivateBuildError::Refused(
+                crate::privacy_session::BuildRefusal::RequestedPart,
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (owner, cfg, approval);
+            Err(crate::privacy_bootstrap::PrivateBuildError::Source(
+                crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported),
+            ))
+        }
+    }
+
+    /// Only the private owned terminal entry supplies this actual bridge.
+    /// Its receiver is retained and pumped by that same application loop.
+    pub(in crate::tui) async fn request_full_session_on_bridge(
+        &mut self,
+        owner: &std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
+        cfg: &crate::config::Config,
+        approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+        bridge: &crate::tui::session_bridge::UiBridge,
+    ) -> std::result::Result<
+        crate::privacy_bootstrap::PrivateBuiltSession,
+        crate::privacy_bootstrap::PrivateBuildError,
+    > {
+        #[cfg(unix)]
+        {
+            use crate::privacy_bootstrap::{BootstrapError, PrivateBuildError};
+            self.inner
+                .check()
+                .map_err(|error| PrivateBuildError::Source(BootstrapError::Key(error)))?;
+            owner.check_sources().map_err(PrivateBuildError::Source)?;
             let mut extras = bridge.session_extras();
             extras.cancellation_session = Some(
                 self.inner
@@ -94,16 +127,11 @@ impl OwnedSecretTerminal {
                     .child()
                     .map_err(|_| PrivateBuildError::Unavailable)?,
             );
-            self.inner.ui_events = Some(rx);
-            let result = owner.request_full_session(cfg, approval, extras).await;
-            if result.is_err() {
-                self.inner.ui_events = None;
-            }
-            result
+            owner.request_full_session(cfg, approval, extras).await
         }
         #[cfg(not(unix))]
         {
-            let _ = (owner, cfg, approval);
+            let _ = (owner, cfg, approval, bridge);
             Err(crate::privacy_bootstrap::PrivateBuildError::Source(
                 crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported),
             ))
@@ -220,8 +248,12 @@ impl UnixPopup {
     }
 
     async fn prompt(&mut self, prompt: Prompt) -> Result<Passphrase> {
-        let result = self.prompt_inner(prompt).await;
-        let cleanup = self.input.finish_input();
+        // The guard outlives the borrowed inner future. Dropping a pending
+        // prompt first drops its SecretField, then clears/flushes this SAME
+        // sole-reader input even when the terminal owner itself is retained.
+        let mut scope = PopupInputScope::new(self);
+        let result = scope.popup.prompt_inner(prompt).await;
+        let cleanup = scope.finish();
         match result {
             Err(error) => Err(error),
             Ok(phrase) => cleanup.map(|()| phrase),
@@ -255,7 +287,9 @@ impl UnixPopup {
                             2,
                         );
                         frame.render_widget(
-                            Paragraph::new("Enter confirms. Escape or Ctrl-C cancels; privacy stays unavailable."),
+                            Paragraph::new(
+                                "Enter confirms. Escape or Ctrl-C cancels this key operation.",
+                            ),
                             footer,
                         );
                     })
@@ -298,9 +332,10 @@ impl UnixPopup {
             Box<dyn std::future::Future<Output = Result<UnlockedVault>> + Send + '_>,
         >,
     ) -> Result<UnlockedVault> {
-        self.input.clear_secret_buffers();
-        let result = self.work_inner(operation).await;
-        let cleanup = self.input.finish_input();
+        let mut scope = PopupInputScope::new(self);
+        scope.popup.input.clear_secret_buffers();
+        let result = scope.popup.work_inner(operation).await;
+        let cleanup = scope.finish();
         finish(result, cleanup)
     }
 
@@ -310,6 +345,9 @@ impl UnixPopup {
             Box<dyn std::future::Future<Output = Result<UnlockedVault>> + Send + '_>,
         >,
     ) -> Result<UnlockedVault> {
+        // An already cancelled/restored owner cannot start polling key work.
+        // Cancellation can still race a later poll; started work stays owned.
+        self.check()?;
         self.terminal
             .draw(|frame| {
                 frame.render_widget(
@@ -339,6 +377,38 @@ impl UnixPopup {
                     self.input.discard_during_work()?;
                 },
             }
+        }
+    }
+}
+
+#[cfg(unix)]
+struct PopupInputScope<'a> {
+    popup: &'a mut UnixPopup,
+    finished: bool,
+}
+
+#[cfg(unix)]
+impl<'a> PopupInputScope<'a> {
+    fn new(popup: &'a mut UnixPopup) -> Self {
+        Self {
+            popup,
+            finished: false,
+        }
+    }
+    fn finish(&mut self) -> Result<()> {
+        self.finished = true;
+        self.popup.input.finish_input()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PopupInputScope<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            // An abandoned future has no result to report a native flush
+            // error through. Its owned buffers still clear; native flushing
+            // is best effort here, and never claims another reader is safe.
+            let _ = self.popup.input.finish_input();
         }
     }
 }

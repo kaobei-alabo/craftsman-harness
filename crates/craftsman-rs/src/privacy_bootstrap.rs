@@ -417,6 +417,19 @@ impl CapturedUserPolicy for PrivateConversation {
         // accept opaque items from a fixture flag or a transport's name.
         true
     }
+    fn restorable_file_data(
+        &self,
+        workspace_sha256: &str,
+        destination: &Path,
+    ) -> Option<crate::privacy_restore::FileDataFormat> {
+        if workspace_sha256 != self.session.workspace_sha256() || self.check_sources().is_err() {
+            return None;
+        }
+        self.policy
+            .proposed_detector()
+            .ok()??
+            .file_data_format(&self.workspace.canonical, destination)
+    }
 }
 
 #[derive(Clone, thiserror::Error)]
@@ -459,6 +472,9 @@ impl std::fmt::Debug for PrivateBuiltSession {
     }
 }
 impl PrivateBuiltSession {
+    pub(crate) fn session_for_terminal(&self) -> &crate::agent::Session {
+        &self.session
+    }
     pub fn thread_id(&self) -> &str {
         &self.session.thread_id
     }
@@ -496,6 +512,60 @@ impl PrivateBuiltSession {
     }
     pub fn close(&self) {
         self.owner.close();
+    }
+    pub async fn steer(&self, typed: &str) -> std::result::Result<bool, PrivateTurnError> {
+        self.owner
+            .check_sources()
+            .map_err(PrivateTurnError::Source)?;
+        let view = self
+            .session
+            .privacy_view
+            .as_ref()
+            .ok_or(PrivateTurnError::Source(BootstrapError::Session(
+                SessionStop::Closed,
+            )))?;
+        let result = view
+            .steer(&self.session.agent, typed)
+            .await
+            .map_err(PrivateTurnError::Entry);
+        let checked = self.owner.check_sources().map_err(PrivateTurnError::Source);
+        match result {
+            Err(error) => Err(error),
+            Ok(accepted) => {
+                checked?;
+                Ok(accepted)
+            }
+        }
+    }
+    pub async fn request_decision(
+        &self,
+        deny_default: &str,
+    ) -> std::result::Result<Option<craftsman_harness::TurnResult>, PrivateTurnError> {
+        self.owner
+            .check_sources()
+            .map_err(PrivateTurnError::Source)?;
+        let view = self
+            .session
+            .privacy_view
+            .as_ref()
+            .ok_or(PrivateTurnError::Source(BootstrapError::Session(
+                SessionStop::Closed,
+            )))?;
+        let result = view
+            .request_decision(&self.session.agent, deny_default)
+            .await
+            .map_err(PrivateTurnError::Entry);
+        let checked = self.owner.check_sources().map_err(PrivateTurnError::Source);
+        match result {
+            Err(error) => Err(error),
+            Ok(returned) => {
+                checked?;
+                Ok(returned)
+            }
+        }
+    }
+    pub fn before_configuration_save(&self) -> Result<()> {
+        self.owner.before_configuration_save()
     }
 }
 impl Drop for PrivateBuiltSession {
