@@ -117,6 +117,7 @@ async fn privacy_view_builder_fixture() {
     let (vault, _) = open(&vault_root, "unused-thread").await;
     let activity = Arc::new(Mutex::new(Vec::new()));
     conversation(&directory, &vault, &activity).await;
+    repair(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -296,6 +297,66 @@ async fn conversation(
     let reissued = body["messages"][1]["content"].as_str().unwrap();
     assert!(!reissued.contains(EMAIL) && !reissued.contains(&issued));
     fresh.lsp.shutdown().await;
+    session.lsp.shutdown().await;
+}
+
+/// The protected call repair in a built session: a reply whose call arguments
+/// are not a JSON object is repaired as always, and the conversation keeps
+/// what was received and what the repair changed.
+async fn repair(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
+    let server = MockServer::start().await;
+    let malformed = "notes.txt{";
+    let body = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","type":"function","function":{"name":"read_file","arguments":malformed}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}});
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!("data: {body}\n\ndata: [DONE]\n\n"),
+            "text/event-stream",
+        ))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(answer("chat", &["fixture answer"]))
+        .mount(&server)
+        .await;
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    let session = build(&cfg, directory, Some(&owner), None, activity, |_| {})
+        .await
+        .unwrap();
+    let view = session.privacy_view.as_ref().unwrap();
+    let TurnResult::Done(output) = view.turn(&session.agent, "read the notes").await.unwrap()
+    else {
+        panic!("the turn finishes");
+    };
+    assert_eq!(output.final_text(), "fixture answer");
+    // The record holds the repaired call and the tool's real answer to it.
+    let repaired = json!({"_raw": malformed});
+    let messages = session.agent.state.lock().unwrap().messages.clone();
+    assert!(matches!(&messages[1], Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == repaired));
+    assert!(matches!(&messages[2], Msg::Tool { .. }));
+    // The conversation keeps the reply as received and the recorded change.
+    let sources = session.agent.recorded_sources().unwrap();
+    let reply = owner.committed_model(sources[1].as_ref().unwrap()).unwrap();
+    assert!(
+        matches!(reply.received_message().unwrap(), Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == serde_json::Value::String(malformed.into()))
+    );
+    let edits = reply.edits().unwrap();
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].by, "patch_tool_calls");
+    assert_eq!(edits[0].replaced, repaired);
+    // The tool was given the repaired call, and the next request carries it.
+    let result = owner.actual_result(sources[2].as_ref().unwrap()).unwrap();
+    assert_eq!(result.reached()[0].call.args, repaired);
+    let requests = sent(&server).await;
+    let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+    assert_eq!(
+        second["messages"][2]["tool_calls"][0]["function"]["arguments"],
+        repaired.to_string()
+    );
     session.lsp.shutdown().await;
 }
 
