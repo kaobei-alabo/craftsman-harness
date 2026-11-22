@@ -6,8 +6,10 @@ admit them to the send guard and only then publish an admitted node with a
 model view. Private builder, provider, tool and restoration candidates now use
 these primitives in owned fixtures. No normal configuration, command, frontend
 or key/policy owner selects them, and normal sessions behave exactly as before.
-The restoration candidate still needs the actual pre-review and decision
-consumers; its failed full-suite evidence is retained. Privacy remains inactive.
+The local correction has actual pre-review and registered inline decision
+consumers for main and delegated gates. Its opaque UI transport still needs A's
+real receiver/modal integration; original failed evidence is retained. Privacy
+remains inactive.
 
 This is one slice of the work described in [privacy hooks](privacy-hooks.md).
 It builds on the [private vault](privacy-vault.md) and the
@@ -322,8 +324,10 @@ caller action factory. The actual absent, denied, approved, Always or edited
 choice and raw edited bytes are retained. Every `ApproveEdited` remains human
 origin even when its JSON equals model bytes, and is admitted before effects.
 An issued alias in raw edited input refuses. An Always permission update happens
-only after the sealed decision passes its source/admission checks. Inline
-approval-gate and `ask_user` producer adapters remain separate, unfinished work.
+only after the sealed decision passes its source/admission checks. The local
+inline gate correction now registers its own policy/input owner, binds the
+actual request and preview, and retains raw answers before parsing. Real UI
+receiver and `ask_user` consumers remain separate integration work.
 
 Each post-chain terminal invocation gets its own call, decision and source
 witness, with a synchronous live check immediately before the actual tool poll.

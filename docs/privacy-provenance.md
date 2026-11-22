@@ -54,11 +54,12 @@ not detection of everything a model writes or of opaque provider content.
 | Delegated agents with `task`, notifications and inbox | private actual child/parent/retained-envelope adapters; task returns retain real partial state and facts |
 | Verification, context and failure controls | selected activation remains refused; genuine control helpers are provided for complementary adapters |
 | Sealed parked-call human decisions | private registered input producer; actual decision and raw edit retained, no caller action factory |
-| Decisions inside the approval gate; `ask_user` answers as drafts | producer adapters not implemented |
+| Decisions inside the approval gate | local registered policy/input owners and opaque request/presentation/original-decision transport; actual A UI receiver/modal consumer still pending |
+| `ask_user` answers as drafts | actual receiver consumer still pending |
 | Terminal ingress, `/clear` | not implemented |
 | Drawing replies in the terminal | implemented, private: the root boundary tells a frontend's display when the agent has retained a reply, and the terminal's bridge and application draw its human view once through the safe backend. The stream is held and never drawn; see [privacy-restore.md](privacy-restore.md) |
 | Reopening, transferring or rebinding a privacy conversation | refused |
-| Restoration into what a person reads and into the content of `write_file` and `edit_file` | implemented, private, for the root agent and for delegated agents in their own lanes. The file operation is the source the boundary returns from `before_review` for the agent's plan, its digest is what `reviewed_operation_digest` gives, and the decision a gate records on it travels by `note_decision` and is checked at the file tool; the file tool runs its own checkpoint and diagnostics around the derived write; see [privacy-restore.md](privacy-restore.md). Every other tool argument, memory files, delete and rename are not restored |
+| Restoration into what a person reads and into the content of `write_file` and `edit_file` | implemented, private, for the root agent and for delegated agents in their own lanes. The file operation is the source the boundary returns from `before_review` for the agent's plan, its digest is what `reviewed_operation_digest` gives, and the independently registered gate input/policy decision travels as a non-authoritative annotation and is validated against its actual issuer, plan, preview and final invocation at the file tool; the file tool runs its own checkpoint and diagnostics around the derived write; see [privacy-restore.md](privacy-restore.md). Every other tool argument, memory files, delete and rename are not restored |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
 
@@ -842,3 +843,24 @@ effect, observer result, cancellation and save-error precedence. Old mutators
 are not marked Preserving. Selected boundary-policy and completion/control
 activation remain refused until those adapters work; the helpers do not enable
 a frontend or waive native/source review.
+
+
+The November 23 local inline correction adds a distinct actual inner-terminal
+witness for delegated handlers, retaining both wrapper and handler results.
+Raw edits remain human-origin even when their JSON equals model bytes; issued
+aliases are refused by the original raw-admission path before effects. The
+registered UI request carries the actual private issuer, framework plan and
+lane, review source, immutable preview and shown digest. Only its original
+recorded presentation/decision can be consumed once, while the actual activity
+and source owners are live. These data objects alone prove no human action:
+A's production receiver/modal/choice callsites and bootstrap must still bind
+the real UI owner. Missing private UI support refuses a selected gated call;
+ordinary callbacks remain unchanged on unselected paths.
+
+The f4a2c85 correction retains the existing completion-refusal note with its
+actual source event, keeps the real completion-check window live, and supplies
+the source-bound idle-compaction callback before final save. The real final
+save and original refusal/error precedence remain required. The combined
+receiver/shutdown ownership, key/policy integration, C restoration activation,
+all-union full17 and independent native/hosted checks remain pending; current
+local fixture results do not approve activation, installation or publication.

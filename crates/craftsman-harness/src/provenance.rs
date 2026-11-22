@@ -387,6 +387,7 @@ impl TrackedPrepare<'_> {
 pub struct TrackedDispatch {
     pub(crate) notes: Arc<std::sync::Mutex<DispatchNotes>>,
     pub(crate) origin: Option<Arc<DispatchOrigin>>,
+    pub(crate) planned_boundary: Option<Arc<dyn ModelViewBoundary>>,
     pub(crate) planned: Option<ActualPlannedInvocation>,
     pub(crate) review_source: Option<SourceRef>,
     pub(crate) shown: Option<[u8; 32]>,
@@ -400,6 +401,9 @@ pub(crate) struct DispatchOrigin {
     pub(crate) call_id: String,
     pub(crate) invocation: ActualToolInvocation,
     pub(crate) facts: Arc<std::sync::Mutex<ActualFacts>>,
+    pub(crate) source: Option<SourceRef>,
+    pub(crate) reached: Arc<std::sync::Mutex<Vec<ActualTerminalOutcome>>>,
+    pub(crate) live: Arc<dyn Fn() -> Result<(), AgentError> + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -409,9 +413,85 @@ pub(crate) struct DispatchNotes {
     pub(crate) todos: Option<Vec<String>>,
     pub(crate) outcome: Option<Vec<OutcomePart>>,
     pub(crate) decision: Option<SourceRef>,
+    pub(crate) decision_action: Option<HitlAction>,
 }
 
 impl TrackedDispatch {
+    /// Runs an actual inner handler of the currently owned terminal. The
+    /// private event is issued here, with the actual call and parent; the
+    /// selected host validates its sources before any inner effect. Results
+    /// enter the same fact owner/dispatch inventory before projection returns.
+    /// This is no permission, public execution interface or receipt factory.
+    pub fn run_inner_tool<'a, 'ctx>(
+        &'a self,
+        tool: &'a dyn crate::Tool,
+        call: ToolCall,
+        ctx: &'a mut crate::ToolCtx<'ctx>,
+    ) -> crate::middleware::BoxedToolFuture<'a>
+    where
+        'ctx: 'a,
+    {
+        Box::pin(async move {
+            let origin = self.origin.as_ref().ok_or_else(|| {
+                AgentError::State("This inner handler has no actual owned terminal.".into())
+            })?;
+            (origin.live)()?;
+            if call.name != tool.def().name || call.name != origin.invocation.call().name {
+                return Err(AgentError::State(
+                    "This inner handler does not match its real tool.".into(),
+                ));
+            }
+            let (decision, action) = {
+                let notes = self.notes.lock().unwrap();
+                (
+                    notes
+                        .decision
+                        .clone()
+                        .or_else(|| origin.invocation.decision_source().cloned()),
+                    notes
+                        .decision_action
+                        .clone()
+                        .or_else(|| origin.invocation.decision_action().cloned()),
+                )
+            };
+            let invocation = ActualToolInvocation::inner_issued(
+                &origin.invocation,
+                origin.source.clone(),
+                call.clone(),
+                decision,
+                action,
+            );
+            let _decision = invocation.own_decision();
+            let source = match origin.boundary.before_terminal(&invocation).await {
+                Ok(source) => source,
+                Err(error) => {
+                    origin.boundary.close();
+                    return Err(error);
+                }
+            };
+            (origin.live)()?;
+            origin.boundary.terminal_live(&invocation)?;
+            let mut tracked = self.clone();
+            tracked.origin = Some(Arc::new(DispatchOrigin {
+                boundary: origin.boundary.clone(),
+                reply: origin.reply.clone(),
+                call_id: call.id.clone(),
+                invocation: invocation.clone(),
+                facts: origin.facts.clone(),
+                source: source.clone(),
+                reached: origin.reached.clone(),
+                live: origin.live.clone(),
+            }));
+            let result = tool.call_with_view(call.args.clone(), ctx, &tracked).await;
+            invocation.seal_decision();
+            let actual =
+                ActualTerminalOutcome::issued(invocation, source, ReachedTool::new(call, &result));
+            origin.facts.lock().unwrap().terminals.push(actual.clone());
+            origin.reached.lock().unwrap().push(actual);
+            result
+        })
+    }
+
     /// The real proposal whose review chain is running. It is present before
     /// a terminal exists and is not reconstructed from the call's id or bytes.
     pub fn planned(&self) -> Option<&ActualPlannedInvocation> {
@@ -427,6 +507,16 @@ impl TrackedDispatch {
     /// annotation mints no approval, human or policy authority: the selected
     /// host must validate its private producer and exact proposal/preview.
     pub fn note_decision(&self, decision: SourceRef) -> Result<(), AgentError> {
+        self.note_decision_action(decision, None)
+    }
+    /// Action data from the same host-owned actual decision. Generic erasure
+    /// and action values grant no human/source/permission authority; the host
+    /// must verify its private issuer before the actual terminal can run.
+    pub fn note_decision_action(
+        &self,
+        decision: SourceRef,
+        action: Option<HitlAction>,
+    ) -> Result<(), AgentError> {
         let mut notes = self.notes.lock().unwrap();
         if notes.decision.is_some() {
             return Err(AgentError::State(
@@ -436,9 +526,12 @@ impl TrackedDispatch {
         if let Some(origin) = &self.origin {
             // A gate inside a delegated terminal can attach its private
             // actual decision once, before calling the inner tool.
-            origin.invocation.note_decision(decision.clone())?;
+            origin
+                .invocation
+                .note_decision_action(decision.clone(), action.clone())?;
         }
         notes.decision = Some(decision);
+        notes.decision_action = action;
         Ok(())
     }
     /// Keeps a genuine child return before formatting, source or result
@@ -488,10 +581,14 @@ impl TrackedDispatch {
         }
     }
 
-    /// The boundary of the conversation the call runs in. `None` when the
-    /// agent holds no source for the reply that asked for the call.
+    /// The actual selected boundary carried by the planned dispatch, including
+    /// the pre-terminal gate phase. Its host still validates private membership;
+    /// it grants no argument, input, tool or restoration authority by itself.
     pub fn boundary(&self) -> Option<Arc<dyn ModelViewBoundary>> {
-        self.origin.as_ref().map(|origin| origin.boundary.clone())
+        self.origin
+            .as_ref()
+            .map(|origin| origin.boundary.clone())
+            .or_else(|| self.planned_boundary.clone())
     }
 
     /// `text` as the string the running call carries at `pointer` of its

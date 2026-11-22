@@ -969,13 +969,53 @@ pub(crate) fn gated_for_delegation(
     cwd: &std::path::Path,
     review: Option<&Arc<crate::privacy_session::FileReview>>,
 ) -> Vec<Arc<dyn Tool>> {
+    let tools = with_restored_files(tools, review);
     crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
-        with_restored_files(tools, review),
+        tools,
         approval,
         prompt.0.clone(),
         cwd,
         prompt.1.clone(),
     )
+}
+
+pub(crate) fn gated_for_delegation_with_privacy(
+    tools: Vec<Arc<dyn Tool>>,
+    approval: &Arc<Mutex<ApprovalState>>,
+    prompt: (
+        &Option<ApprovalPrompt>,
+        &Option<(CallApprovalPrompt, ToolActivitySink)>,
+    ),
+    cwd: &std::path::Path,
+    review: Option<&Arc<crate::privacy_session::FileReview>>,
+    boundary: Option<&Arc<crate::privacy_session::ConversationBoundary>>,
+    privacy_prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
+) -> Vec<Arc<dyn Tool>> {
+    if boundary.is_none() && privacy_prompt.is_none() {
+        return gated_for_delegation(tools, approval, prompt, cwd, review);
+    }
+    let tools = with_restored_files(tools, review);
+    let registered = boundary
+        .cloned()
+        .or_else(|| review.and_then(|review| review.boundary_for_gates()));
+    match registered {
+        Some(boundary) => crate::subagent_gate::SubagentGate::wrap_all_at_correlated_with_sources(
+            tools,
+            approval,
+            prompt.0.clone(),
+            cwd,
+            prompt.1.clone(),
+            Some(&boundary),
+            privacy_prompt,
+        ),
+        None => crate::subagent_gate::SubagentGate::wrap_all_at_correlated(
+            tools,
+            approval,
+            prompt.0.clone(),
+            cwd,
+            prompt.1.clone(),
+        ),
+    }
 }
 
 fn host_and_web_tools(
@@ -1040,6 +1080,9 @@ impl Tool for McpFrameworkTool {
 /// established terminal behavior; explicit sinks never use terminal stdout.
 #[derive(Default)]
 pub struct SessionExtras {
+    /// Actual registered private UI receiver transport; ordinary callbacks
+    /// cannot supply source-bound privacy decisions. Absent by default.
+    pub(crate) privacy_approval_prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
     /// Opaque selection consumed only with its actual TUI/ACP construction owner.
     /// No public route mints one; marked native fixtures exercise this foundation.
     #[cfg(feature = "gadgets")]
@@ -2694,12 +2737,14 @@ async fn build_session_with_capture_profile(
             tools: if construction.gate().is_some() {
                 shared_tools.clone() // Already wrapped with the SAME immutable invocation gate.
             } else {
-                gated_for_delegation(
+                gated_for_delegation_with_privacy(
                     shared_tools.clone(),
                     &approval,
                     (&extras.approval_prompt, &extras.delegated_tool_callbacks),
                     &cwd,
                     file_review.as_ref(),
+                    privacy_boundary.as_ref(),
+                    extras.privacy_approval_prompt.clone(),
                 )
             },
             model: Some(sub_provider.clone()),
@@ -2736,12 +2781,14 @@ async fn build_session_with_capture_profile(
         let tools = if construction.gate().is_some() {
             tools
         } else {
-            gated_for_delegation(
+            gated_for_delegation_with_privacy(
                 tools,
                 &approval,
                 (&extras.approval_prompt, &extras.delegated_tool_callbacks),
                 &cwd,
                 file_review.as_ref(),
+                privacy_boundary.as_ref(),
+                extras.privacy_approval_prompt.clone(),
             )
         };
         let subagent_prompt = match construction.prepared() {
@@ -2981,7 +3028,9 @@ async fn build_session_with_capture_profile(
                 cwd,
             )
             .with_call_prompt(extras.call_approval_prompt.clone())
-            .with_verification(verification.clone()),
+            .with_verification(verification.clone())
+            .with_privacy_prompt(extras.privacy_approval_prompt.clone())
+            .with_privacy_boundary(privacy_boundary.as_ref()),
         ));
     }
 

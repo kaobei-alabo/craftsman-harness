@@ -1226,6 +1226,9 @@ pub struct ConversationBoundary {
 }
 
 impl ConversationBoundary {
+    pub(crate) fn session_owner(&self) -> Arc<PrivacySession> {
+        self.session.clone()
+    }
     pub(crate) fn require_agent(&self, owner: &ActualAgentOwner) -> Result<(), AgentError> {
         self.session.check().map_err(fault)?;
         if !self
@@ -2149,7 +2152,50 @@ impl ModelViewBoundary for ConversationBoundary {
         let inner = &self.session.inner;
         inner.live().map_err(fault)?;
         let call = invocation.call();
-        let (model, edited) = if invocation.resumed() {
+        let parent_operation = match (invocation.parent(), invocation.parent_source()) {
+            (None, None) => None,
+            (Some(parent), Some(source)) => {
+                self.require_agent(parent.owner())?;
+                let operation = source
+                    .downcast::<ApprovedOperation>()
+                    .filter(|operation| {
+                        operation.is_for(parent) && Arc::ptr_eq(&operation.owner, inner)
+                    })
+                    .ok_or_else(|| fault(unbound(inner)))?;
+                Some(operation)
+            }
+            _ => return Err(fault(unbound(inner))),
+        };
+        let inline = invocation
+            .decision_source()
+            .and_then(|source| source.downcast::<crate::privacy_entry::InlineDecisionInput>());
+        let (model, edited) = if let Some(input) = inline {
+            match input.validate_terminal(&self.session, invocation) {
+                Ok(()) => (
+                    self.asked_for(invocation.planned().call())
+                        .ok_or_else(|| fault(unbound(inner)))?,
+                    input.edited(),
+                ),
+                Err(super::FileRefusal::NotApproved)
+                    if !invocation.was_planned_as(input.planned()) =>
+                {
+                    // Unaccepted annotation is no grant and changes no source.
+                    // Only the unchanged actual committed model call can keep
+                    // its origin here. The real file/permission consumer must
+                    // still reject the copied or spent decision before effects.
+                    (
+                        self.asked_for(call).ok_or_else(|| fault(unbound(inner)))?,
+                        false,
+                    )
+                }
+                Err(_) => return Err(fault(unbound(inner))),
+            }
+        } else if let Some(parent) = &parent_operation {
+            if parent.call().map_err(fault)? != call {
+                return Err(fault(unbound(inner)));
+            }
+            (parent.model.clone(), parent.edited)
+        } else if invocation.resumed() {
             let decided = self.dispatch.lock().unwrap().decided.take();
             let model = self.dispatch.lock().unwrap().model.clone();
             match (decided, model) {

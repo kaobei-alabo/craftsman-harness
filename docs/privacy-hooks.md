@@ -33,7 +33,7 @@ person's view of a committed reply, a hold on a streamed reply, and file writes
 and edits that are derived with the real content in the agent's own event
 before a call is reviewed, from the plan the agent issued. A gate's policy or
 a person at its prompt decides on that content; the decision is recorded by
-the operation where it is taken, carried to the terminal and checked again
+the independently registered input/policy producer, carried to the terminal and checked again
 where the file is written. This holds for the root agent at the approval gate
 and for each delegated agent in its own lane at its own gate; the file tool
 keeps its workspace checkpoint, diagnostics and result around the derived
@@ -42,8 +42,10 @@ and its application draws a committed reply once through the safe backend;
 see [privacy-restore.md](privacy-restore.md). The core now supplies real
 pre-review/parked/terminal events and carriage of the source-bound shown digest;
 the restoration candidate consumes the real pre-review source and digest,
-but independently registered inline human and automatic policy issuers remain
-missing; its operation-owned decision is not sufficient authority. Terminal input for a privacy turn, restoration for other
+and the local correction adds independently registered inline human and
+automatic-policy issuers. The UI returns the original opaque decision for the
+actual request/presentation; its operation-owned decision or an ordinary
+approval callback is not sufficient authority. Terminal input for a privacy turn, restoration for other
 tools, the owner of the user's policy, key handling and activation remain
 unselected or unfinished. The target diagram
 below predates that contract where it shows masked history: stored history
@@ -590,8 +592,9 @@ caller action factory. The actual absent, denied, approved, Always or edited
 choice and raw edited bytes are retained. Every `ApproveEdited` remains human
 origin even when its JSON equals model bytes, and is admitted before effects.
 An issued alias in raw edited input refuses. An Always permission update happens
-only after the sealed decision passes its source/admission checks. Inline
-approval-gate and `ask_user` producer adapters remain separate, unfinished work.
+only after the sealed decision passes its source/admission checks. The local
+inline gate correction supplies actual registered request/decision consumers;
+A's real UI receiver/modal and `ask_user` adapters remain separate work.
 
 Each post-chain terminal invocation gets its own call, decision and source
 witness, with a synchronous live check immediately before the actual tool poll.

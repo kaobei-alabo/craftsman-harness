@@ -1183,6 +1183,7 @@ impl Agent {
         hosted: Option<crate::provenance::ActualHostScheduledCall>,
     ) -> Result<(), AgentError> {
         let proposed_call = self.model_view.as_ref().map(|_| call.clone());
+        let mut _review_ownership = None;
         let decision = self.model_view.as_ref().and_then(|view| {
             if bypass_chain {
                 view.decision.lock().unwrap().take()
@@ -1212,6 +1213,16 @@ impl Agent {
                         call.clone(),
                     ),
                 };
+                let actual_view = Arc::downgrade(view);
+                let actual_input = self.turn_input.clone();
+                planned.bind_live(Arc::new(move || {
+                    let view = actual_view.upgrade().ok_or_else(|| {
+                        AgentError::State("The actual review owner has returned.".into())
+                    })?;
+                    view.live()?;
+                    model_view::invocation_turn_live(&actual_input.lock().unwrap())
+                }))?;
+                _review_ownership = Some(planned.own_review());
                 let source = view.boundary.before_review(&planned).await?;
                 model_view::invocation_turn_live(&self.turn_input.lock().unwrap())?;
                 let shown = source.as_ref().map_or(Ok(None), |source| {
@@ -1241,8 +1252,9 @@ impl Agent {
         // `merge_dispatch_result` and the two-channel note atop this module).
         let t0 = self.snapshot();
         let mut working = t0.clone();
-        let dispatch_watch = self.model_view.as_ref().map(|_| {
+        let dispatch_watch = self.model_view.as_ref().map(|view| {
             let mut watch = DispatchWatch::new(&t0);
+            watch.tracked.planned_boundary = Some(view.boundary.clone());
             if let Some((planned, source, shown)) = &planned_review {
                 watch.tracked.planned = Some(planned.clone());
                 watch.tracked.review_source = source.clone();
@@ -1304,6 +1316,8 @@ impl Agent {
                                     review.expect("selected terminal retains its planned review");
                                 let policy_decision =
                                     tracked.notes.lock().unwrap().decision.clone();
+                                let policy_action =
+                                    tracked.notes.lock().unwrap().decision_action.clone();
                                 let invocation = ActualToolInvocation::issued(
                                     &view.owner,
                                     call.clone(),
@@ -1312,7 +1326,10 @@ impl Agent {
                                         .as_ref()
                                         .map(|decision| decision.source.clone())
                                         .or(policy_decision),
-                                    decision.as_ref().map(|decision| decision.action.clone()),
+                                    decision
+                                        .as_ref()
+                                        .map(|decision| decision.action.clone())
+                                        .or(policy_action),
                                     planned,
                                     review_source,
                                     shown,
@@ -1327,14 +1344,27 @@ impl Agent {
                                     }
                                 };
                                 if let Some(reply) = reply {
-                                    tracked.origin =
-                                        Some(Arc::new(crate::provenance::DispatchOrigin {
+                                    let actual_view = Arc::downgrade(view);
+                                    let actual_input = turn_input.clone();
+                                    tracked.origin = Some(Arc::new(
+                                        crate::provenance::DispatchOrigin {
                                             boundary: view.boundary.clone(),
                                             reply,
                                             call_id: invocation.call().id.clone(),
                                             invocation: invocation.clone(),
                                             facts: view.facts.clone(),
-                                        }));
+                                            source: source.clone(),
+                                            reached: record.clone(),
+                                            live: Arc::new(move || {
+                                                let view = actual_view.upgrade().ok_or_else(||
+                                                    AgentError::State("The actual terminal owner has returned.".into()))?;
+                                                view.live()?;
+                                                model_view::invocation_turn_live(
+                                                    &actual_input.lock().unwrap(),
+                                                )
+                                            }),
+                                        },
+                                    ));
                                 }
                                 if let Err(error) = view
                                     .live()
@@ -1385,6 +1415,10 @@ impl Agent {
                 self.chain.around_tool(call, &mut ctx, &terminal).await
             }
         };
+
+        if let Some((planned, _, _)) = &planned_review {
+            planned.seal_review();
+        }
 
         // On a selected agent: every run of the tool, and whether anything
         // other than the tool changed the recorded state during the dispatch.

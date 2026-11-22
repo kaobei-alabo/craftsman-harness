@@ -165,8 +165,6 @@ pub struct DerivedFileOperation {
     digest: [u8; 32],
     held: Mutex<Option<Held>>,
     state: Mutex<State>,
-    /// The one decision this operation issued, if a gate decided on it.
-    decision: Mutex<Option<Arc<FileDecision>>>,
     /// Whether the preview was handed to whoever asks a person.
     presented: AtomicBool,
 }
@@ -496,7 +494,6 @@ impl PrivacySession {
                 new,
             })),
             state: Mutex::new(State::Derived),
-            decision: Mutex::new(None),
             presented: AtomicBool::new(false),
         })
     }
@@ -622,39 +619,39 @@ impl std::fmt::Debug for ReviewedFile {
     }
 }
 
-/// Who decided on a reviewed operation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DecidedBy {
-    /// The automatic policy of the gate the call went through.
-    Policy,
-    /// A person, asked by that gate and shown the operation.
-    Person,
-}
-
-/// One decision on a reviewed operation, recorded where it was taken: by the
-/// automatic policy of a gate when that policy was evaluated on what will
-/// really be written, or by a person when the gate's own prompt returned
-/// after showing it. It names the plan, the digest of what was shown and the
-/// choice. It is made nowhere else, it is kept by the operation it is about,
-/// and it is used once.
-///
-/// The agent carries it to the terminal of the call. Carrying it grants
-/// nothing: the file tool checks it against the operation that issued it.
-pub struct FileDecision {
-    plan: ActualPlannedInvocation,
-    shown: [u8; 32],
-    by: DecidedBy,
-    approved: bool,
-    used: AtomicBool,
-}
-
-impl std::fmt::Debug for FileDecision {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("FileDecision([actual decision])")
-    }
-}
-
 impl ReviewedFile {
+    /// Called only by the independently registered input/policy producer.
+    /// Source/digest come from this actual dispatch, never caller tuple data.
+    pub(crate) fn producer_preview(
+        self: &Arc<Self>,
+        session: &PrivacySession,
+        tracked: &TrackedDispatch,
+    ) -> Result<(ToolCall, Option<[u8; 32]>), FileRefusal> {
+        let derived = self.derived()?;
+        if !Arc::ptr_eq(&self.owner, &session.inner)
+            || !tracked
+                .planned()
+                .is_some_and(|plan| plan.same_plan(self.operation.plan()))
+            || !Self::of(tracked).is_some_and(|source| Arc::ptr_eq(&source, self))
+            || tracked.shown() != Some(derived.digest)
+        {
+            return Err(FileRefusal::NotApproved);
+        }
+        derived.preview(|preview| {
+            (
+                ToolCall {
+                    id: self.operation.plan().call().id.clone(),
+                    name: self.operation.plan().call().name.clone(),
+                    args: preview.arguments.clone(),
+                },
+                Some(preview.digest),
+            )
+        })
+    }
+    pub(crate) fn producer_presented(&self) -> Result<(), FileRefusal> {
+        self.derived()?.presented.store(true, Ordering::Release);
+        Ok(())
+    }
     /// The reviewed operation of the dispatch a gate is deciding, from the
     /// source the agent kept for that dispatch's review. `None` for every
     /// call that has none, which a gate then decides as it always does.
@@ -679,99 +676,6 @@ impl ReviewedFile {
     /// recorded call is not changed.
     pub(crate) fn shown_arguments(&self) -> Result<serde_json::Value, FileRefusal> {
         self.derived()?.preview(|preview| preview.arguments.clone())
-    }
-
-    /// The automatic policy of the gate this call goes through decides on
-    /// what will really be written. The policy is evaluated here, on the
-    /// arguments with the real content, and an approval is recorded here,
-    /// where it is taken, and handed to the agent to carry to the terminal.
-    /// A policy that neither allows nor denies asks a person next.
-    pub(crate) fn policy_decides(
-        self: &Arc<Self>,
-        approval: &Mutex<crate::hitl::ApprovalState>,
-        tracked: &TrackedDispatch,
-    ) -> crate::hitl::ToolPermission {
-        use crate::hitl::ToolPermission;
-        let refused = |refusal: FileRefusal| ToolPermission::Deny(refusal.to_string());
-        let Ok(call) = self.operation.call() else {
-            return refused(FileRefusal::NotApproved);
-        };
-        let arguments = match self.shown_arguments() {
-            Ok(arguments) => arguments,
-            Err(refusal) => return refused(refusal),
-        };
-        // Never held while anything waits: only the evaluation itself.
-        let permission = approval.lock().unwrap().permission(&call.name, &arguments);
-        match permission {
-            ToolPermission::Allow => match self.decide(tracked, DecidedBy::Policy, true) {
-                Ok(()) => ToolPermission::Allow,
-                Err(refusal) => refused(refusal),
-            },
-            ToolPermission::Deny(reason) => {
-                self.over();
-                ToolPermission::Deny(reason)
-            }
-            ToolPermission::Prompt => ToolPermission::Prompt,
-        }
-    }
-
-    /// A person decides. `ask` is the gate's own prompt: it is handed the
-    /// preview, shows it, and returns whether the person approved, with
-    /// whatever else the gate needs of the answer. The decision is recorded
-    /// when `ask` returns, and an approval is handed to the agent to carry
-    /// to the terminal. A refusal ends the operation.
-    pub(crate) fn person_decides<T>(
-        self: &Arc<Self>,
-        tracked: &TrackedDispatch,
-        ask: impl FnOnce(FilePreview<'_>) -> (bool, T),
-    ) -> Result<T, FileRefusal> {
-        let derived = self.derived()?;
-        let (approved, answer) = derived.preview(ask)?;
-        derived.presented.store(true, Ordering::Release);
-        self.decide(tracked, DecidedBy::Person, approved)?;
-        Ok(answer)
-    }
-
-    /// Records one decision. An approval is carried by the dispatch; a
-    /// refusal ends the operation. An operation is decided once.
-    fn decide(
-        self: &Arc<Self>,
-        tracked: &TrackedDispatch,
-        by: DecidedBy,
-        approved: bool,
-    ) -> Result<(), FileRefusal> {
-        let derived = self.derived()?;
-        // The dispatch that decides is the dispatch of this plan.
-        let same = tracked
-            .planned()
-            .is_some_and(|planned| planned.same_plan(self.operation.plan()))
-            && Self::of(tracked).is_some_and(|carried| Arc::ptr_eq(&carried, self));
-        if !same {
-            return Err(FileRefusal::NotApproved);
-        }
-        let decision = Arc::new(FileDecision {
-            plan: self.operation.plan().clone(),
-            shown: derived.digest,
-            by,
-            approved,
-            used: AtomicBool::new(false),
-        });
-        {
-            let mut issued = derived.decision.lock().unwrap();
-            if issued.is_some() {
-                return Err(FileRefusal::NotApproved);
-            }
-            *issued = Some(decision.clone());
-        }
-        if !approved {
-            self.over();
-            return Ok(());
-        }
-        if tracked.note_decision(SourceRef::new(decision)).is_err() {
-            self.over();
-            return Err(FileRefusal::NotApproved);
-        }
-        Ok(())
     }
 
     /// For the reader that asks a person about a parked call: the preview
@@ -805,8 +709,8 @@ impl ReviewedFile {
         }
     }
 
-    /// The decision the invocation carries is a decision on this operation:
-    /// one this operation issued itself, approving, unused; or the sealed
+    /// The decision comes from an independently registered actual inline
+    /// input/policy producer, or the sealed
     /// input of a person who was asked about the parked call, was shown this
     /// operation and approved it as it is.
     fn decided(
@@ -818,24 +722,12 @@ impl ReviewedFile {
             .decision_source()
             .ok_or(FileRefusal::NotApproved)?;
         let plan = self.operation.plan();
-        if let Some(decision) = source.downcast::<FileDecision>() {
-            let issued = derived.decision.lock().unwrap().clone();
-            let ours = issued.is_some_and(|issued| Arc::ptr_eq(&issued, &decision));
-            let shown_to_person =
-                decision.by == DecidedBy::Policy || derived.presented.load(Ordering::Acquire);
-            if !ours
-                || !decision.approved
-                || !shown_to_person
-                || !decision.plan.same_plan(plan)
-                || decision.shown != derived.digest
-                || invocation.resumed()
-            {
+        if let Some(input) = source.downcast::<crate::privacy_entry::InlineDecisionInput>() {
+            let session = input.registered_session().ok_or(FileRefusal::NotApproved)?;
+            if !Arc::ptr_eq(&session.inner, &self.owner) {
                 return Err(FileRefusal::NotApproved);
             }
-            if decision.used.swap(true, Ordering::AcqRel) {
-                return Err(FileRefusal::Spent);
-            }
-            return Ok(());
+            return input.consume_file(&session, invocation, derived.digest);
         }
         if let Some(input) = source.downcast::<crate::privacy_entry::HumanDecisionInput>() {
             let approved = invocation.resumed()
@@ -955,6 +847,9 @@ pub struct FileReview {
 }
 
 impl FileReview {
+    pub(crate) fn boundary_for_gates(&self) -> Option<Arc<ConversationBoundary>> {
+        self.conversation.get()?.upgrade()
+    }
     /// `policy` is the user's captured policy, which the caller keeps for
     /// the life of the session. `root` is the directory relative paths are
     /// resolved against, as the file tools resolve them.

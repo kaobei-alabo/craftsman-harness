@@ -83,6 +83,8 @@ struct PlannedInvocation {
     owner: ActualAgentOwner,
     call: ToolCall,
     host: Option<ActualHostScheduledCall>,
+    reviewing: Mutex<bool>,
+    live: OnceLock<Arc<dyn Fn() -> Result<(), AgentError> + Send + Sync>>,
 }
 impl ActualPlannedInvocation {
     pub(crate) fn issued(owner: &ActualAgentOwner, call: ToolCall) -> Self {
@@ -90,6 +92,8 @@ impl ActualPlannedInvocation {
             owner: owner.clone(),
             call,
             host: None,
+            reviewing: Mutex::new(true),
+            live: OnceLock::new(),
         }))
     }
     pub fn owner(&self) -> &ActualAgentOwner {
@@ -106,10 +110,49 @@ impl ActualPlannedInvocation {
             owner: scheduled.owner().clone(),
             call: scheduled.call().clone(),
             host: Some(scheduled),
+            reviewing: Mutex::new(true),
+            live: OnceLock::new(),
         }))
     }
     pub fn host_scheduled(&self) -> Option<&ActualHostScheduledCall> {
         self.0.host.as_ref()
+    }
+    /// Actual pre-review/chain liveness; data only. Private app producers
+    /// still validate their registration, source and once-only use.
+    pub fn in_review(&self) -> bool {
+        *self.0.reviewing.lock().unwrap()
+    }
+    /// Actual framework activity/cancellation owner, not a caller status or
+    /// permission. Direct data-only test events have no callable live owner.
+    pub fn check_live(&self) -> Result<(), AgentError> {
+        if !self.in_review() {
+            return Err(AgentError::State("This planned review has ended.".into()));
+        }
+        self.0
+            .live
+            .get()
+            .ok_or_else(|| AgentError::State("This review has no actual activity owner.".into()))?(
+        )
+    }
+    pub(crate) fn bind_live(
+        &self,
+        live: Arc<dyn Fn() -> Result<(), AgentError> + Send + Sync>,
+    ) -> Result<(), AgentError> {
+        self.0.live.set(live).map_err(|_| {
+            AgentError::State("This review already has its actual activity owner.".into())
+        })
+    }
+    pub(crate) fn own_review(&self) -> PlannedReviewOwnership {
+        PlannedReviewOwnership(self.clone())
+    }
+    pub(crate) fn seal_review(&self) {
+        *self.0.reviewing.lock().unwrap() = false;
+    }
+}
+pub(crate) struct PlannedReviewOwnership(ActualPlannedInvocation);
+impl Drop for PlannedReviewOwnership {
+    fn drop(&mut self) {
+        self.0.seal_review();
     }
 }
 
@@ -898,9 +941,12 @@ struct Invocation {
     decision: OnceLock<SourceRef>,
     decision_open: Mutex<bool>,
     action: Option<HitlAction>,
+    inline_action: OnceLock<HitlAction>,
     planned: ActualPlannedInvocation,
     review_source: Option<SourceRef>,
     shown: Option<[u8; 32]>,
+    parent: Option<ActualToolInvocation>,
+    parent_source: Option<SourceRef>,
 }
 
 impl ActualToolInvocation {
@@ -925,10 +971,49 @@ impl ActualToolInvocation {
             decision: held_decision,
             decision_open: Mutex::new(true),
             action,
+            inline_action: OnceLock::new(),
             planned,
             review_source,
             shown,
+            parent: None,
+            parent_source: None,
         }))
+    }
+
+    /// The real inner handler entry of an already running terminal. Neither
+    /// caller arguments nor this event supplies tool/application permission.
+    pub(crate) fn inner_issued(
+        parent: &Self,
+        parent_source: Option<SourceRef>,
+        call: ToolCall,
+        decision: Option<SourceRef>,
+        action: Option<HitlAction>,
+    ) -> Self {
+        let held_decision = OnceLock::new();
+        if let Some(decision) = decision {
+            let _ = held_decision.set(decision);
+        }
+        Self(Arc::new(Invocation {
+            owner: parent.owner().clone(),
+            call,
+            resumed: parent.resumed(),
+            decision: held_decision,
+            decision_open: Mutex::new(true),
+            action,
+            inline_action: OnceLock::new(),
+            planned: parent.planned().clone(),
+            review_source: parent.review_source().cloned(),
+            shown: parent.shown(),
+            parent: Some(parent.clone()),
+            parent_source,
+        }))
+    }
+    pub fn parent(&self) -> Option<&Self> {
+        self.0.parent.as_ref()
+    }
+    /// The host's source for that actual outer event; erasure is not authority.
+    pub fn parent_source(&self) -> Option<&SourceRef> {
+        self.0.parent_source.as_ref()
     }
 
     pub fn owner(&self) -> &ActualAgentOwner {
@@ -943,12 +1028,30 @@ impl ActualToolInvocation {
     pub fn decision_source(&self) -> Option<&SourceRef> {
         self.0.decision.get()
     }
+    #[cfg(test)]
     pub(crate) fn note_decision(&self, source: SourceRef) -> Result<(), AgentError> {
+        self.note_decision_action(source, None)
+    }
+    pub(crate) fn note_decision_action(
+        &self,
+        source: SourceRef,
+        action: Option<HitlAction>,
+    ) -> Result<(), AgentError> {
         let open = self.0.decision_open.lock().unwrap();
         if !*open {
             return Err(AgentError::State(
                 "This invocation has ended its decision entry.".into(),
             ));
+        }
+        if self.0.decision.get().is_some() {
+            return Err(AgentError::State(
+                "This invocation already has a decision source.".into(),
+            ));
+        }
+        if let Some(action) = action {
+            self.0.inline_action.set(action).map_err(|_| {
+                AgentError::State("This invocation already has an inline action.".into())
+            })?;
         }
         self.0
             .decision
@@ -962,10 +1065,16 @@ impl ActualToolInvocation {
         *self.0.decision_open.lock().unwrap() = false;
     }
     pub fn decision_action(&self) -> Option<&HitlAction> {
-        self.0.action.as_ref()
+        self.0
+            .action
+            .as_ref()
+            .or_else(|| self.0.inline_action.get())
     }
     pub fn human_edited(&self) -> bool {
-        matches!(self.0.action, Some(HitlAction::ApproveEdited { .. }))
+        matches!(
+            self.decision_action(),
+            Some(HitlAction::ApproveEdited { .. })
+        )
     }
 
     pub fn planned(&self) -> &ActualPlannedInvocation {
