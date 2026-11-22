@@ -29,7 +29,7 @@ pub enum KeyError {
     Missing,
     #[error("The private key operation requires an unchanged private user config root.")]
     Root,
-    #[error("The private key source changed during the operation.")]
+    #[error("The private key source changed or is unavailable during the operation.")]
     Changed,
     #[error("The private key operation did not complete its IO.")]
     Io,
@@ -39,7 +39,7 @@ pub enum KeyError {
     Bounds,
     #[error("The private key operation is closed.")]
     Closed,
-    #[error("The private unlock was cancelled.")]
+    #[error("The private key operation was cancelled.")]
     Cancelled,
     #[error("A private key operation is already in progress.")]
     Busy,
@@ -77,9 +77,11 @@ impl UnlockedKey {
         }
     }
     pub fn close(&self) {
-        if let Ok(mut key) = self.bytes.lock() {
-            *key = None;
-        }
+        // A poisoned lock is already refused by readers. Still clear this
+        // owner's material through its retained guard; do not leave a live key
+        // solely because an earlier owner unwound while holding the mutex.
+        let mut key = self.bytes.lock().unwrap_or_else(|error| error.into_inner());
+        *key = None;
     }
     pub fn recheck_source(&self) -> Result<()> {
         if self

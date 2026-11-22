@@ -19,9 +19,13 @@ pub enum BootstrapError {
     #[error("The private bootstrap user policy was refused.")]
     Policy(PolicyError),
     #[error(
-        "The captured user configuration changed; the private conversation has ended. Start a fresh privacy bootstrap before continuing."
+        "The captured user configuration changed or is unavailable; the private conversation has ended. Start a fresh privacy bootstrap before continuing."
     )]
     ConfigurationChanged,
+    #[error(
+        "Settings cannot be saved while this private conversation is active; its configuration is unchanged."
+    )]
+    SettingsSaveRefused,
     #[error("The private bootstrap requires a captured proposed user privacy policy.")]
     NoPolicy,
     #[error("The private bootstrap requires the source-built detector feature.")]
@@ -268,6 +272,17 @@ impl std::fmt::Debug for PrivateConversation {
         f.write_str("PrivatePrivacyConversation([private])")
     }
 }
+struct ClearBeforeBuild<'a> {
+    owner: &'a mut PrivateConversation,
+    completed: bool,
+}
+impl Drop for ClearBeforeBuild<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.owner.close();
+        }
+    }
+}
 impl PrivateConversation {
     pub fn thread_id(&self) -> &str {
         self.session.thread_id()
@@ -311,18 +326,30 @@ impl PrivateConversation {
     /// must also rebuild all lanes with that id; a void setter is insufficient.
     pub async fn clear_before_new_build(&mut self) -> Result<()> {
         self.session.stop();
-        self.check_key_and_policy()?;
-        let binding = self.workspace.reserve()?;
-        let detector = detector(&self.policy, &self.workspace)?;
-        self.session = Arc::new(
-            PrivacySession::open(self.unlocked.vault(), binding, detector)
-                .await
-                .map_err(BootstrapError::Session)?,
-        );
-        self.check_sources()
+        // The borrowed owner remains under this guard through the new scope's
+        // actual open/check. Error, panic or future abandonment closes BOTH
+        // the old/new scope and key; only completed pre-build clear keeps it.
+        let mut clear = ClearBeforeBuild {
+            owner: self,
+            completed: false,
+        };
+        let result = async {
+            clear.owner.check_key_and_policy()?;
+            let binding = clear.owner.workspace.reserve()?;
+            let detector = detector(&clear.owner.policy, &clear.owner.workspace)?;
+            clear.owner.session = Arc::new(
+                PrivacySession::open(clear.owner.unlocked.vault(), binding, detector)
+                    .await
+                    .map_err(BootstrapError::Session)?,
+            );
+            clear.owner.check_sources()
+        }
+        .await;
+        clear.completed = result.is_ok();
+        result
     }
     pub fn close_before_rebind(&self) {
-        self.session.stop();
+        self.close();
     }
     /// Revoke the actual session and key even when a policy/tool keeps an Arc.
     /// Existing vault references retain their derived material until release.
@@ -330,12 +357,12 @@ impl PrivateConversation {
         self.session.stop();
         self.unlocked.close();
     }
-    /// The private terminal refuses its own config/model/effort saves before
-    /// their rename. No equal caller digest can renew the captured source.
+    /// The private terminal refuses its own config/model/effort saves BEFORE
+    /// mutation. A refused save keeps the live conversation and configuration;
+    /// an actually changed/unavailable captured source closes both separately.
     pub fn before_configuration_save(&self) -> Result<()> {
         self.check_sources()?;
-        self.close();
-        Err(BootstrapError::ConfigurationChanged)
+        Err(BootstrapError::SettingsSaveRefused)
     }
 
     /// The policy implementation is this actual captured owner, not a host
@@ -394,7 +421,7 @@ impl PrivateConversation {
                 .as_ref()
                 .is_some_and(|guard| Arc::ptr_eq(guard, &self.session.send_guard()));
         if !bound {
-            self.session.stop();
+            self.close();
             return Err(PrivateBuildError::Unavailable);
         }
         self.check_sources().map_err(PrivateBuildError::Source)?;

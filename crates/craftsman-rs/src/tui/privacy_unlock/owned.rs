@@ -416,8 +416,10 @@ impl Drop for PopupInputScope<'_> {
 #[cfg(unix)]
 impl Drop for UnixPopup {
     fn drop(&mut self) {
-        // Sole-reader cleanup only on this popup's retained descriptor, before
-        // the guard restores it. No ordinary/foreign terminal input is flushed.
+        // Sole-reader cleanup on this popup's retained descriptor, before the
+        // guard restores it. TCIFLUSH discards ALL queued terminal type-ahead,
+        // including bytes intended for a later reader. Bytes arriving after
+        // that flush are outside this sampled cleanup observation.
         let _ = self.input.finish_input();
         // The retained guard restores the captured modes. No secret, draft,
         // history, exit-success or OS quiescence message is printed here.
@@ -484,7 +486,7 @@ impl SecretInput {
         }
         Ok(())
     }
-    fn read_byte(&mut self) -> Result<Option<u8>> {
+    fn read_byte(&mut self, count_prompt: bool) -> Result<Option<u8>> {
         self.check_modes()?;
         let mut ready = libc::pollfd {
             fd: self.descriptor.as_raw_fd(),
@@ -507,9 +509,11 @@ impl SecretInput {
         if result == 0 {
             return Ok(None);
         }
-        self.consumed = self.consumed.checked_add(1).ok_or(KeyError::Bounds)?;
-        if self.consumed > INPUT_BYTES {
-            return Err(KeyError::Bounds);
+        if count_prompt {
+            self.consumed = self.consumed.checked_add(1).ok_or(KeyError::Bounds)?;
+            if self.consumed > INPUT_BYTES {
+                return Err(KeyError::Bounds);
+            }
         }
         let mut byte = Zeroizing::new([0u8; 1]);
         let count = unsafe { libc::read(self.descriptor.as_raw_fd(), byte.as_mut_ptr().cast(), 1) };
@@ -519,7 +523,7 @@ impl SecretInput {
         Ok(Some(byte[0]))
     }
     fn next(&mut self) -> Result<Option<SecretEvent>> {
-        if let Some(byte) = self.read_byte()? {
+        if let Some(byte) = self.read_byte(true)? {
             return self.decode(byte);
         }
         if self
@@ -535,7 +539,9 @@ impl SecretInput {
         // A bounded raw batch acts only on Ctrl-C or a lone Escape. Navigation,
         // paste and other bytes are discarded without passphrase decoding.
         for _ in 0..64 {
-            match self.read_byte()? {
+            // These bytes are not passphrase input. Each work tick retains
+            // its own 64-read bound without spending the prompt allowance.
+            match self.read_byte(false)? {
                 Some(0x03) => return Err(KeyError::Cancelled),
                 Some(0x1b) => self.escape_at = Some(tokio::time::Instant::now()),
                 Some(_) => self.escape_at = None,

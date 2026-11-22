@@ -6,6 +6,40 @@ fn pass(value: &str) -> Passphrase {
     Passphrase::from_owned(Zeroizing::new(value.as_bytes().to_vec())).unwrap()
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn closing_a_poisoned_real_unlocked_owner_clears_its_owned_key() {
+    let (_directory, path) = owned_root();
+    let manager = KeyManager::from_root(ConfigRoot::capture_owned_test_root(&path).unwrap());
+    let unlocked = manager
+        .initialize(pass("owned poison test passphrase"))
+        .await
+        .unwrap();
+    // The synthetic key came from the real envelope/vault create path. Only a
+    // fixed panic text is used; no key/guard Debug can enter a panic payload.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = match unlocked.key.bytes.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("owned key fixture unexpectedly poisoned"),
+        };
+        panic!("owned key fixture poison");
+    }));
+    assert!(panicked.is_err());
+    unlocked.close();
+    let guard = match unlocked.key.bytes.lock() {
+        Ok(_) => panic!("owned key fixture requires the original poisoned mutex"),
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    assert!(
+        guard.is_none(),
+        "close must clear material despite an earlier unwind"
+    );
+    drop(guard);
+    assert!(unlocked.key_source().acquire_privacy_key().is_err());
+    assert!(unlocked.recheck_key_source().is_err());
+    manager.close_and_wait().await.unwrap();
+}
+
 #[test]
 fn actual_fixed_envelope_random_key_round_trip_and_secret_debug_absence() {
     let _serial = envelope::test_serial();
