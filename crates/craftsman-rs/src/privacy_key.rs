@@ -81,6 +81,22 @@ impl UnlockedKey {
             *key = None;
         }
     }
+    pub fn recheck_source(&self) -> Result<()> {
+        if self
+            .root
+            .recheck()
+            .and_then(|_| self.source.recheck())
+            .is_err()
+        {
+            self.close();
+            return Err(KeyError::Changed);
+        }
+        let key = self.bytes.lock().map_err(|_| KeyError::Closed)?;
+        if key.is_none() {
+            return Err(KeyError::Closed);
+        }
+        Ok(())
+    }
 }
 impl HostKeySource for UnlockedKey {
     fn acquire_privacy_key(&self) -> crate::privacy_vault::Result<HostKey> {
@@ -119,6 +135,9 @@ impl UnlockedVault {
     }
     pub fn key_source(&self) -> &dyn HostKeySource {
         &self.key
+    }
+    pub fn recheck_key_source(&self) -> Result<()> {
+        self.key.recheck_source()
     }
     pub fn close(&self) {
         self.vault.close();

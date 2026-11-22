@@ -220,6 +220,15 @@ impl UnixPopup {
     }
 
     async fn prompt(&mut self, prompt: Prompt) -> Result<Passphrase> {
+        let result = self.prompt_inner(prompt).await;
+        let cleanup = self.input.finish_input();
+        match result {
+            Err(error) => Err(error),
+            Ok(phrase) => cleanup.map(|()| phrase),
+        }
+    }
+
+    async fn prompt_inner(&mut self, prompt: Prompt) -> Result<Passphrase> {
         self.check()?;
         self.input.begin_prompt();
         let mut field = SecretField::default();
@@ -253,6 +262,7 @@ impl UnixPopup {
                     .map_err(|_| KeyError::Terminal)?;
                 dirty = false;
             }
+            let before = self.input.consumed;
             if let Some(event) = self.input.next()? {
                 match event {
                     SecretEvent::Key(key) => {
@@ -264,6 +274,11 @@ impl UnixPopup {
                     SecretEvent::Paste(paste) => field.accept_owned_paste(paste)?,
                 }
                 dirty = true;
+                continue;
+            }
+            if self.input.consumed != before {
+                // Already consumed UTF8/paste framing is decoded immediately,
+                // under the same whole input cap, rather than one tick/byte.
                 continue;
             }
             tokio::select! {
@@ -278,6 +293,18 @@ impl UnixPopup {
     }
 
     async fn work(
+        &mut self,
+        operation: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<UnlockedVault>> + Send + '_>,
+        >,
+    ) -> Result<UnlockedVault> {
+        self.input.clear_secret_buffers();
+        let result = self.work_inner(operation).await;
+        let cleanup = self.input.finish_input();
+        finish(result, cleanup)
+    }
+
+    async fn work_inner(
         &mut self,
         mut operation: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<UnlockedVault>> + Send + '_>,
@@ -309,16 +336,7 @@ impl UnixPopup {
                 _ = self.shutdown.cancellation.cancelled() => return Err(KeyError::Cancelled),
                 _ = tokio::time::sleep(TICK) => {
                     self.check()?;
-                    if let Some(event) = self.input.next()? {
-                        // No text is submitted while key work is outstanding.
-                        if let SecretEvent::Key(key) = event
-                            && (key.code == KeyCode::Esc
-                                || key.code == KeyCode::Char('c')
-                                    && key.modifiers.contains(KeyModifiers::CONTROL))
-                        {
-                            return Err(KeyError::Cancelled);
-                        }
-                    }
+                    self.input.discard_during_work()?;
                 },
             }
         }
@@ -328,7 +346,9 @@ impl UnixPopup {
 #[cfg(unix)]
 impl Drop for UnixPopup {
     fn drop(&mut self) {
-        self.input.clear_secret_buffers();
+        // Sole-reader cleanup only on this popup's retained descriptor, before
+        // the guard restores it. No ordinary/foreign terminal input is flushed.
+        let _ = self.input.finish_input();
         // The retained guard restores the captured modes. No secret, draft,
         // history, exit-success or OS quiescence message is printed here.
         let _ = &self.guard;
@@ -372,6 +392,15 @@ impl SecretInput {
         self.escape_at = None;
         self.in_paste = false;
     }
+    fn finish_input(&mut self) -> Result<()> {
+        // Clear owned decoder storage on every path, even a failed native
+        // flush. The caller cannot treat an unsuccessful cleanup as success.
+        self.clear_secret_buffers();
+        if unsafe { libc::tcflush(self.descriptor.as_raw_fd(), libc::TCIFLUSH) } < 0 {
+            return Err(KeyError::Terminal);
+        }
+        Ok(())
+    }
     fn begin_prompt(&mut self) {
         self.clear_secret_buffers();
         self.consumed = 0;
@@ -385,7 +414,7 @@ impl SecretInput {
         }
         Ok(())
     }
-    fn next(&mut self) -> Result<Option<SecretEvent>> {
+    fn read_byte(&mut self) -> Result<Option<u8>> {
         self.check_modes()?;
         let mut ready = libc::pollfd {
             fd: self.descriptor.as_raw_fd(),
@@ -406,13 +435,6 @@ impl SecretInput {
             return Err(KeyError::Terminal);
         }
         if result == 0 {
-            if self
-                .escape_at
-                .is_some_and(|at| at.elapsed() >= Duration::from_millis(30))
-            {
-                self.clear_secret_buffers();
-                return Err(KeyError::Cancelled);
-            }
             return Ok(None);
         }
         self.consumed = self.consumed.checked_add(1).ok_or(KeyError::Bounds)?;
@@ -424,7 +446,39 @@ impl SecretInput {
         if count != 1 {
             return Err(KeyError::Terminal);
         }
-        self.decode(byte[0])
+        Ok(Some(byte[0]))
+    }
+    fn next(&mut self) -> Result<Option<SecretEvent>> {
+        if let Some(byte) = self.read_byte()? {
+            return self.decode(byte);
+        }
+        if self
+            .escape_at
+            .is_some_and(|at| at.elapsed() >= Duration::from_millis(30))
+        {
+            self.clear_secret_buffers();
+            return Err(KeyError::Cancelled);
+        }
+        Ok(None)
+    }
+    fn discard_during_work(&mut self) -> Result<()> {
+        // A bounded raw batch acts only on Ctrl-C or a lone Escape. Navigation,
+        // paste and other bytes are discarded without passphrase decoding.
+        for _ in 0..64 {
+            match self.read_byte()? {
+                Some(0x03) => return Err(KeyError::Cancelled),
+                Some(0x1b) => self.escape_at = Some(tokio::time::Instant::now()),
+                Some(_) => self.escape_at = None,
+                None => break,
+            }
+        }
+        if self
+            .escape_at
+            .is_some_and(|at| at.elapsed() >= Duration::from_millis(30))
+        {
+            return Err(KeyError::Cancelled);
+        }
+        Ok(())
     }
     fn decode(&mut self, byte: u8) -> Result<Option<SecretEvent>> {
         if self.escape_at.is_some() {

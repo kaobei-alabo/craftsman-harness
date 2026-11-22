@@ -18,6 +18,10 @@ pub enum BootstrapError {
     Key(KeyError),
     #[error("The private bootstrap user policy was refused.")]
     Policy(PolicyError),
+    #[error(
+        "The captured user configuration changed; the private conversation has ended. Start a fresh privacy bootstrap before continuing."
+    )]
+    ConfigurationChanged,
     #[error("The private bootstrap requires a captured proposed user privacy policy.")]
     NoPolicy,
     #[error("The private bootstrap requires the source-built detector feature.")]
@@ -274,21 +278,18 @@ impl PrivateConversation {
             self.session.check().map_err(BootstrapError::Session)
         })();
         if result.is_err() {
-            self.session.stop();
+            self.close();
         }
         result
     }
     fn check_key_and_policy(&self) -> Result<()> {
-        self.policy.recheck()?;
+        self.policy.recheck().map_err(|error| match error {
+            PolicyError::Source => BootstrapError::ConfigurationChanged,
+            error => BootstrapError::Policy(error),
+        })?;
         self.workspace.recheck()?;
-        // Sample actual envelope/root liveness via its key owner. The
-        // temporary HostKey is zeroizing and is never exposed to callers.
-        drop(
-            self.unlocked
-                .key_source()
-                .acquire_privacy_key()
-                .map_err(|_| BootstrapError::Key(KeyError::Changed))?,
-        );
+        // Sample the retained key/source owner without copying raw key bytes.
+        self.unlocked.recheck_key_source()?;
         Ok(())
     }
     /// Actual terminal drafts only. Real source approval and authenticated
@@ -322,6 +323,19 @@ impl PrivateConversation {
     }
     pub fn close_before_rebind(&self) {
         self.session.stop();
+    }
+    /// Revoke the actual session and key even when a policy/tool keeps an Arc.
+    /// Existing vault references retain their derived material until release.
+    pub fn close(&self) {
+        self.session.stop();
+        self.unlocked.close();
+    }
+    /// The private terminal refuses its own config/model/effort saves before
+    /// their rename. No equal caller digest can renew the captured source.
+    pub fn before_configuration_save(&self) -> Result<()> {
+        self.check_sources()?;
+        self.close();
+        Err(BootstrapError::ConfigurationChanged)
     }
 
     /// The policy implementation is this actual captured owner, not a host
@@ -462,23 +476,36 @@ impl PrivateBuiltSession {
             .ok_or(PrivateTurnError::Source(BootstrapError::Session(
                 SessionStop::Closed,
             )))?;
-        view.turn(&self.session.agent, typed)
+        let result = view
+            .turn(&self.session.agent, typed)
             .await
-            .map_err(PrivateTurnError::Entry)
+            .map_err(PrivateTurnError::Entry);
+        let checked = self.owner.check_sources().map_err(PrivateTurnError::Source);
+        match result {
+            Err(error) => {
+                if checked.is_err() {
+                    self.owner.close();
+                }
+                Err(error)
+            }
+            Ok(returned) => {
+                checked?;
+                Ok(returned)
+            }
+        }
     }
     pub fn close(&self) {
-        self.owner.close_before_rebind();
+        self.owner.close();
     }
 }
 impl Drop for PrivateBuiltSession {
     fn drop(&mut self) {
-        self.owner.close_before_rebind();
+        self.owner.close();
     }
 }
 impl Drop for PrivateConversation {
     fn drop(&mut self) {
-        self.session.stop();
-        self.unlocked.close();
+        self.close();
     }
 }
 

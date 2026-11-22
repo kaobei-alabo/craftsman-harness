@@ -43,7 +43,9 @@ impl Passphrase {
             return Err(KeyError::Passphrase);
         }
         let text = std::str::from_utf8(&raw).map_err(|_| KeyError::Passphrase)?;
-        let mut normalized = Zeroizing::new(Vec::with_capacity(raw.len()));
+        // NFC can expand an input. Reserve its entire admitted byte ceiling
+        // before storing any secret, so growth cannot free an uncleared buffer.
+        let mut normalized = Zeroizing::new(Vec::with_capacity(1024));
         for character in text.nfc() {
             let mut encoded = Zeroizing::new([0; 4]);
             let bytes = character.encode_utf8(encoded.as_mut()).as_bytes();
