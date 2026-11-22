@@ -329,7 +329,19 @@ fn execute(
             Operation::Initialize => Box::pin(Vault::create_new(location, &key, Limits::default())),
             Operation::Unlock => Box::pin(Vault::open_existing(location, &key, Limits::default())),
         };
-    let opened = runtime.block_on(opening).map_err(|_| KeyError::Vault)?;
+    // The runtime entry uses the same erased unit-output type as Tokio's
+    // existing test runners. This local receives only the actual awaited
+    // vault result, and the original error mapping remains after completion.
+    let mut returned = None;
+    {
+        let body = async { returned = Some(opening.await) };
+        tokio::pin!(body);
+        let body: Pin<&mut dyn Future<Output = ()>> = body;
+        runtime.block_on(body);
+    }
+    let opened = returned
+        .ok_or(KeyError::Worker)?
+        .map_err(|_| KeyError::Vault)?;
     let result = UnlockedVault { key, vault: opened };
     root.recheck()?;
     check_open(state)?;
