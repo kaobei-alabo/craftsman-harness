@@ -72,6 +72,22 @@ impl PrivacyView {
         Ok(agent.steer_with_view(typed, source))
     }
 
+    /// Compacts the idle conversation now, as the manual compaction of an
+    /// ordinary session does, through the tracked path: the summarizer is
+    /// asked with views, and the summary and the kept messages keep their
+    /// sources. `compaction` is the session's own compaction middleware.
+    pub async fn compact(
+        &self,
+        agent: &Agent,
+        compaction: &craftsman_harness::builtin::CompactionMiddleware,
+    ) -> Result<Option<(usize, usize)>, PrivateEntryError> {
+        self.session().check().map_err(PrivateEntryError::Stopped)?;
+        agent
+            .compact_idle_with_view(compaction)
+            .await
+            .map_err(PrivateEntryError::Agent)
+    }
+
     /// Applies what a person decided about the parked call `shown`, which is
     /// the call the interface actually showed them. A reason typed with a
     /// denial is checked as a draft first.

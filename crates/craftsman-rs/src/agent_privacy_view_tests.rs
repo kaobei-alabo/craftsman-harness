@@ -113,6 +113,7 @@ async fn privacy_view_builder_fixture() {
     conversation(&directory, &vault, &activity).await;
     repair(&directory, &vault, &activity).await;
     normal_parts(&directory, &vault, &activity).await;
+    compaction_lane(&directory, &vault, &activity).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
 }
@@ -164,12 +165,8 @@ async fn conversation(
         .find(|line| line.starts_with("This private conversation runs without: "))
         .cloned()
         .expect("the frontend is told what is left out");
-    assert!(named.contains("compaction"), "{named}");
-    // The protected call repair, the todo list, memory and the reminders are
-    // not among them: they run, tracked.
-    for kept in ["patch_tool_calls", "todos", "memory", "system_reminders"] {
-        assert!(!named.contains(kept), "{named}");
-    }
+    // Only the delegated-agent middleware has no source path yet.
+    assert_eq!(named, "This private conversation runs without: subagents.");
     // The untyped entry is refused before anything is recorded.
     assert!(session.agent.run_turn("untyped").await.is_err());
     assert!(session.agent.state.lock().unwrap().messages.is_empty());
@@ -462,6 +459,104 @@ async fn normal_parts(
     session.lsp.shutdown().await;
 }
 
+/// Manual compaction in a built session: the builder's own summarizer lane
+/// is asked with views, the summary replaces the summarized messages, and
+/// the conversation continues from it.
+async fn compaction_lane(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let server = MockServer::start().await;
+    for (priority, text) in ["one", "two", "SUMMARY of the work", "three"]
+        .into_iter()
+        .enumerate()
+    {
+        Mock::given(method("POST"))
+            .respond_with(answer("chat", &[text]))
+            .up_to_n_times(1)
+            .with_priority(priority as u8 + 1)
+            .mount(&server)
+            .await;
+    }
+    let cfg = config("chat", &server);
+    let owner = privacy(vault, directory).await;
+    // The owned terminal's durable checkpoints, which idle compaction needs.
+    let session = build(&cfg, directory, Some(&owner), None, activity, |extras| {
+        extras.cancellation_session = Some(craftsman_harness::SessionCancellation::default())
+    })
+    .await
+    .unwrap();
+    let view = session.privacy_view.as_ref().unwrap();
+    let first = format!("Write to {EMAIL} about the plan.");
+    view.turn(&session.agent, &first).await.unwrap();
+    view.turn(&session.agent, "And then?").await.unwrap();
+    let before = session.agent.state.lock().unwrap().messages.clone();
+    assert_eq!(before.len(), 4);
+
+    let counts = view
+        .compact(&session.agent, &session.compaction)
+        .await
+        .unwrap();
+    assert_eq!(counts, Some((4, 4)));
+    // The record: the summary in the place of the first input, then the
+    // kept messages as they were.
+    let after = session.agent.state.lock().unwrap().messages.clone();
+    assert_eq!(
+        after[0],
+        Msg::user("<conversation_summary>\nSUMMARY of the work\n</conversation_summary>")
+    );
+    assert_eq!(after[1..], before[1..]);
+    // The summarizer was asked on the same wire with the view of the input
+    // it summarized and the application's own instruction, and no tools.
+    let requests = sent(&server).await;
+    assert_eq!(requests.len(), 3);
+    assert!(!requests[2].contains(EMAIL));
+    let asked: serde_json::Value = serde_json::from_str(&requests[2]).unwrap();
+    let asked_messages = asked["messages"].as_array().unwrap();
+    assert_eq!(asked_messages.len(), 3);
+    assert!(
+        asked_messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are compacting an ongoing agent conversation")
+    );
+    assert!(
+        asked_messages[1]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Write to ")
+    );
+    assert_eq!(
+        asked_messages[2]["content"],
+        "Summarize the conversation above per your instructions, as a continuation summary."
+    );
+    assert!(asked.get("tools").is_none());
+    // Every recorded message still has its source, and the conversation
+    // goes on from the summary.
+    assert!(
+        session
+            .agent
+            .recorded_sources()
+            .unwrap()
+            .iter()
+            .all(Option::is_some)
+    );
+    let TurnResult::Done(output) = view.turn(&session.agent, "Go on.").await.unwrap() else {
+        panic!("the conversation continues");
+    };
+    assert_eq!(output.final_text(), "three");
+    let requests = sent(&server).await;
+    let next: serde_json::Value = serde_json::from_str(&requests[3]).unwrap();
+    assert_eq!(
+        next["messages"][1]["content"],
+        "<conversation_summary>\nSUMMARY of the work\n</conversation_summary>"
+    );
+    assert!(!requests[3].contains(EMAIL));
+    assert!(owner.check().is_ok());
+    session.lsp.shutdown().await;
+}
+
 /// Selections that are refused before a session exists, each with its
 /// typed reason for the host that made the selection.
 async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mutex<Vec<String>>>) {
@@ -595,20 +690,10 @@ async fn refusals(directory: &std::path::Path, vault: &Vault, activity: &Arc<Mut
     let Some(BuildRefusal::MissingSourcePaths(missing)) = report.refusal() else {
         panic!("the host is told which parts have no source path");
     };
-    assert!(
-        missing.iter().any(|part| part == "compaction"),
-        "{missing:?}"
-    );
-    for kept in [
-        "patch_tool_calls",
-        "hitl",
-        "result_budgets",
-        "todos",
-        "memory",
-        "system_reminders",
-    ] {
-        assert!(!missing.iter().any(|part| part == kept), "{missing:?}");
-    }
+    // The delegated-agent middleware is the one installed part without a
+    // source path. Compaction, the todo list, memory, the reminders, the
+    // call repair, the approval gate and the result size limit are kept.
+    assert_eq!(missing, ["subagents"]);
     let line = activity
         .lock()
         .unwrap()

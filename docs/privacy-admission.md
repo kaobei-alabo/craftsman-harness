@@ -25,7 +25,8 @@ It is local, unmerged and not installed.
 | Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
 | Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
 | Mixed text from the system prompt, todos, memory, reminders and task workflow notes, as parts | implemented, private; see provenance |
-| Mixed text from compaction, delegated agents and context controls | not implemented |
+| Compaction summaries, with the summarizer's text kept as model text | implemented, private; see provenance |
+| Mixed text from delegated agents and context controls | not implemented |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
 | Secret input, frontend selector, activation | not implemented |
@@ -229,6 +230,7 @@ PrivacyViewSelection::from_user_policy(policy, session)   -> Result<Self, BuildR
 selection.report().refusal()                      -> Option<BuildRefusal>   // why the builder refused
 session.workspace_sha256()
 view.turn(&agent, typed) / view.steer(&agent, typed) / view.decide(&agent, &shown, action, deny_default)
+view.compact(&agent, &compaction)                 -> Result<Option<(usize, usize)>, PrivateEntryError>
 
 // crate::privacy_session, the only producers of a reply's receipt
 ViewChatProvider::new(chat_client, session, usage, sink).await

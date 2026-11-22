@@ -2512,6 +2512,45 @@ async fn build_session_with_capture_profile(
             crate::exec::meter::Role::Compaction,
             extras.output_closed.clone(),
         )?,
+        None if privacy_view.is_some() => {
+            // The summarizer of a privacy conversation: the same owner and
+            // guard, its own usage, and requests composed from sources.
+            let session = privacy_view.clone()?;
+            let client = make_unguarded_client()?;
+            let built: Result<Arc<dyn ModelProvider>, _> = if client.native.is_none() {
+                crate::privacy_session::ViewChatProvider::new(
+                    client,
+                    session,
+                    compact_usage,
+                    child_sink,
+                )
+                .await
+                .map(|provider| Arc::new(provider) as Arc<dyn ModelProvider>)
+            } else {
+                crate::privacy_session::ViewNativeProvider::new(
+                    client,
+                    session,
+                    compact_usage,
+                    child_sink,
+                )
+                .await
+                .map(|provider| Arc::new(provider.for_summaries()) as Arc<dyn ModelProvider>)
+            };
+            match built {
+                Ok(provider) => provider,
+                Err(_) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .refuse(crate::privacy_session::BuildRefusal::Provider);
+                    }
+                    if let Some(sink) = &extras.activity_sink {
+                        sink("The model connection of this session has no private view.");
+                    }
+                    return None;
+                }
+            }
+        }
         None => Arc::new(StreamingLlmProvider {
             client: make_client()?,
             usage: compact_usage,

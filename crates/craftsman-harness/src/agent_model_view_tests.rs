@@ -546,6 +546,29 @@ impl ModelViewBoundary for Frontiers {
         self.commit_model(receipt, committed).await
     }
 
+    async fn host_message(
+        &self,
+        part: &crate::provenance::SourcePart,
+    ) -> Result<SourceRef, AgentError> {
+        self.note(format!("host message {:?}", &*part.text));
+        Ok(source("host:ask"))
+    }
+
+    async fn summary_source(
+        &self,
+        receipt: SourceRef,
+        open: &crate::provenance::SourcePart,
+        close: &crate::provenance::SourcePart,
+        summary: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let Msg::User { content } = summary else {
+            panic!("a summary is recorded with the user role");
+        };
+        assert!(content.starts_with(&*open.text) && content.ends_with(&*close.text));
+        self.note(format!("summary {} {content:?}", tag(&receipt)));
+        Ok(source(&format!("summary:{}", tag(&receipt))))
+    }
+
     async fn system_addition(
         &self,
         parts: &[crate::provenance::SourcePart],
@@ -1620,4 +1643,147 @@ async fn a_stored_todo_without_an_origin_stops_the_next_request() {
     assert_eq!(recorded(&agent).len(), 3);
     assert_eq!(agent.state.lock().unwrap().todos.len(), 1);
     assert_eq!(model.seen.lock().unwrap().len(), 1);
+}
+
+// ---- compaction through the tracked path ------------------------------------
+
+fn compaction_of(
+    summarizer: Arc<dyn ModelProvider>,
+    threshold_msgs: usize,
+) -> Arc<crate::builtin::CompactionMiddleware> {
+    Arc::new(crate::builtin::CompactionMiddleware::new(
+        summarizer,
+        crate::builtin::CompactionTrigger::MessageCount {
+            threshold_msgs,
+            keep_tail_msgs: 2,
+        },
+    ))
+}
+
+#[tokio::test]
+async fn compaction_replaces_messages_with_a_sourced_summary_and_keeps_the_tail_sources() {
+    let replies = || {
+        vec![
+            Msg::assistant("one"),
+            Msg::assistant("two"),
+            Msg::assistant("three"),
+        ]
+    };
+    // The selected agent: the summarizer is asked through its view path.
+    let model = ViewModel::new(replies());
+    let summarizer = ViewModel::new(vec![Msg::assistant("SUMMARY")]);
+    let boundary = Arc::new(Frontiers::default());
+    let agent = Agent::builder(model.clone())
+        .middleware(compaction_of(summarizer.clone(), 4))
+        .model_view_boundary(Some(boundary.clone()))
+        .build();
+    // The same conversation without a boundary.
+    let plain_model = Arc::new(ScriptedModel::new(replies()));
+    let plain_summarizer = Arc::new(ScriptedModel::new(vec![Msg::assistant("SUMMARY")]));
+    let plain = Agent::builder(plain_model.clone())
+        .middleware(compaction_of(plain_summarizer.clone(), 4))
+        .build();
+    for (index, input) in ["first", "second", "third"].into_iter().enumerate() {
+        agent
+            .run_turn_with_view(input, source(&format!("input:{index}")))
+            .await
+            .unwrap();
+        plain.run_turn(input).await.unwrap();
+    }
+    // The record is the same: one summary, the kept tail and the new reply.
+    assert_eq!(recorded(&agent), recorded(&plain));
+    assert_eq!(recorded(&agent).len(), 4);
+    assert!(matches!(&recorded(&agent)[0], Msg::User { content }
+        if content == "<conversation_summary>\nSUMMARY\n</conversation_summary>"));
+
+    // The summarizer was given the summarized messages with their own
+    // sources, then the application's instruction, and no tools. It is the
+    // same request the other summarizer got as text.
+    let asked = summarizer.seen.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        asked[0].messages,
+        ["input:0", "model:receipt:0", "input:1", "host:ask"]
+    );
+    assert_eq!(asked[0].system.len(), 1);
+    assert!(asked[0].tools.is_empty());
+    let plain_asked = plain_summarizer.requests.lock().unwrap();
+    assert_eq!(asked[0].recorded.messages, plain_asked[0].messages);
+    assert_eq!(summarizer.recorded_path_calls.load(Ordering::SeqCst), 0);
+
+    // The request that followed carried the summary's own source and the
+    // sources of the kept messages.
+    assert_eq!(
+        last_sources(&model),
+        ["summary:receipt:0", "model:receipt:1", "input:2"]
+    );
+    let slots = agent.recorded_sources().unwrap();
+    assert_eq!(slots.len(), 4);
+    assert!(slots.iter().all(Option::is_some));
+    assert!(
+        boundary.events().contains(
+            &r#"summary receipt:0 "<conversation_summary>\nSUMMARY\n</conversation_summary>""#
+                .to_owned()
+        )
+    );
+}
+
+#[tokio::test]
+async fn idle_compaction_of_a_selected_agent_keeps_the_same_record_and_every_source() {
+    let replies = || vec![Msg::assistant("one"), Msg::assistant("two")];
+    let model = ViewModel::new(replies());
+    let summarizer = ViewModel::new(vec![Msg::assistant("SUMMARY")]);
+    let compaction = compaction_of(summarizer.clone(), 100);
+    let agent = Agent::builder(model.clone())
+        .middleware(compaction.clone())
+        .model_view_boundary(Some(Arc::new(Frontiers::default())))
+        .checkpointer(Arc::new(MemCheckpointer::default()))
+        .durable_turn_checkpoints(true)
+        .build();
+    let plain_summarizer = Arc::new(ScriptedModel::new(vec![Msg::assistant("SUMMARY")]));
+    let plain_compaction = compaction_of(plain_summarizer, 100);
+    let plain = Agent::builder(Arc::new(ScriptedModel::new(replies())))
+        .middleware(plain_compaction.clone())
+        .checkpointer(Arc::new(MemCheckpointer::default()))
+        .durable_turn_checkpoints(true)
+        .build();
+    for (index, input) in ["first", "second"].into_iter().enumerate() {
+        agent
+            .run_turn_with_view(input, source(&format!("input:{index}")))
+            .await
+            .unwrap();
+        plain.run_turn(input).await.unwrap();
+    }
+    // The untyped entry stays refused on a selected agent.
+    assert!(agent.compact_idle(&compaction).await.is_err());
+    let counts = agent.compact_idle_with_view(&compaction).await.unwrap();
+    assert_eq!(counts, plain.compact_idle(&plain_compaction).await.unwrap());
+    assert_eq!(counts, Some((4, 4)));
+    assert_eq!(recorded(&agent), recorded(&plain));
+    // The summary has its own source, and the kept messages kept theirs.
+    let slots: Vec<String> = agent
+        .recorded_sources()
+        .unwrap()
+        .iter()
+        .map(|slot| tag(slot.as_ref().unwrap()))
+        .collect();
+    assert_eq!(
+        slots,
+        [
+            "summary:receipt:0",
+            "model:receipt:0",
+            "input:1",
+            "model:receipt:1"
+        ]
+    );
+    // Nothing is summarized when the conversation is too short.
+    let short = Agent::builder(ViewModel::new(vec![]))
+        .model_view_boundary(Some(Arc::new(Frontiers::default())))
+        .checkpointer(Arc::new(MemCheckpointer::default()))
+        .durable_turn_checkpoints(true)
+        .build();
+    assert_eq!(
+        short.compact_idle_with_view(&compaction).await.unwrap(),
+        None
+    );
 }

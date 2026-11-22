@@ -229,12 +229,36 @@ pub const MAX_SYSTEM_ADDITIONS: usize = 64;
 pub const MAX_ADDITION_PARTS: usize = 1024;
 pub const MAX_ADDITION_BYTES: usize = 1_048_576;
 
+/// The application's own text around a summary: the summarizer's system
+/// text, the instruction that ends its request, and what opens and closes
+/// the summary message.
+pub struct SummaryText {
+    pub system: SourcePart,
+    pub ask: SourcePart,
+    pub open: SourcePart,
+    pub close: SourcePart,
+}
+
+/// What the agent keeps beside one recorded message.
+#[derive(Clone)]
+pub(crate) enum Slot {
+    Bound(SourceRef),
+    /// Appended by the agent itself; the boundary has not been asked yet.
+    Pending(FrameworkCommit),
+}
+
 /// What a middleware with a tracked prepare sees on a selected agent: the
-/// state, read-only, and one way to add system text.
+/// state, read-only, one way to add system text, and one way to replace
+/// recorded messages with a summary of them.
 pub struct TrackedPrepare<'a> {
-    pub(crate) state: &'a crate::AgentState,
+    pub(crate) state: &'a mut crate::AgentState,
     pub(crate) todos: Option<&'a [PartFrom]>,
     pub(crate) additions: &'a mut Vec<Vec<SourcePart>>,
+    pub(crate) boundary: &'a dyn ModelViewBoundary,
+    /// The slots beside the recorded messages as this preparation sees them.
+    pub(crate) slots: &'a mut Vec<Slot>,
+    /// Whether this preparation replaced recorded messages.
+    pub(crate) replaced: &'a mut bool,
 }
 
 impl TrackedPrepare<'_> {
@@ -430,6 +454,33 @@ pub trait ModelViewBoundary: Send + Sync {
         let _ = parts;
         Err(AgentError::State(
             "This conversation has no source for a system addition.".into(),
+        ))
+    }
+
+    /// The source of one message the host itself writes into a request and
+    /// does not record: the instruction that ends a summarizer's request.
+    /// The default refuses.
+    async fn host_message(&self, part: &SourcePart) -> Result<SourceRef, AgentError> {
+        let _ = part;
+        Err(AgentError::State(
+            "This conversation has no source for a host message.".into(),
+        ))
+    }
+
+    /// A summarizer's reply was received through `receipt`, and `summary` is
+    /// the message that replaces the summarized ones: `open`, the reply's
+    /// text and `close`, joined. Returns the source to keep beside it. The
+    /// default refuses.
+    async fn summary_source(
+        &self,
+        receipt: SourceRef,
+        open: &SourcePart,
+        close: &SourcePart,
+        summary: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let _ = (receipt, open, close, summary);
+        Err(AgentError::State(
+            "This conversation has no source for a summary.".into(),
         ))
     }
 

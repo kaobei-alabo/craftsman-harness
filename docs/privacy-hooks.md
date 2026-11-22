@@ -19,9 +19,10 @@ input and tool results through the framework agent and the shared session
 builder to the existing clients and guard, and the protected repair of tool
 calls runs on it as a recorded change. The system prompt, the todo list,
 memory, todo reminders and task workflow notes reach a request as parts with
-their own origins. Nothing selects it, and it cannot be built outside test
-fixtures: compaction and delegated agents have no source path yet, and the
-builder refuses a session that would lose them.
+their own origins, and compaction asks its summarizer with views and keeps the
+summary as model text. Nothing selects it, and it cannot be built outside test
+fixtures: delegated agents have no source path yet, and the builder refuses a
+session that would lose them.
 Approval receipts inside the gate, terminal input and display, restoration,
 key handling and activation are not built. The target diagram
 below predates that contract where it shows masked history: stored history

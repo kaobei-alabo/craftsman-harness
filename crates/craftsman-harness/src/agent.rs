@@ -434,11 +434,11 @@ impl Agent {
 
             // Rebuild the per-turn system additions from scratch each round.
             working.system_extras.clear();
-            let additions = match &self.model_view {
+            let (additions, staged) = match &self.model_view {
                 Some(view) => self.prepare_with_view(view, &mut working).await?,
                 None => {
                     self.chain.prepare_model(&mut working).await?;
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             };
 
@@ -462,7 +462,9 @@ impl Agent {
             };
             let mut view_receipt = None;
             let response = if let Some(view) = &self.model_view {
-                let Some(delivery) = self.deliver_with_view(view, &working, additions).await?
+                let Some(delivery) = self
+                    .deliver_with_view(view, &working, additions, staged.as_deref())
+                    .await?
                 else {
                     return self.finish_cancelled().await;
                 };
@@ -525,6 +527,11 @@ impl Agent {
                 .cloned()
                 .unwrap_or(response.message);
             self.commit(working);
+            if let Some(view) = &self.model_view {
+                // Slots a preparation of this round replaced take effect
+                // with the working state they belong to.
+                self.commit_slots(view, staged);
+            }
             self.journal(
                 "assistant",
                 serde_json::to_value(&assistant).unwrap_or_default(),

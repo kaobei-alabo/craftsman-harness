@@ -48,8 +48,9 @@ not detection of everything a model writes or of opaque provider content.
 | Providers for all four wires (Chat, Responses, Claude Messages, Gemini) through the existing clients and guard, with receipts | implemented, private; see below |
 | Protected repair of tool calls (`patch_tool_calls`) as a recorded change of the received reply | implemented, private; see below |
 | Todo list, memory section, todo reminders, task workflow notes, workspace checkpoints, and the system prompt as sections | implemented, private; see "Normal parts" below |
+| Compaction: automatic, and manual or idle through a typed entry | implemented, private; see "Compaction" below |
 | Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path, which today is never the case outside test fixtures; see below |
-| Compaction (automatic, manual and idle), delegated agents with notifications and inbox | not implemented; these two are installed in every ordinary session and have no source path, so the build is refused |
+| Delegated agents with `task`, notifications and inbox | not implemented; the middleware is installed in every ordinary session and has no source path, so the build is refused |
 | Verification, context and failure controls, gadget catalog | not implemented; a selection that asks for one is refused |
 | Receipts for approval decisions taken inside the approval gate; `ask_user` answers as drafts | not implemented |
 | Terminal ingress, `/clear`, display of replies | not implemented |
@@ -162,6 +163,16 @@ again is the same source, while equal text in another piece is not.
 - *Outcome parts.* When a tool says what its own outcome is made of, the agent
   uses the statement only if the pieces join to exactly what the tool returned
   and the recorded content is exactly that plus what middleware appended.
+
+- *Summaries.* A tracked preparation can replace recorded messages with a
+  summary of them. It names the positions to summarize and to keep, the
+  summarizer, and the application's own text. The agent builds the
+  summarizer's request from the summarized messages with their own sources,
+  asks the summarizer through its view path, records the summary message as
+  the ordinary compaction does, and asks the boundary for its source. The
+  kept messages keep their slots. The replacement belongs to the round's
+  working state: it takes effect when that state is committed, and is dropped
+  with it when the round fails or is cancelled.
 
 The defaults of the `_with_view` hooks are written without `async`, so that an
 implementation that does not override them gets one small function instead of
@@ -382,9 +393,9 @@ Then it:
   none, the build is refused and the frontend is told which.
 
 Today the statement exists for the approval gate, the result size limit, the
-protected call repair, the todo list, memory, the todo reminders, the task
-workflow notes and workspace checkpoints. Compaction and the delegated-agent
-middleware are installed in every ordinary session and have none. **So no
+protected call repair, the todo list, memory, the todo reminders, compaction,
+the task workflow notes and workspace checkpoints. The delegated-agent
+middleware is installed in every ordinary session and has none. **So no
 privacy session can be built outside tests yet**: a selection made from a real policy is refused
 with the list of those parts. Test fixtures alone use a fixture policy and a
 second constructor, both compiled only into test builds, that leave those
@@ -396,17 +407,53 @@ the privacy owner and changes nothing else; reopening and transfer are refused
 as they are for a guard-bound session. A new conversation is a new owner, a new
 reserved id, a new scope and a new session.
 
-**Typed entries.** `PrivacyView::turn`, `steer` and `decide` are the producers
-of what a person types. Each captures the text as a draft and admits it before
+**Typed entries.** `PrivacyView::compact` runs the manual compaction of an idle
+conversation through the tracked path. `PrivacyView::turn`, `steer` and
+`decide` are the producers of what a person types. Each captures the text as a draft and admits it before
 it is accepted, so a draft that cannot be admitted is turned away unchanged and
 the conversation continues. A reason typed with a denial is checked the same
 way. Nothing calls these entries yet.
 
-**In the fixtures.** A fixture session has no compaction and no delegated
-agents, so it also lacks the section the delegated-agent middleware adds to
-the system text and its `task` tool. A long conversation is not compacted. Reading the checkpoint back
+**In the fixtures.** A fixture session has no delegated agents, so it lacks
+the section the delegated-agent middleware adds to the system text and its
+`task` tool. Reading the checkpoint back
 with an ordinary session returns the real record: nothing in it is redacted or
 encrypted by this work.
+
+## Compaction
+
+Compaction on a selected agent decides, splits and records exactly as the
+ordinary compaction does: the same trigger and thresholds, the same kept tail,
+the same summary message with the user role, the same reset of the usage
+anchor. What differs is where the text comes from.
+
+- **The summarizer's request** is composed like any other request. Its system
+  text and its closing instruction are the application's fixed text, captured
+  and admitted. The summarized messages go out as the views of their own
+  sources. It has no tools.
+- **The summarizer** is a second provider of the same conversation: the same
+  owner and guard, its own usage counter, built by the session builder from
+  the same route. On a native wire it sends earlier replies as their text and
+  calls, never with provider items, as the ordinary summarizer does: its own
+  client never received those replies.
+- **The summary** is received with a receipt like any reply. The recorded
+  summary message is the application's opening text, the summarizer's text
+  and the application's closing text, and its source holds those three apart.
+  The summarizer's text is model-origin whatever role the message has: it is
+  sent as the summarizer wrote it, and a placeholder in it is neither replaced
+  by the original nor masked again.
+- **The kept messages keep their sources.** A reply that a compaction moved to
+  another position is sent as its text and calls from then on, not with its
+  provider items, which is what the native history does with a record whose
+  position no longer matches.
+- **Manual and idle compaction** use `Agent::compact_idle_with_view`, reached
+  through `PrivacyView::compact`. The conditions are those of the ordinary
+  idle compaction: durable checkpoints, no pending approval, exclusive
+  activity, a save before and after, refusal when the conversation changed or
+  the turn was cancelled while the summarizer ran. The untyped entry stays
+  refused.
+
+Usage of the two lanes stays separate, and nothing is replayed.
 
 ## Normal parts
 
@@ -422,7 +469,7 @@ How each normal component runs on a selected agent today.
 | Task workflow notes | the two fixed notes as parts; its observation of outcomes stays in its own memory |
 | Workspace checkpoints | reads recorded messages and writes its own store; changes nothing the agent records, which is checked |
 | Approval gate, result size limit | leave the record alone, which is checked |
-| Compaction | **no path.** Needs the summarizer request composed from views, the summary received with a receipt, and the replaced prefix given one source |
+| Compaction | tracked: same trigger, split and record as the ordinary compaction; see "Compaction" |
 | Delegated agents, notifications, inbox | **no path.** Children need the conversation's scope, their own boundary and envelopes for what they return |
 | Verification, context and failure controls, gadget catalog | **no path** |
 | Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |

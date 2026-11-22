@@ -48,6 +48,14 @@ enum ViewSource {
     },
     /// One section a middleware added to the system text, part by part.
     Addition(Vec<AdditionPart>),
+    /// The message that replaced summarized ones: the application's opening
+    /// and closing text around what a summarizer of this conversation
+    /// returned. That text is model-origin, whatever role the message has.
+    Summary {
+        open: AdmittedNode,
+        text: String,
+        close: AdmittedNode,
+    },
 }
 
 /// How a recorded tool result is seen by a model.
@@ -521,9 +529,11 @@ impl PrivacySession {
     /// The request a model may see on a native wire, with the provider items
     /// to send back. `identity` is the sending client's. Every reply of the
     /// conversation must have been received by a client of exactly that
-    /// identity, at exactly its position. A reply without such a receipt, or
-    /// with another client's, stops the session before a request exists.
-    /// Items are sent back only for a reply that was committed as received.
+    /// identity. A reply without such a receipt, or with another client's,
+    /// stops the session before a request exists. Items are sent back only
+    /// for a reply that was committed as received and still stands at the
+    /// position it was received for. A reply that a compaction moved is sent
+    /// as its text and calls, as the native history does.
     pub fn native_view(
         &self,
         request: &TrackedModelRequest,
@@ -537,12 +547,17 @@ impl PrivacySession {
                 items.push(None);
                 continue;
             };
-            let Some(receipt) = node.inner.native.as_ref().filter(|receipt| {
-                receipt.identity == identity && node.inner.request.index == index
-            }) else {
+            let Some(receipt) = node
+                .inner
+                .native
+                .as_ref()
+                .filter(|receipt| receipt.identity == identity)
+            else {
                 return Err(unbound(&self.inner));
             };
-            items.push((node.inner.received == node.inner.message).then(|| receipt.items.clone()));
+            let stands =
+                node.inner.request.index == index && node.inner.received == node.inner.message;
+            items.push(stands.then(|| receipt.items.clone()));
         }
         Ok((view, NativeReplay { items }))
     }
@@ -757,6 +772,25 @@ impl PrivacySession {
                         if node.committed_by(self) && node.inner.message == *message =>
                     {
                         message.clone()
+                    }
+                    (Msg::User { content }, ViewSource::Summary { open, text, close }) => {
+                        // The recorded summary is the opening text, the
+                        // summarizer's text and the closing text, exactly.
+                        let (first, last) = (open.captured_len(), content.len());
+                        let fits = last.checked_sub(close.captured_len()).is_some_and(|tail| {
+                            first <= tail
+                                && content.is_char_boundary(first)
+                                && content.is_char_boundary(tail)
+                                && open.captured_text_is(&content[..first])
+                                && content[first..tail] == **text
+                                && close.captured_text_is(&content[tail..])
+                        });
+                        if !fits {
+                            return Err(SessionStop::Unbound);
+                        }
+                        Msg::User {
+                            content: format!("{}{text}{}", host(open)?, host(close)?),
+                        }
                     }
                     _ => return Err(SessionStop::Unbound),
                 });
@@ -1000,6 +1034,57 @@ impl ModelViewBoundary for ConversationBoundary {
     async fn system_addition(&self, parts: &[SourcePart]) -> Result<SourceRef, AgentError> {
         let composed = self.held_parts(parts).await?;
         Ok(SourceRef::new(Arc::new(ViewSource::Addition(composed))))
+    }
+
+    async fn host_message(&self, part: &SourcePart) -> Result<SourceRef, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        let origin = match &part.from {
+            PartFrom::Fixed => RawOrigin::HostStatic,
+            PartFrom::Read { .. } => RawOrigin::HostFile,
+            _ => return Err(fault(unbound(inner))),
+        };
+        let node = self.owned_part(origin, &part.text).await?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node))))
+    }
+
+    async fn summary_source(
+        &self,
+        receipt: SourceRef,
+        open: &SourcePart,
+        close: &SourcePart,
+        summary: &Msg,
+    ) -> Result<SourceRef, AgentError> {
+        let inner = &self.session.inner;
+        inner.live().map_err(fault)?;
+        // The receipt is this conversation's own, and the summary message is
+        // the application's opening and closing text around exactly the text
+        // that was received.
+        let Some(received) = receipt
+            .downcast::<ReceivedModel>()
+            .filter(|received| Arc::ptr_eq(&received.owner, inner))
+        else {
+            return Err(fault(unbound(inner)));
+        };
+        let text = match &received.message {
+            Msg::Assistant { content, .. }
+            | Msg::User { content }
+            | Msg::System { content }
+            | Msg::Tool { content, .. } => content.clone(),
+        };
+        let fits = matches!(summary, Msg::User { content }
+            if *content == format!("{}{text}{}", open.text, close.text));
+        let fixed = matches!(open.from, PartFrom::Fixed) && matches!(close.from, PartFrom::Fixed);
+        if !fits || !fixed {
+            return Err(fault(unbound(inner)));
+        }
+        let open = self.owned_part(RawOrigin::HostStatic, &open.text).await?;
+        let close = self.owned_part(RawOrigin::HostStatic, &close.text).await?;
+        Ok(SourceRef::new(Arc::new(ViewSource::Summary {
+            open,
+            text,
+            close,
+        })))
     }
 
     async fn commit_model(

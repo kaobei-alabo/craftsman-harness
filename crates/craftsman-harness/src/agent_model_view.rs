@@ -198,11 +198,7 @@ pub(super) fn state_changed() -> AgentError {
     )
 }
 
-pub(super) enum Slot {
-    Bound(SourceRef),
-    /// Appended by the agent itself; the boundary has not been asked yet.
-    Pending(FrameworkCommit),
-}
+pub(super) use crate::provenance::Slot;
 
 /// One queued input of the active turn. `source` is set only by the typed
 /// steering entry of an agent with a source view.
@@ -541,7 +537,13 @@ impl Agent {
         &self,
         view: &ModelView,
         working: &mut AgentState,
-    ) -> Result<Vec<Vec<SourcePart>>, AgentError> {
+    ) -> Result<(Vec<Vec<SourcePart>>, Option<Vec<Slot>>), AgentError> {
+        // A preparation may replace recorded messages with a summary. It
+        // works on a copy of the slots, which takes the place of the kept
+        // ones when the working state is committed.
+        self.settle_sources(view).await?;
+        let mut slots = view.sources.lock().unwrap().clone();
+        let mut replaced = false;
         let mut additions = Vec::new();
         // The stored todos have origins only while there is one per todo.
         let todos = view
@@ -556,6 +558,9 @@ impl Agent {
                     state: working,
                     todos: todos.as_deref(),
                     additions: &mut additions,
+                    boundary: view.boundary.as_ref(),
+                    slots: &mut slots,
+                    replaced: &mut replaced,
                 };
                 entry.prepare_model_with_view(&mut prepare).await?;
             } else {
@@ -566,7 +571,15 @@ impl Agent {
                 }
             }
         }
-        Ok(additions)
+        Ok((additions, replaced.then_some(slots)))
+    }
+
+    /// The working state of a round was committed. Slots that a preparation
+    /// of that round replaced take the place of the kept ones.
+    pub(super) fn commit_slots(&self, view: &ModelView, staged: Option<Vec<Slot>>) {
+        if let Some(staged) = staged {
+            *view.sources.lock().unwrap() = staged;
+        }
     }
 
     /// The source of the committed reply that asked for the call `call_id`:
@@ -630,15 +643,17 @@ impl Agent {
         view: &ModelView,
         working: &AgentState,
         additions: Vec<Vec<SourcePart>>,
+        staged: Option<&[Slot]>,
     ) -> Result<Option<ModelDelivery>, AgentError> {
         if !working.system_extras.is_empty() {
             return Err(unavailable());
         }
         self.settle_sources(view).await?;
-        let messages = view
-            .sources
-            .lock()
-            .unwrap()
+        let current = match staged {
+            Some(staged) => staged.to_vec(),
+            None => view.sources.lock().unwrap().clone(),
+        };
+        let messages = current
             .iter()
             .map(|slot| match slot {
                 Slot::Bound(source) => Some(source.clone()),
@@ -754,5 +769,204 @@ impl Agent {
         }
         sources.push(Slot::Bound(source));
         Ok(())
+    }
+}
+
+impl TrackedPrepare<'_> {
+    /// Replaces recorded messages with a summary of them, made by
+    /// `summarizer` through its view path.
+    ///
+    /// The summarizer is given `text.system` as its system text, the recorded
+    /// messages at `summarized` with their own sources, and `text.ask` as a
+    /// final input. The summary message is `text.open`, the reply's text and
+    /// `text.close`, joined, recorded with the user role as the ordinary
+    /// compaction records it. After it come the recorded messages at `kept`,
+    /// with their slots. The usage anchor is reset as the ordinary compaction
+    /// resets it.
+    ///
+    /// Nothing is replaced when the summarizer or the boundary fails, or when
+    /// the turn is cancelled while the summarizer runs.
+    pub async fn replace_with_summary(
+        &mut self,
+        summarizer: &dyn ModelProvider,
+        text: crate::provenance::SummaryText,
+        summarized: &[usize],
+        kept: &[usize],
+    ) -> Result<(), AgentError> {
+        let crate::provenance::SummaryText {
+            system,
+            ask,
+            open,
+            close,
+        } = text;
+        if self.slots.len() != self.state.messages.len() {
+            return Err(unsourced());
+        }
+        let bound = |slots: &[Slot], index: usize| match slots.get(index) {
+            Some(Slot::Bound(source)) => Ok(source.clone()),
+            _ => Err(unsourced()),
+        };
+        let mut messages = Vec::with_capacity(summarized.len() + 1);
+        let mut sources = Vec::with_capacity(summarized.len() + 1);
+        for index in summarized {
+            messages.push(
+                self.state
+                    .messages
+                    .get(*index)
+                    .cloned()
+                    .ok_or_else(unsourced)?,
+            );
+            sources.push(bound(self.slots, *index)?);
+        }
+        messages.push(Msg::user(&*ask.text));
+        sources.push(self.boundary.host_message(&ask).await?);
+        let request = TrackedModelRequest {
+            system: vec![self.boundary.system_addition(&[system]).await?],
+            request: ModelRequest {
+                system: String::new(),
+                messages,
+                tools: Vec::new(),
+            },
+            messages: sources,
+            tools: Vec::new(),
+        };
+        let delivery = match crate::TurnCancellation::current() {
+            Some(turn) => tokio::select! {
+                biased;
+                _ = turn.cancelled() => return Err(AgentError::Cancelled),
+                delivery = summarizer.complete_with_view(request) => delivery?,
+            },
+            None => summarizer.complete_with_view(request).await?,
+        };
+        let text = match &delivery.response.message {
+            Msg::Assistant { content, .. }
+            | Msg::User { content }
+            | Msg::System { content }
+            | Msg::Tool { content, .. } => content.clone(),
+        };
+        let summary = Msg::user(format!("{}{text}{}", open.text, close.text));
+        let source = self
+            .boundary
+            .summary_source(delivery.receipt, &open, &close, &summary)
+            .await?;
+        let mut replaced = Vec::with_capacity(kept.len() + 1);
+        let mut slots = Vec::with_capacity(kept.len() + 1);
+        replaced.push(summary);
+        slots.push(Slot::Bound(source));
+        for index in kept {
+            replaced.push(
+                self.state
+                    .messages
+                    .get(*index)
+                    .cloned()
+                    .ok_or_else(unsourced)?,
+            );
+            slots.push(Slot::Bound(bound(self.slots, *index)?));
+        }
+        self.state.messages = replaced;
+        self.state.last_usage = None;
+        self.state.last_usage_msg_count = 0;
+        *self.slots = slots;
+        *self.replaced = true;
+        Ok(())
+    }
+}
+
+impl Agent {
+    /// The idle compaction of a selected agent: [`compact_idle`] with the
+    /// tracked path. The same conditions, the same exclusive activity, the
+    /// same saves before and after, and the same refusals when an approval is
+    /// pending, when the turn is cancelled or when the conversation changed
+    /// while the summarizer ran. The summarizer is asked through its view
+    /// path, and the summary and the kept messages keep their sources.
+    ///
+    /// [`compact_idle`]: Agent::compact_idle
+    pub async fn compact_idle_with_view(
+        &self,
+        compaction: &crate::builtin::CompactionMiddleware,
+    ) -> Result<Option<(usize, usize)>, AgentError> {
+        let view = self.supported_view()?;
+        if !self.durable_turn_checkpoints {
+            return Err(AgentError::State(
+                "Durable idle compaction is not enabled for this agent.".into(),
+            ));
+        }
+        let _activity = self.begin_activity(true)?;
+        let cancellation = self.turn_input.lock().unwrap().cancellation.clone();
+        match cancellation {
+            Some(turn) => {
+                turn.scope(self.compact_idle_with_view_inner(view, compaction))
+                    .await
+            }
+            None => {
+                crate::cancellation::unscoped(self.compact_idle_with_view_inner(view, compaction))
+                    .await
+            }
+        }
+    }
+
+    async fn compact_idle_with_view_inner(
+        &self,
+        view: &ModelView,
+        compaction: &crate::builtin::CompactionMiddleware,
+    ) -> Result<Option<(usize, usize)>, AgentError> {
+        if self.pending.lock().unwrap().is_some()
+            || self.parked_suspension.lock().unwrap().is_some()
+        {
+            return Err(AgentError::State(
+                "Resolve the pending approval before compacting the conversation.".into(),
+            ));
+        }
+        if self.take_cancel_request() {
+            return Err(AgentError::Cancelled);
+        }
+        view.reconcile(&mut self.state.lock().unwrap());
+        self.save_progress_checkpoint(None).await?;
+        self.settle_sources(view).await?;
+        let mut working = self.snapshot();
+        let messages = working.messages.clone();
+        let mut slots = view.sources.lock().unwrap().clone();
+        let mut replaced = false;
+        let mut additions = Vec::new();
+        {
+            let mut prepare = TrackedPrepare {
+                state: &mut working,
+                todos: None,
+                additions: &mut additions,
+                boundary: view.boundary.as_ref(),
+                slots: &mut slots,
+                replaced: &mut replaced,
+            };
+            compaction.compact_now_with_view(&mut prepare).await?;
+        }
+        let counts = {
+            let mut input = self.turn_input.lock().unwrap();
+            if input.cancel_requested
+                || input
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(|turn| turn.is_cancelled())
+            {
+                return Err(AgentError::Cancelled);
+            }
+            let mut state = self.state.lock().unwrap();
+            if state.messages != messages {
+                return Err(AgentError::State(
+                    "Conversation changed during compaction; the summary was discarded.".into(),
+                ));
+            }
+            let counts = replaced.then(|| {
+                let counts = (messages.len(), working.messages.len());
+                state.messages = working.messages;
+                state.last_usage = None;
+                state.last_usage_msg_count = 0;
+                *view.sources.lock().unwrap() = slots;
+                counts
+            });
+            input.finishing = true;
+            counts
+        };
+        self.save_progress_checkpoint(None).await?;
+        Ok(counts)
     }
 }
