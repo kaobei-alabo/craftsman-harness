@@ -1598,7 +1598,7 @@ pub async fn run(
                     app.running = true;
                     app.operation_cancellation = Some(turn.clone());
                     let tx = bridge.tx.clone();
-                    work.spawn(async move {
+                    crate::util::spawn_in(&mut work, async move {
                         let output = turn
                             .scope(crate::tools::run_shell_escape(&command, &settings))
                             .await;
@@ -1614,7 +1614,7 @@ pub async fn run(
                             let tx = bridge.tx.clone();
                             app.running = true;
                             app.operation_cancellation = Some(turn.clone());
-                            work.spawn(async move {
+                            crate::util::spawn_in(&mut work, async move {
                                 let output = turn
                                     .scope(super::commands::compact_session(agent, compaction))
                                     .await;
@@ -1663,7 +1663,7 @@ pub async fn run(
                     let controls = session.controls.clone();
                     let tx = bridge.tx.clone();
                     let prompt = extension_prompt.unwrap_or(line);
-                    work.spawn(async move {
+                    crate::util::spawn_in(&mut work, async move {
                         let result = agent.run_turn(prompt).await;
                         let event = UiEvent::turn_result_with_controls(result, controls.as_deref());
                         let _ = tx.send(event);
