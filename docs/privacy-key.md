@@ -150,9 +150,15 @@ before compilation/describe. A nonempty declared-identifier policy refuses
 because the stable admission interface currently supplies none; it is not
 silently omitted. Pre-build clear stops the old scope and reserves another;
 every failed/abandoned clear closes both session and key. Once an Agent has
-been built, a clear needs a fresh exclusive unlock and complete new build.
-That in-place input handoff is unsupported and refused while retaining the
-current conversation. The 128-scope ceiling and exhaustion remain unchanged.
+been built, private `/clear` closes the old conversation/key before waking
+old prompts and awaits its actual task/background/LSP owners. A sole normal
+reader transfers input only after its synchronous poll/read has returned;
+up to 32 available decoded ordinary events are retained in the same UI before
+the password is requested. The popup then authenticates an existing key/vault
+again through the old retained root/workspace authority. Only a successful
+unlock reserves another actual id and builds the complete fresh session.
+Cancellation or any failure ends the entry without starting a replacement or
+disabling privacy. The 128-scope ceiling and exhaustion remain unchanged.
 
 The unselected owned terminal entry now requests the complete actual terminal
 extras and retains/pumps its real receiver through construction and turns.
@@ -162,6 +168,13 @@ request/presentation/decision approvals go through actual input and SafeBackend.
 No limited-set fixture permission is used as user policy. The first current
 owned Chat/PTY check passes without file restoration, including an ordinary
 constant write, exact input/checkpoint retention and active-save refusal.
+Three additional ordinary macOS cases pass for fresh clear, Escape/Ctrl-C
+cancellation, and a decoded ordinary draft retained across password input.
+They retain config/key bytes, restored terminal modes, exact accepted human
+records in distinct threads, and password absence from capture/wires/store.
+The first clear case lost its queued committed reply in the UI; its failed
+capture remains evidence. Completion now enters the same event FIFO after
+the committed reply, so idle state cannot discard that earlier queued event.
 Voice must be explicitly disabled in this private v1 entry; unsupported
 configured parts and native opaque items refuse rather than being omitted.
 
@@ -194,8 +207,8 @@ comparison. The two helpers that read a format from a workspace and
 destination path alone exist in test builds only; a production build has no
 such answer, and the legacy restoration method still returns nothing.
 
-Normal init/status/enable and /privacy selectors, active-turn password
-reacquisition, guarded data restoration and full native/source/security
+Normal init/status/enable and /privacy selectors, password entry during live
+work without retiring its owners, guarded data restoration and full native/source/security
 validation remain pending. Reopen/transfer are unsupported; void setters
 cannot replace a fresh owner and full rebuild.
 

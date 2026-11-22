@@ -72,6 +72,10 @@ enum Case {
     FullEntry,
     #[cfg(feature = "gadgets")]
     SafeEntry,
+    #[cfg(feature = "gadgets")]
+    ClearEntry,
+    #[cfg(feature = "gadgets")]
+    ClearCancel,
 }
 impl Case {
     fn name(self) -> &'static str {
@@ -99,6 +103,10 @@ impl Case {
             Self::FullEntry => "full-entry",
             #[cfg(feature = "gadgets")]
             Self::SafeEntry => "safe-entry",
+            #[cfg(feature = "gadgets")]
+            Self::ClearEntry => "clear-entry",
+            #[cfg(feature = "gadgets")]
+            Self::ClearCancel => "clear-cancel",
         }
     }
     fn selected(arguments: impl Iterator<Item = std::ffi::OsString>) -> Option<Self> {
@@ -143,6 +151,10 @@ impl Case {
             "full-entry" => Self::FullEntry,
             #[cfg(feature = "gadgets")]
             "safe-entry" => Self::SafeEntry,
+            #[cfg(feature = "gadgets")]
+            "clear-entry" => Self::ClearEntry,
+            #[cfg(feature = "gadgets")]
+            "clear-cancel" => Self::ClearCancel,
             _ => return None,
         })
     }
@@ -168,6 +180,11 @@ async fn private_key_ui_child(case: Case) {
         entry_tests::run_safe_child().await;
         return;
     }
+    #[cfg(feature = "gadgets")]
+    if matches!(case, Case::ClearEntry | Case::ClearCancel) {
+        entry_tests::run_clear_child(matches!(case, Case::ClearCancel)).await;
+        return;
+    }
     // Every environment, path, configuration and terminal access is AFTER the
     // complete marker decision. Unmarked/unknown/duplicate startup is inert.
     let config = crate::config::config_dir();
@@ -186,7 +203,7 @@ async fn private_key_ui_child(case: Case) {
     let mut terminal = OwnedSecretTerminal::enter().unwrap();
     match case {
         #[cfg(feature = "gadgets")]
-        Case::FullEntry | Case::SafeEntry => {
+        Case::FullEntry | Case::SafeEntry | Case::ClearEntry | Case::ClearCancel => {
             unreachable!("full entry dispatched before ordinary popup fixture")
         }
         Case::Init | Case::TailInit => {

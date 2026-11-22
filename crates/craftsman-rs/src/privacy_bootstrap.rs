@@ -137,7 +137,7 @@ pub struct PrivateBootstrap {
     policy: CapturedPolicy,
     operations: PrivateKeyOperations,
     workspace: Workspace,
-    binding: FreshConversationBinding,
+    binding: Option<FreshConversationBinding>,
 }
 impl std::fmt::Debug for PrivateBootstrap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -160,7 +160,7 @@ impl PrivateBootstrap {
             policy,
             operations: PrivateKeyOperations::from_captured_root(key_root),
             workspace,
-            binding,
+            binding: Some(binding),
         })
     }
     pub fn status(&self) -> Result<FilePresence> {
@@ -186,8 +186,14 @@ impl PrivateBootstrap {
         self.workspace.recheck()?;
         let unlocked = terminal.unlock(&self.operations).await?;
         let detector = detector(&self.policy, &self.workspace)?;
+        // A clear captures authority before asking, but reserves its next
+        // actual conversation only AFTER the fresh key authenticated.
+        let binding = match self.binding {
+            Some(binding) => binding,
+            None => self.workspace.reserve()?,
+        };
         let session = Arc::new(
-            PrivacySession::open(unlocked.vault(), self.binding, detector)
+            PrivacySession::open(unlocked.vault(), binding, detector)
                 .await
                 .map_err(BootstrapError::Session)?,
         );
@@ -284,6 +290,31 @@ impl Drop for ClearBeforeBuild<'_> {
     }
 }
 impl PrivateConversation {
+    pub(crate) fn session_guard_for_retirement(&self) -> Arc<crate::privacy_send::SendGuard> {
+        self.session.send_guard()
+    }
+    /// A fresh clear keeps the OLD retained root/workspace observations as
+    /// prerequisites, recaptures the same real source, and delays allocation
+    /// until actual unlock. No equal digest or ambient path renews authority.
+    pub(crate) fn capture_after_retirement(&self) -> Result<PrivateBootstrap> {
+        self.policy.recheck().map_err(|error| match error {
+            PolicyError::Source => BootstrapError::ConfigurationChanged,
+            error => BootstrapError::Policy(error),
+        })?;
+        self.workspace.recheck()?;
+        let root = self.policy.root().duplicate_owned()?;
+        let key_root = root.duplicate_owned()?;
+        let policy = CapturedPolicy::capture_from_root(root)?;
+        let workspace = Workspace::capture(&self.workspace.canonical)?;
+        self.policy.recheck()?;
+        self.workspace.recheck()?;
+        Ok(PrivateBootstrap {
+            policy,
+            operations: PrivateKeyOperations::from_captured_root(key_root),
+            workspace,
+            binding: None,
+        })
+    }
     pub fn thread_id(&self) -> &str {
         self.session.thread_id()
     }

@@ -84,8 +84,9 @@ reply and authenticated vault commit before the separate model view is
 released. Source/key/root liveness is sampled before and after admission;
 this is not a continuous external-writer lease or an OS race-proof guarantee.
 Only pre-build clear rotates a scope while retaining its live unlock. Failed
-or abandoned rotation closes the key too. A built clear needs a fresh exclusive
-unlock and remains refused. No path raises the 128-scope ceiling, prunes,
+or abandoned rotation closes the key too. Built private `/clear` instead
+retires its actual owners and requires another exclusive existing-only unlock
+and a complete fresh build. No path raises the 128-scope ceiling, prunes,
 reopens, transfers or replays.
 
 The current admission interface masks with DeclaredIdentifiers::none(). A
@@ -100,7 +101,9 @@ The captured real key/user-policy owner makes the full-set selection; no
 fixture permission, merged Config.extra or ready Boolean substitutes for it.
 `OwnedSecretTerminal::run_private` consumes the fresh popup, finishes secret
 input/started-key cleanup, retains the original guard/panic/signal owners,
-flushes the sole-reader descriptor, and starts one ordinary EventStream.
+flushes the sole-reader descriptor, and hands off to a synchronous owned normal
+poll/read loop with a 10 ms idle sleep. No EventStream polling thread is created
+by this private entry; the ordinary terminal keeps its existing EventStream.
 The actual UiBridge receiver is pumped through the entire build and loop;
 no successful path leaves an undrained channel in the popup. The unattached
 historical request method still refuses before bridge/build effects.
@@ -136,10 +139,33 @@ not establish interruption or quiescence of native/blocking work.
 The entry intercepts settings actions BEFORE configuration/permission/model
 mutation and displays `SettingsSaveRefused`, preserving the live configuration
 and conversation. Actually changed/unavailable captured source closes both
-session and key with its separate fixed line. In-place built `/clear` requires
-fresh exclusive password acquisition and remains refused; the current owner
-is retained. Pre-build scope rotation is distinct, and its failed/abandoned
-paths close both. There is no reopen, transfer, replay or source-receipt renewal.
+session and key with its separate fixed line. Built private `/clear` takes the
+sole normal reader after its poll/read future returns, closes the old session
+and key before releasing old prompts, and awaits actual owned work/background
+joins/LSP. Cleanup/checkpoint failure refuses a replacement. The retired guard
+and key owner must actually refuse before another password is requested.
+At most 32 ready decoded normal events are retained in the same App as ordinary
+drafts; this does not promise retention of incomplete parser fragments or input
+arriving after the handoff. The same retained descriptor then belongs only to
+the password popup, which clears owned secret fragments and flushes queued
+bytes as described above. The old retained root/workspace must still match;
+policy is recaptured from that actual source, and only successful existing-only
+unlock reserves another opaque thread id. All original extras are rebuilt with
+that id, new cancellation/bridge/receiver/approval owners and the new session.
+Escape/Ctrl-C cancels the entry explicitly; it does not keep the old agent alive
+or fall back to privacy-off. Pre-build scope rotation is distinct. There is no
+reopen, transfer, replay or source-receipt renewal.
+
+The ordinary macOS clear checks exercise actual owned PTYs, real key/KDF/vault,
+captured policy, approved source-built WASM and the shared Chat builder. Fresh
+clear, Escape/Ctrl-C cancellation and decoded ordinary draft retention pass,
+including config/key byte preservation, restored modes, exact accepted human
+checkpoint records and password absence. The first fresh-clear capture timed
+out after the fresh request because completion overtook an already queued
+committed reply in the private UI. That failure is retained; actual completion
+now enters the same FIFO behind the earlier reply, with direct returned-result
+handling retained when cleanup has closed the receiver. No injected callback,
+budget/interleaving or restricted private MAIN probe supplies this proof.
 
 Voice has no reviewed private input adapter: v1 requires an actual explicit
 `voice.enabled:false` and refuses other settings. The captured policy grants

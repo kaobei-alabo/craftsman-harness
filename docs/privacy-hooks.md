@@ -7,6 +7,12 @@ still refuses as unavailable in normal frontends. An unselected
 [owned password popup and private composition](privacy-bootstrap.md) now read
 the retained non-echoing terminal directly and bind key/policy owners to a
 pinned detector and fresh conversation. No normal command selects them.
+The private owned `/clear` now retires old work/key/session owners, reacquires
+the password on its sole retained reader and builds a distinct fresh thread.
+Ordinary macOS PTYs cover that rebuild, Escape/Ctrl-C cancellation and a
+decoded ordinary draft retained across the popup; the first lost-reply capture
+and larger union's unwind warning remain failed evidence. This is no normal
+activation, continuous input/OS race guarantee or final native validation.
 The corrected design retains exact accepted input/results/history/checkpoints
 and builds a separate masked model view. This is no at-rest history or complete
 privacy claim. Full expected-set Agent construction, producer/native/HITL/
@@ -65,9 +71,9 @@ and the local correction adds independently registered inline human and
 automatic-policy issuers. The real private UI must return the original opaque
 decision for that actual request/presentation; an operation-owned decision or
 ordinary approval callback grants no such authority. Captured key/user-policy
-ownership now exists privately in A. The owned terminal consumer, restoration
-for other tools, fresh-unlock clear and normal activation remain
-unselected or unfinished. The target diagram
+ownership now exists privately in A. The owned terminal consumer and fresh
+unlock clear exist on the local unselected branch; guarded data consumers,
+other native adapters and normal activation remain unfinished. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 

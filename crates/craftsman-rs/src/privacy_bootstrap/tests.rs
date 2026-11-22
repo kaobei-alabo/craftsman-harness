@@ -48,9 +48,13 @@ async fn key_and_policy_owner(root: &Path, workspace: &Path) -> PrivateConversat
     bootstrap.operations.close_and_wait().await.unwrap();
     let detector = detector(&bootstrap.policy, &bootstrap.workspace).unwrap();
     let session = Arc::new(
-        PrivacySession::open(unlocked.vault(), bootstrap.binding, detector)
-            .await
-            .unwrap(),
+        PrivacySession::open(
+            unlocked.vault(),
+            bootstrap.binding.expect("initial owned binding"),
+            detector,
+        )
+        .await
+        .unwrap(),
     );
     PrivateConversation {
         policy: bootstrap.policy,

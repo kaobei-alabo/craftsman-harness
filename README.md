@@ -61,7 +61,9 @@ vault key and existing-only unlock backend. An unselected
 [owned password popup and private bootstrap](docs/privacy-bootstrap.md) compose
 those owners with a pinned detector and fresh conversation. The actual private
 receiver carries opaque approvals and human questions, and refuses active
-settings saves and in-place clear; normal activation remains unavailable.
+settings saves. Its private `/clear` retires the old owners, asks for the
+password again, and builds a distinct fresh conversation; normal activation
+remains unavailable.
 The local key/UI union still has a retained macOS test-binary unwind warning;
 warning and native integration gates remain open.
 A private [detector contract and admission core](docs/privacy-admission.md)
