@@ -127,6 +127,14 @@ impl Limits {
 /// config::config_dir()/privacy-vault.db, selected by a subsequent host adapter.
 pub struct VaultLocation {
     root: PathBuf,
+    opening: OpeningMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpeningMode {
+    Legacy,
+    ExistingOnly,
+    CreateOnly,
 }
 
 impl VaultLocation {
@@ -144,7 +152,10 @@ impl VaultLocation {
         {
             return Err(PrivacyError::Input);
         }
-        Ok(Self { root: root.into() })
+        Ok(Self {
+            root: root.into(),
+            opening: OpeningMode::Legacy,
+        })
     }
 }
 

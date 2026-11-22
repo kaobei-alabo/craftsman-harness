@@ -58,6 +58,27 @@ impl fmt::Debug for Vault {
 }
 
 impl Vault {
+    /// Authenticates an existing vault; never creates an absent primary file or
+    /// adopts an unmarked/foreign layout. Original SQL/limits remain unchanged.
+    pub async fn open_existing(
+        mut location: VaultLocation,
+        source: &dyn HostKeySource,
+        limits: Limits,
+    ) -> Result<Self> {
+        location.opening = super::OpeningMode::ExistingOnly;
+        Self::open(location, source, limits).await
+    }
+
+    /// Private explicit initialization; an existing primary name is a refusal.
+    pub(crate) async fn create_new(
+        mut location: VaultLocation,
+        source: &dyn HostKeySource,
+        limits: Limits,
+    ) -> Result<Self> {
+        location.opening = super::OpeningMode::CreateOnly;
+        Self::open(location, source, limits).await
+    }
+
     pub async fn open(
         location: VaultLocation,
         source: &dyn HostKeySource,
@@ -491,10 +512,15 @@ async fn open_worker(
         budget.opening_enter(open_observation::Phase::DatabaseBuild);
     }
     budget.io()?;
-    let database = libsql::Builder::new_local(&native.path)
-        .build()
-        .await
-        .map_err(sql_error)?;
+    let builder = libsql::Builder::new_local(&native.path);
+    // Only the additive existing/create-only entry points suppress SQLite's
+    // CREATE flag; deletion after native capture cannot recreate the primary.
+    let builder = if native.existing_required {
+        builder.flags(libsql::OpenFlags::SQLITE_OPEN_READ_WRITE)
+    } else {
+        builder
+    };
+    let database = builder.build().await.map_err(sql_error)?;
     #[cfg(test)]
     budget.opening_returned();
     budget.check()?;
@@ -765,10 +791,12 @@ struct NativeLocation {
     root_id: NativeIdentity,
     file_id: NativeIdentity,
     created: bool,
+    existing_required: bool,
 }
 
 impl NativeLocation {
     fn capture(location: VaultLocation, budget: &mut Budget) -> Result<Self> {
+        let opening = location.opening;
         let root = location.root;
         #[cfg(windows)]
         {
@@ -808,7 +836,10 @@ impl NativeLocation {
             }
         }
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
+        options.read(true).write(true);
+        if opening != super::OpeningMode::ExistingOnly {
+            options.create_new(true);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -816,6 +847,7 @@ impl NativeLocation {
         }
         budget.io()?;
         let created = match options.open(&path) {
+            Ok(_file) if opening == super::OpeningMode::ExistingOnly => false,
             Ok(file) => {
                 // Sidecars without a marked base may be foreign data. Creation
                 // authority over this one new base never grants their mutation.
@@ -826,7 +858,15 @@ impl NativeLocation {
                 file.sync_all().map_err(|_| PrivacyError::Io)?;
                 true
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    && opening == super::OpeningMode::Legacy =>
+            {
+                false
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(PrivacyError::Integrity);
+            }
             Err(_) => return Err(PrivacyError::Io),
         };
         let file_id = inspect(&path, false, DB_BYTES, budget)?;
@@ -848,6 +888,7 @@ impl NativeLocation {
             root_id,
             file_id,
             created,
+            existing_required: opening != super::OpeningMode::Legacy,
         };
         captured.recheck(budget)?;
         Ok(captured)

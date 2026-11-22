@@ -41,6 +41,8 @@ vault, WASM detector and restoration views are implemented privately;
 normal-session integration is still pending. See [development status](docs/privacy-hooks.md).
 A private [final-send guard](docs/privacy-send.md) that refuses requests
 containing already-mapped values is also implemented; nothing selects it yet.
+Private [key and policy ownership](docs/privacy-key.md) now adds a password-wrapped
+vault key and existing-only unlock backend; its TTY/CLI/session wiring remains unselected.
 
 ## Planned WASM enhancement
 

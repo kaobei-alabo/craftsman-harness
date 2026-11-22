@@ -1,5 +1,14 @@
 # Privacy hooks — masked model data, restored replies and file edits
 
+Private Step A now provides [real key and trusted policy ownership](privacy-key.md):
+a password-wrapped random vault key, strict user-source policy before project
+merges, create-only initialization and existing-only opening. Enabled policy
+still refuses as unavailable; no frontend/CLI/popup selects these owners.
+The corrected design retains exact accepted input/results/history/checkpoints
+and builds a separate masked model view. This is no at-rest history or complete
+privacy claim. Actual conversation binding, producer/native/resume seams,
+non-echoing terminal ownership, activation and native validation remain pending.
+
 Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under
 PR #32. The PR head passed all four hosted contexts in both native modes; a

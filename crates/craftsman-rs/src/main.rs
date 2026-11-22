@@ -43,6 +43,15 @@ mod oneshot_io;
 mod picker;
 mod platform_os;
 mod plugins;
+// Private key/policy owners; no init/unlock/enable CLI or frontend selector.
+#[doc(hidden)]
+pub mod privacy_cli;
+#[doc(hidden)]
+pub mod privacy_key;
+#[doc(hidden)]
+pub mod privacy_policy;
+#[doc(hidden)]
+pub use tui::privacy_unlock;
 // App-binary host views only; no tool, transport, renderer or hook selects them.
 #[doc(hidden)]
 pub mod privacy_restore;
