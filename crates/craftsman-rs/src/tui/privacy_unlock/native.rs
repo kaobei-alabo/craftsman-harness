@@ -70,6 +70,8 @@ enum Case {
     Unapproved,
     #[cfg(feature = "gadgets")]
     FullEntry,
+    #[cfg(feature = "gadgets")]
+    SafeEntry,
 }
 impl Case {
     fn name(self) -> &'static str {
@@ -95,6 +97,8 @@ impl Case {
             Self::Unapproved => "unapproved",
             #[cfg(feature = "gadgets")]
             Self::FullEntry => "full-entry",
+            #[cfg(feature = "gadgets")]
+            Self::SafeEntry => "safe-entry",
         }
     }
     fn selected(arguments: impl Iterator<Item = std::ffi::OsString>) -> Option<Self> {
@@ -137,6 +141,8 @@ impl Case {
             "unapproved" => Self::Unapproved,
             #[cfg(feature = "gadgets")]
             "full-entry" => Self::FullEntry,
+            #[cfg(feature = "gadgets")]
+            "safe-entry" => Self::SafeEntry,
             _ => return None,
         })
     }
@@ -157,6 +163,11 @@ async fn private_key_ui_child(case: Case) {
         entry_tests::run_child().await;
         return;
     }
+    #[cfg(feature = "gadgets")]
+    if matches!(case, Case::SafeEntry) {
+        entry_tests::run_safe_child().await;
+        return;
+    }
     // Every environment, path, configuration and terminal access is AFTER the
     // complete marker decision. Unmarked/unknown/duplicate startup is inert.
     let config = crate::config::config_dir();
@@ -175,7 +186,9 @@ async fn private_key_ui_child(case: Case) {
     let mut terminal = OwnedSecretTerminal::enter().unwrap();
     match case {
         #[cfg(feature = "gadgets")]
-        Case::FullEntry => unreachable!("full entry dispatched before ordinary popup fixture"),
+        Case::FullEntry | Case::SafeEntry => {
+            unreachable!("full entry dispatched before ordinary popup fixture")
+        }
         Case::Init | Case::TailInit => {
             assert_eq!(presence, FilePresence::Missing);
             let unlocked = terminal.initialize(&operations).await.unwrap();

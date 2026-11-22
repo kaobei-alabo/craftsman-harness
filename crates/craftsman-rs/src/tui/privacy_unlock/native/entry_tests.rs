@@ -11,39 +11,71 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::m
 const TYPED: &str = "  Handle alice@example.invalid and +886 912 345 678.  ";
 const FOLLOW: &str = "  Follow up for alice@example.invalid.  ";
 
+fn actual_alias(request: &Request) -> String {
+    let value: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_absent(&request.body);
+    eprintln!(
+        "PRIVATE-ENTRY-ACTUAL-WIRE:{}",
+        base64::engine::general_purpose::STANDARD.encode(&request.body)
+    );
+    let user = value["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|message| {
+            message["role"] == "user"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("@privacy.invalid"))
+        })
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    // Borrow the exact issued alias from the actual request. This is a
+    // model echo, not a host reconstruction/normalization of a raw alias.
+    let end = user
+        .find("@privacy.invalid")
+        .expect("actual issued email alias")
+        + "@privacy.invalid".len();
+    let start = user[..end]
+        .rfind("pv1-")
+        .expect("actual issued email alias prefix");
+    user[start..end].to_owned()
+}
+
 struct ConversationReplies(AtomicUsize);
+struct SafeReplies(AtomicUsize);
+impl Respond for SafeReplies {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let alias = actual_alias(request);
+        let index = self.0.fetch_add(1, Ordering::SeqCst);
+        let delta = match index {
+            0 => tool(
+                "ask-safe-human",
+                "ask_user",
+                serde_json::json!({"question":"Please confirm delivery."}),
+            ),
+            1 => tool(
+                "write-ordinary-note",
+                "write_file",
+                serde_json::json!({"path":"answer.txt","content":"delivered note"}),
+            ),
+            2 => serde_json::json!({"content":format!("Delivered for {alias}.")}),
+            _ => serde_json::json!({"content":format!("Follow-up acknowledged for {alias}.")}),
+        };
+        let finish = if index < 2 { "tool_calls" } else { "stop" };
+        let event = serde_json::json!({"choices":[{"delta":delta,"finish_reason":finish}],
+            "usage":{"prompt_tokens":3,"completion_tokens":2}});
+        ResponseTemplate::new(200).set_body_raw(
+            format!("data: {event}\n\ndata: [DONE]\n\n"),
+            "text/event-stream",
+        )
+    }
+}
 impl Respond for ConversationReplies {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let value: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-        assert_absent(&request.body);
-        eprintln!(
-            "PRIVATE-ENTRY-ACTUAL-WIRE:{}",
-            base64::engine::general_purpose::STANDARD.encode(&request.body)
-        );
-        let user = value["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|message| {
-                message["role"] == "user"
-                    && message["content"]
-                        .as_str()
-                        .is_some_and(|content| content.contains("@privacy.invalid"))
-            })
-            .unwrap()["content"]
-            .as_str()
-            .unwrap();
-        // Borrow the exact issued alias from the actual request. This is a
-        // model echo, not a host reconstruction/normalization of a raw alias.
-        let end = user
-            .find("@privacy.invalid")
-            .expect("actual issued email alias")
-            + "@privacy.invalid".len();
-        let start = user[..end]
-            .rfind("pv1-")
-            .expect("actual issued email alias prefix");
-        let alias = user[start..end].to_owned();
+        let alias = actual_alias(request);
         let index = self.0.fetch_add(1, Ordering::SeqCst);
         let delta = match index {
             0 => tool(
@@ -185,6 +217,12 @@ async fn source_and_user_policy(home: &Home, endpoint: &str) -> Vec<u8> {
 }
 
 pub(super) async fn run_child() {
+    run_entry_child("delivered alice@example.invalid").await;
+}
+pub(super) async fn run_safe_child() {
+    run_entry_child("delivered note").await;
+}
+async fn run_entry_child(expected_file: &str) {
     // Called only AFTER the parent's exact registered argv decision. It reads
     // the genuine owned user file; no merged Config.extra mints the policy.
     let root = crate::config::config_dir();
@@ -206,7 +244,7 @@ pub(super) async fn run_child() {
     assert_eq!(std::fs::read(root.join("config.json")).unwrap(), user);
     assert_eq!(
         std::fs::read_to_string(workspace.join("answer.txt")).unwrap(),
-        "delivered alice@example.invalid"
+        expected_file
     );
     // This opens only the already observed ordinary checkpoint store; it is
     // not a private-vault reopen, source-receipt replay or activation route.
@@ -237,6 +275,57 @@ pub(super) async fn run_child() {
     absent_secrets(&root);
     eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
     eprintln!("{COMPLETE}");
+}
+
+#[test]
+fn actual_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(SafeReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let mut pty = Pty::start(&home, Case::SafeEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Please confirm delivery.").await;
+        pty.send(b"yes, deliver\r").await;
+        pty.expect("private operation review").await;
+        pty.send(b"\x1b[F").await;
+        pty.expect("delivered note").await;
+        pty.send(b"\r").await;
+        pty.expect("Delivered for alice@example.invalid.").await;
+        pty.send(b"\x1b[Z").await;
+        pty.expect("Settings cannot be saved").await;
+        pty.send(b"/clear\r").await;
+        pty.expect("In-place private clear").await;
+        pty.send(format!("{FOLLOW}\r").as_bytes()).await;
+        pty.expect("Follow-up acknowledged for alice@example.invalid.")
+            .await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.workspace.join("answer.txt")).unwrap(),
+            "delivered note"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 4);
+        for request in requests {
+            assert_absent(&request.body);
+            let body = std::str::from_utf8(&request.body).unwrap();
+            assert!(!body.contains("alice@example.invalid"));
+            assert!(!body.contains("+886 912 345 678"));
+        }
+        absent_secrets(&home.config);
+    }));
 }
 
 #[test]
