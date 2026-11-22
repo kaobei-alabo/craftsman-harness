@@ -1,6 +1,6 @@
 use crate::error::AgentError;
 use crate::model::{ModelRequest, ModelResponse, ToolDef};
-use crate::provenance::{ModelDelivery, TrackedModelRequest, ViewSupport};
+use crate::provenance::{ModelDelivery, TrackedModelRequest, TrackedReply, ViewSupport};
 use crate::state::{AgentState, ToolCall};
 use crate::tool::{Tool, ToolCtx, ToolOutcome};
 use async_trait::async_trait;
@@ -158,6 +158,15 @@ pub trait AgentMiddleware: Send + Sync {
     /// boundary. Without one, such an agent refuses to run.
     fn view_support(&self) -> ViewSupport {
         ViewSupport::Unadapted
+    }
+    /// The review of a received reply on an agent that selected a source
+    /// view boundary, for a middleware that stated
+    /// [`ViewSupport::TrackedReply`]. Its `review_model` is not called there.
+    async fn review_model_with_view(
+        &self,
+        _reply: &mut TrackedReply<'_>,
+    ) -> Result<Flow, AgentError> {
+        Ok(Flow::Proceed)
     }
     /// The model-call wrap on an agent that selected a source view boundary,
     /// where `around_model` is never called.

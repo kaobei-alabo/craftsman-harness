@@ -43,17 +43,20 @@ not detection of everything a model writes or of opaque provider content.
 | Part | State |
 | --- | --- |
 | Raw captures, admitted nodes, conversation binding ([admission](privacy-admission.md)) | implemented, private |
-| Framework boundary: sources, typed turn, steering and approval entries, dispatch check, the agent's own messages, middleware statements | implemented, private; see below |
+| Framework boundary: sources, typed turn, steering and approval entries, dispatch check, the agent's own messages, middleware statements, tracked review of a reply | implemented, private; see below |
 | Conversation boundary: sources, composition, result records, checked operations and fields | implemented, private; see below |
-| Chat provider that sends the view through the existing client and guard | implemented, private; see below |
-| Session builder selection with a limited supported set, and typed session entries | implemented, private, selected by nothing; see below |
-| Native wires (Responses, Claude Messages, Gemini) with receipts | not implemented; such a client is refused |
-| Parts kept apart inside the system text; memory, todos, context notes, reminders | not implemented; the middleware that add them are left out and named |
-| Compaction, delegated agents, notifications and inbox with sources | not implemented; left out, or refused when they occur |
+| Providers for all four wires (Chat, Responses, Claude Messages, Gemini) through the existing clients and guard, with receipts | implemented, private; see below |
+| Protected repair of tool calls (`patch_tool_calls`) as a recorded change of the received reply | implemented, private; see below |
+| Session builder selection and typed session entries | implemented, private, selected by nothing. A session is built only when every part has a source path, which today is never the case outside test fixtures; see below |
+| Parts kept apart inside the system text; memory, todos, context notes, reminders | not implemented; the middleware that add them have no source path, so the build is refused |
+| Compaction, delegated agents, notifications and inbox with sources | not implemented; refused |
+| Receipts for approval decisions taken inside the approval gate; `ask_user` answers as drafts | not implemented |
+| Terminal ingress, `/clear`, display of replies | not implemented |
 | Verification, context and failure controls, local gadgets | not implemented; a selection that asks for one is refused |
 | Reopening, transferring or rebinding a privacy conversation | refused |
 | Restoration into replies, files and tool arguments | not implemented; separate work |
-| Key envelope, unlock, user policy, activation | not implemented; separate work |
+| Key envelope, unlock and captured user policy | a private backend exists on a separate local branch and is not part of this one. The builder selection takes the user's captured policy through the `CapturedUserPolicy` trait. Nothing in this branch implements that trait outside tests, so no selection can be made here |
+| Secret input, frontend selector, activation | not implemented |
 
 ## Framework boundary
 
@@ -108,14 +111,31 @@ the entry or before the next request. An ordinary cancellation therefore no
 longer ends a conversation. A boundary that does not know such a message
 refuses, and no later request is composed.
 
-**Middleware.** A middleware runs on a selected agent only if its author stated,
-through `AgentMiddleware::view_support`, that its hooks never add, remove or
-rewrite a recorded message, never add system text and do not need the request
-text. The agent compares the recorded messages before and after every hook
-phase and stops the turn if one changed. `around_model` is never called on a
-selected agent; `around_model_with_view` is, with a request that can be read
-and passed on but not changed. A middleware without the statement makes the
-typed entries refuse before any effect.
+**Middleware.** A middleware runs on a selected agent only if its author made a
+statement through `AgentMiddleware::view_support`. Without one, the typed
+entries refuse before any effect.
+
+- *Preserving*: its hooks leave alone everything the agent records or carries
+  between rounds, which is messages, todos, files, custom state and system
+  additions, and it does not need the request text. The statement is checked,
+  not trusted. The agent compares that state before and after every hook phase
+  and stops the turn if anything changed. Around a tool call only the tool
+  itself may change it: the agent compares the state when the tool is entered
+  and after the chain returns, and stops the turn after recording the result
+  if a middleware changed something. `around_model` is never called on a
+  selected agent; `around_model_with_view` is, with a request that can be read
+  and passed on but not changed.
+- *Tracked reply*: as above, except that its review changes the received reply.
+  Its `review_model` is not called. `review_model_with_view` is, and receives
+  only the reply, through `TrackedReply`. The single operation there replaces
+  the arguments of one call and records who replaced what with what. Those
+  records go to the boundary with the commit. A boundary that does not know
+  them refuses the changed reply; nothing is worked out afterwards by comparing
+  texts.
+
+The protected `patch_tool_calls` middleware is the one tracked reviewer. On a
+selected agent it repairs string-encoded or malformed call arguments exactly as
+it always does, and the record is the same as an unselected agent's.
 
 Still refused on a selected agent because no source-preserving path exists: the
 untyped turn, steering and resume entries, reopening a thread, transferring a
@@ -143,8 +163,13 @@ private objects:
 | The agent's own message | the agent appended it at a named event; its text was captured and admitted | the text's view |
 
 A committed model node is model-origin text. It is not an admitted node and
-gives no right to restore anything. A reply whose calls the agent removed
-because the round ended without running them is committed in that form.
+gives no right to restore anything. It keeps the reply as it was received, the
+reply as it was committed, and the recorded changes between them. What was
+committed must be what was received with those changes applied in order, or
+that reply with its calls removed because the round ended without running
+them. Anything else stops the session.
+
+A conversation has one agent. Its boundary is handed out once.
 
 **Composition.** `PrivacySession::model_view` turns a tracked request into the
 request a model may see. Each recorded text is replaced by the view of its own
@@ -197,44 +222,125 @@ at all. A field states where a known placeholder was written. It is not a
 permission to put the original there: that decision, with its own syntax,
 destination and approval checks, belongs to the restoration work.
 
-**Chat provider.** `ViewChatProvider` is the existing Chat client and request
-encoding. It composes the view, encodes it with the functions the ordinary
-provider uses, and sends it through a client bound to the conversation's send
-guard, so the final bytes of every attempt still pass the guard under the
-existing retry policy. It makes the receipt from the reply as received, before
-the agent reviews or commits it, keeps the real usage and gives the frontend
-the same round and status notifications. It refuses the ordinary `complete`
-call, so recorded text cannot be sent through it, and it refuses a client that
-speaks a native wire.
+## Providers for the four wires
+
+Two providers send the view. Both are the existing clients and encoders, bound
+to the conversation's send guard, so the final bytes of every attempt still
+pass the guard under the existing transport policy. Both refuse the ordinary
+`complete` call, so recorded text cannot be sent through them. Both keep the
+real usage.
+
+**Receipts.** The providers live inside the conversation module and are the
+only producers of a reply's receipt. The functions that make one are private
+to that module and are called only there, at the moment a client returns a
+reply, before the agent reviews or commits it. No other code can make a
+receipt from a message it holds. Every receipt, on all four wires, carries the
+position of the reply and the SHA-256 of the exact request bytes that were
+sent, taken where those bytes are sealed for sending.
+
+One half of this is still open. When the agent reports a commit, the
+conversation checks that the receipt is its own and that the committed reply
+is the received one with the recorded changes. It does not yet verify a
+witness issued by the framework that the reply was actually retained. That
+witness, and the equivalent producer for human decisions, are being added to
+the framework on a separate correction branch; `PrivacySession::human_decision`
+is still a public factory here.
+
+**Chat.** `ViewChatProvider` composes the view, encodes it with the functions
+the ordinary provider uses and sends it with the existing retry policy. It
+refuses a client that has a native transport, and it refuses a conversation
+in which a reply was received by a native transport: those items are not sent
+on another wire.
+
+**Responses, Claude Messages and Gemini.** `ViewNativeProvider` uses the
+existing native client: endpoint, headers, protocol version, the 4 MiB request
+and event bounds, the 16 MiB response bound, stream parsing, cancellation and
+usage are that client's, unchanged. There is no retry, redirect or fallback to
+another wire, as before. What differs:
+
+- The request is the view, and the provider items sent back for an earlier
+  reply come from this conversation's own receipts, not from the client's
+  history cache. That cache is neither read nor written, the history
+  middleware is not installed, and nothing about provider items is written to
+  the checkpointed state. A checkpoint cannot produce a receipt.
+- A native receipt also holds the client's identity (endpoint, model,
+  protocol and credential, as one digest) and the provider's items exactly as
+  received, signed and opaque ones included. The items are validated against the reply with the native
+  transport's own check and size bound before the receipt exists.
+- Items are sent back only for the reply they were received with, at its
+  position, by a client of the same identity, and only if that reply was
+  committed as received. Then they are sent back exactly; nothing is stripped
+  or reformatted. A reply with no receipt, or with another client's, stops the
+  session before a request exists. A native reply that a review changed is
+  refused with the native transport's own message, as on the ordinary path.
+- At most 256 replies with provider items are kept, the native history's bound.
+
+**What a client adds by itself.** The model id, the fixed fields of its wire and
+the configured generation settings are captured once as host configuration:
+for a native wire, the encoding of a request with no system text, message or
+tool, made by the same encoder; for Chat, the model id and the configured
+settings. That capture is admitted like any other raw source. A setting that
+holds a supported value cannot be replaced without changing what it means, so
+such a client is refused and the conversation that was offered ends. The
+capture is checked against the client again before every request. Request
+headers, including credentials and configured headers, are outside the view
+and the guard, as they always were.
+
+**Scope on native wires.** What is masked is raw-origin text: typed input, tool
+results, system text, tool descriptions. What is checked last is the existing
+guard: the final bytes, provider items included, must not contain an original
+this conversation already holds. Encrypted reasoning, signed thinking and
+thought signatures cannot be inspected, and nothing here claims to know what
+is inside them. A user policy that requires inspectable provider items
+therefore refuses a native wire at build.
 
 ## Session builder selection
 
 The shared session builder accepts one private selection,
-`PrivacyViewSelection`, which only host code can make from a live
-`PrivacySession`. It states that the host's policy permits that conversation
-to run with the limited set of parts that have a source-preserving path. No
-frontend, configuration key or command makes one, so no session is built this
-way outside tests.
+`PrivacyViewSelection::from_user_policy(policy, session)`: the user's captured
+policy and the live conversation that was opened under it. The policy comes in
+through the `CapturedUserPolicy` trait, which the application's policy owner
+implements for the policy it captured from the user's own configuration before
+any project file was merged. It answers two questions: whether the policy
+enables privacy for the conversation's workspace, and whether everything a
+provider is sent must be inspectable. A flag, a label or a digest is not a
+policy. Nothing in this branch implements the trait outside tests, and no
+frontend, configuration key or command makes a selection.
 
-With the selection, and before configuration, stores or providers are touched:
+Making the selection is refused when the policy does not enable privacy for
+the workspace or the conversation has ended. The builder's own result has no
+room for a reason, so the selection carries a report: when the builder refuses,
+`selection.report().refusal()` gives the host a typed `BuildRefusal`, including
+the names of the parts that have no source path.
+
+The selection carries no permission to run with fewer parts than the user
+configured. Before configuration, stores or providers are touched, the builder
+refuses:
 
 - a caller's thread id, a separately selected guard, the prepared headless
-  runtime and an owner that has already ended are refused;
+  runtime and an owner that has already ended;
 - a request for verification, context controls, failure controls, local
-  gadgets or script capture is refused, because those must not simply be left
-  out.
+  gadgets or script capture.
 
-Then the builder:
+Then it:
 
 - uses the conversation's reserved thread id for the agent and the checkpoint
   store, and the conversation's own guard for every model client it makes;
-- builds the provider as a `ViewChatProvider`, and refuses a configured native
-  wire;
+- builds the provider for the configured wire, and refuses a native wire when
+  the policy requires inspectable provider items;
 - captures the complete system text it built as one host capture, admits it
   and gives the agent no system text of its own;
-- keeps the middleware whose authors made the statement above, which today are
-  the approval gate and the result size limit, and names every other one to
-  the frontend in one line. Nothing is left out silently.
+- requires a statement from every middleware it would install. If one has
+  none, the build is refused and the frontend is told which.
+
+Today the statement exists for the approval gate, the result size limit and
+the protected call repair. Todos, memory, compaction and system reminders are
+installed in every ordinary session and have none. **So no privacy session can
+be built outside tests yet**: a selection made from a real policy is refused
+with the list of those parts. Test fixtures alone use a fixture policy and a
+second constructor, both compiled only into test builds, that leave those
+parts out and name them in one line. Neither is a user policy and neither
+gives a production path.
 
 The session keeps the view. `Session::set_thread_id` on such a session closes
 the privacy owner and changes nothing else; reopening and transfer are refused
@@ -247,20 +353,19 @@ it is accepted, so a draft that cannot be admitted is turned away unchanged and
 the conversation continues. A reason typed with a denial is checked the same
 way. Nothing calls these entries yet.
 
-**What such a session does not have.** No todo list, memory text, system
-reminders, compaction, repair of malformed tool calls, workspace checkpoints,
-delegated agents or task workflow notes. A long conversation is not compacted
-and will reach the provider's limit. The system text is one capture, not parts.
-Reading the checkpoint back with an ordinary session returns the real record:
-nothing in it is redacted or encrypted by this work.
+**In the fixtures.** A fixture session has no todo list, memory text, system
+reminders, compaction, workspace checkpoints, delegated agents or task workflow
+notes. The system text is one capture, not parts. Reading the checkpoint back
+with an ordinary session returns the real record: nothing in it is redacted or
+encrypted by this work.
 
 ## Limits that will remain
 
 - A raw text that contains an issued placeholder is refused, including a
   telephone number that equals one.
-- Provider items that are signed or opaque are kept byte-exact. If a policy
-  needs to inspect one that cannot be inspected, that representation is
-  refused; it is not stripped or rewritten.
+- Provider items that are signed or opaque are kept exactly as received and
+  sent back exactly. If a policy needs to inspect one that cannot be
+  inspected, that wire is refused; nothing is stripped or rewritten.
 - A model node is not an admitted node and gives no right to restore anything.
 - Vault capacity is fixed at 128 conversations that hold a value, 512 values
   each and 4096 in total, with no retention.

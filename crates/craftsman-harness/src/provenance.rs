@@ -25,8 +25,8 @@ use std::sync::Arc;
 #[path = "provenance_facts.rs"]
 mod facts;
 pub use facts::{
-    ActualAgentOwner, ActualReceivedReply, ActualRetainedCommit, ActualTerminalOutcome,
-    ActualToolFact, ActualToolInvocation, RetainedEvent,
+    ActualAgentOwner, ActualParkedCall, ActualReceivedReply, ActualRetainedCommit,
+    ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 
 /// Opaque evidence owned by the host that selected the boundary. This crate
@@ -132,13 +132,94 @@ pub enum ViewSupport {
     /// The agent checks the recorded messages after every hook phase and
     /// refuses the turn when one changed. Its `around_model` is not called on
     /// a selected agent; `around_model_with_view` is.
+    ///
+    /// The statement covers everything the agent records or carries between
+    /// rounds: messages, todos, files, custom state and system additions. It
+    /// is checked after every hook phase and around every tool call, where
+    /// only the tool itself may change that state.
     Preserving,
+    /// As `Preserving`, except that its review of a received reply changes
+    /// that reply. On a selected agent its `review_model` is not called;
+    /// `review_model_with_view` is, and every change it makes goes through
+    /// [`TrackedReply`] and is recorded as a derivation of what was received.
+    TrackedReply,
+}
+
+/// One change a middleware made to a received reply during its tracked
+/// review. Recorded by the agent when the change is made.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ReplyEdit {
+    /// The middleware that made the change.
+    pub by: String,
+    /// The position of the call among the reply's tool calls.
+    pub call: usize,
+    /// The arguments as they were before this change.
+    pub received: serde_json::Value,
+    /// The arguments that replaced them.
+    pub replaced: serde_json::Value,
+}
+
+/// The reply under review on a selected agent, for a middleware that stated
+/// [`ViewSupport::TrackedReply`]. It can be read freely. It can be changed
+/// only through the operations here, each of which is recorded.
+pub struct TrackedReply<'a> {
+    pub(crate) message: &'a mut Msg,
+    pub(crate) edits: &'a mut Vec<ReplyEdit>,
+    pub(crate) by: &'a str,
+}
+
+impl TrackedReply<'_> {
+    /// The reply as it stands, with earlier recorded changes applied.
+    pub fn message(&self) -> &Msg {
+        self.message
+    }
+
+    /// Replaces the arguments of one tool call of the reply. Its text, the
+    /// call's id and name and every other call stay as they are.
+    pub fn replace_call_arguments(
+        &mut self,
+        call: usize,
+        args: serde_json::Value,
+    ) -> Result<(), AgentError> {
+        let Msg::Assistant { tool_calls, .. } = &mut *self.message else {
+            return Err(AgentError::State(
+                "The reply under review is not a reply.".into(),
+            ));
+        };
+        let target = tool_calls.get_mut(call).ok_or_else(|| {
+            AgentError::State("The reply under review has no such tool call.".into())
+        })?;
+        let received = std::mem::replace(&mut target.args, args.clone());
+        self.edits.push(ReplyEdit {
+            by: self.by.to_owned(),
+            call,
+            received,
+            replaced: args,
+        });
+        Ok(())
+    }
+}
+
+impl fmt::Debug for TrackedReply<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TrackedReply([opaque])")
+    }
 }
 
 /// Implemented by the host for one conversation. Every method is called by
 /// the agent at an actual event; none can change what the agent records.
 #[async_trait]
 pub trait ModelViewBoundary: Send + Sync {
+    async fn accept_parked_decision(
+        &self,
+        parked: &ActualParkedCall,
+        action: &HitlAction,
+        source: &SourceRef,
+    ) -> Result<(), AgentError> {
+        self.accept_decision(parked.call(), action, source).await
+    }
+
     /// Called by the actual builder for its one selected agent owner. A host
     /// must bind this event owner before accepting the later witnesses.
     fn bind_agent(&self, _owner: &ActualAgentOwner) -> Result<(), AgentError> {
@@ -155,8 +236,12 @@ pub trait ModelViewBoundary: Send + Sync {
         let received = commit.received().ok_or_else(|| {
             AgentError::State("The retained model event has no received reply.".into())
         })?;
-        self.commit_model(received.transport_receipt().clone(), commit.message())
-            .await
+        self.commit_reviewed_model(
+            received.transport_receipt().clone(),
+            commit.message(),
+            commit.edits(),
+        )
+        .await
     }
 
     async fn observe_retained_tool(&self, fact: &ActualToolFact) -> Result<SourceRef, AgentError> {
@@ -237,6 +322,25 @@ pub trait ModelViewBoundary: Send + Sync {
         &self,
         result: ObservedToolResult<'_>,
     ) -> Result<SourceRef, AgentError>;
+
+    /// As [`commit_model`](Self::commit_model), for a reply that a middleware
+    /// changed during its tracked review. `edits` are those changes, in the
+    /// order they were made. With no change this is `commit_model`. The
+    /// default refuses a changed reply: a boundary that does not know the
+    /// changes cannot say what the committed reply derives from.
+    async fn commit_reviewed_model(
+        &self,
+        receipt: SourceRef,
+        committed: &Msg,
+        edits: &[ReplyEdit],
+    ) -> Result<SourceRef, AgentError> {
+        if edits.is_empty() {
+            return self.commit_model(receipt, committed).await;
+        }
+        Err(AgentError::State(
+            "This conversation has no source for a reply that was changed in review.".into(),
+        ))
+    }
 
     /// The agent itself appended `committed` at `event`, and it is recorded.
     /// Returns the source to keep beside it. The default refuses: a boundary

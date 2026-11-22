@@ -493,46 +493,37 @@ impl Agent {
             working.last_usage = Some(response.usage.clone());
             working.last_usage_msg_count = working.messages.len();
 
-            let kept = self.view_phase_start(&working);
-            let reviewed = self.chain.review_model_flow(&mut working).await;
-            if self.model_view.is_some() {
-                let failure = match &reviewed {
-                    Err(_) => true,
-                    Ok(_) => self.view_phase_end(kept.clone(), &working).is_err(),
-                };
-                if failure {
-                    // Keep the real provider reply/usage, including calls that
-                    // did not run. Keep actual non-message hook changes too.
-                    if let Some(messages) = kept {
-                        working.messages = messages;
-                    }
-                    working.last_usage = Some(response.usage.clone());
-                    working.last_usage_msg_count = working.messages.len();
-                    self.commit(working);
-                    self.journal(
-                        "assistant",
-                        serde_json::to_value(&response.message).unwrap_or_default(),
-                    );
-                    if let (Some(view), Some(received)) = (&self.model_view, view_received) {
-                        let commit = view.retained(
-                            RetainedEvent::ModelReply,
-                            &response.message,
-                            Some(received),
-                        );
-                        view.sources
-                            .lock()
-                            .unwrap()
-                            .push(model_view::Slot::Pending(commit));
-                    }
-                    let error = match reviewed {
-                        Err(error) => error,
-                        Ok(_) => AgentError::State("A middleware of this conversation changed a recorded message. Nothing further was sent.".into()),
-                    };
-                    return Err(error);
+            let mut reply_edits = Vec::new();
+            let original_messages = self.model_view.as_ref().map(|_| working.messages.clone());
+            let reviewed = match &self.model_view {
+                Some(_) => {
+                    self.review_with_view(&mut working, assistant_idx, &mut reply_edits)
+                        .await
                 }
+                None => self.chain.review_model_flow(&mut working).await,
+            };
+            if self.model_view.is_some() && reviewed.is_err() {
+                // A failed review cannot discard what the provider returned.
+                if let Some(messages) = original_messages {
+                    working.messages = messages;
+                }
+                working.last_usage = Some(response.usage.clone());
+                working.last_usage_msg_count = working.messages.len();
+                self.commit(working);
+                self.journal(
+                    "assistant",
+                    serde_json::to_value(&response.message).unwrap_or_default(),
+                );
+                if let (Some(view), Some(received)) = (&self.model_view, view_received) {
+                    let commit = view.retained_model(&response.message, received, &[]);
+                    view.sources
+                        .lock()
+                        .unwrap()
+                        .push(model_view::Slot::Pending(commit));
+                }
+                return Err(reviewed.err().expect("failed review has its error"));
             }
             let decision = reviewed?;
-            self.view_phase_end(kept, &working)?;
 
             // End and Remodel both leave this round's tool_calls unanswered
             // (no tool results will follow). OpenAI-compatible providers
@@ -561,8 +552,7 @@ impl Agent {
             );
             let view_commit = match (&self.model_view, view_received) {
                 (Some(view), Some(received)) => {
-                    let commit =
-                        view.retained(RetainedEvent::ModelReply, &assistant, Some(received));
+                    let commit = view.retained_model(&assistant, received, &reply_edits);
                     view.sources
                         .lock()
                         .unwrap()
@@ -637,6 +627,13 @@ impl Agent {
                                     round,
                                 });
                                 *self.parked_suspension.lock().unwrap() = Some((*s).clone());
+                                if let Some(view) = &self.model_view {
+                                    *view.parked.lock().unwrap() =
+                                        Some(crate::provenance::ActualParkedCall::issued(
+                                            &view.owner,
+                                            c.clone(),
+                                        ));
+                                }
                                 self.journal(
                                     "suspended",
                                     serde_json::to_value(s.as_ref()).unwrap_or_default(),
@@ -724,6 +721,9 @@ impl Agent {
         // This parked turn is being consumed; clear the retained suspension so
         // `pending_suspension` reports `None` unless a later call re-parks.
         *self.parked_suspension.lock().unwrap() = None;
+        if let Some(view) = &self.model_view {
+            *view.parked.lock().unwrap() = None;
+        }
         self.journal("resumed", serde_json::to_value(&action).unwrap_or_default());
         // Retire the durable approval BEFORE executing an approved call. A
         // crash after approval must recover an unknown operation, not a stale
@@ -768,6 +768,11 @@ impl Agent {
                         round,
                     });
                     *self.parked_suspension.lock().unwrap() = Some((*s).clone());
+                    if let Some(view) = &self.model_view {
+                        *view.parked.lock().unwrap() = Some(
+                            crate::provenance::ActualParkedCall::issued(&view.owner, c.clone()),
+                        );
+                    }
                     self.journal(
                         "suspended",
                         serde_json::to_value(s.as_ref()).unwrap_or_default(),
@@ -1113,6 +1118,10 @@ impl Agent {
         // `merge_dispatch_result` and the two-channel note atop this module).
         let t0 = self.snapshot();
         let mut working = t0.clone();
+        let dispatch_watch = self
+            .model_view
+            .as_ref()
+            .map(|_| Arc::new(Mutex::new(DispatchWatch::new(&t0))));
         let backend = self.backend.clone();
         let tools = self.tools.clone();
         let names = self.tool_names();
@@ -1128,19 +1137,25 @@ impl Agent {
             // return an `is_error` outcome for an unknown tool. Bound through
             // `as_tool_handler` so the higher-ranked return-lifetime resolves.
             let record = reached.clone();
+            let dispatch_watch = dispatch_watch.clone();
             let terminal = as_tool_handler(move |call: ToolCall, ctx: &mut ToolCtx<'_>| {
                 let found = tools.get(&call.name).cloned();
                 let names = names.clone();
                 let record = record.clone();
                 let view = terminal_view.clone();
                 let decision = decision.clone();
+                let watch = dispatch_watch.clone();
                 Box::pin(async move {
                     match found {
                         Some(tool) => match record {
                             // The exact call and outcome of the tool itself,
                             // before any middleware sees the outcome.
                             Some(record) => {
+                                if let Some(watch) = &watch {
+                                    watch.lock().unwrap().entering(ctx.state);
+                                }
                                 let given = call.clone();
+                                let given_for_watch = given.clone();
                                 let view =
                                     view.as_ref().expect("selected terminal has its view owner");
                                 view.live()?;
@@ -1175,6 +1190,12 @@ impl Agent {
                                 // replace the result or fail afterwards.
                                 view.terminal(actual.clone());
                                 record.lock().unwrap().push(actual);
+                                if let Some(watch) = &watch {
+                                    watch
+                                        .lock()
+                                        .unwrap()
+                                        .left(given_for_watch, &result, ctx.state);
+                                }
                                 result
                             }
                             None => tool.call(call.args, ctx).await,
@@ -1193,6 +1214,11 @@ impl Agent {
             }
         };
 
+        // On a selected agent: every run of the tool, and whether anything
+        // other than the tool changed the recorded state during the dispatch.
+        let watched = dispatch_watch
+            .as_ref()
+            .map(|record| record.lock().unwrap().finish(&working));
         // Three-way merge instead of a blanket overwrite commit: the backend may
         // have written to committed.files mid-dispatch (StateFs shares the Arc),
         // which a plain `commit(working)` would clobber with the stale snapshot.
@@ -1259,6 +1285,9 @@ impl Agent {
             // The actual result is journaled and committed above, and saved
             // there when durable turn checkpoints are selected.
             view.live()?;
+            if watched.as_ref().is_some_and(|(_, changed)| *changed) {
+                return Err(model_view::state_changed());
+            }
             self.record_tool_source(view, &fact).await?;
         }
         Ok(())
@@ -2295,7 +2324,7 @@ use crate::provenance::{
     ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, FrameworkCommit, ReachedTool,
     RetainedEvent,
 };
-use model_view::{ModelView, QueuedInput};
+use model_view::{DispatchWatch, ModelView, QueuedInput};
 
 #[cfg(test)]
 #[path = "agent_model_view_tests.rs"]

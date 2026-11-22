@@ -884,9 +884,10 @@ pub struct SessionExtras {
     /// Private final-send guard, minted only from an actual live vault session
     /// and its own records. No frontend, configuration or CLI route sets this.
     pub(crate) send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
-    /// Private source-view selection for one live privacy conversation,
-    /// minted only by the host's trusted policy. No frontend, configuration
-    /// or CLI route sets this.
+    /// Private source-view selection for one live privacy conversation, made
+    /// only by host code. It is not policy or key authority and carries no
+    /// permission to build with fewer parts. No frontend, configuration or
+    /// CLI route sets this.
     pub(crate) privacy_view: Option<crate::privacy_session::PrivacyViewSelection>,
     /// Installed terminal shutdown router's session owner. Absent in other modes.
     pub cancellation_session: Option<craftsman_harness::SessionCancellation>,
@@ -1538,15 +1539,27 @@ async fn build_session_with_capture_profile(
             let gadgets_requested = extras.local_gadgets || extras.script_capture.is_some();
             #[cfg(not(feature = "gadgets"))]
             let gadgets_requested = false;
-            if construction.prepared().is_some()
+            use crate::privacy_session::BuildRefusal;
+            let refusal = if selection.session().check().is_err() {
+                Some(BuildRefusal::Ended)
+            } else if !selection.policy_holds() {
+                Some(BuildRefusal::PolicyDisabled)
+            } else if construction.prepared().is_some()
                 || thread_id.is_some()
                 || send_guard.is_some()
-                || extras.verification
+            {
+                Some(BuildRefusal::NotFresh)
+            } else if extras.verification
                 || extras.context_compilation
                 || extras.failure_controls
                 || gadgets_requested
-                || selection.session().check().is_err()
             {
+                Some(BuildRefusal::RequestedPart)
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                selection.report().refuse(refusal);
                 if let Some(sink) = &extras.activity_sink {
                     sink("The private conversation view is not available for this session.");
                 }
@@ -1555,6 +1568,12 @@ async fn build_session_with_capture_profile(
             Some(selection.session().clone())
         }
     };
+    // Capture only the actual registered app input callback. No value, flag or
+    // model/project record can mint a human decision source.
+    let human_prompt = privacy_view
+        .as_ref()
+        .and_then(|_| extras.call_approval_prompt.clone());
+    let human_approval = approval.clone();
     let send_guard = match &privacy_view {
         Some(session) => Some(session.send_guard()),
         None => send_guard,
@@ -1867,21 +1886,66 @@ async fn build_session_with_capture_profile(
             extras.output_closed.clone(),
         )?,
         None if privacy_view.is_some() => {
-            // The view provider binds the conversation's own guard itself and
-            // sends only requests composed from sources, on the Chat wire.
+            // A view provider binds the conversation's own guard itself and
+            // sends only requests composed from sources, on the wire the
+            // configured client speaks. The native history cache is not
+            // installed: provider items live in the conversation's receipts.
             let session = privacy_view.clone()?;
-            match crate::privacy_provider::ViewChatProvider::new(
-                make_unguarded_client()?,
-                session,
-                usage.clone(),
-                main_sink,
-            ) {
-                Ok(provider) => Arc::new(
-                    provider.with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
-                ),
-                Err(_) => {
+            let client = make_unguarded_client()?;
+            let inspectable = extras
+                .privacy_view
+                .as_ref()
+                .is_some_and(|selection| selection.requires_inspectable_items());
+            use crate::privacy_session::BuildRefusal;
+            let unavailable = (
+                BuildRefusal::Provider,
+                "The model connection of this session has no private view.",
+            );
+            let built: Result<Arc<dyn ModelProvider>, (BuildRefusal, &str)> = if client
+                .native
+                .is_none()
+            {
+                crate::privacy_session::ViewChatProvider::new(
+                    client,
+                    session,
+                    usage.clone(),
+                    main_sink,
+                )
+                .await
+                .map(|provider| {
+                    Arc::new(
+                        provider
+                            .with_sinks(extras.round_sink.clone(), extras.activity_sink.clone()),
+                    ) as Arc<dyn ModelProvider>
+                })
+                .map_err(|_| unavailable.clone())
+            } else if inspectable {
+                Err((
+                    BuildRefusal::OpaqueProviderItems,
+                    "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected.",
+                ))
+            } else {
+                crate::privacy_session::ViewNativeProvider::new(
+                    client,
+                    session,
+                    usage.clone(),
+                    main_sink,
+                )
+                .await
+                .map(|provider| {
+                    Arc::new(provider.with_round_sink(extras.round_sink.clone()))
+                        as Arc<dyn ModelProvider>
+                })
+                .map_err(|_| unavailable.clone())
+            };
+            match built {
+                Ok(provider) => provider,
+                Err((refusal, line)) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection.report().refuse(refusal);
+                    }
                     if let Some(sink) = &extras.activity_sink {
-                        sink("The private conversation view supports only the Chat wire.");
+                        sink(line);
                     }
                     return None;
                 }
@@ -1987,6 +2051,11 @@ async fn build_session_with_capture_profile(
                 Err(_) => None,
             };
             let Some(boundary) = boundary else {
+                if let Some(selection) = &extras.privacy_view {
+                    selection
+                        .report()
+                        .refuse(crate::privacy_session::BuildRefusal::SystemText);
+                }
                 if let Some(sink) = &extras.activity_sink {
                     sink("The system text of this session has no private view.");
                 }
@@ -2262,6 +2331,7 @@ async fn build_session_with_capture_profile(
     // Shared registry + notification channel: the `task` tool records spawned
     // subagents in `registry`; background children push completions/messages on
     // `notif_tx`, which the app drains through `notif_rx` (see Session).
+    let human_workspace = cwd.clone();
     let registry = Arc::new(AgentRegistry::default());
     let (notif_tx, notif_rx) = craftsman_harness::notification_channel();
 
@@ -2613,23 +2683,50 @@ async fn build_session_with_capture_profile(
         // disabled while its provider is selected. No model/tool work in hooks.
         middleware.insert(0, history as Arc<dyn AgentMiddleware>);
     }
-    // The selection permits the limited supported set. Every middleware
-    // whose author made no statement for the source view is left out and
-    // named to the frontend; nothing is dropped silently.
+    // A privacy conversation is built only if every middleware has a
+    // source-preserving path. One whose author made no statement for the
+    // source view refuses the build, and the frontend is told which. A
+    // selection carries no permission to run with fewer parts than the user
+    // configured. Test fixtures alone may leave such parts out, by name.
     let middleware = match &privacy_view {
         None => middleware,
         Some(_) => {
-            let (kept, left_out): (Vec<_>, Vec<_>) = middleware.into_iter().partition(|entry| {
-                entry.view_support() == craftsman_harness::provenance::ViewSupport::Preserving
+            use craftsman_harness::provenance::ViewSupport;
+            let (kept, unadapted): (Vec<_>, Vec<_>) = middleware.into_iter().partition(|entry| {
+                matches!(
+                    entry.view_support(),
+                    ViewSupport::Preserving | ViewSupport::TrackedReply
+                )
             });
-            if !left_out.is_empty()
-                && let Some(sink) = &extras.activity_sink
-            {
-                let names: Vec<&str> = left_out.iter().map(|entry| entry.name()).collect();
-                sink(&format!(
-                    "This private conversation runs without: {}.",
-                    names.join(", ")
-                ));
+            if !unadapted.is_empty() {
+                let names: Vec<&str> = unadapted.iter().map(|entry| entry.name()).collect();
+                let leave_out = extras
+                    .privacy_view
+                    .as_ref()
+                    .is_some_and(|selection| selection.leaves_out_unadapted_parts());
+                if let Some(sink) = &extras.activity_sink {
+                    sink(&if leave_out {
+                        format!(
+                            "This private conversation runs without: {}.",
+                            names.join(", ")
+                        )
+                    } else {
+                        format!(
+                            "This private conversation cannot be built. No source path exists for: {}.",
+                            names.join(", ")
+                        )
+                    });
+                }
+                if !leave_out {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection.report().refuse(
+                            crate::privacy_session::BuildRefusal::MissingSourcePaths(
+                                names.iter().map(|name| (*name).to_owned()).collect(),
+                            ),
+                        );
+                    }
+                    return None;
+                }
             }
             kept
         }
@@ -2733,6 +2830,37 @@ async fn build_session_with_capture_profile(
     if let Some(controls) = &controls {
         controls.bind_tools(&agent, &trusted_observational_tools, &trusted_file_tools);
     }
+    let human_source = privacy_view
+        .as_ref()
+        .zip(human_prompt)
+        .map(|(privacy, prompt)| {
+            let approval = human_approval.clone();
+            let workspace = human_workspace.clone();
+            crate::privacy_entry::HumanDecisionProducer::register(
+                privacy.clone(),
+                Arc::new(move |parked| {
+                    let call = parked.call();
+                    let summary = crate::tools::summarize_call(&call.name, &call.args);
+                    let details =
+                        crate::tools::approval_details_at(&call.name, &call.args, &workspace);
+                    match prompt(call, &summary, &details) {
+                        ApprovalPromptResult::Approve => crate::privacy_entry::HumanChoice::Approve,
+                        ApprovalPromptResult::ApproveAlways => {
+                            let mut approval = approval.lock().unwrap();
+                            if crate::tools::NETWORK_TOOLS.contains(&call.name.as_str()) {
+                                approval.auto_approve_network = true;
+                            } else {
+                                approval.auto_approve = true;
+                            }
+                            crate::privacy_entry::HumanChoice::ApproveAlways
+                        }
+                        ApprovalPromptResult::Reject(feedback) => {
+                            crate::privacy_entry::HumanChoice::Deny(feedback)
+                        }
+                    }
+                }),
+            )
+        });
     Some(Session {
         #[cfg(feature = "gadgets")]
         script_capture,
@@ -2750,7 +2878,13 @@ async fn build_session_with_capture_profile(
         send_guard,
         privacy_view: privacy_view
             .zip(privacy_boundary)
-            .map(|(session, boundary)| crate::privacy_session::PrivacyView::new(session, boundary)),
+            .map(|(session, boundary)| {
+                let view = crate::privacy_session::PrivacyView::new(session, boundary);
+                match human_source {
+                    Some(source) => view.with_human_source(source),
+                    None => view,
+                }
+            }),
         memories,
         compaction,
         mcp: mcp_summary,

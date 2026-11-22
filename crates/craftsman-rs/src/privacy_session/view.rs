@@ -22,7 +22,8 @@
 
 use super::*;
 use craftsman_harness::provenance::{
-    FrameworkCommit, ModelViewBoundary, ObservedToolResult, ReachedTool, SourceRef,
+    ActualAgentOwner, ActualRetainedCommit, ActualToolFact, ActualToolInvocation, FrameworkCommit,
+    ModelViewBoundary, ObservedToolResult, ReachedTool, ReplyEdit, RetainedEvent, SourceRef,
     TrackedModelRequest,
 };
 use craftsman_harness::{
@@ -41,10 +42,12 @@ enum ViewSource {
     Result {
         node: AdmittedNode,
         actual: Arc<ActualToolResult>,
+        commit: ActualRetainedCommit,
     },
     Framework {
         node: AdmittedNode,
         event: FrameworkCommit,
+        commit: ActualRetainedCommit,
     },
 }
 
@@ -53,12 +56,106 @@ enum ViewSource {
 pub struct ReceivedModel {
     owner: Arc<Inner>,
     message: Msg,
+    request: RequestContext,
+    native: Option<NativeReceipt>,
+}
+
+/// The request a reply answered, as the transport that sent it knows it.
+#[derive(Clone, Copy)]
+struct RequestContext {
+    /// The number of messages in the request, which is the position of the
+    /// reply.
+    index: usize,
+    /// SHA-256 of the exact request bytes that were sent.
+    sha256: [u8; 32],
+}
+
+/// What this conversation's own native transport actually received with one
+/// reply. It exists only in memory, from the moment of receipt. A checkpoint
+/// or a history cache cannot make one.
+struct NativeReceipt {
+    /// Endpoint, model, protocol and credential of the receiving client.
+    identity: String,
+    /// The provider's own items, signed and opaque ones included, exactly as
+    /// received.
+    items: Vec<serde_json::Value>,
+}
+
+/// The receipt of a reply that the Chat transport for `session` has just
+/// received.
+/// Called only by that transport, with the request it actually sent.
+pub(super) fn received_chat_reply(
+    session: &PrivacySession,
+    message: &Msg,
+    index: usize,
+    request_sha256: [u8; 32],
+) -> Result<ReceivedModel, SessionStop> {
+    session.inner.live()?;
+    Ok(ReceivedModel {
+        owner: session.inner.clone(),
+        message: message.clone(),
+        request: RequestContext {
+            index,
+            sha256: request_sha256,
+        },
+        native: None,
+    })
+}
+
+/// The receipt of a reply that a native transport for `session` has just
+/// received:
+/// the client's identity and the provider's items exactly as received.
+/// Called only by that transport, with the request it actually sent.
+pub(super) fn received_native_reply(
+    session: &PrivacySession,
+    message: &Msg,
+    identity: &str,
+    index: usize,
+    request_sha256: [u8; 32],
+    items: Vec<serde_json::Value>,
+) -> Result<ReceivedModel, SessionStop> {
+    let mut received = received_chat_reply(session, message, index, request_sha256)?;
+    received.native = Some(NativeReceipt {
+        identity: identity.to_owned(),
+        items,
+    });
+    Ok(received)
 }
 
 struct ModelInner {
     owner: Arc<Inner>,
+    commit: ActualRetainedCommit,
+    /// The reply as the agent committed it.
     message: Msg,
+    /// The reply as it was received.
+    received: Msg,
+    /// The recorded changes that lead from the received reply to the
+    /// committed one, in order.
+    edits: Vec<ReplyEdit>,
+    request: RequestContext,
+    native: Option<NativeReceipt>,
     fields: Option<Vec<SourceField>>,
+}
+
+/// The provider items a native request sends back, by message position.
+/// Built for one request from the committed model nodes of the conversation.
+pub struct NativeReplay {
+    items: Vec<Option<Vec<serde_json::Value>>>,
+}
+
+impl NativeReplay {
+    /// The items this conversation received for the reply at `index`. They
+    /// are given only for the reply they were received with.
+    pub fn items(&self, index: usize, message: &Msg) -> Option<Vec<serde_json::Value>> {
+        matches!(message, Msg::Assistant { .. })
+            .then(|| self.items.get(index).cloned().flatten())
+            .flatten()
+    }
+
+    /// How many replies of the request carry provider items.
+    pub fn replies(&self) -> usize {
+        self.items.iter().flatten().count()
+    }
 }
 
 /// A received reply that the agent committed. Model-origin text: separate
@@ -78,6 +175,31 @@ impl CommittedModelNode {
     pub fn message(&self) -> Result<&Msg, SessionStop> {
         self.inner.owner.live()?;
         Ok(&self.inner.message)
+    }
+
+    /// The reply as it was received, before any recorded change.
+    pub fn received_message(&self) -> Result<&Msg, SessionStop> {
+        self.inner.owner.live()?;
+        Ok(&self.inner.received)
+    }
+
+    /// The recorded changes between the received and the committed reply.
+    pub fn edits(&self) -> Result<&[ReplyEdit], SessionStop> {
+        self.inner.owner.live()?;
+        Ok(&self.inner.edits)
+    }
+
+    /// The SHA-256 of the exact request bytes this reply answered, as the
+    /// transport that sent them recorded it.
+    pub fn request_sha256(&self) -> Result<[u8; 32], SessionStop> {
+        self.inner.owner.live()?;
+        Ok(self.inner.request.sha256)
+    }
+
+    /// Whether a native transport received the reply, with provider items.
+    pub fn has_provider_items(&self) -> Result<bool, SessionStop> {
+        self.inner.owner.live()?;
+        Ok(self.inner.native.is_some())
     }
 
     /// Every occurrence in the reply's text of a placeholder this
@@ -144,6 +266,7 @@ impl SourceField {
 /// arguments name issued placeholders.
 pub struct ApprovedOperation {
     owner: Arc<Inner>,
+    invocation: ActualToolInvocation,
     model: CommittedModelNode,
     call: ToolCall,
     edited: bool,
@@ -212,11 +335,6 @@ impl ActualToolResult {
 }
 
 /// The host's record of what a person decided about a call it showed them.
-struct HumanDecision {
-    owner: Arc<Inner>,
-    call: ToolCall,
-    action: HitlAction,
-}
 
 /// Why a request could not be composed from its sources. The session is
 /// stopped: a recorded item of the conversation has no usable view.
@@ -237,7 +355,7 @@ fn refused(error: AdmitError) -> AgentError {
 }
 
 impl AdmittedNode {
-    fn captured_text_is(&self, text: &str) -> bool {
+    pub(crate) fn captured_text_is(&self, text: &str) -> bool {
         self.inner.raw.inner.text.as_str() == text
     }
 
@@ -345,30 +463,48 @@ impl PrivacySession {
         Ok(SourceRef::new(Arc::new(ViewSource::Admitted(node.clone()))))
     }
 
-    /// Called by this conversation's own transport with the reply it has just
-    /// received, before anything else happens to that reply.
-    pub fn received_model(&self, message: &Msg) -> Result<ReceivedModel, SessionStop> {
-        self.inner.live()?;
-        Ok(ReceivedModel {
-            owner: self.inner.clone(),
-            message: message.clone(),
-        })
+    /// The request a model may see on the Chat wire. Refused, and the
+    /// session stopped, when a reply of the conversation was received by a
+    /// native transport: its items are not sent on another wire.
+    pub fn chat_view(&self, request: &TrackedModelRequest) -> Result<ModelRequest, SessionStop> {
+        let view = self.model_view(request)?;
+        let foreign = request.message_sources().iter().any(|source| {
+            matches!(source.downcast::<ViewSource>().as_deref(),
+                Some(ViewSource::Model(node)) if node.inner.native.is_some())
+        });
+        if foreign {
+            return Err(unbound(&self.inner));
+        }
+        Ok(view)
     }
 
-    /// Called by the interface that actually showed `call` to a person and
-    /// took `action` from them. The result is the evidence for
-    /// `Agent::resume_with_view`.
-    pub fn human_decision(
+    /// The request a model may see on a native wire, with the provider items
+    /// to send back. `identity` is the sending client's. Every reply of the
+    /// conversation must have been received by a client of exactly that
+    /// identity, at exactly its position. A reply without such a receipt, or
+    /// with another client's, stops the session before a request exists.
+    /// Items are sent back only for a reply that was committed as received.
+    pub fn native_view(
         &self,
-        call: &ToolCall,
-        action: &HitlAction,
-    ) -> Result<SourceRef, SessionStop> {
-        self.inner.live()?;
-        Ok(SourceRef::new(Arc::new(HumanDecision {
-            owner: self.inner.clone(),
-            call: call.clone(),
-            action: action.clone(),
-        })))
+        request: &TrackedModelRequest,
+        identity: &str,
+    ) -> Result<(ModelRequest, NativeReplay), SessionStop> {
+        let view = self.model_view(request)?;
+        let mut items = Vec::with_capacity(view.messages.len());
+        for (index, source) in request.message_sources().iter().enumerate() {
+            let own = source.downcast::<ViewSource>();
+            let Some(ViewSource::Model(node)) = own.as_deref() else {
+                items.push(None);
+                continue;
+            };
+            let Some(receipt) = node.inner.native.as_ref().filter(|receipt| {
+                receipt.identity == identity && node.inner.request.index == index
+            }) else {
+                return Err(unbound(&self.inner));
+            };
+            items.push((node.inner.received == node.inner.message).then(|| receipt.items.clone()));
+        }
+        Ok((view, NativeReplay { items }))
     }
 
     /// The committed model node behind `source`, if it is one of this
@@ -398,7 +534,9 @@ impl PrivacySession {
     /// if it is one of this session's.
     pub fn actual_result(&self, source: &SourceRef) -> Option<Arc<ActualToolResult>> {
         match &*source.downcast::<ViewSource>()? {
-            ViewSource::Result { node, actual } if node.admitted_by(self) => Some(actual.clone()),
+            ViewSource::Result { node, actual, .. } if node.admitted_by(self) => {
+                Some(actual.clone())
+            }
             _ => None,
         }
     }
@@ -414,6 +552,29 @@ impl PrivacySession {
         let inner = &self.inner;
         inner.live()?;
         let recorded = request.recorded();
+        let actor = inner
+            .agent_owner
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(SessionStop::Unbound)?;
+        if request
+            .retained_commits()
+            .iter()
+            .any(|commit| !commit.owner().same_agent(&actor))
+        {
+            return Err(unbound(inner));
+        }
+        if request.retained_commits().len() != recorded.messages.len()
+            || request
+                .retained_commits()
+                .iter()
+                .zip(&recorded.messages)
+                .any(|(commit, message)| commit.message() != message)
+        {
+            return Err(unbound(inner));
+        }
+
         if !recorded.system.is_empty()
             || recorded.messages.len() != request.message_sources().len()
             || recorded.tools.len() != request.tool_sources().len()
@@ -453,26 +614,37 @@ impl PrivacySession {
                             content,
                             is_error,
                         },
-                        ViewSource::Result { node, actual },
-                    ) if actual.call_id == *tool_call_id => Msg::Tool {
-                        tool_call_id: tool_call_id.clone(),
-                        content: view(node, content)?,
-                        is_error: *is_error,
-                    },
+                        ViewSource::Result {
+                            node,
+                            actual,
+                            commit,
+                        },
+                    ) if actual.call_id == *tool_call_id && commit.message() == message => {
+                        Msg::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: view(node, content)?,
+                            is_error: *is_error,
+                        }
+                    }
                     (
                         Msg::Tool {
                             tool_call_id,
                             content,
                             is_error,
                         },
-                        ViewSource::Framework { node, event },
-                    ) if matches!(
-                        event,
-                        FrameworkCommit::CancelledCall
-                            | FrameworkCommit::UnansweredCall
-                            | FrameworkCommit::UnrecordedCall
-                            | FrameworkCommit::Denial
-                    ) =>
+                        ViewSource::Framework {
+                            node,
+                            event,
+                            commit,
+                        },
+                    ) if commit.message() == message
+                        && matches!(
+                            event,
+                            FrameworkCommit::CancelledCall
+                                | FrameworkCommit::UnansweredCall
+                                | FrameworkCommit::UnrecordedCall
+                                | FrameworkCommit::Denial
+                        ) =>
                     {
                         Msg::Tool {
                             tool_call_id: tool_call_id.clone(),
@@ -488,13 +660,16 @@ impl PrivacySession {
                         ViewSource::Framework {
                             node,
                             event: FrameworkCommit::CancelNote,
+                            commit,
                         },
-                    ) if tool_calls.is_empty() => Msg::Assistant {
+                    ) if tool_calls.is_empty() && commit.message() == message => Msg::Assistant {
                         content: view(node, content)?,
                         tool_calls: Vec::new(),
                     },
                     (Msg::Assistant { .. }, ViewSource::Model(node))
-                        if node.committed_by(self) && node.inner.message == *message =>
+                        if node.committed_by(self)
+                            && node.inner.commit.message() == message
+                            && node.inner.message == *message =>
                     {
                         message.clone()
                     }
@@ -538,7 +713,9 @@ impl PrivacySession {
 
     /// The boundary to select on the one agent of this conversation. The
     /// system channel is made of `system`, in order: raw host text that was
-    /// captured and admitted before the first request.
+    /// captured and admitted before the first request. A conversation has one
+    /// agent, so the boundary is handed out once; a second request for it is
+    /// refused.
     pub fn boundary(
         self: &Arc<Self>,
         system: &[AdmittedNode],
@@ -550,22 +727,31 @@ impl PrivacySession {
             }
             sources.push(self.source(node)?);
         }
+        if self.inner.bound.swap(true, Ordering::AcqRel) {
+            return Err(SessionStop::Unbound);
+        }
         Ok(Arc::new(ConversationBoundary {
             session: self.clone(),
             system: sources,
             definitions: tokio::sync::Mutex::new(Vec::new()),
             dispatch: std::sync::Mutex::new(Dispatch::default()),
+            agent: std::sync::Mutex::new(None),
         }))
     }
 }
 
 /// What the boundary remembers between a reply and the calls it asked for.
+struct Decided {
+    call: ToolCall,
+    action: HitlAction,
+    source: SourceRef,
+}
 #[derive(Default)]
 struct Dispatch {
     /// The last reply the agent committed.
     model: Option<CommittedModelNode>,
     /// The exact call a checked human decision allows to run next.
-    decided: Option<ToolCall>,
+    decided: Option<Decided>,
     /// The operation checked for the call that is running now.
     in_flight: Option<Arc<ApprovedOperation>>,
 }
@@ -578,9 +764,24 @@ pub struct ConversationBoundary {
     /// entry is reused only while the definition's text is the captured text.
     definitions: tokio::sync::Mutex<Vec<(String, SourceRef)>>,
     dispatch: std::sync::Mutex<Dispatch>,
+    agent: std::sync::Mutex<Option<ActualAgentOwner>>,
 }
 
 impl ConversationBoundary {
+    pub(crate) fn require_agent(&self, owner: &ActualAgentOwner) -> Result<(), AgentError> {
+        self.session.check().map_err(fault)?;
+        if !self
+            .agent
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|held| held.same_agent(owner))
+        {
+            return Err(fault(SessionStop::Unbound));
+        }
+        Ok(())
+    }
+
     /// The operation that was checked for the call running now, for a host
     /// component at the tool that needs to know exactly what was approved.
     pub fn operation_in_flight(&self) -> Option<Arc<ApprovedOperation>> {
@@ -603,6 +804,24 @@ impl ConversationBoundary {
 
 #[async_trait::async_trait]
 impl ModelViewBoundary for ConversationBoundary {
+    fn bind_agent(&self, owner: &ActualAgentOwner) -> Result<(), AgentError> {
+        self.session.check().map_err(fault)?;
+        let mut agent = self.agent.lock().unwrap();
+        if agent.is_some() {
+            return Err(fault(SessionStop::Unbound));
+        }
+        *agent = Some(owner.clone());
+        let mut session_owner = self.session.inner.agent_owner.lock().unwrap();
+        if session_owner.is_some() {
+            return Err(fault(SessionStop::Unbound));
+        }
+        *session_owner = Some(owner.clone());
+        Ok(())
+    }
+    fn close(&self) {
+        self.session.stop();
+    }
+
     async fn system_sources(&self) -> Result<Vec<SourceRef>, AgentError> {
         self.session.check().map_err(fault)?;
         Ok(self.system.clone())
@@ -644,24 +863,78 @@ impl ModelViewBoundary for ConversationBoundary {
         Ok(source)
     }
 
-    async fn commit_model(
+    async fn commit_model(&self, _: SourceRef, _: &Msg) -> Result<SourceRef, AgentError> {
+        Err(fault(unbound(&self.session.inner)))
+    }
+    async fn commit_reviewed_model(
         &self,
-        receipt: SourceRef,
-        committed: &Msg,
+        _: SourceRef,
+        _: &Msg,
+        _: &[ReplyEdit],
     ) -> Result<SourceRef, AgentError> {
+        Err(fault(unbound(&self.session.inner)))
+    }
+    async fn commit_retained_model(
+        &self,
+        commit: &ActualRetainedCommit,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(commit.owner())?;
+        if commit.event() != RetainedEvent::ModelReply {
+            return Err(fault(SessionStop::Unbound));
+        }
+        let actual = commit
+            .received()
+            .ok_or_else(|| fault(SessionStop::Unbound))?;
+        self.require_agent(actual.owner())?;
+        let receipt = actual.transport_receipt().clone();
+        let committed = commit.message();
+        let edits = commit.edits();
         let inner = &self.session.inner;
         inner.live().map_err(fault)?;
-        // The receipt is this conversation's own, and what was committed is
-        // what was received, or that reply with its calls removed because the
-        // round ended without running them.
-        let fits = receipt.downcast::<ReceivedModel>().is_some_and(|received| {
-            Arc::ptr_eq(&received.owner, inner)
-                && (received.message == *committed
-                    || without_calls(&received.message).as_ref() == Some(committed))
+        // The receipt is this conversation's own. What was committed is what
+        // was received with the recorded changes applied in order, or that
+        // reply with its calls removed because the round ended without
+        // running them. The changes are the agent's own record of what a
+        // tracked review did; nothing is worked out from a comparison.
+        let Some(received) = receipt
+            .downcast::<ReceivedModel>()
+            .filter(|received| Arc::ptr_eq(&received.owner, inner))
+        else {
+            return Err(fault(unbound(inner)));
+        };
+        if received.message != *actual.message() {
+            return Err(fault(unbound(inner)));
+        }
+        let derived = edits
+            .iter()
+            .try_fold(received.message.clone(), |mut reply, edit| {
+                let Msg::Assistant { tool_calls, .. } = &mut reply else {
+                    return None;
+                };
+                let call = tool_calls.get_mut(edit.call)?;
+                (call.args == edit.received).then(|| call.args = edit.replaced.clone())?;
+                Some(reply)
+            });
+        let fits = derived.as_ref().is_some_and(|derived| {
+            derived == committed || without_calls(derived).as_ref() == Some(committed)
         });
         if !fits {
             return Err(fault(unbound(inner)));
         }
+        if received.native.is_some() && !edits.is_empty() {
+            // Provider items were validated against the reply as received.
+            // The native transport refuses a reply that was changed after
+            // that, and so does this conversation.
+            inner.stop();
+            return Err(AgentError::State(
+                "Native model response was changed after validation; tool dispatch was refused."
+                    .into(),
+            ));
+        }
+        let native = received.native.as_ref().map(|receipt| NativeReceipt {
+            identity: receipt.identity.clone(),
+            items: receipt.items.clone(),
+        });
         let fields = match committed {
             Msg::Assistant { content, .. } => {
                 inner.fields_in(&FieldPlace::ReplyText, content).await
@@ -671,7 +944,12 @@ impl ModelViewBoundary for ConversationBoundary {
         let node = CommittedModelNode {
             inner: Arc::new(ModelInner {
                 owner: inner.clone(),
+                commit: commit.clone(),
                 message: committed.clone(),
+                received: received.message.clone(),
+                edits: edits.to_vec(),
+                request: received.request,
+                native,
                 fields,
             }),
         };
@@ -684,46 +962,94 @@ impl ModelViewBoundary for ConversationBoundary {
 
     async fn observe_tool_result(
         &self,
-        result: ObservedToolResult<'_>,
+        _: ObservedToolResult<'_>,
     ) -> Result<SourceRef, AgentError> {
-        let operation = {
-            let mut dispatch = self.dispatch.lock().unwrap();
-            dispatch
-                .in_flight
-                .take()
-                .filter(|operation| operation.call.id == result.call_id)
+        Err(fault(SessionStop::Unbound))
+    }
+    async fn observe_retained_tool(&self, fact: &ActualToolFact) -> Result<SourceRef, AgentError> {
+        self.require_agent(fact.owner())?;
+        let commit = fact.commit().ok_or_else(|| fault(SessionStop::Unbound))?;
+        self.require_agent(commit.owner())?;
+        let Msg::Tool {
+            tool_call_id,
+            content,
+            ..
+        } = commit.message()
+        else {
+            return Err(fault(SessionStop::Unbound));
         };
-        // The recorded content is the tool's own only when the last run of
-        // the tool returned exactly it. Otherwise the chain wrote it: a
-        // refusal or denial on the way, a cut, or the text of a failure.
-        let own = matches!(result.reached.last().map(|run| &run.result),
-            Some(Ok(outcome)) if outcome.content == result.content);
-        let origin = if own {
+        if commit.event() != RetainedEvent::ToolResult {
+            return Err(fault(SessionStop::Unbound));
+        }
+        let mut operations = Vec::new();
+        for terminal in fact.terminals() {
+            self.require_agent(terminal.invocation().owner())?;
+            let operation = terminal
+                .operation_source()
+                .and_then(|source| source.downcast::<ApprovedOperation>())
+                .ok_or_else(|| fault(SessionStop::Unbound))?;
+            if !operation.invocation.same_invocation(terminal.invocation())
+                || operation.call != *terminal.invocation().call()
+            {
+                return Err(fault(SessionStop::Unbound));
+            }
+            operations.push(operation);
+        }
+        let actual = Arc::new(ActualToolResult {
+            call_id: tool_call_id.clone(),
+            tool: fact.proposed_call().name.clone(),
+            operation: operations.first().cloned(),
+            reached: fact
+                .terminals()
+                .iter()
+                .map(|terminal| terminal.reached().clone())
+                .collect(),
+            returned: fact.returned().cloned(),
+        });
+        // This label records that a checked actual terminal also returned this
+        // value. It grants no source/restore authority; the immutable invocation,
+        // outcome and retained message above supply the event binding.
+        let observed_tool_value = fact.terminals().iter().any(|terminal| {
+            matches!(&terminal.reached().result, Ok(outcome) if outcome.content == *content
+                && Some(outcome.is_error) == fact.returned().map(|returned| returned.is_error))
+        });
+        let origin = if observed_tool_value {
             RawOrigin::ToolResult
         } else {
             RawOrigin::ChainResult
         };
-        // The content is an accepted fact: it is admitted or the session
-        // stops. It is never replaced.
-        let node = self.admit(origin, result.content).await?;
-        let actual = Arc::new(ActualToolResult {
-            call_id: result.call_id.to_owned(),
-            tool: result.tool.to_owned(),
-            operation,
-            reached: result.reached.to_vec(),
-            returned: result.returned.cloned(),
-        });
+        let node = self.admit(origin, content).await?;
+        let mut dispatch = self.dispatch.lock().unwrap();
+        if dispatch.in_flight.as_ref().is_some_and(|pending| {
+            operations
+                .iter()
+                .any(|operation| pending.invocation.same_invocation(&operation.invocation))
+        }) {
+            dispatch.in_flight = None;
+        }
         Ok(SourceRef::new(Arc::new(ViewSource::Result {
             node,
             actual,
+            commit: commit.clone(),
         })))
     }
 
     async fn observe_framework_commit(
         &self,
-        event: FrameworkCommit,
-        committed: &Msg,
+        _: FrameworkCommit,
+        _: &Msg,
     ) -> Result<SourceRef, AgentError> {
+        Err(fault(unbound(&self.session.inner)))
+    }
+    async fn observe_retained_framework(
+        &self,
+        commit: &ActualRetainedCommit,
+    ) -> Result<SourceRef, AgentError> {
+        self.require_agent(commit.owner())?;
+        let RetainedEvent::Framework(event) = commit.event() else {
+            return Err(fault(SessionStop::Unbound));
+        };
+        let committed = commit.message();
         let inner = &self.session.inner;
         let (origin, text) = match (event, committed) {
             (
@@ -750,62 +1076,115 @@ impl ModelViewBoundary for ConversationBoundary {
         Ok(SourceRef::new(Arc::new(ViewSource::Framework {
             node,
             event,
+            commit: commit.clone(),
         })))
     }
 
     async fn before_dispatch(&self, call: &ToolCall, approved: bool) -> Result<(), AgentError> {
+        self.session.check().map_err(fault)?;
+        let allowed = if approved {
+            self.dispatch
+                .lock()
+                .unwrap()
+                .decided
+                .as_ref()
+                .is_some_and(|decided| decided.call == *call)
+        } else {
+            self.asked_for(call).is_some()
+        };
+        if !allowed {
+            return Err(fault(unbound(&self.session.inner)));
+        }
+        Ok(())
+    }
+    async fn before_terminal(
+        &self,
+        invocation: &ActualToolInvocation,
+    ) -> Result<Option<SourceRef>, AgentError> {
+        self.require_agent(invocation.owner())?;
         let inner = &self.session.inner;
         inner.live().map_err(fault)?;
-        let decided = self.dispatch.lock().unwrap().decided.take();
-        let (model, edited) = if approved {
-            // Exactly the call a checked decision allowed, and nothing else.
+        let call = invocation.call();
+        let (model, edited) = if invocation.resumed() {
+            let decided = self.dispatch.lock().unwrap().decided.take();
             let model = self.dispatch.lock().unwrap().model.clone();
             match (decided, model) {
-                (Some(decided), Some(model)) if decided == *call => {
-                    let edited = self.asked_for(call).is_none();
-                    (model, edited)
+                (Some(decided), Some(model))
+                    if decided.call == *call
+                        && invocation
+                            .decision_source()
+                            .is_some_and(|source| source.is(&decided.source)) =>
+                {
+                    (
+                        model,
+                        matches!(decided.action, HitlAction::ApproveEdited { .. }),
+                    )
                 }
                 _ => return Err(fault(unbound(inner))),
             }
         } else {
-            match self.asked_for(call) {
-                Some(model) => (model, false),
-                None => return Err(fault(unbound(inner))),
-            }
+            (
+                self.asked_for(call).ok_or_else(|| fault(unbound(inner)))?,
+                false,
+            )
         };
         let fields = if edited {
             Some(Vec::new())
         } else {
             inner.argument_fields(&call.name, &call.args).await
         };
-        self.dispatch.lock().unwrap().in_flight = Some(Arc::new(ApprovedOperation {
+        inner.live().map_err(fault)?;
+        let operation = Arc::new(ApprovedOperation {
             owner: inner.clone(),
+            invocation: invocation.clone(),
             model,
             call: call.clone(),
             edited,
             fields,
-        }));
-        Ok(())
+        });
+        self.dispatch.lock().unwrap().in_flight = Some(operation.clone());
+        Ok(Some(SourceRef::new(operation)))
+    }
+    fn terminal_live(&self, invocation: &ActualToolInvocation) -> Result<(), AgentError> {
+        self.require_agent(invocation.owner())?;
+        self.session.check().map_err(fault)
     }
 
     async fn accept_decision(
         &self,
-        call: &ToolCall,
+        _: &ToolCall,
+        _: &HitlAction,
+        _: &SourceRef,
+    ) -> Result<(), AgentError> {
+        Err(fault(SessionStop::Unbound))
+    }
+    async fn accept_parked_decision(
+        &self,
+        parked: &craftsman_harness::provenance::ActualParkedCall,
         action: &HitlAction,
         decision: &SourceRef,
     ) -> Result<(), AgentError> {
+        self.require_agent(parked.owner())?;
+        let call = parked.call();
         let inner = &self.session.inner;
         inner.live().map_err(fault)?;
         // A decision that is not this conversation's, or is about another
         // call or action, is turned away. Nothing has happened yet, so the
         // call stays parked and the conversation continues.
-        let fits = decision.downcast::<HumanDecision>().is_some_and(|decided| {
-            Arc::ptr_eq(&decided.owner, inner) && decided.call == *call && decided.action == *action
-        });
+        let received = decision.downcast::<crate::privacy_entry::HumanDecisionInput>();
+        let fits = received
+            .as_ref()
+            .is_some_and(|input| input.binds(&self.session, parked, action));
         if !fits || self.asked_for(call).is_none() {
             return Err(AgentError::State(
                 "This decision does not belong to the call that is waiting.".into(),
             ));
+        }
+        if let Some(raw) = received.as_ref().and_then(|input| input.edited_raw()) {
+            self.session.admit_raw(raw).await.map_err(refused)?;
+        }
+        if let HitlAction::Deny { feedback } = action {
+            self.admit(RawOrigin::HumanReply, feedback).await?;
         }
         let run = match action {
             HitlAction::Approve => Some(call.clone()),
@@ -816,7 +1195,11 @@ impl ModelViewBoundary for ConversationBoundary {
             }),
             HitlAction::Deny { .. } => None,
         };
-        self.dispatch.lock().unwrap().decided = run;
+        self.dispatch.lock().unwrap().decided = run.map(|call| Decided {
+            call,
+            action: action.clone(),
+            source: decision.clone(),
+        });
         Ok(())
     }
 }

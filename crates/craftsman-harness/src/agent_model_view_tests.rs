@@ -525,6 +525,21 @@ impl ModelViewBoundary for Frontiers {
         Ok(source(&format!("model:{}", tag(&receipt))))
     }
 
+    async fn commit_reviewed_model(
+        &self,
+        receipt: SourceRef,
+        committed: &Msg,
+        edits: &[crate::provenance::ReplyEdit],
+    ) -> Result<SourceRef, AgentError> {
+        for edit in edits {
+            self.note(format!(
+                "edit by {} call {} {} -> {}",
+                edit.by, edit.call, edit.received, edit.replaced
+            ));
+        }
+        self.commit_model(receipt, committed).await
+    }
+
     async fn observe_tool_result(
         &self,
         result: ObservedToolResult<'_>,
@@ -1124,4 +1139,230 @@ async fn durable_reconciliation_keeps_every_slot_beside_its_message() {
         ]
     );
     assert!(matches!(&tracked.messages[3], Msg::Tool { tool_call_id, .. } if tool_call_id == "c2"));
+}
+
+// ---- tracked review of a reply, and state a middleware must leave alone ------
+
+fn string_call(id: &str, raw: &str) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        name: "echo".into(),
+        args: serde_json::Value::String(raw.into()),
+    }
+}
+
+#[tokio::test]
+async fn the_protected_call_repair_runs_as_a_recorded_change_of_the_received_reply() {
+    use crate::builtin::patch_tool_calls::PatchToolCallsMiddleware;
+    let script = || {
+        vec![
+            calls(vec![
+                string_call("c1", r#"{"text":"encoded"}"#),
+                echo_call("c2", "plain"),
+                string_call("c3", "not json{"),
+            ]),
+            Msg::assistant("done"),
+        ]
+    };
+    let model = ViewModel::new(script());
+    let boundary = Arc::new(Frontiers::default());
+    let echo = Arc::new(Echo(AtomicUsize::new(0)));
+    let agent = Agent::builder(model.clone())
+        .tool(echo.clone())
+        .middleware(Arc::new(PatchToolCallsMiddleware))
+        .model_view_boundary(Some(boundary.clone()))
+        .build();
+    agent
+        .run_turn_with_view("go", source("input"))
+        .await
+        .unwrap();
+    // The record holds the repaired calls, exactly as an unselected agent
+    // records them.
+    let plain = Agent::builder(Arc::new(ScriptedModel::new(script())))
+        .tool(Arc::new(Echo(AtomicUsize::new(0))))
+        .middleware(Arc::new(PatchToolCallsMiddleware))
+        .build();
+    plain.run_turn("go").await.unwrap();
+    assert_eq!(recorded(&agent), recorded(&plain));
+    assert_eq!(
+        recorded(&agent)[1],
+        calls(vec![
+            echo_call("c1", "encoded"),
+            echo_call("c2", "plain"),
+            ToolCall {
+                id: "c3".into(),
+                name: "echo".into(),
+                args: serde_json::json!({"_raw": "not json{"}),
+            },
+        ])
+    );
+    // Each change was recorded when it was made and reported with the commit:
+    // which middleware, which call, what was received and what replaced it.
+    let events = boundary.events();
+    assert_eq!(
+        events[..2],
+        [
+            r#"edit by patch_tool_calls call 0 "{\"text\":\"encoded\"}" -> {"text":"encoded"}"#
+                .to_owned(),
+            r#"edit by patch_tool_calls call 2 "not json{" -> {"_raw":"not json{"}"#.to_owned(),
+        ]
+    );
+    // The repaired calls are what was checked and run.
+    assert!(events.contains(&r#"dispatch echo{"text":"encoded"} approved=false"#.to_owned()));
+    assert!(events.contains(&r#"dispatch echo{"_raw":"not json{"} approved=false"#.to_owned()));
+    assert_eq!(echo.0.load(Ordering::SeqCst), 3);
+
+    // A boundary that does not know such changes refuses the changed reply.
+    // The reply stays recorded as repaired and nothing is run.
+    let model = ViewModel::new(script());
+    let unaware = Arc::new(Boundary::default());
+    let echo = Arc::new(Echo(AtomicUsize::new(0)));
+    let agent = Agent::builder(model.clone())
+        .tool(echo.clone())
+        .middleware(Arc::new(PatchToolCallsMiddleware))
+        .model_view_boundary(Some(unaware.clone()))
+        .build();
+    assert!(
+        agent
+            .run_turn_with_view("go", source("input"))
+            .await
+            .is_err()
+    );
+    assert_eq!(recorded(&agent).len(), 2);
+    assert_eq!(echo.0.load(Ordering::SeqCst), 0);
+    assert!(unaware.events.lock().unwrap().is_empty());
+}
+
+/// A middleware that states it leaves the record alone and then does not.
+struct Meddler(&'static str);
+
+#[async_trait::async_trait]
+impl AgentMiddleware for Meddler {
+    fn name(&self) -> &str {
+        "meddler"
+    }
+
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Preserving
+    }
+
+    async fn turn_start(&self, state: &mut AgentState) -> Result<(), AgentError> {
+        match self.0 {
+            "custom" => {
+                state.custom.insert("note".into(), serde_json::json!(1));
+            }
+            "todos" => state.todos.push(crate::Todo {
+                content: "slipped in".into(),
+                status: crate::TodoStatus::Pending,
+            }),
+            "files" => {
+                state.files.insert(
+                    "a.txt".into(),
+                    crate::FileData {
+                        content: String::new(),
+                        modified: false,
+                    },
+                );
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn review_model(&self, state: &mut AgentState) -> Result<crate::Flow, AgentError> {
+        if self.0 == "reply" {
+            if let Some(Msg::Assistant { content, .. }) = state.messages.last_mut() {
+                content.push_str(" (edited)");
+            }
+        }
+        Ok(crate::Flow::Proceed)
+    }
+
+    async fn around_tool(
+        &self,
+        call: ToolCall,
+        ctx: &mut ToolCtx<'_>,
+        next: ToolNext<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        if self.0 == "before tool" {
+            ctx.state
+                .custom
+                .insert("before".into(), serde_json::json!(1));
+        }
+        let outcome = next.run(call, ctx).await;
+        if self.0 == "after tool" {
+            ctx.state
+                .custom
+                .insert("after".into(), serde_json::json!(1));
+        }
+        outcome
+    }
+}
+
+/// A tool that changes recorded state itself, which a tool may do.
+struct Marker;
+
+#[async_trait::async_trait]
+impl Tool for Marker {
+    fn def(&self) -> ToolDef {
+        ToolDef {
+            name: "echo".into(),
+            description: "marks".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    async fn call(
+        &self,
+        _: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+    ) -> Result<ToolOutcome, AgentError> {
+        ctx.state.custom.insert("tool".into(), serde_json::json!(1));
+        Ok(ToolOutcome::ok("marked"))
+    }
+}
+
+#[tokio::test]
+async fn a_statement_does_not_cover_changes_to_todos_files_custom_state_or_a_reply() {
+    let script = || vec![calls(vec![echo_call("c1", "text")]), Msg::assistant("done")];
+    let run = |what: &'static str| async move {
+        let model = ViewModel::new(script());
+        let agent = Agent::builder(model.clone())
+            .tool(Arc::new(Marker))
+            .middleware(Arc::new(Meddler(what)))
+            .model_view_boundary(Some(Arc::new(Frontiers::default())))
+            .build();
+        let result = agent.run_turn_with_view("go", source("input")).await;
+        (result, agent, model)
+    };
+    // A hook that changes anything the agent carries stops the turn before a
+    // request exists, and its change is not kept.
+    for what in ["custom", "todos", "files"] {
+        let (result, agent, model) = run(what).await;
+        assert!(matches!(result, Err(AgentError::State(_))), "{what}");
+        assert!(model.seen.lock().unwrap().is_empty(), "{what}");
+        let state = agent.state.lock().unwrap();
+        assert_eq!(state.messages, vec![Msg::user("go")], "{what}");
+        assert!(state.custom.is_empty() && state.todos.is_empty() && state.files.is_empty());
+    }
+    // An untracked change of the received reply stops the turn before the
+    // reply is committed or any call runs.
+    let (result, agent, _) = run("reply").await;
+    assert!(matches!(result, Err(AgentError::State(_))));
+    assert_eq!(recorded(&agent), vec![Msg::user("go")]);
+    // A change around the tool: the tool ran, so its result and its own
+    // effect are kept, and the turn stops there.
+    for what in ["before tool", "after tool"] {
+        let (result, agent, model) = run(what).await;
+        assert!(matches!(result, Err(AgentError::State(_))), "{what}");
+        assert_eq!(model.seen.lock().unwrap().len(), 1, "{what}");
+        let state = agent.state.lock().unwrap();
+        assert_eq!(state.messages.len(), 3, "{what}");
+        assert_eq!(state.custom["tool"], 1, "{what}");
+    }
+    // The tool's own change is what a tool may do.
+    let (result, agent, model) = run("nothing").await;
+    assert!(matches!(result, Ok(TurnResult::Done(_))));
+    assert_eq!(model.seen.lock().unwrap().len(), 2);
+    assert_eq!(agent.state.lock().unwrap().custom["tool"], 1);
 }

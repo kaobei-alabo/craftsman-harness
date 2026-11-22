@@ -20,11 +20,98 @@ use super::*;
 use crate::ModelResponse;
 use crate::middleware::BoxedViewFuture;
 use crate::provenance::{
-    ActualAgentOwner, ActualReceivedReply, ActualRetainedCommit, ActualTerminalOutcome,
-    ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary, RetainedEvent, SourceRef,
-    TrackedModelRequest, ViewSupport,
+    ActualAgentOwner, ActualParkedCall, ActualReceivedReply, ActualRetainedCommit,
+    ActualTerminalOutcome, ActualToolFact, FrameworkCommit, ModelDelivery, ModelViewBoundary,
+    ReachedTool, ReplyEdit, RetainedEvent, SourceRef, TrackedModelRequest, TrackedReply,
+    ViewSupport,
 };
 use std::sync::atomic::AtomicBool;
+
+/// Everything the agent records or carries between rounds. A middleware of a
+/// selected agent stated that it leaves all of it alone.
+pub(super) struct Kept {
+    messages: Vec<Msg>,
+    todos: Vec<crate::state::Todo>,
+    files: crate::state::FileMap,
+    custom: serde_json::Map<String, serde_json::Value>,
+    system_extras: Vec<String>,
+    last_usage: Option<crate::Usage>,
+    last_usage_msg_count: usize,
+}
+
+impl Kept {
+    fn of(state: &AgentState) -> Self {
+        Self {
+            messages: state.messages.clone(),
+            todos: state.todos.clone(),
+            files: state.files.clone(),
+            custom: state.custom.clone(),
+            system_extras: state.system_extras.clone(),
+            last_usage: state.last_usage.clone(),
+            last_usage_msg_count: state.last_usage_msg_count,
+        }
+    }
+
+    fn is(&self, state: &AgentState) -> bool {
+        self.messages == state.messages
+            && self.todos == state.todos
+            && self.files == state.files
+            && self.custom == state.custom
+            && self.system_extras == state.system_extras
+            && self.last_usage == state.last_usage
+            && self.last_usage_msg_count == state.last_usage_msg_count
+    }
+}
+
+/// What the agent watches during one dispatch on a selected agent: every run
+/// of the tool itself, and whether anything else changed the recorded state.
+/// Only the tool may change it.
+pub(super) struct DispatchWatch {
+    reached: Vec<ReachedTool>,
+    /// The state as the agent, and then each run of the tool, left it.
+    last: Kept,
+    changed: bool,
+}
+
+impl DispatchWatch {
+    pub(super) fn new(state: &AgentState) -> Self {
+        Self {
+            reached: Vec::new(),
+            last: Kept::of(state),
+            changed: false,
+        }
+    }
+
+    /// The tool is about to run.
+    pub(super) fn entering(&mut self, state: &AgentState) {
+        self.changed |= !self.last.is(state);
+    }
+
+    /// The tool has run: its exact call and outcome, before any middleware
+    /// sees the outcome, and the state as it left it.
+    pub(super) fn left(
+        &mut self,
+        call: ToolCall,
+        result: &Result<ToolOutcome, AgentError>,
+        state: &AgentState,
+    ) {
+        self.reached.push(ReachedTool::new(call, result));
+        self.last = Kept::of(state);
+    }
+
+    /// The dispatch chain has returned.
+    pub(super) fn finish(&mut self, state: &AgentState) -> (Vec<ReachedTool>, bool) {
+        self.changed |= !self.last.is(state);
+        (std::mem::take(&mut self.reached), self.changed)
+    }
+}
+
+pub(super) fn state_changed() -> AgentError {
+    AgentError::State(
+        "A middleware of this conversation changed recorded state. Nothing further was sent."
+            .into(),
+    )
+}
 
 pub(super) enum Slot {
     Bound(SourceRef, ActualRetainedCommit),
@@ -53,6 +140,7 @@ pub(super) struct ModelView {
     pub(super) owner: ActualAgentOwner,
     closed: AtomicBool,
     pub(super) decision: Mutex<Option<SourceRef>>,
+    pub(super) parked: Mutex<Option<ActualParkedCall>>,
     facts: Mutex<Facts>,
 }
 
@@ -74,6 +162,7 @@ impl ModelView {
             owner,
             closed: AtomicBool::new(closed),
             decision: Mutex::new(None),
+            parked: Mutex::new(None),
             facts: Mutex::new(Facts::default()),
         }
     }
@@ -98,6 +187,22 @@ impl ModelView {
         received: Option<ActualReceivedReply>,
     ) -> ActualRetainedCommit {
         let commit = ActualRetainedCommit::issued(&self.owner, event, message.clone(), received);
+        self.facts.lock().unwrap().retained.push(commit.clone());
+        commit
+    }
+
+    pub(super) fn retained_model(
+        &self,
+        message: &Msg,
+        received: ActualReceivedReply,
+        edits: &[ReplyEdit],
+    ) -> ActualRetainedCommit {
+        let commit = ActualRetainedCommit::model_issued(
+            &self.owner,
+            message.clone(),
+            received,
+            edits.to_vec(),
+        );
         self.facts.lock().unwrap().retained.push(commit.clone());
         commit
     }
@@ -236,11 +341,12 @@ impl Agent {
             ));
         };
         view.live()?;
-        let adapted = self
-            .chain
-            .middlewares()
-            .iter()
-            .all(|entry| entry.view_support() == ViewSupport::Preserving);
+        let adapted = self.chain.middlewares().iter().all(|entry| {
+            matches!(
+                entry.view_support(),
+                ViewSupport::Preserving | ViewSupport::TrackedReply
+            )
+        });
         if !adapted
             || self.boundary_policy.is_some()
             || self.completion_check.is_some()
@@ -277,9 +383,10 @@ impl Agent {
             return Err(unsourced());
         }
         let user_input = user_input.into();
-        let result = self
-            .in_turn_scope(self.run_turn_inner(user_input, Some(source)))
-            .await;
+        let future: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<TurnResult, AgentError>> + Send + '_>,
+        > = Box::pin(self.run_turn_inner(user_input, Some(source)));
+        let result = self.in_turn_scope(future).await;
         self.settled(view, result).await
     }
 
@@ -353,6 +460,10 @@ impl Agent {
         )
     }
 
+    pub fn actual_parked_call(&self) -> Option<ActualParkedCall> {
+        self.model_view.as_ref()?.parked.lock().unwrap().clone()
+    }
+
     /// Adds typed input to the active turn of a selected agent, like
     /// [`steer`](Agent::steer). The text is recorded at the next safe round
     /// boundary and `source` is kept beside it. Returns `false` when no turn
@@ -395,13 +506,23 @@ impl Agent {
             .as_ref()
             .map(|pending| pending.call.clone())
             .ok_or_else(|| AgentError::State("no suspension to resume".into()))?;
+        let parked = view
+            .parked
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(unavailable)?;
+        if parked.call() != &call {
+            return Err(unsourced());
+        }
         view.boundary
-            .accept_decision(&call, &action, &decision)
+            .accept_parked_decision(&parked, &action, &decision)
             .await?;
         *view.decision.lock().unwrap() = Some(decision);
-        let result = self
-            .in_turn_scope(self.resume_inner(action, deny_default))
-            .await;
+        let future: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<TurnResult, AgentError>> + Send + '_>,
+        > = Box::pin(self.resume_inner(action, deny_default));
+        let result = self.in_turn_scope(future).await;
         self.settled(view, result).await
     }
 
@@ -484,26 +605,58 @@ impl Agent {
         }
     }
 
-    /// The recorded messages before a phase of middleware hooks, on a
-    /// selected agent.
-    pub(super) fn view_phase_start(&self, working: &AgentState) -> Option<Vec<Msg>> {
-        self.model_view.as_ref().map(|_| working.messages.clone())
+    /// The recorded state before a phase of middleware hooks, on a selected
+    /// agent.
+    pub(super) fn view_phase_start(&self, working: &AgentState) -> Option<Kept> {
+        self.model_view.as_ref().map(|_| Kept::of(working))
     }
 
-    /// Refuses the turn when a hook of the phase changed a recorded message.
+    /// Refuses the turn when a hook of the phase changed recorded state.
     /// Every middleware of a selected agent stated that it does not.
     pub(super) fn view_phase_end(
         &self,
-        kept: Option<Vec<Msg>>,
+        kept: Option<Kept>,
         working: &AgentState,
     ) -> Result<(), AgentError> {
         match kept {
-            Some(kept) if kept != working.messages => Err(AgentError::State(
-                "A middleware of this conversation changed a recorded message. Nothing further was sent."
-                    .into(),
-            )),
+            Some(kept) if !kept.is(working) => Err(state_changed()),
             _ => Ok(()),
         }
+    }
+
+    /// The review of a received reply on a selected agent, in the order and
+    /// with the verdict rule of the ordinary review. A middleware with a
+    /// tracked review changes the reply only through recorded operations and
+    /// sees nothing else. Every other middleware must leave the state alone.
+    pub(super) async fn review_with_view(
+        &self,
+        working: &mut AgentState,
+        reply: usize,
+        edits: &mut Vec<ReplyEdit>,
+    ) -> Result<Flow, AgentError> {
+        let mut decision = Flow::Proceed;
+        for entry in self.chain.middlewares().iter().rev() {
+            let verdict = if entry.view_support() == ViewSupport::TrackedReply {
+                let message = working.messages.get_mut(reply).ok_or_else(unsourced)?;
+                let mut tracked = TrackedReply {
+                    message,
+                    edits,
+                    by: entry.name(),
+                };
+                entry.review_model_with_view(&mut tracked).await?
+            } else {
+                let kept = Kept::of(working);
+                let verdict = entry.review_model(working).await?;
+                if !kept.is(working) {
+                    return Err(state_changed());
+                }
+                verdict
+            };
+            if decision == Flow::Proceed {
+                decision = verdict;
+            }
+        }
+        Ok(decision)
     }
 
     /// Composes the request from sources and hands it to the provider's view

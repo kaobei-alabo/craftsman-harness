@@ -14,11 +14,14 @@ engine and an owner that turns one actual raw capture into an admitted node
 only after the vault's commit and the send guard's admission. It is not
 connected to any display, file, key source or policy.
 [Privacy provenance](privacy-provenance.md) records how sources and model views
-reach a request. A private path now exists for the Chat wire, from typed input
-and tool results through the framework agent and the shared session builder to
-the existing client and guard, with a limited set of parts. Nothing selects it,
-native wires are refused, and restoration, key handling and activation are not
-built. The target diagram
+reach a request. A private path now exists for all four model wires, from typed
+input and tool results through the framework agent and the shared session
+builder to the existing clients and guard, and the protected repair of tool
+calls runs on it as a recorded change. Nothing selects it, and it cannot be
+built outside test fixtures: todos, memory, compaction and reminders have no
+source path yet, and the builder refuses a session that would lose them.
+Approval receipts inside the gate, terminal input and display, restoration,
+key handling and activation are not built. The target diagram
 below predates that contract where it shows masked history: stored history
 stays exact and the model gets a separate view.
 

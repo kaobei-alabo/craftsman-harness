@@ -5,10 +5,35 @@
 use crate::{Msg, ToolCall, ToolOutcome, Usage};
 use std::sync::Arc;
 
-use super::{FrameworkCommit, ReachedTool, SourceRef};
+use super::{FrameworkCommit, ReachedTool, ReplyEdit, SourceRef};
 
 #[derive(Clone)]
 pub struct ActualAgentOwner(Arc<()>);
+
+/// Issued when this agent actually parks a call. Reopening cannot recreate it.
+#[derive(Clone)]
+pub struct ActualParkedCall(Arc<Parked>);
+struct Parked {
+    owner: ActualAgentOwner,
+    call: ToolCall,
+}
+impl ActualParkedCall {
+    pub(crate) fn issued(owner: &ActualAgentOwner, call: ToolCall) -> Self {
+        Self(Arc::new(Parked {
+            owner: owner.clone(),
+            call,
+        }))
+    }
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    pub fn call(&self) -> &ToolCall {
+        &self.0.call
+    }
+    pub fn same_park(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
 
 impl ActualAgentOwner {
     pub(crate) fn issued() -> Self {
@@ -81,6 +106,7 @@ struct Retained {
     event: RetainedEvent,
     message: Msg,
     received: Option<ActualReceivedReply>,
+    edits: Vec<ReplyEdit>,
 }
 
 impl ActualRetainedCommit {
@@ -95,6 +121,22 @@ impl ActualRetainedCommit {
             event,
             message,
             received,
+            edits: Vec::new(),
+        }))
+    }
+
+    pub(crate) fn model_issued(
+        owner: &ActualAgentOwner,
+        message: Msg,
+        received: ActualReceivedReply,
+        edits: Vec<ReplyEdit>,
+    ) -> Self {
+        Self(Arc::new(Retained {
+            owner: owner.clone(),
+            event: RetainedEvent::ModelReply,
+            message,
+            received: Some(received),
+            edits,
         }))
     }
 
@@ -109,6 +151,9 @@ impl ActualRetainedCommit {
     }
     pub fn received(&self) -> Option<&ActualReceivedReply> {
         self.0.received.as_ref()
+    }
+    pub fn edits(&self) -> &[ReplyEdit] {
+        &self.0.edits
     }
     pub fn same_commit(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -265,6 +310,7 @@ macro_rules! opaque_debug {
 
 opaque_debug!(
     ActualAgentOwner,
+    ActualParkedCall,
     ActualReceivedReply,
     ActualRetainedCommit,
     ActualToolInvocation,
