@@ -12,7 +12,7 @@ run, is not merged to main and is not installed.
 
 This is one slice of the work described in [privacy hooks](privacy-hooks.md).
 It builds on the [private vault](privacy-vault.md). It is a separate candidate
-and is not part of PR #32.
+and was not part of PR #32, which merged those foundations without it.
 
 ## What it does
 
@@ -266,9 +266,18 @@ That run is bound to `38da30b` (log of 523,809 bytes, SHA-256
 not repeated for later documentation-only commits, whose Rust and other
 implementation files are identical to `38da30b`.
 
+**Alignment with the merged foundation.** PR #32 merged the foundations as
+`dffddeae`, with the tree of its reviewed head `7fca3d9`. A later local commit
+merges this guard with `7fca3d9`. No guard source or test file and no
+foundation implementation file differs from its reviewed side; only documents
+were reconciled and updated. The acceptance stays bound to `70d4b0e` and the
+full local run to `38da30b`. Any local run of the later merge is recorded with
+its own head in the directory named below; none is stated here.
+
 **Records.** `target/verification/privacy-send-fable52/` (first candidate),
 `privacy-send-fable52-correction/` and `privacy-send-fable52-copy-bound/`
-(corrections), `privacy-send-aligned-full17/` (alignment and the full run).
+(corrections), `privacy-send-aligned-full17/` (alignment and the full run),
+`privacy-guard-final-alignment/` (alignment with the merged foundation source).
 
 **The guard's own cases.**
 
@@ -297,16 +306,20 @@ contacted and no paid call was made.
 
 - Linux and Windows have not run these cases. There is no hosted run of the
   guard.
-- The foundation's hosted run
+- The foundation's earlier hosted run
   [44937824282](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44937824282)
-  refused its Windows data fixture at `pe.align.section`. It ran without this
-  guard and gives the guard no coverage.
+  refused its Windows data fixture at `pe.align.section`. Its merged PR head's
+  run [44973387679](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44973387679)
+  passed all four contexts in both native modes. Neither ran this guard, and
+  neither gives the guard coverage.
+- A separate run on main after the PR #32 merge is under independent audit and
+  is not claimed here. It does not contain this guard either.
 - No test ran in the default voice configuration.
 - The guard is not merged to main and not installed, and no key, policy, hook,
   masking, restoration or activation exists.
 
-Hosted validation on all four contexts in both native modes, and the foundation
-and main gates, remain before delivery.
+Hosted validation of the guard on all four contexts in both native modes, and
+the independent main proof, remain before delivery.
 
 ## Known gaps
 
