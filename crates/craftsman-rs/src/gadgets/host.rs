@@ -429,7 +429,7 @@ impl Host for HostState {
                     let summary = crate::tools::summarize_call("write_file", &args);
                     let details = crate::tools::approval_details_at("write_file", &args, &self.workspace.root);
                     let pause = self.budget.pause();
-                    let decision = tokio::task::spawn_blocking(move || prompt("write_file", &summary, &details))
+                    let decision = crate::util::spawn_blocking(move || prompt("write_file", &summary, &details))
                         .await.map_err(io_error)?;
                     drop(pause);
                     match decision {

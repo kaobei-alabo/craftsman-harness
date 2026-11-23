@@ -170,7 +170,7 @@ impl GuestHost {
                 ensure(&self.gate, Some(budget))?;
                 let bytes = source.component_bytes().to_vec();
                 let engine = self.engine.clone();
-                let component = tokio::task::spawn_blocking(move || Component::new(&engine, bytes))
+                let component = crate::util::spawn_blocking(move || Component::new(&engine, bytes))
                     .await
                     .map_err(|_| error(ErrorKind::Io, "private guest compilation worker failed"))?
                     .map_err(|_| {
