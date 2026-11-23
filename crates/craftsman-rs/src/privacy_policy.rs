@@ -222,7 +222,10 @@ impl CapturedUserConfiguration {
     )> {
         self.recheck()?;
         let retained_source = RetainedUserConfigurationSource {
-            root: self.root.duplicate_owned().map_err(|_| PolicyError::Source)?,
+            root: self
+                .root
+                .duplicate_owned()
+                .map_err(|_| PolicyError::Source)?,
             source: self
                 .source
                 .as_ref()
