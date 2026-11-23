@@ -14,14 +14,15 @@ Only the actual user policy can produce the opaque `CapturedTerminalStartup`.
 
 The selected owner holds the same `ConfigRoot`, no-follow ancestor descriptors,
 regular single-link user-file lease, original bytes, parsed configuration and
-`CapturedPolicy`. The original bytes remain in an owned zeroizing buffer, under
+`CapturedPolicy`. The original bytes remain in a separate opaque source owner
+with duplicates of the same held root/file descriptors, in a zeroizing buffer under
 the existing 1 MiB user-source ceiling. Read-only configuration/policy access and
 consuming handoff recheck root identity, descriptor and named-file metadata,
 exact bounded contents and EOF. Source changes refuse with fixed text before
 the caller receives usable configuration or policy. These observations are
 sampled; they do not form a continuous writer lease or remove a later race.
-Ordinary policy captures retain their existing behavior and do not acquire this
-additional retained byte buffer.
+Ordinary policy captures and their type shape remain unchanged; they do not
+acquire this additional retained byte buffer.
 
 Missing and disabled sources keep the original legacy loader behavior,
 including missing directories, valid legacy directory modes and large unknown
@@ -49,7 +50,10 @@ controls pass, before returning the completed captured policy.
 
 `CapturedTerminalStartup::into_owned` and
 `OwnedTerminalStartup::into_configuration_policy` preserve the configuration,
-actual policy/source owner and typed `StartupRequirements`. The requirements
+actual policy, separate retained source owner and typed `StartupRequirements`.
+The source owner must remain beside the policy through the later bootstrap;
+it cannot be discarded or replaced by a policy reconstructed from configuration.
+The requirements
 retain fresh shared conversation identity, all requested features and actual
 native views, owned key/source approval before guest execution, voice/native
 inspection and final validation as obligations. They do not infer compatibility

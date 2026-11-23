@@ -3,7 +3,8 @@
 use crate::config::Config;
 use crate::privacy_key::{ConfigRoot, KeyError};
 use crate::privacy_policy::{
-    CapturedPolicy, CapturedUserConfiguration, PolicyError, UserConfigurationCaptureError,
+    CapturedPolicy, CapturedUserConfiguration, PolicyError, RetainedUserConfigurationSource,
+    UserConfigurationCaptureError,
 };
 use clap::Parser;
 use std::{fmt, io::IsTerminal};
@@ -47,12 +48,13 @@ impl fmt::Debug for TerminalStartupCapture {
     }
 }
 
-/// The SAME user root, descriptor, bounded original bytes and parsed policy
-/// live in `policy`; configuration was parsed from those exact bytes. Neither
-/// owner has a caller-data constructor, Clone, Serialize or mutable getter.
+/// The SAME user root/file source remains in the policy and source owners;
+/// configuration was parsed from the bounded original bytes held by `source`.
+/// None has a caller-data constructor, Clone, Serialize or mutable getter.
 pub struct CapturedTerminalStartup {
     configuration: Config,
     policy: CapturedPolicy,
+    source: RetainedUserConfigurationSource,
 }
 impl fmt::Debug for CapturedTerminalStartup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,6 +106,7 @@ impl fmt::Debug for StartupRequirements {
 pub struct OwnedTerminalStartup {
     configuration: Config,
     policy: CapturedPolicy,
+    source: RetainedUserConfigurationSource,
     requirements: StartupRequirements,
 }
 impl fmt::Debug for OwnedTerminalStartup {
@@ -114,7 +117,9 @@ impl fmt::Debug for OwnedTerminalStartup {
 
 impl CapturedTerminalStartup {
     pub fn recheck(&self) -> Result<()> {
-        self.policy.recheck().map_err(policy_error)
+        self.source.recheck().map_err(policy_error)?;
+        self.policy.recheck().map_err(policy_error)?;
+        self.source.recheck().map_err(policy_error)
     }
     pub fn configuration(&self) -> Result<&Config> {
         self.recheck()?;
@@ -129,13 +134,16 @@ impl CapturedTerminalStartup {
         Ok(OwnedTerminalStartup {
             configuration: self.configuration,
             policy: self.policy,
+            source: self.source,
             requirements: StartupRequirements::pending(),
         })
     }
 }
 impl OwnedTerminalStartup {
     pub fn configuration(&self) -> Result<&Config> {
+        self.source.recheck().map_err(policy_error)?;
         self.policy.recheck().map_err(policy_error)?;
+        self.source.recheck().map_err(policy_error)?;
         Ok(&self.configuration)
     }
     pub fn requirements(&self) -> &StartupRequirements {
@@ -143,9 +151,21 @@ impl OwnedTerminalStartup {
     }
     pub fn into_configuration_policy(
         self,
-    ) -> Result<(Config, CapturedPolicy, StartupRequirements)> {
+    ) -> Result<(
+        Config,
+        CapturedPolicy,
+        RetainedUserConfigurationSource,
+        StartupRequirements,
+    )> {
+        self.source.recheck().map_err(policy_error)?;
         self.policy.recheck().map_err(policy_error)?;
-        Ok((self.configuration, self.policy, self.requirements))
+        self.source.recheck().map_err(policy_error)?;
+        Ok((
+            self.configuration,
+            self.policy,
+            self.source,
+            self.requirements,
+        ))
     }
 }
 
@@ -293,20 +313,19 @@ fn capture_user_source(origin: &UserSourceOrigin) -> Result<SourceSelection> {
     if source.is_enabled() {
         Ok(SourceSelection::Proposed(source))
     } else {
-        let (configuration, _) = source
-            .into_configuration_and_policy()
-            .map_err(policy_error)?;
+        let configuration = source.into_legacy_configuration().map_err(policy_error)?;
         Ok(SourceSelection::Legacy(configuration))
     }
 }
 
 fn finish_source(source: CapturedUserConfiguration) -> Result<CapturedTerminalStartup> {
-    let (configuration, policy) = source
+    let (configuration, policy, retained_source) = source
         .into_configuration_and_policy()
         .map_err(policy_error)?;
     Ok(CapturedTerminalStartup {
         configuration: configuration.ok_or(StartupError::Invalid)?,
         policy,
+        source: retained_source,
     })
 }
 
@@ -414,11 +433,12 @@ mod tests {
             owned.requirements().require_normal_activation(),
             Err(StartupError::NotYetAvailable)
         ));
-        let (configuration, policy, requirements) = owned
+        let (configuration, policy, source, requirements) = owned
             .into_configuration_policy()
             .expect("same configuration and policy owners");
         assert!(configuration.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
         assert!(policy.proposed_detector().expect("held source").is_some());
+        assert!(source.recheck().is_ok());
         assert!(
             requirements
                 .prerequisites()
@@ -677,11 +697,15 @@ mod tests {
         let rendered = format!("{owned:?} {:?}", owned.requirements());
         assert!(!rendered.contains("UNSELECTED_STARTUP_CREDENTIAL"));
         assert!(!rendered.contains("synthetic-detector"));
-        let (configuration, policy, requirements) = owned
+        let (configuration, policy, source, requirements) = owned
             .into_configuration_policy()
             .expect("same retained configuration");
         assert!(configuration.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
-        let rendered = format!("{policy:?} {requirements:?} {}", StartupError::Source);
+        assert!(source.recheck().is_ok());
+        let rendered = format!(
+            "{policy:?} {source:?} {requirements:?} {}",
+            StartupError::Source
+        );
         assert!(!rendered.contains("UNSELECTED_STARTUP_CREDENTIAL"));
         assert!(!rendered.contains("synthetic-detector"));
         fixture.no_owned_effects(&bytes);

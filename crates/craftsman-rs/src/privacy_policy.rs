@@ -108,9 +108,6 @@ pub struct CapturedPolicy {
     policy: Policy,
     root: ConfigRoot,
     source: Option<FileLease>,
-    // Present only for the new startup capture. Ordinary captures keep their
-    // existing metadata/source behavior and do not retain another byte copy.
-    configuration_bytes: Option<Zeroizing<Vec<u8>>>,
 }
 
 pub(crate) enum UserConfigurationCaptureError {
@@ -128,6 +125,35 @@ pub(crate) struct CapturedUserConfiguration {
     root: ConfigRoot,
     source: Option<FileLease>,
     bytes: Option<Zeroizing<Vec<u8>>>,
+}
+
+/// Opaque startup-only original bytes and SAME held root/file source. It must
+/// stay beside the returned CapturedPolicy; ordinary policy owners are unchanged.
+pub struct RetainedUserConfigurationSource {
+    root: ConfigRoot,
+    source: Option<FileLease>,
+    bytes: Option<Zeroizing<Vec<u8>>>,
+}
+impl fmt::Debug for RetainedUserConfigurationSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RetainedUserConfigurationSource([private])")
+    }
+}
+impl RetainedUserConfigurationSource {
+    pub fn recheck(&self) -> Result<()> {
+        self.root.recheck().map_err(|_| PolicyError::Source)?;
+        match (&self.source, &self.bytes) {
+            (Some(source), Some(bytes)) => source
+                .verify_configuration_bytes(bytes)
+                .map_err(|_| PolicyError::Source)?,
+            (None, None) => self
+                .root
+                .verify_config_absent()
+                .map_err(|_| PolicyError::Source)?,
+            _ => return Err(PolicyError::Source),
+        }
+        self.root.recheck().map_err(|_| PolicyError::Source)
+    }
 }
 
 impl CapturedUserConfiguration {
@@ -189,13 +215,26 @@ impl CapturedUserConfiguration {
 
     pub(crate) fn into_configuration_and_policy(
         self,
-    ) -> Result<(Option<crate::config::Config>, CapturedPolicy)> {
+    ) -> Result<(
+        Option<crate::config::Config>,
+        CapturedPolicy,
+        RetainedUserConfigurationSource,
+    )> {
         self.recheck()?;
+        let retained_source = RetainedUserConfigurationSource {
+            root: self.root.duplicate_owned().map_err(|_| PolicyError::Source)?,
+            source: self
+                .source
+                .as_ref()
+                .map(FileLease::duplicate_owned)
+                .transpose()
+                .map_err(|_| PolicyError::Source)?,
+            bytes: self.bytes,
+        };
         let mut policy = CapturedPolicy {
             policy: self.policy,
             root: self.root,
             source: self.source,
-            configuration_bytes: self.bytes,
         };
         if let Policy::Proposed(proposed) = &mut policy.policy {
             for rule in &mut proposed.file_rules {
@@ -203,7 +242,16 @@ impl CapturedUserConfiguration {
             }
         }
         policy.recheck()?;
-        Ok((self.configuration, policy))
+        retained_source.recheck()?;
+        Ok((self.configuration, policy, retained_source))
+    }
+
+    pub(crate) fn into_legacy_configuration(self) -> Result<Option<crate::config::Config>> {
+        self.recheck()?;
+        if self.is_enabled() {
+            return Err(PolicyError::NotYetAvailable);
+        }
+        Ok(self.configuration)
     }
 }
 impl fmt::Debug for CapturedPolicy {
@@ -231,7 +279,6 @@ impl CapturedPolicy {
             policy,
             root,
             source,
-            configuration_bytes: None,
         };
         if let Policy::Proposed(policy) = &mut captured.policy {
             for rule in &mut policy.file_rules {
@@ -249,14 +296,6 @@ impl CapturedPolicy {
             self.root
                 .verify_config_absent()
                 .map_err(|_| PolicyError::Source)?;
-        }
-        if let Some(bytes) = &self.configuration_bytes {
-            self.source
-                .as_ref()
-                .ok_or(PolicyError::Source)?
-                .verify_configuration_bytes(bytes)
-                .map_err(|_| PolicyError::Source)?;
-            self.root.recheck().map_err(|_| PolicyError::Source)?;
         }
         if let Policy::Proposed(policy) = &self.policy {
             for rule in &policy.file_rules {

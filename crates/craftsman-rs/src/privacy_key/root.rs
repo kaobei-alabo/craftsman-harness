@@ -386,6 +386,28 @@ impl fmt::Debug for FileLease {
     }
 }
 impl FileLease {
+    /// Duplicate this already-held source without opening a caller pathname.
+    pub(crate) fn duplicate_owned(&self) -> Result<Self> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let copy = Self {
+                file: self.file.try_clone().map_err(|_| KeyError::Io)?,
+                metadata: self.metadata.clone(),
+                identity: self.identity,
+                private: self.private,
+                parent: self.parent.try_clone().map_err(|_| KeyError::Io)?,
+                name: self.name.clone(),
+            };
+            copy.recheck()?;
+            Ok(copy)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
     /// Refusal-only re-verification of this descriptor's bounded original
     /// config bytes. Neither bytes nor a source owner can be supplied by it.
     pub(crate) fn verify_configuration_bytes(&self, expected: &[u8]) -> Result<()> {
