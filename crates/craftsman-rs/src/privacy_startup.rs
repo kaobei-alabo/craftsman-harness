@@ -466,6 +466,9 @@ fn finish_source(source: CapturedUserConfiguration) -> Result<CapturedTerminalSt
 }
 
 #[cfg(all(test, unix))]
+mod options_tests;
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;
