@@ -1,6 +1,6 @@
-//! Private owned-input/key/policy/conversation composition. No normal CLI,
-//! frontend or enabled policy can select this path. It builds no Agent: the
-//! full expected-set source/provider/mutator selection is not available yet.
+//! Private owned-input/key/policy/conversation and full-session composition.
+//! Normal CLI/frontend routing never selects it; compiled private construction
+//! and pending startup requirements do not authorize normal activation.
 use crate::privacy_cli::{FilePresence, PrivateKeyOperations};
 use crate::privacy_key::{ConfigRoot, KeyError, UnlockedVault};
 use crate::privacy_policy::RetainedUserConfigurationSource;
@@ -409,9 +409,9 @@ impl PrivateConversation {
     pub(crate) fn session_guard_for_retirement(&self) -> Arc<crate::privacy_send::SendGuard> {
         self.session.send_guard()
     }
-    /// A fresh clear keeps the OLD retained root/workspace observations as
-    /// prerequisites, recaptures the same real source, and delays allocation
-    /// until actual unlock. No equal digest or ambient path renews authority.
+    /// Startup retirement shares the retained four-owner object; legacy
+    /// root-only retirement recaptures after source/workspace rechecks. Both
+    /// delay reservation until unlock; equal bytes or paths renew no authority.
     pub(crate) fn capture_after_retirement(&self) -> Result<PrivateBootstrap> {
         self.policy.recheck().map_err(|error| match error {
             PolicyError::Source => BootstrapError::ConfigurationChanged,
@@ -744,8 +744,8 @@ impl std::fmt::Debug for PrivateBuildError {
     }
 }
 
-/// Holds the key/policy owner through the real session's lifetime, including
-/// every shared lane. Currently unreachable: the full source paths refuse.
+/// Holds actual owners through the unselected private full-session path and
+/// every shared lane. User-facing startup routing remains unwired.
 pub struct PrivateBuiltSession {
     session: crate::agent::Session,
     owner: Arc<PrivateConversation>,
