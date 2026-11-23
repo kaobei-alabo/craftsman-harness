@@ -93,6 +93,17 @@ isolated consuming checks use synthetic files, enter no password popup and
 make no private MAIN/model call. This composition needs its own measured binary
 and independent/source/native proof; c33's tests and margin cover c33 only.
 
+The bounded layout correction now uses the existing erased worker in the
+ordinary gadget I/O timeout adapter. The work, timeout argument, error mapping,
+capability/approval checks and key-operation JoinHandle ownership stay exact.
+At layout commit `445fbfb4e3a00e169d7e12c60cc5f8835f2f4e67`, the actual gadget
+unwind section was 16,749,644 bytes against the unchanged 16,777,216-byte limit,
+with 27,572 bytes of measured room and no linker warning. Core measured
+9,136,668 bytes. Source/consuming and key checks passed in both modes. The
+earlier 1,456/1,404/1,424-byte excesses remain recorded failures; no test or
+bound was removed. This is compiled private composition evidence, not proof
+that future routing fits or that normal startup/native/activation is ready.
+
 The next route must consume these same owners before the competing normal
 TerminalGuard/EventStream, store, provider and helper construction. It must use
 the owned password UI and an actual fresh conversation shared across every lane,

@@ -616,3 +616,13 @@ missing-producer release uses the existing tracked identity rule and has static
 review only. Combined linked-size, full17, independent source, all-four hosted
 and merged-main/install gates remain open; neither the preserved incomplete
 draft nor older passing fixtures supply that proof.
+
+The later private startup composition has scoped independent four-owner source
+acceptance at9de. Its bounded ordinary gadget I/O layout correction measured
+16,749,644 bytes of unwind data, 27,572 below the unchanged16MiB limit at445fbfb;
+source/consuming12 and key9 pass in each native mode with no current warnings.
+The producer, key-handle ownership, full builder body and c33 behavior remain
+unchanged. Earlier excesses stay rejected evidence. This measured room does
+not certify future routing, and the composition's broad full17/all-four/native/
+merged-main/install gates remain separate. User-facing startup/activation is
+still unwired; original records remain plaintext outside the encrypted vault.
