@@ -254,7 +254,7 @@ impl UiBridge {
                 {
                     return ApprovalPromptResult::Reject(String::new());
                 }
-                let result = tokio::task::block_in_place(|| receive.recv());
+                let result = crate::util::block_in_place(|| receive.recv());
                 if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
                     return ApprovalPromptResult::Reject(String::new());
                 }
@@ -278,7 +278,7 @@ impl UiBridge {
                         &turn,
                     ))
                     .ok()?;
-                let answer = tokio::task::block_in_place(|| receive.recv())
+                let answer = crate::util::block_in_place(|| receive.recv())
                     .ok()
                     .flatten();
                 if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
