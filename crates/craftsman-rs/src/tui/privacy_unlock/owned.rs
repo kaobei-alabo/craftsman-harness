@@ -47,7 +47,80 @@ impl std::fmt::Debug for OwnedSecretTerminal {
     }
 }
 
+/// Only the separate private entry constructors select these variants. A
+/// captured variant carries no Config: every use checks the actual owner.
+enum FrontendConfiguration {
+    Legacy(crate::config::Config),
+    Captured,
+}
+impl FrontendConfiguration {
+    fn check_bootstrap(
+        &self,
+        bootstrap: &crate::privacy_bootstrap::PrivateBootstrap,
+    ) -> std::result::Result<(), PrivateTerminalError> {
+        let captured = bootstrap
+            .captured_configuration()
+            .map_err(PrivateTerminalError::Source)?;
+        match (self, captured) {
+            (Self::Legacy(_), None) => Ok(()),
+            (Self::Captured, Some(cfg)) => check_voice_configuration(cfg),
+            _ => Err(PrivateTerminalError::Build(
+                crate::privacy_bootstrap::PrivateBuildError::Unavailable,
+            )),
+        }
+    }
+    fn source<'a>(
+        &'a self,
+        owner: &'a std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
+    ) -> std::result::Result<&'a crate::config::Config, PrivateTerminalError> {
+        match self {
+            Self::Legacy(cfg) => Ok(cfg),
+            Self::Captured => owner
+                .captured_configuration()
+                .map_err(PrivateTerminalError::Source)?
+                .ok_or(PrivateTerminalError::Build(
+                    crate::privacy_bootstrap::PrivateBuildError::Unavailable,
+                )),
+        }
+    }
+    fn legacy_for_build(&self) -> Option<crate::config::Config> {
+        match self {
+            Self::Legacy(cfg) => Some(cfg.clone()),
+            Self::Captured => None,
+        }
+    }
+    fn is_captured(&self) -> bool {
+        matches!(self, Self::Captured)
+    }
+}
+
+fn check_voice_configuration(
+    cfg: &crate::config::Config,
+) -> std::result::Result<(), PrivateTerminalError> {
+    // The captured entry checks this before key work. Its popup already
+    // exists; this is not normal before-terminal readiness or a downgrade.
+    if cfg
+        .voice_setting("enabled")
+        .and_then(serde_json::Value::as_bool)
+        != Some(false)
+    {
+        return Err(PrivateTerminalError::Build(
+            crate::privacy_bootstrap::PrivateBuildError::Refused(
+                crate::privacy_session::BuildRefusal::RequestedPart,
+            ),
+        ));
+    }
+    Ok(())
+}
+
 impl OwnedSecretTerminal {
+    /// Read-only captured-source eligibility, before key work. This neither
+    /// enters a terminal nor supplies ownership/permission from caller values.
+    pub(crate) fn check_captured_bootstrap(
+        bootstrap: &crate::privacy_bootstrap::PrivateBootstrap,
+    ) -> std::result::Result<(), PrivateTerminalError> {
+        FrontendConfiguration::Captured.check_bootstrap(bootstrap)
+    }
     /// Capture modes/authority and install signal ownership before raw entry.
     /// Windows refuses before secret input until secure storage is supported.
     pub fn enter() -> Result<Self> {
@@ -135,11 +208,13 @@ impl OwnedSecretTerminal {
     async fn request_full_session_on_bridge(
         self,
         owner: std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
-        cfg: crate::config::Config,
+        configuration: FrontendConfiguration,
         approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
     ) -> std::result::Result<live::Frontend, PrivateTerminalError> {
-        let mut frontend = live::Frontend::from_popup(self.inner, owner, cfg, approval)?;
-        frontend.build_full().await?;
+        let mut frontend = live::Frontend::from_popup(self.inner, owner, configuration, approval)?;
+        if let Err(primary) = frontend.build_full().await {
+            return Err(frontend.retire_failed_build(primary).await);
+        }
         Ok(frontend)
     }
 
@@ -153,8 +228,37 @@ impl OwnedSecretTerminal {
         cfg: crate::config::Config,
         approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
     ) -> std::result::Result<i32, PrivateTerminalError> {
+        self.run_owned(bootstrap, FrontendConfiguration::Legacy(cfg), approval)
+            .await
+    }
+
+    /// Private consuming entry for an actual startup-issued bootstrap. No
+    /// caller configuration can become its build, voice or renderer authority.
+    /// Normal dispatch never calls this path and requirements stay pending.
+    pub async fn run_captured_private(
+        self,
+        bootstrap: crate::privacy_bootstrap::PrivateBootstrap,
+        approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+    ) -> std::result::Result<i32, PrivateTerminalError> {
+        self.run_owned(bootstrap, FrontendConfiguration::Captured, approval)
+            .await
+    }
+
+    async fn run_owned(
+        self,
+        bootstrap: crate::privacy_bootstrap::PrivateBootstrap,
+        configuration: FrontendConfiguration,
+        approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+    ) -> std::result::Result<i32, PrivateTerminalError> {
         #[cfg(unix)]
         {
+            // Verify genuine startup ownership and captured voice eligibility
+            // before any key/unlock operation; compatibility stays separate.
+            if configuration.is_captured() {
+                Self::check_captured_bootstrap(&bootstrap)?;
+            } else {
+                configuration.check_bootstrap(&bootstrap)?;
+            }
             let mut terminal = self;
             let owner = match bootstrap.unlock_private(&mut terminal).await {
                 Ok(owner) => std::sync::Arc::new(owner),
@@ -170,13 +274,13 @@ impl OwnedSecretTerminal {
                 }
             };
             let mut frontend = terminal
-                .request_full_session_on_bridge(owner, cfg, approval)
+                .request_full_session_on_bridge(owner, configuration, approval)
                 .await?;
             frontend.run().await
         }
         #[cfg(not(unix))]
         {
-            let _ = (self, bootstrap, cfg, approval);
+            let _ = (self, bootstrap, configuration, approval);
             Err(PrivateTerminalError::Source(
                 crate::privacy_bootstrap::BootstrapError::Key(KeyError::SecureStorageUnsupported),
             ))

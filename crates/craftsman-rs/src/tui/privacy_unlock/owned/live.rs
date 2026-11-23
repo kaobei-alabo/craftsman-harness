@@ -1,8 +1,10 @@
 //! A fresh private terminal's real receiver/input/task owner. This is never
 //! called by a normal selector. Password acquisition has finished before this
 //! sole ordinary reader exists; active-entry password reacquisition is refused.
-use super::{OwnedSecretTerminal, PrivateTerminalError, UnixPopup};
-use crate::config::Config;
+use super::{
+    FrontendConfiguration, OwnedSecretTerminal, PrivateTerminalError, UnixPopup,
+    check_voice_configuration,
+};
 use crate::hitl::ApprovalState;
 use crate::privacy_bootstrap::{
     BootstrapError, PrivateBuiltSession, PrivateConversation, PrivateTurnError,
@@ -59,7 +61,7 @@ enum Returned {
 pub(super) struct Frontend {
     popup: OwnedSecretTerminal,
     owner: Arc<PrivateConversation>,
-    cfg: Config,
+    configuration: FrontendConfiguration,
     approval: Arc<Mutex<ApprovalState>>,
     app: App,
     bridge: UiBridge,
@@ -76,7 +78,7 @@ impl Frontend {
     pub(super) fn from_popup(
         mut popup: UnixPopup,
         owner: Arc<PrivateConversation>,
-        cfg: Config,
+        configuration: FrontendConfiguration,
         approval: Arc<Mutex<ApprovalState>>,
     ) -> Result<Self, PrivateTerminalError> {
         let result = (|| {
@@ -89,17 +91,8 @@ impl Frontend {
             }
             // Voice has no reviewed private acquisition adapter. Refuse the
             // configured feature; never turn it off to get a smaller session.
-            if cfg
-                .voice_setting("enabled")
-                .and_then(serde_json::Value::as_bool)
-                != Some(false)
-            {
-                return Err(PrivateTerminalError::Build(
-                    crate::privacy_bootstrap::PrivateBuildError::Refused(
-                        crate::privacy_session::BuildRefusal::RequestedPart,
-                    ),
-                ));
-            }
+            let cfg = configuration.source(&owner)?;
+            check_voice_configuration(cfg)?;
             popup
                 .input
                 .finish_input()
@@ -117,9 +110,10 @@ impl Frontend {
             // flush the ordinary reader's accepted drafts/type-ahead.
             popup.secret_reader = false;
             let input = OwnedNormalInput;
-            Ok((cancellation, receiver, bridge, prompt, ui, input))
+            let app = App::new(cfg);
+            Ok((cancellation, receiver, bridge, prompt, ui, input, app))
         })();
-        let (cancellation, receiver, bridge, prompt, ui, input) = match result {
+        let (cancellation, receiver, bridge, prompt, ui, input, app) = match result {
             Ok(parts) => parts,
             Err(error) => {
                 owner.close();
@@ -129,8 +123,8 @@ impl Frontend {
         Ok(Self {
             popup: OwnedSecretTerminal { inner: popup },
             owner,
-            app: App::new(&cfg),
-            cfg,
+            app,
+            configuration,
             approval,
             bridge,
             receiver,
@@ -148,7 +142,7 @@ impl Frontend {
         self.owner
             .check_sources()
             .map_err(PrivateTerminalError::Source)?;
-        let cfg = self.cfg.clone();
+        let legacy_cfg = self.configuration.legacy_for_build();
         let approval = self.approval.clone();
         let owner = self.owner.clone();
         let mut extras = self.bridge.session_extras();
@@ -166,7 +160,12 @@ impl Frontend {
                     > + Send
                     + '_,
             >,
-        > = Box::pin(async move { owner.request_full_session(&cfg, approval, extras).await });
+        > = Box::pin(async move {
+            match legacy_cfg {
+                Some(cfg) => owner.request_full_session(&cfg, approval, extras).await,
+                None => owner.request_captured_full_session(approval, extras).await,
+            }
+        });
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         self.app.running = true;
@@ -201,6 +200,8 @@ impl Frontend {
             .map(|built| built.session_for_terminal())
     }
     fn draw(&mut self, pending: bool) -> Result<(), PrivateTerminalError> {
+        let owner = self.owner.clone();
+        let cfg = self.configuration.source(&owner)?;
         let session = self
             .built
             .as_ref()
@@ -208,7 +209,7 @@ impl Frontend {
         draw_session(
             &mut self.popup.inner.terminal,
             &mut self.app,
-            &self.cfg,
+            cfg,
             session,
             pending,
             &self.approval,
@@ -450,6 +451,22 @@ impl Frontend {
             }
         }
     }
+    /// The real build has returned/dropped and no normal read is in flight.
+    /// Keep its primary error and wait for the actual retirement result; Drop
+    /// alone is not a completed cleanup witness for a failed captured build.
+    pub(super) async fn retire_failed_build(
+        &mut self,
+        primary: PrivateTerminalError,
+    ) -> PrivateTerminalError {
+        if !self.configuration.is_captured() {
+            return primary;
+        }
+        drop(self.input.take());
+        match self.retire_owners().await {
+            Ok(true) => primary,
+            _ => PrivateTerminalError::CleanupAfter(Box::new(primary)),
+        }
+    }
     /// Actual cleanup half shared by exit and the pending fresh-clear path.
     /// No reader relinquishment or unlock is implied by its return.
     async fn retire_owners(&mut self) -> Result<bool, tokio::time::error::Elapsed> {
@@ -532,6 +549,7 @@ impl Frontend {
         let bootstrap = old
             .capture_after_retirement()
             .map_err(PrivateTerminalError::Source)?;
+        self.configuration.check_bootstrap(&bootstrap)?;
         self.popup.inner.secret_reader = true;
         self.popup
             .inner

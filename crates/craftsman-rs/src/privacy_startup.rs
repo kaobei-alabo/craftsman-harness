@@ -792,4 +792,85 @@ mod tests {
         assert!(bootstrap.status().is_err());
         fixture.no_owned_effects(&changed);
     }
+
+    #[test]
+    fn captured_frontend_preflight_uses_actual_voice_source_before_key_work() {
+        for voice in [
+            None,
+            Some(serde_json::json!(true)),
+            Some(serde_json::json!("false")),
+            Some(serde_json::json!(false)),
+        ] {
+            let fixture = OwnedUserFile::new();
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&enabled_user_source()).unwrap();
+            if let Some(voice) = &voice {
+                value["voice"] = serde_json::json!({"enabled": voice});
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fixture.write(&bytes);
+            let workspace = fixture._temporary.path().canonicalize().unwrap();
+            let bootstrap = fixture
+                .captured()
+                .into_owned()
+                .unwrap()
+                .into_private_bootstrap(&workspace)
+                .unwrap();
+            let result =
+                crate::privacy_unlock::OwnedSecretTerminal::check_captured_bootstrap(&bootstrap);
+            if voice == Some(serde_json::json!(false)) {
+                assert!(result.is_ok());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(crate::privacy_unlock::PrivateTerminalError::Build(
+                        crate::privacy_bootstrap::PrivateBuildError::Refused(
+                            crate::privacy_session::BuildRefusal::RequestedPart
+                        )
+                    ))
+                ));
+            }
+            assert!(matches!(
+                bootstrap.status(),
+                Ok(crate::privacy_cli::FilePresence::Missing)
+            ));
+            fixture.no_owned_effects(&bytes);
+        }
+    }
+
+    #[test]
+    fn captured_frontend_preflight_refuses_missing_or_replaced_startup_ownership() {
+        let fixture = OwnedUserFile::new();
+        let mut value: serde_json::Value = serde_json::from_slice(&enabled_user_source()).unwrap();
+        value["voice"] = serde_json::json!({"enabled":false});
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fixture.write(&bytes);
+        let workspace = fixture._temporary.path().canonicalize().unwrap();
+        let legacy = crate::privacy_bootstrap::PrivateBootstrap::from_captured_root(
+            ConfigRoot::capture_owned_startup_fixture(fixture.root.clone()).unwrap(),
+            &workspace,
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::privacy_unlock::OwnedSecretTerminal::check_captured_bootstrap(&legacy),
+            Err(crate::privacy_unlock::PrivateTerminalError::Build(
+                crate::privacy_bootstrap::PrivateBuildError::Unavailable
+            ))
+        ));
+        let captured = fixture
+            .captured()
+            .into_owned()
+            .unwrap()
+            .into_private_bootstrap(&workspace)
+            .unwrap();
+        let replacement = fixture.root.join("replacement.json");
+        fs::write(&replacement, &bytes).unwrap();
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&replacement, fixture.root.join("config.json")).unwrap();
+        assert!(matches!(
+            crate::privacy_unlock::OwnedSecretTerminal::check_captured_bootstrap(&captured),
+            Err(crate::privacy_unlock::PrivateTerminalError::Source(_))
+        ));
+        fixture.no_owned_effects(&bytes);
+    }
 }
