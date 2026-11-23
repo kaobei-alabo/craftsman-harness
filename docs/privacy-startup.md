@@ -60,6 +60,35 @@ inspection and final validation as obligations. They do not infer compatibility
 from model names or protocol labels, omit requested capabilities, or switch a
 model or protocol. `require_normal_activation` always refuses as unavailable.
 
+The private consuming composition now exists as
+`OwnedTerminalStartup::into_private_bootstrap(workspace)`. It moves the
+configuration, actual policy, retained source and requirements into one private
+owner. It derives key operations from the same held user root and reuses the
+existing workspace observation and genuine fresh-conversation reservation;
+it does not reparse configuration or recapture policy from a merged Config.
+Read-only `captured_configuration` and `startup_requirements` access checks the
+retained source. Status/init/unlock keep that owner through their existing
+operations, and successful unlock retains it in the private conversation and
+its selected policy. Requirements remain pending; no prototype result marks
+normal routing, voice/native support or final validation complete.
+
+The conversation's private `request_captured_full_session` accepts no Config;
+it uses that owner's original configuration and forwards every requested
+extra to the existing full shared builder. The older Config-taking request
+can reach it only with a borrow of that same retained configuration, after
+actual source checks; an equal caller or project-merged Config refuses.
+Reference identity adds only this substitution check and creates no source,
+human-decision or permission authority. Successful built sessions retain the
+same actual owner through their policy and task owners. Fresh retirement shares
+that immutable four-owner object and held workspace observations, preserving
+requirements and delaying its new reservation until unlock; it does not renew
+authority from new bytes, transfer old messages or use a constant namespace.
+
+The normal route and actual startup-to-frontend handoff remain unselected. The
+isolated consuming checks use synthetic files, enter no password popup and
+make no private MAIN/model call. This composition needs its own measured binary
+and independent/source/native proof; c33's tests and margin cover c33 only.
+
 The next route must consume these same owners before the competing normal
 TerminalGuard/EventStream, store, provider and helper construction. It must use
 the owned password UI and an actual fresh conversation shared across every lane,

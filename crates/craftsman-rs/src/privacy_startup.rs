@@ -710,4 +710,86 @@ mod tests {
         assert!(!rendered.contains("synthetic-detector"));
         fixture.no_owned_effects(&bytes);
     }
+
+    #[test]
+    fn consuming_private_bootstrap_retains_actual_configuration_and_pending_requirements() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let workspace = fixture._temporary.path().canonicalize().unwrap();
+        let bootstrap = fixture
+            .captured()
+            .into_owned()
+            .unwrap()
+            .into_private_bootstrap(&workspace)
+            .unwrap();
+        let configuration = bootstrap.captured_configuration().unwrap().unwrap();
+        assert!(configuration.model.as_deref() == Some("synthetic-local-model"));
+        assert!(configuration.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
+        assert!(configuration.extra["unknown_setting"]["keep"] == serde_json::json!([1, 2, 3]));
+        let requirements = bootstrap.startup_requirements().unwrap().unwrap();
+        for prerequisite in [
+            StartupPrerequisite::ReviewedNormalTerminalRouting,
+            StartupPrerequisite::FreshConversationSharedAcrossAllLanes,
+            StartupPrerequisite::FullRequestedFeaturesAndActualNativeViews,
+            StartupPrerequisite::OwnedKeyAndApprovedDetectorBeforeGuestExecution,
+            StartupPrerequisite::VoiceAndNativeInspectionIntegration,
+            StartupPrerequisite::FinalSourceAndNativeValidation,
+        ] {
+            assert!(requirements.prerequisites().contains(&prerequisite));
+        }
+        assert!(matches!(
+            requirements.require_normal_activation(),
+            Err(StartupError::NotYetAvailable)
+        ));
+        assert!(matches!(
+            bootstrap.status(),
+            Ok(crate::privacy_cli::FilePresence::Missing)
+        ));
+        let debug = format!("{bootstrap:?}");
+        assert!(!debug.contains("UNSELECTED_STARTUP_CREDENTIAL"));
+        assert!(!debug.contains("synthetic-local-model"));
+        fixture.no_owned_effects(&bytes);
+    }
+
+    #[test]
+    fn consuming_private_bootstrap_refuses_replaced_source_before_any_new_capture() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let owned = fixture.captured().into_owned().unwrap();
+        let replacement = fixture.root.join("replacement.json");
+        fs::write(&replacement, &bytes).unwrap();
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&replacement, fixture.root.join("config.json")).unwrap();
+        let workspace = fixture._temporary.path().canonicalize().unwrap();
+        assert!(matches!(
+            owned.into_private_bootstrap(&workspace),
+            Err(crate::privacy_bootstrap::BootstrapError::ConfigurationChanged)
+        ));
+        fixture.no_owned_effects(&bytes);
+    }
+
+    #[test]
+    fn consuming_private_bootstrap_rechecks_retained_source_before_configuration_and_key_status() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let workspace = fixture._temporary.path().canonicalize().unwrap();
+        let bootstrap = fixture
+            .captured()
+            .into_owned()
+            .unwrap()
+            .into_private_bootstrap(&workspace)
+            .unwrap();
+        let changed = bytes
+            .iter()
+            .map(|byte| if *byte == b'a' { b'b' } else { *byte })
+            .collect::<Vec<_>>();
+        fixture.write(&changed);
+        assert!(bootstrap.captured_configuration().is_err());
+        assert!(bootstrap.startup_requirements().is_err());
+        assert!(bootstrap.status().is_err());
+        fixture.no_owned_effects(&changed);
+    }
 }

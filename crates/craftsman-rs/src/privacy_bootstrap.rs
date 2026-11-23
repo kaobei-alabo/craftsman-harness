@@ -3,11 +3,13 @@
 //! full expected-set source/provider/mutator selection is not available yet.
 use crate::privacy_cli::{FilePresence, PrivateKeyOperations};
 use crate::privacy_key::{ConfigRoot, KeyError, UnlockedVault};
+use crate::privacy_policy::RetainedUserConfigurationSource;
 use crate::privacy_policy::{CapturedPolicy, PolicyError};
 use crate::privacy_session::{
     AdmitError, AdmittedNode, BuildRefusal, CapturedRaw, CapturedUserPolicy,
     FreshConversationBinding, PrivacySession, PrivacyViewSelection, RawOrigin, SessionStop,
 };
+use crate::privacy_startup::{OwnedTerminalStartup, StartupError, StartupRequirements};
 use crate::tui::privacy_unlock::OwnedSecretTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -127,6 +129,108 @@ impl Workspace {
         self.recheck()?;
         Ok(binding)
     }
+    fn duplicate_owned(&self) -> Result<Self> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let captured = Self {
+                canonical: self.canonical.clone(),
+                directory: self
+                    .directory
+                    .try_clone()
+                    .map_err(|_| BootstrapError::Workspace)?,
+            };
+            captured.recheck()?;
+            Ok(captured)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(BootstrapError::Workspace)
+        }
+    }
+}
+
+/// The consuming startup adapter keeps all four issued owners together. An
+/// Arc shares this actual retained object; it cannot reconstruct it from a
+/// Config, pathname, policy label, digest or caller requirements.
+struct StartupOwners {
+    configuration: crate::config::Config,
+    policy: CapturedPolicy,
+    source: RetainedUserConfigurationSource,
+    requirements: StartupRequirements,
+}
+enum PolicyOwner {
+    Legacy(CapturedPolicy),
+    Startup(Arc<StartupOwners>),
+}
+impl std::ops::Deref for PolicyOwner {
+    type Target = CapturedPolicy;
+    fn deref(&self) -> &CapturedPolicy {
+        match self {
+            Self::Legacy(policy) => policy,
+            Self::Startup(owners) => &owners.policy,
+        }
+    }
+}
+impl PolicyOwner {
+    fn recheck(&self) -> std::result::Result<(), PolicyError> {
+        match self {
+            Self::Legacy(policy) => policy.recheck(),
+            Self::Startup(owners) => {
+                owners.source.recheck()?;
+                owners.policy.recheck()?;
+                owners.source.recheck()
+            }
+        }
+    }
+    fn recheck_startup(&self) -> std::result::Result<(), PolicyError> {
+        match self {
+            Self::Legacy(_) => Ok(()),
+            Self::Startup(_) => self.recheck(),
+        }
+    }
+    fn startup(&self) -> Option<&StartupOwners> {
+        match self {
+            Self::Legacy(_) => None,
+            Self::Startup(owners) => Some(owners),
+        }
+    }
+}
+
+impl OwnedTerminalStartup {
+    /// Consume only the actual startup issuer's configuration, policy, source
+    /// and still-pending requirements. Normal main/TUI routing never calls it.
+    /// Workspace capture/reservation reuse the existing actual native owners.
+    pub fn into_private_bootstrap(self, workspace: &Path) -> Result<PrivateBootstrap> {
+        let (configuration, policy, source, requirements) = self
+            .into_configuration_policy()
+            .map_err(|error| match error {
+                StartupError::Source => BootstrapError::ConfigurationChanged,
+                StartupError::Invalid => BootstrapError::Policy(PolicyError::Invalid),
+                StartupError::NotYetAvailable => {
+                    BootstrapError::Policy(PolicyError::NotYetAvailable)
+                }
+                _ => BootstrapError::Source,
+            })?;
+        let policy = PolicyOwner::Startup(Arc::new(StartupOwners {
+            configuration,
+            policy,
+            source,
+            requirements,
+        }));
+        policy.recheck()?;
+        let key_root = policy.root().duplicate_owned()?;
+        policy.root().with_captured_path(|_| Ok(()))?;
+        let workspace = Workspace::capture(workspace)?;
+        let binding = workspace.reserve()?;
+        policy.recheck()?;
+        Ok(PrivateBootstrap {
+            policy,
+            operations: PrivateKeyOperations::from_captured_root(key_root),
+            workspace,
+            binding: Some(binding),
+        })
+    }
 }
 
 /// These owners all come from the SAME captured actual user ConfigRoot. The
@@ -134,7 +238,7 @@ impl Workspace {
 /// enabled policy is usable only by this unselected private entry; normal
 /// Config::load still refuses enabled privacy as not-yet-available.
 pub struct PrivateBootstrap {
-    policy: CapturedPolicy,
+    policy: PolicyOwner,
     operations: PrivateKeyOperations,
     workspace: Workspace,
     binding: Option<FreshConversationBinding>,
@@ -157,11 +261,21 @@ impl PrivateBootstrap {
         let binding = workspace.reserve()?;
         policy.recheck()?;
         Ok(Self {
-            policy,
+            policy: PolicyOwner::Legacy(policy),
             operations: PrivateKeyOperations::from_captured_root(key_root),
             workspace,
             binding: Some(binding),
         })
+    }
+    /// The original captured configuration is read-only and source-checked.
+    /// Legacy root-only bootstrap has no startup configuration authority.
+    pub fn captured_configuration(&self) -> Result<Option<&crate::config::Config>> {
+        self.policy.recheck()?;
+        Ok(self.policy.startup().map(|owners| &owners.configuration))
+    }
+    pub fn startup_requirements(&self) -> Result<Option<&StartupRequirements>> {
+        self.policy.recheck()?;
+        Ok(self.policy.startup().map(|owners| &owners.requirements))
     }
     pub fn status(&self) -> Result<FilePresence> {
         self.policy.recheck()?;
@@ -185,6 +299,7 @@ impl PrivateBootstrap {
         self.require_detector_policy()?;
         self.workspace.recheck()?;
         let unlocked = terminal.unlock(&self.operations).await?;
+        self.policy.recheck_startup()?;
         let detector = detector(&self.policy, &self.workspace)?;
         // A clear captures authority before asking, but reserves its next
         // actual conversation only AFTER the fresh key authenticated.
@@ -207,6 +322,7 @@ impl PrivateBootstrap {
         Ok(conversation)
     }
     fn require_detector_policy(&self) -> Result<()> {
+        self.policy.recheck_startup()?;
         let proposed = self
             .policy
             .proposed_detector()?
@@ -268,7 +384,7 @@ fn detector(_: &CapturedPolicy, _: &Workspace) -> Result<crate::privacy_hook::De
 /// The future full-selection builder must consume this owner, not take an
 /// unowned session Arc or a fixture Boolean in its place.
 pub struct PrivateConversation {
-    policy: CapturedPolicy,
+    policy: PolicyOwner,
     unlocked: UnlockedVault,
     workspace: Workspace,
     session: Arc<PrivacySession>,
@@ -302,6 +418,18 @@ impl PrivateConversation {
             error => BootstrapError::Policy(error),
         })?;
         self.workspace.recheck()?;
+        if let PolicyOwner::Startup(owners) = &self.policy {
+            let policy = PolicyOwner::Startup(owners.clone());
+            let key_root = policy.root().duplicate_owned()?;
+            let workspace = self.workspace.duplicate_owned()?;
+            policy.recheck()?;
+            return Ok(PrivateBootstrap {
+                policy,
+                operations: PrivateKeyOperations::from_captured_root(key_root),
+                workspace,
+                binding: None,
+            });
+        }
         let root = self.policy.root().duplicate_owned()?;
         let key_root = root.duplicate_owned()?;
         let policy = CapturedPolicy::capture_from_root(root)?;
@@ -309,11 +437,19 @@ impl PrivateConversation {
         self.policy.recheck()?;
         self.workspace.recheck()?;
         Ok(PrivateBootstrap {
-            policy,
+            policy: PolicyOwner::Legacy(policy),
             operations: PrivateKeyOperations::from_captured_root(key_root),
             workspace,
             binding: None,
         })
+    }
+    pub fn captured_configuration(&self) -> Result<Option<&crate::config::Config>> {
+        self.check_sources()?;
+        Ok(self.policy.startup().map(|owners| &owners.configuration))
+    }
+    pub fn startup_requirements(&self) -> Result<Option<&StartupRequirements>> {
+        self.check_sources()?;
+        Ok(self.policy.startup().map(|owners| &owners.requirements))
     }
     pub fn thread_id(&self) -> &str {
         self.session.thread_id()
@@ -407,6 +543,43 @@ impl PrivateConversation {
     /// A successful future build retains these owners beside its real Session.
     #[cfg(unix)]
     pub(crate) async fn request_full_session(
+        self: &Arc<Self>,
+        cfg: &crate::config::Config,
+        approval: Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+        extras: crate::agent::SessionExtras,
+    ) -> std::result::Result<PrivateBuiltSession, PrivateBuildError> {
+        // The source owner establishes origin. Reference identity only adds
+        // a substitution refusal: an equal caller/merged Config is not the
+        // original configuration retained in those actual four owners.
+        if let Some(owners) = self.policy.startup() {
+            self.check_sources().map_err(PrivateBuildError::Source)?;
+            if !std::ptr::eq(cfg, &owners.configuration) {
+                return Err(PrivateBuildError::Unavailable);
+            }
+            return self.request_captured_full_session(approval, extras).await;
+        }
+        self.request_bound_full_session(cfg, approval, extras).await
+    }
+    /// Unselected fresh construction from the same four retained startup
+    /// owners. No caller Config or merged extras can stand in for its source.
+    /// All original requested extras go to the existing full shared builder;
+    /// pending StartupRequirements still confer no normal activation.
+    #[cfg(unix)]
+    pub(crate) async fn request_captured_full_session(
+        self: &Arc<Self>,
+        approval: Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+        extras: crate::agent::SessionExtras,
+    ) -> std::result::Result<PrivateBuiltSession, PrivateBuildError> {
+        self.check_sources().map_err(PrivateBuildError::Source)?;
+        let owners = self
+            .policy
+            .startup()
+            .ok_or(PrivateBuildError::Unavailable)?;
+        self.request_bound_full_session(&owners.configuration, approval, extras)
+            .await
+    }
+    #[cfg(unix)]
+    async fn request_bound_full_session(
         self: &Arc<Self>,
         cfg: &crate::config::Config,
         approval: Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,

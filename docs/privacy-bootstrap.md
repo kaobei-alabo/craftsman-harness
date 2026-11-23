@@ -235,3 +235,17 @@ merged-main proof remain required
 before public delivery. The same $24.285934/$25 ledger with 40 unknowns, SDK/WIT,
 dependencies/pins/lock, SQL/schema/frames/goldens, native permissions/limits and
 binary/container publication hold remain unchanged.
+
+The new private consuming startup adapter retains configuration, CapturedPolicy,
+RetainedUserConfigurationSource and StartupRequirements in one actual owner.
+It uses only the issued startup handoff and already-held user root, preserves
+the existing workspace/fresh reservation and key-operation methods, and carries
+the owner through init/unlock/private conversation construction. Source-checked
+read-only access cannot replace it with merged configuration. Its private
+full-session request takes no Config and sends all requested extras to the same
+builder; the older request refuses substituted configuration. Fresh retirement
+keeps the original owner and requirements without reparsing or rebinding it.
+Normal routing and startup-to-frontend acquisition remain unwired. No source
+record or pending requirement grants activation, tool permission or native
+support. The current composition's isolated checks/measurement remain separate
+from earlier c33 full17 and private FullEntry evidence.
