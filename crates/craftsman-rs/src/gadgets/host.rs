@@ -500,7 +500,7 @@ async fn bounded_blocking<T: Send + 'static>(
     duration: Duration,
     work: impl FnOnce() -> Result<T, GadgetError> + Send + 'static,
 ) -> Result<T, GadgetError> {
-    tokio::time::timeout(duration, tokio::task::spawn_blocking(work))
+    tokio::time::timeout(duration, crate::util::spawn_blocking(work))
         .await
         .map_err(|_| GadgetError::new(ErrorKind::Timeout, "gadget I/O timed out"))?
         .map_err(io_error)?

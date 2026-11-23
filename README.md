@@ -33,8 +33,8 @@ flowchart TD
     S --> O
     M -->|Tool calls| G["Mode, permission and approval gate"]
     G -->|Native tool allowed| N["Host tools<br/>Files, shell, web, configured MCP"]
-    G -->|Gadget allowed| W["WASM gadget<br/>Wasmtime + approved capabilities"]
-    N --> H["Record actual result<br/>Local Turso history + checkpoint hooks"]
+    G -->|Gadget allowed| W["WASM gadget when enabled<br/>Wasmtime + approved capabilities"]
+    N --> H["Record actual result<br/>Local libSQL history + checkpoint hooks"]
     W --> H
     G -->|Refused| H
     H --> P
@@ -47,8 +47,9 @@ flowchart TD
 The model can repeat the tool loop before answering. Replies stream through the
 terminal UI; configured verification and failure controls can request more work
 or stop the turn. WASM contains **gadget code**; host tools keep their own
-execution and permission boundaries. Models and MCP connect remotely only when
-configured; session data stays local.
+execution and permission boundaries. Models and MCP use configured connections;
+web requests come from web-tool calls. Session data uses the local libSQL/Turso
+core with no remote Turso replica.
 
 Code entry points: [submission routing](crates/craftsman-rs/src/tui/commands.rs),
 [session construction](crates/craftsman-rs/src/agent.rs),
@@ -81,18 +82,18 @@ the original local records and gives the model a separate masked view.
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
 flowchart TD
-    U["Private session start<br/>User unlocks mapping vault"] --> V[("Encrypted original ↔ masked map<br/>Local Turso / libSQL")]
+    U["Private session start<br/>User unlocks mapping vault"] --> V[("Encrypted vault originals + keyed indexes<br/>Local libSQL storage")]
     U --> I
     I["Original messages + actual tool results"] --> H["Required hook<br/>Detect supported data and mask model view"]
     V -. lookup / store .-> H
-    H --> M["Configured model API<br/>Masked copy only"]
+    H --> M["Configured model API<br/>Recognized values masked"]
     M -->|Reply| D["Restore committed display reply"]
     D --> O["Terminal display"]
     M -->|Supported data-file edit| B["Validate destination, whole before image<br/>and editable data fields"]
     B --> F["Restore allowed data fields<br/>Validate final images + review + permission"]
     F --> W["Actual file change + checkpoint"]
     W --> I
-    M -->|Other tool call| N["Normal tool gate and execution<br/>Record result; arguments stay masked"]
+    M -->|Other tool call| N["Normal tool gate<br/>Aliases are not restored into arguments"]
     N --> I
     V -. restore .-> D
     V -. restore .-> F
@@ -104,10 +105,13 @@ flowchart TD
 
 **The password belongs to this prototype's mapping vault.** It unwraps the
 vault key at private-session startup; private `/clear` retires the old session
-and asks again. Model access uses your configured API keys. The mapping is
-encrypted; conversation history and checkpoints retain their original local
-format. This is currently tested private code, with normal startup and
-activation still unwired. Supported file restoration is limited to validated
+and asks again. Model access uses your configured API keys. The vault encrypts
+stored originals and uses keyed lookup indexes; original messages, tool results,
+history and checkpoints keep their existing plaintext form. Workspace files
+keep their current contents. Only recognized supported values are masked;
+unrecognized content is sent as written. This private prototype has local test
+evidence, with user-facing startup and activation still unwired.
+Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments
 are not restoration destinations. See [privacy development](docs/privacy-hooks.md).
 
