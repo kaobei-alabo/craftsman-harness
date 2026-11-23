@@ -1052,6 +1052,18 @@ schema/range, current-policy and retained-effect records remain mandatory.
 The same compiled application selects the representation in production and
 tests. The legacy format fixture can check agreement but cannot override it.
 
+The current internal before-image filter borrows the actual bounded file
+capture after that target precheck. It runs the same compiled contact
+whole-object checks as the final validator before restoring a private selector
+or counting its matches. Unsupported fields, decoded duplicate JSON keys,
+malformed documents, invalid UTF-8 and over-limit captures return uniform
+`NoRule`. Every matched private span must lie in a permitted value and, for
+JSON, between complete escape/scalar units before a miss or multiplicity
+answer is returned. The filter issues no policy request, source record,
+validator record or permission. The real final before/after image, range,
+current-user policy, retained directory, opaque human decision and ordinary
+tool checks remain required.
+
 On Unix, creates use exclusive/no-follow `openat` under the actual policy's
 retained directory. Updates use the original held file, with its exact content
 rechecked and a final regular/single-link/effective-user/non-executable metadata
@@ -1061,6 +1073,9 @@ rollback, secure deletion or Windows native acceptance is claimed.
 
 An early absent-delegated-channel refusal ends only that dispatch's actual
 still-derived review; foreign, ended and spent operations keep their own state.
+The main gate now applies the same tracked-identity release when its registered
+private input/policy producer is absent. This main correction has static source
+review only; no new main callback, closure or budget scenario was exercised.
 Actual completed file IO retains its successful original return when closure
 follows completion. Liveness checks precede effects; later stop is handled
 separately by the real tool/fact/end/save path, with no replay or fabricated

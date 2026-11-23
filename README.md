@@ -50,6 +50,11 @@ fresh `/clear`. Recorded inputs, replies, actual results and usage remain
 original; the model gets a separate view, and source records grant no tool
 permission. Unsupported frontends and representations refuse.
 
+The private file consumer checks the actual containing before image before
+restoring an alias or reporting selector matches. Unsupported contact objects
+refuse uniformly; final image, user policy, human decision and tool permission
+checks remain required. This internal check introduces no new policy API.
+
 Independent combined-source review, the recorded native unwind-size warning,
 full-suite/platform/hosted validation and later merged-main/install gates
 remain open. Earlier failures and unknown causes are retained. These local

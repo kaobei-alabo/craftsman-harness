@@ -371,3 +371,14 @@ remain gates before integration/install. The restricted private MAIN
 callback/budget-boundary, equivalent and close-between-retry scenarios remain
 UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
 The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.
+
+The local file consumer now checks its actual bounded before image with the
+same compiled contact-data predicates as its final validator. Unsupported or
+malformed containing objects refuse with uniform `NoRule` before private alias
+restoration or selector miss/count answers. Complete JSON value/escape/scalar
+checks precede those answers. This internal borrowed filter issues no policy
+request or admission/effect record; final current-policy, image/range, retained
+directory, sealed human decision and ordinary tool checks still apply.
+The main missing-producer branch also releases only its actual tracked review,
+using the existing delegated identity rule. That main correction is assessed
+statically; the restricted main scenarios remain unexecuted and uninspected.

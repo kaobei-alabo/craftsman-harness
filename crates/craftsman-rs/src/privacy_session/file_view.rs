@@ -39,8 +39,8 @@
 //! for the write happens before the write. Delete and rename are untouched.
 
 use super::file_data::{
-    DataRequest, FileDataRequest, FileEffectRequest, FileTargetRequest, SupportedDataApplication,
-    TargetRequest,
+    BeforeFilter, DataRequest, FileDataRequest, FileEffectRequest, FileTargetRequest,
+    SupportedDataApplication, TargetRequest,
 };
 use super::view::{
     ApprovedOperation, ConversationBoundary, FieldPlace, PlannedOperation, SourceField,
@@ -557,16 +557,21 @@ impl PrivacySession {
                 }
                 let (format, application) = precheck_target(&bound, FileChange::Update)?;
                 if opened.len() > MAX_FILE as u64 {
-                    return Err(FileRefusal::Stale);
+                    return Err(FileRefusal::NoRule);
                 }
                 let mut text = Zeroizing::new(String::new());
                 (&mut file)
                     .take(MAX_FILE as u64 + 1)
                     .read_to_string(&mut text)
-                    .map_err(unreadable)?;
+                    .map_err(|_| FileRefusal::NoRule)?;
                 if text.len() > MAX_FILE {
-                    return Err(FileRefusal::Stale);
+                    return Err(FileRefusal::NoRule);
                 }
+                // The actual source-bound precheck selected this application.
+                // Reject the complete containing before-image before any
+                // private alias is restored or selector observation is made.
+                // This internal filter grants no image, effect or permission.
+                let before_filter = BeforeFilter::check(application, &text)?;
                 let old_string = restored_field(
                     format,
                     false,
@@ -591,7 +596,20 @@ impl PrivacySession {
                         "Error: old_string must not be empty".into(),
                     ));
                 }
-                let count = text.matches(old_string.value.as_str()).count();
+                let mut count = 0;
+                let mut actual_selectors = Vec::new();
+                for (offset, _) in text.match_indices(old_string.value.as_str()) {
+                    count += 1;
+                    actual_selectors.extend(
+                        old_string
+                            .ranges
+                            .iter()
+                            .map(|range| offset + range.start..offset + range.end),
+                    );
+                }
+                // Every restored selector span must be in a supported data
+                // value and between complete units before count/miss answers.
+                before_filter.selectors(&actual_selectors)?;
                 if count == 0 {
                     return Err(FileRefusal::Tool(format!(
                         "Error: old_string not found in {}",
@@ -606,6 +624,7 @@ impl PrivacySession {
                 }
                 let (new, selectors, replacements) =
                     replace_with_ranges(&text, &old_string, &new_string, replace_all)?;
+                drop(before_filter);
                 if new.len() > MAX_FILE {
                     return Err(FileRefusal::Restore(RestoreError::Bounds));
                 }

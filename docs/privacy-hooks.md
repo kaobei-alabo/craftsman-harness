@@ -717,3 +717,23 @@ Still separate: the key, the user's policy, the terminal's entry, sealed
 inline decisions, any default-on selection, and native or hosted validation.
 Nothing is merged, installed or selected, stored history is not encrypted or
 redacted, and no paid call was made.
+
+
+## Internal contact before-image refusal — November 23, 2026
+
+The private file consumer now rejects unsupported containing before images
+before restoring an alias or reporting a selector miss/count. It borrows the
+actual bounded capture and reuses the final validator's compiled contact-data
+checks, including complete JSON shape, decoded duplicate keys, permitted values
+and complete escape/scalar boundaries. Unsupported, malformed, invalid UTF-8 or
+over-limit captures return uniform `NoRule`. This internal filter grants no
+source, user policy, image or effect authority. Final supported before/after
+images, ranges, current captured-user policy, retained directory, opaque human
+decision and tool permission remain separate requirements.
+
+The main gate's missing-producer refusal now ends only its own tracked review,
+as the delegated gate already did. This branch was reviewed statically; no new
+main callback, closure or budget scenario was run. The local correction and
+approved scheduling substitutions still need combined size, full-suite,
+independent source and native/hosted proof. Normal selection, installation,
+restoration activation and publication remain gated.

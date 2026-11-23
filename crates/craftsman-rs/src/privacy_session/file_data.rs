@@ -170,18 +170,10 @@ impl FileDataRequest {
         if self.0.format != expected {
             return Err(FileRefusal::Unsupported);
         }
-        let values = permitted_values(application, &self.0.after)?;
-        if !inside_all(&self.0.replacements, &values) {
-            return Err(FileRefusal::Unsupported);
-        }
-        check_json_ranges(application, &self.0.after, &self.0.replacements)?;
+        checked_values(application, &self.0.after, &self.0.replacements)?;
         match &self.0.before {
             Some(before) => {
-                let values = permitted_values(application, before)?;
-                if !inside_all(&self.0.selectors, &values) {
-                    return Err(FileRefusal::Unsupported);
-                }
-                check_json_ranges(application, before, &self.0.selectors)?;
+                checked_values(application, before, &self.0.selectors)?;
             }
             None if !self.0.selectors.is_empty() => return Err(FileRefusal::Unsupported),
             None => {}
@@ -195,6 +187,53 @@ impl FileDataRequest {
     pub(super) fn after(&self) -> &str {
         &self.0.after
     }
+}
+
+/// Internal contact-format filter over borrowed actual before-image bytes.
+/// It can only refuse; it creates no source, policy, image or effect record.
+/// The selecting consumer must already have the actual target precheck and
+/// still obtain the real final image/range/current-policy/effect/decision.
+pub(super) struct BeforeFilter<'a> {
+    application: SupportedDataApplication,
+    text: &'a str,
+    values: Vec<Range<usize>>,
+}
+
+impl<'a> BeforeFilter<'a> {
+    pub(super) fn check(
+        application: SupportedDataApplication,
+        text: &'a str,
+    ) -> Result<Self, FileRefusal> {
+        let values = checked_values(application, text, &[]).map_err(|_| FileRefusal::NoRule)?;
+        Ok(Self {
+            application,
+            text,
+            values,
+        })
+    }
+
+    pub(super) fn selectors(&self, ranges: &[Range<usize>]) -> Result<(), FileRefusal> {
+        if !inside_all(ranges, &self.values) {
+            return Err(FileRefusal::NoRule);
+        }
+        check_json_ranges(self.application, self.text, ranges).map_err(|_| FileRefusal::NoRule)
+    }
+}
+
+/// The existing compiled whole-object/data-field checks shared by the
+/// refusal filter and the final supported-image validator. No grant is
+/// issued here, and final-validator errors keep their original meanings.
+fn checked_values(
+    application: SupportedDataApplication,
+    text: &str,
+    ranges: &[Range<usize>],
+) -> Result<Vec<Range<usize>>, FileRefusal> {
+    let values = permitted_values(application, text)?;
+    if !inside_all(ranges, &values) {
+        return Err(FileRefusal::Unsupported);
+    }
+    check_json_ranges(application, text, ranges)?;
+    Ok(values)
 }
 impl SupportedFileData {
     pub fn application(&self) -> SupportedDataApplication {
@@ -466,6 +505,56 @@ opaque_debug!(
     FileEffectRequest,
     RetainedFileEffect
 );
+
+#[cfg(test)]
+mod before_filter_tests {
+    use super::*;
+
+    #[test]
+    fn internal_before_filter_requires_complete_closed_objects_and_value_units() {
+        let text = "{\"owner\":\"x\\u0040y\",\"note\":\"😀\"}";
+        let filter = BeforeFilter::check(SupportedDataApplication::ContactJsonV1, text).unwrap();
+        let escaped = text.find("\\u0040").unwrap();
+        assert_eq!(filter.selectors(&[escaped..escaped + 6]), Ok(()));
+        assert_eq!(
+            filter.selectors(&[escaped + 1..escaped + 6]),
+            Err(FileRefusal::NoRule)
+        );
+        let key = text.find("owner").unwrap();
+        assert_eq!(filter.selectors(&[key..key + 5]), Err(FileRefusal::NoRule));
+        let character = text.find('😀').unwrap();
+        assert_eq!(filter.selectors(&[character..character + 4]), Ok(()));
+        assert_eq!(
+            filter.selectors(&[character..character + 3]),
+            Err(FileRefusal::NoRule)
+        );
+        assert!(matches!(
+            BeforeFilter::check(
+                SupportedDataApplication::ContactJsonV1,
+                "{\"owner\":\"x\",\"\\u006fwner\":\"y\"}"
+            ),
+            Err(FileRefusal::NoRule)
+        ));
+        assert!(matches!(
+            BeforeFilter::check(
+                SupportedDataApplication::ContactJsonV1,
+                "{\"secret\":\"x\"}"
+            ),
+            Err(FileRefusal::NoRule)
+        ));
+        assert!(matches!(
+            BeforeFilter::check(
+                SupportedDataApplication::ContactJsonV1,
+                "{\"owner\":\"broken"
+            ),
+            Err(FileRefusal::NoRule)
+        ));
+        let plain = "Contact value";
+        let filter = BeforeFilter::check(SupportedDataApplication::ContactLinesV1, plain).unwrap();
+        assert_eq!(filter.selectors(&[8..13]), Ok(()));
+        assert_eq!(filter.selectors(&[0..7]), Err(FileRefusal::NoRule));
+    }
+}
 
 #[cfg(test)]
 mod tests {

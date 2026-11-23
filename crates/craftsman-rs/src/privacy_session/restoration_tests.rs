@@ -2276,3 +2276,78 @@ async fn actual_declared_targets_keep_ordinary_selector_miss_and_multiplicity_re
         nothing_original_sent(&server).await;
     }
 }
+
+#[tokio::test]
+async fn declared_unsupported_before_images_refuse_before_private_selector_observations() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let cases = [
+        (
+            FileDataFormat::PlainText,
+            format!("unrecognized {EMAIL}").into_bytes(),
+        ),
+        (
+            FileDataFormat::PlainText,
+            b"unrecognized another@example.test".to_vec(),
+        ),
+        (
+            FileDataFormat::PlainText,
+            format!("unrecognized {EMAIL}\nunrecognized {EMAIL}").into_bytes(),
+        ),
+        (FileDataFormat::PlainText, vec![b'x'; 256 * 1024 + 1]),
+        (FileDataFormat::PlainText, vec![0xff, 0xfe]),
+        (
+            FileDataFormat::JsonDocument,
+            format!("{{\"secret\":\"{EMAIL}\"}}").into_bytes(),
+        ),
+        (
+            FileDataFormat::JsonDocument,
+            b"{\"secret\":\"another@example.test\"}".to_vec(),
+        ),
+        (
+            FileDataFormat::JsonDocument,
+            format!("{{\"secret\":\"{EMAIL} {EMAIL}\"}}").into_bytes(),
+        ),
+        (
+            FileDataFormat::JsonDocument,
+            format!("{{\"owner\":\"{EMAIL}\",\"\\u006fwner\":\"{EMAIL}\"}}").into_bytes(),
+        ),
+        (
+            FileDataFormat::JsonDocument,
+            b"{\"owner\":\"broken".to_vec(),
+        ),
+    ];
+    for (format, before) in cases {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, Some(format)).await;
+        let path = f.dir.path().join("contacts.txt");
+        std::fs::write(&path, &before).unwrap();
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "unsupported-before",
+                    "edit_file",
+                    json!({
+                        "file_path":"contacts.txt", "old_string":f.placeholder,
+                        "new_string":"Contact finished.",
+                    }),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            result_at(&f.agent, 2),
+            (FileRefusal::NoRule.to_string(), true)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(f.reviewer.shown.lock().unwrap().is_empty());
+        assert!(f.around.steps.lock().unwrap().is_empty());
+        nothing_original_sent(&server).await;
+    }
+}

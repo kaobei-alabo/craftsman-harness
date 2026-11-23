@@ -257,6 +257,9 @@ impl AgentMiddleware for ApprovalMiddleware {
         let mut running_call = call.clone();
         let decision = if let Some(tracked) = &tracked {
             let Some(producer) = &self.inline_source else {
+                if let Some(reviewed) = &reviewed {
+                    reviewed.refused_before_receive(tracked);
+                }
                 return Ok(ToolOutcome::err(
                     "This selected call has no registered input/policy producer.",
                 ));

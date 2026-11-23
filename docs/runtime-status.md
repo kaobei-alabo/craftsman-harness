@@ -603,3 +603,15 @@ remain gates before integration/install. The restricted private MAIN
 callback/budget-boundary, equivalent and close-between-retry scenarios remain
 UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
 The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.
+
+The current unmerged file consumer adds an internal borrowed before-image
+filter after the actual source-bound target precheck. It reuses the compiled
+contact whole-object/value checks before private restoration and selector
+miss/count answers; unsupported/malformed/invalid-UTF-8/over-limit captures
+return uniform `NoRule`. Final image/range, actual captured-user policy,
+retained effect, sealed decision and ordinary permission remain required.
+No new policy request or authority constructor is introduced. The main
+missing-producer release uses the existing tracked identity rule and has static
+review only. Combined linked-size, full17, independent source, all-four hosted
+and merged-main/install gates remain open; neither the preserved incomplete
+draft nor older passing fixtures supply that proof.
