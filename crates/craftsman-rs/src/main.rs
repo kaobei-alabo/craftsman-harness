@@ -52,6 +52,9 @@ pub mod privacy_cli;
 pub mod privacy_key;
 #[doc(hidden)]
 pub mod privacy_policy;
+// Actual user-source startup capture only; normal routing remains unchanged.
+#[doc(hidden)]
+pub mod privacy_startup;
 #[doc(hidden)]
 pub use tui::privacy_unlock;
 // Private detector contract and pinned source call; nothing selects them.

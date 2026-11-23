@@ -50,6 +50,9 @@ fresh `/clear`. Recorded inputs, replies, actual results and usage remain
 original; the model gets a separate view, and source records grant no tool
 permission. Unsupported frontends and representations refuse.
 
+A private [terminal startup capture](docs/privacy-startup.md) now retains the
+actual user configuration and policy together. Normal routing does not call it.
+
 Independent combined-source review, the recorded native unwind-size warning,
 full-suite/platform/hosted validation and later merged-main/install gates
 remain open. Earlier failures and unknown causes are retained. These local

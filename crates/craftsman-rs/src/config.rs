@@ -257,7 +257,10 @@ fn write_config_file(
 
 impl Config {
     pub fn load() -> anyhow::Result<Option<Config>> {
-        let path = config_path();
+        Self::load_user_file(&config_path())
+    }
+
+    fn load_user_file(path: &std::path::Path) -> anyhow::Result<Option<Config>> {
         if !path.exists() {
             return Ok(None);
         }
@@ -276,6 +279,13 @@ impl Config {
             crate::privacy_policy::reject_unavailable_user_source(raw.as_bytes())?;
         }
         Ok(Some(cfg))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_owned_startup_fixture(
+        path: &std::path::Path,
+    ) -> anyhow::Result<Option<Config>> {
+        Self::load_user_file(path)
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
