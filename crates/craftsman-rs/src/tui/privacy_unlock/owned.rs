@@ -27,6 +27,10 @@ pub enum PrivateTerminalError {
         "Fresh private clear could not complete input handoff; the old conversation has ended and no new work started."
     )]
     InputHandoff,
+    #[error(
+        "The captured terminal approval source is unavailable or foreign; nothing was unlocked."
+    )]
+    ApprovalSource,
 }
 impl std::fmt::Debug for PrivateTerminalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -233,15 +237,44 @@ impl OwnedSecretTerminal {
     }
 
     /// Private consuming entry for an actual startup-issued bootstrap. No
-    /// caller configuration can become its build, voice or renderer authority.
-    /// Normal dispatch never calls this path and requirements stay pending.
+    /// caller configuration or approval state can become its build, voice,
+    /// renderer or permission authority: the live approval state is the one
+    /// the same startup issued, taken through the bootstrap's own retained
+    /// requirements. Normal dispatch never calls this path and requirements
+    /// stay pending.
     pub async fn run_captured_private(
         self,
         bootstrap: crate::privacy_bootstrap::PrivateBootstrap,
-        approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+        approval: crate::privacy_startup::CapturedApprovalStart,
     ) -> std::result::Result<i32, PrivateTerminalError> {
+        let approval = Self::captured_approval(&bootstrap, &approval)?;
         self.run_owned(bootstrap, FrontendConfiguration::Captured, approval)
             .await
+    }
+
+    /// Before any key work: the bootstrap rechecks its source and lends its
+    /// retained requirements, and only the start that was issued with them
+    /// yields its state. That same live state goes on unchanged; nothing is
+    /// reset, copied or derived here, and a foreign start is refused.
+    fn captured_approval(
+        bootstrap: &crate::privacy_bootstrap::PrivateBootstrap,
+        start: &crate::privacy_startup::CapturedApprovalStart,
+    ) -> std::result::Result<
+        std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+        PrivateTerminalError,
+    > {
+        let Some(requirements) = bootstrap
+            .startup_requirements()
+            .map_err(PrivateTerminalError::Source)?
+        else {
+            return Err(PrivateTerminalError::Build(
+                crate::privacy_bootstrap::PrivateBuildError::Unavailable,
+            ));
+        };
+        match start.state_for(requirements) {
+            Ok(state) => Ok(state),
+            Err(_) => Err(PrivateTerminalError::ApprovalSource),
+        }
     }
 
     async fn run_owned(
