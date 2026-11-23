@@ -451,7 +451,7 @@ impl GadgetRuntime {
         };
         let grants = self.grants.clone();
         let copy = bundle.clone();
-        if tokio::task::spawn_blocking(move || {
+        if crate::util::spawn_blocking(move || {
             grants.approved(
                 &copy.manifest.id,
                 &copy.source,
@@ -482,14 +482,14 @@ impl GadgetRuntime {
             serde_json::to_string_pretty(&bundle.manifest).map_err(io_error)?
         );
         let decision =
-            tokio::task::spawn_blocking(move || callback("gadget_call", &summary, &details))
+            crate::util::spawn_blocking(move || callback("gadget_call", &summary, &details))
                 .await
                 .map_err(io_error)?;
         match decision {
             ApprovalPromptResult::Approve | ApprovalPromptResult::ApproveAlways => {
                 let grants = self.grants.clone();
                 let bundle = bundle.clone();
-                tokio::task::spawn_blocking(move || {
+                crate::util::spawn_blocking(move || {
                     grants.approve(
                         &bundle.manifest.id,
                         &bundle.source,
