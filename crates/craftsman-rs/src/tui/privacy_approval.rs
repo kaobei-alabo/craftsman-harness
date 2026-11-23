@@ -37,7 +37,7 @@ pub(super) fn register(bridge: &UiBridge) -> (Arc<PrivacyApprovalPrompt>, Arc<Pr
             &turn,
         ))
         .ok()?;
-        let returned = tokio::task::block_in_place(|| receive.recv())
+        let returned = crate::util::block_in_place(|| receive.recv())
             .ok()
             .flatten();
         if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
