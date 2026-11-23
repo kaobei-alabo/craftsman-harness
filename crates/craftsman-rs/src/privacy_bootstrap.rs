@@ -558,7 +558,17 @@ impl PrivateConversation {
             }
             return self.request_captured_full_session(approval, extras).await;
         }
-        self.request_bound_full_session(cfg, approval, extras).await
+        // Retain the unchanged shared construction future in one allocation,
+        // rather than duplicate its concrete runtime/drop graph here.
+        let request: std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<PrivateBuiltSession, PrivateBuildError>,
+                    > + Send
+                    + '_,
+            >,
+        > = Box::pin(self.request_bound_full_session(cfg, approval, extras));
+        request.await
     }
     /// Unselected fresh construction from the same four retained startup
     /// owners. No caller Config or merged extras can stand in for its source.
@@ -575,8 +585,15 @@ impl PrivateConversation {
             .policy
             .startup()
             .ok_or(PrivateBuildError::Unavailable)?;
-        self.request_bound_full_session(&owners.configuration, approval, extras)
-            .await
+        let request: std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<PrivateBuiltSession, PrivateBuildError>,
+                    > + Send
+                    + '_,
+            >,
+        > = Box::pin(self.request_bound_full_session(&owners.configuration, approval, extras));
+        request.await
     }
     #[cfg(unix)]
     async fn request_bound_full_session(

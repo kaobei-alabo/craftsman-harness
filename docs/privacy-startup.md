@@ -83,6 +83,10 @@ same actual owner through their policy and task owners. Fresh retirement shares
 that immutable four-owner object and held workspace observations, preserving
 requirements and delaying its new reservation until unlock; it does not renew
 authority from new bytes, transfer old messages or use a constant namespace.
+The two new forwarding methods keep the existing shared construction future
+in one owned allocation and await its real result. This erases its concrete
+runtime/drop type; it starts no task, changes no checks or body, refreshes no
+budget and claims no native-worker quiescence.
 
 The normal route and actual startup-to-frontend handoff remain unselected. The
 isolated consuming checks use synthetic files, enter no password popup and
