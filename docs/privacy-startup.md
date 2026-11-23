@@ -88,6 +88,13 @@ in one owned allocation and await its real result. This erases its concrete
 runtime/drop type; it starts no task, changes no checks or body, refreshes no
 budget and claims no native-worker quiescence.
 
+A captured build that fails or is cancelled keeps its pending construction for
+the frontend's 30-second retirement, and a session that a startup-issued owner
+refuses after the builder returned it is shut down before the refusal returns.
+Cleanup failure is reported separately around the primary error. The details
+and limits are in [privacy-bootstrap.md](privacy-bootstrap.md). Requirements
+stay pending.
+
 The normal route and actual startup-to-frontend handoff remain unselected. The
 isolated consuming checks use synthetic files, enter no password popup and
 make no private MAIN/model call. This composition needs its own measured binary

@@ -643,15 +643,47 @@ impl PrivateConversation {
                 .is_some_and(|guard| Arc::ptr_eq(guard, &self.session.send_guard()));
         if !bound {
             self.close();
-            return Err(PrivateBuildError::Unavailable);
+            return Err(self
+                .refuse_materialized(session, PrivateBuildError::Unavailable)
+                .await);
         }
-        self.check_sources().map_err(PrivateBuildError::Source)?;
+        if let Err(error) = self.check_sources() {
+            return Err(self
+                .refuse_materialized(session, PrivateBuildError::Source(error))
+                .await);
+        }
         Ok(PrivateBuiltSession {
             session,
             owner: self.clone(),
         })
     }
+    /// The shared builder had already materialized `session` when this
+    /// owner's binding or source check refused it. A startup-issued owner
+    /// shuts that session down for real before the refusal returns, within
+    /// the terminal's 30-second bound. The session never leaves this function
+    /// and cannot become a `PrivateBuiltSession`. The refusal is kept; a
+    /// shutdown that did not finish is reported around it. A legacy root-only
+    /// owner drops the session, as it always did.
+    #[cfg(unix)]
+    async fn refuse_materialized(
+        &self,
+        session: crate::agent::Session,
+        refusal: PrivateBuildError,
+    ) -> PrivateBuildError {
+        if self.policy.startup().is_none() {
+            return refusal;
+        }
+        match tokio::time::timeout(REFUSED_SESSION_SHUTDOWN, session.shut_down_owned()).await {
+            Ok(true) => refusal,
+            _ => PrivateBuildError::CleanupAfter(Box::new(refusal)),
+        }
+    }
 }
+
+/// The owned terminal's shutdown bound, for a session that a startup-issued
+/// owner refused after the shared builder had returned it.
+#[cfg(unix)]
+const REFUSED_SESSION_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl CapturedUserPolicy for PrivateConversation {
     fn precheck_file_target(
@@ -737,6 +769,13 @@ pub enum PrivateBuildError {
     Source(BootstrapError),
     #[error("The full private terminal session is unavailable.")]
     Unavailable,
+    /// A startup-issued owner refused a session the shared builder had
+    /// already returned, and that session's real shutdown did not finish.
+    /// The refusal itself is carried unchanged.
+    #[error(
+        "A refused private terminal session's cleanup did not finish; work may still be completing."
+    )]
+    CleanupAfter(Box<PrivateBuildError>),
 }
 impl std::fmt::Debug for PrivateBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -769,6 +808,12 @@ impl std::fmt::Debug for PrivateBuiltSession {
     }
 }
 impl PrivateBuiltSession {
+    /// Real shutdown of a session that returned to a frontend which had
+    /// already begun to retire and so was never installed. Nothing of the
+    /// session is handed out; dropping this afterwards closes the owner.
+    pub(crate) async fn shut_down(self) -> bool {
+        self.session.shut_down_owned().await
+    }
     pub(crate) fn session_for_terminal(&self) -> &crate::agent::Session {
         &self.session
     }

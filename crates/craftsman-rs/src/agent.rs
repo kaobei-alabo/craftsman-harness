@@ -158,6 +158,24 @@ impl Session {
         }
     }
 
+    /// Shuts down what this session owns, for a private construction that is
+    /// not kept. These are the calls the terminal's own session retirement
+    /// makes: the agent's cooperative cancel, script capture where it is
+    /// compiled, every background child the registry started, and the
+    /// language servers. Returns whether every background join returned.
+    /// It interrupts no native or blocking work and reports no quiescence.
+    pub(crate) async fn shut_down_owned(&self) -> bool {
+        self.agent.request_cancel();
+        #[cfg(feature = "gadgets")]
+        self.close_script_capture().await;
+        let mut joined = true;
+        for join in self.registry.take_background_joins() {
+            joined &= join.await.is_ok();
+        }
+        self.lsp.shutdown().await;
+        joined
+    }
+
     /// Estimated session cost in USD. No configured rates are available,
     /// so the footer truthfully shows `n/a`.
     pub fn cost_usd(&self) -> Option<f64> {

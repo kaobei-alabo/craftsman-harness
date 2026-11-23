@@ -140,6 +140,30 @@ Owned shutdown awaits actual tasks/background joins/LSP under the original
 30-second error bound and reports failure honestly; dropped async waiters do
 not establish interruption or quiescence of native/blocking work.
 
+A captured-route build that ends before its construction returns no longer
+drops that construction. The frontend keeps the same boxed construction future
+in a private slot and polls it inline in the same select loop. Cancellation, a
+terminal error or a failed draw leaves it there, and retirement awaits its
+actual return inside the same 30-second bound, after the source owner, the
+session scope and the receiver are closed. A session that still returns to a
+retiring frontend is never installed: it is shut down with the terminal's own
+calls (agent cancel, script capture where compiled, background joins, language
+servers). When the shared builder has returned a session and a startup-issued
+owner's binding or source check then refuses it, that session is shut down the
+same way inside the request, within 30 seconds, before the refusal returns. It
+is never handed out and cannot become a built session. The refusal,
+cancellation or source error stays the primary error; a shutdown that did not
+finish, or a construction that did not return in time, is reported separately
+around it as cleanup failure. The legacy caller-Config route is unchanged: its
+unfinished construction and a refused session are dropped as before.
+
+A completed retirement means these owned returns happened. It does not mean
+that native or blocking work the construction started was interrupted or has
+finished, and a construction that outlives the bound is dropped with that
+failure reported. Two unit checks cover the slot and the error mapping. A
+cancelled or refused actual captured build is not exercised by any check run
+for this change.
+
 The entry intercepts settings actions BEFORE configuration/permission/model
 mutation and displays `SettingsSaveRefused`, preserving the live configuration
 and conversation. Actually changed/unavailable captured source closes both

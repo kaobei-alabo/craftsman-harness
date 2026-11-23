@@ -7,7 +7,7 @@ use super::{
 };
 use crate::hitl::ApprovalState;
 use crate::privacy_bootstrap::{
-    BootstrapError, PrivateBuiltSession, PrivateConversation, PrivateTurnError,
+    BootstrapError, PrivateBuildError, PrivateBuiltSession, PrivateConversation, PrivateTurnError,
 };
 use crate::privacy_entry::{PrivacyApprovalPrompt, PrivacyApprovalUi, PrivateEntryError};
 use crate::tui::{
@@ -52,6 +52,34 @@ async fn next_normal(input: &mut Option<OwnedNormalInput>) -> Option<std::io::Re
     }
 }
 
+/// The frontend's actual full-session construction, as it was requested.
+type Construction =
+    Pin<Box<dyn Future<Output = Result<PrivateBuiltSession, PrivateBuildError>> + Send>>;
+
+/// Polls work where its owner keeps it. Its return empties the slot. A wait
+/// that is dropped first leaves the pending work in the slot, untouched.
+async fn retained<T>(slot: &mut Option<Pin<Box<dyn Future<Output = T> + Send>>>) -> T {
+    match slot {
+        Some(work) => {
+            let returned = work.as_mut().await;
+            *slot = None;
+            returned
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// A refused construction whose own cleanup did not finish keeps its refusal
+/// inside the terminal's existing cleanup report.
+fn build_error(error: PrivateBuildError) -> PrivateTerminalError {
+    match error {
+        PrivateBuildError::CleanupAfter(refusal) => {
+            PrivateTerminalError::CleanupAfter(Box::new(PrivateTerminalError::Build(*refusal)))
+        }
+        error => PrivateTerminalError::Build(error),
+    }
+}
+
 enum Returned {
     Turn(Result<craftsman_harness::TurnResult, PrivateTurnError>),
     Steer(String, Result<bool, PrivateTurnError>),
@@ -71,6 +99,9 @@ pub(super) struct Frontend {
     cancellation: craftsman_harness::SessionCancellation,
     input: Option<OwnedNormalInput>,
     built: Option<PrivateBuiltSession>,
+    /// The construction while it has not returned. The captured route keeps
+    /// it here through a failed build, for its retirement to await.
+    construction: Option<Construction>,
     work: JoinSet<Returned>,
     queued_blocked: bool,
 }
@@ -133,12 +164,23 @@ impl Frontend {
             cancellation,
             input: Some(input),
             built: None,
+            construction: None,
             work: JoinSet::new(),
             queued_blocked: false,
         })
     }
 
     pub(super) async fn build_full(&mut self) -> Result<(), PrivateTerminalError> {
+        let result = self.construct().await;
+        if !self.configuration.is_captured() {
+            // The legacy route drops a construction that has not returned
+            // here, exactly as its local future was dropped.
+            self.construction = None;
+        }
+        result
+    }
+
+    async fn construct(&mut self) -> Result<(), PrivateTerminalError> {
         self.owner
             .check_sources()
             .map_err(PrivateTerminalError::Source)?;
@@ -150,30 +192,23 @@ impl Frontend {
         extras.privacy_approval_prompt = Some(self.prompt.clone());
         // All original terminal extras remain requested. The actual consumer
         // owns their receiver and pumps prompts through the entire build.
-        let mut build: Pin<
-            Box<
-                dyn Future<
-                        Output = Result<
-                            PrivateBuiltSession,
-                            crate::privacy_bootstrap::PrivateBuildError,
-                        >,
-                    > + Send
-                    + '_,
-            >,
-        > = Box::pin(async move {
+        // The construction is kept in the frontend, not in this function: an
+        // early return below leaves it pending there.
+        let construction: Construction = Box::pin(async move {
             match legacy_cfg {
                 Some(cfg) => owner.request_full_session(&cfg, approval, extras).await,
                 None => owner.request_captured_full_session(approval, extras).await,
             }
         });
+        self.construction = Some(construction);
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         self.app.running = true;
         loop {
             tokio::select! {
                 biased;
-                result = &mut build => {
-                    self.built = Some(result.map_err(PrivateTerminalError::Build)?);
+                result = retained(&mut self.construction) => {
+                    self.built = Some(result.map_err(build_error)?);
                     self.app.running = false;
                     self.app.dirty = true;
                     return Ok(());
@@ -451,9 +486,11 @@ impl Frontend {
             }
         }
     }
-    /// The real build has returned/dropped and no normal read is in flight.
-    /// Keep its primary error and wait for the actual retirement result; Drop
-    /// alone is not a completed cleanup witness for a failed captured build.
+    /// The build ended and no normal read is in flight. A captured route's
+    /// construction that had not returned is still in the frontend, and the
+    /// retirement awaits its actual return inside its 30-second bound. The
+    /// primary error is kept; a retirement that did not finish is reported
+    /// around it. The legacy route returns its error and drops, as before.
     pub(super) async fn retire_failed_build(
         &mut self,
         primary: PrivateTerminalError,
@@ -484,6 +521,16 @@ impl Frontend {
         }
         tokio::time::timeout(Duration::from_secs(30), async {
             let mut failed = false;
+            // A captured route's construction that had not returned when its
+            // build ended. Its actual return is awaited here; nothing of it
+            // is installed. A session that still materialized is shut down
+            // for real, and a refused one was shut down where it was refused.
+            if let Some(mut construction) = self.construction.take() {
+                failed |= match construction.as_mut().await {
+                    Ok(late) => !late.shut_down().await,
+                    Err(error) => matches!(error, PrivateBuildError::CleanupAfter(_)),
+                };
+            }
             while let Some(returned) = self.work.join_next().await {
                 match returned {
                     Ok(returned) => self.returned(returned),
@@ -677,5 +724,57 @@ impl Drop for Frontend {
         self.app.cancel_pending_prompts();
         // JoinSet aborts only owned async waiters. It does not claim interrupted
         // native/blocking work or completed cleanup when this future is dropped.
+        // A construction still in its slot is dropped here without any claim.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn a_wait_dropped_early_leaves_the_pending_work_and_its_return_empties_the_slot() {
+        let released = Arc::new(AtomicBool::new(false));
+        let gate = released.clone();
+        let mut slot: Option<Pin<Box<dyn Future<Output = u8> + Send>>> =
+            Some(Box::pin(std::future::poll_fn(move |_| {
+                match gate.load(Ordering::SeqCst) {
+                    true => Poll::Ready(7),
+                    false => Poll::Pending,
+                }
+            })));
+        let mut context = Context::from_waker(Waker::noop());
+        {
+            let mut wait = std::pin::pin!(retained(&mut slot));
+            assert!(wait.as_mut().poll(&mut context).is_pending());
+        }
+        assert!(
+            slot.is_some(),
+            "the dropped wait took the pending work with it"
+        );
+        released.store(true, Ordering::SeqCst);
+        {
+            let mut wait = std::pin::pin!(retained(&mut slot));
+            assert_eq!(wait.as_mut().poll(&mut context), Poll::Ready(7));
+        }
+        assert!(slot.is_none(), "work that returned stayed in its slot");
+        let mut wait = std::pin::pin!(retained(&mut slot));
+        assert!(wait.as_mut().poll(&mut context).is_pending());
+    }
+
+    #[test]
+    fn a_refusal_whose_cleanup_did_not_finish_stays_inside_the_cleanup_report() {
+        let refused = PrivateBuildError::CleanupAfter(Box::new(PrivateBuildError::Unavailable));
+        assert!(matches!(
+            build_error(refused),
+            PrivateTerminalError::CleanupAfter(primary)
+                if matches!(*primary, PrivateTerminalError::Build(PrivateBuildError::Unavailable))
+        ));
+        assert!(matches!(
+            build_error(PrivateBuildError::Unavailable),
+            PrivateTerminalError::Build(PrivateBuildError::Unavailable)
+        ));
     }
 }
