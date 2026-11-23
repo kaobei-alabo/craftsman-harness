@@ -6,6 +6,10 @@ There is no public `privacy init`, `status`, `enable`, `/privacy`, ACP, `-m` or
 service route. Normal enabled privacy policy still refuses before frontend,
 store or provider effects. The existing absent/disabled path is unchanged.
 
+The private [startup capture](privacy-startup.md) now keeps the actual user
+configuration, source and policy together for a later fresh-terminal route.
+That route and normal init/status/enable commands remain unavailable.
+
 ## Password input
 
 `OwnedSecretTerminal` installs the existing Shutdown signal owner, captures

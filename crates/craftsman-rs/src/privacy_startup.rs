@@ -1,0 +1,713 @@
+//! Private actual-user startup capture. Nothing in normal main/TUI dispatch
+//! calls it. Captured selection is a proposal, never activation or approval.
+use crate::config::Config;
+use crate::privacy_key::{ConfigRoot, KeyError};
+use crate::privacy_policy::{
+    CapturedPolicy, CapturedUserConfiguration, PolicyError, RetainedUserConfigurationSource,
+    UserConfigurationCaptureError,
+};
+use clap::Parser;
+use std::{fmt, io::IsTerminal};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StartupError {
+    #[error("The private terminal startup invocation is unsupported.")]
+    Invocation,
+    #[error("The captured user configuration is invalid.")]
+    Invalid,
+    #[error("The actual user configuration source is unavailable or changed.")]
+    Source,
+    #[error("Enabled privacy requires the owned fresh interactive terminal.")]
+    Frontend,
+    #[error("Enabled privacy does not support one-shot message input.")]
+    OneShot,
+    #[error("Enabled privacy cannot resume or transfer an existing conversation.")]
+    Resume,
+    #[error("Enabled privacy requires actual terminal input and output.")]
+    Terminal,
+    #[error("Secure private key ownership is unsupported on this platform.")]
+    SecureStorageUnsupported,
+    #[error("The private terminal requires the source-built detector feature.")]
+    DetectorUnavailable,
+    #[error("The private terminal cannot omit unsupported declared identifiers.")]
+    IdentifiersUnavailable,
+    #[error("Normal terminal privacy activation is not yet available.")]
+    NotYetAvailable,
+}
+pub type Result<T> = std::result::Result<T, StartupError>;
+
+/// This enum is issued from the actual user source only. A later project merge
+/// of a Legacy Config cannot change it into an owned private selection.
+pub enum TerminalStartupCapture {
+    Legacy(Option<Config>),
+    Captured(CapturedTerminalStartup),
+}
+impl fmt::Debug for TerminalStartupCapture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TerminalStartupCapture([private])")
+    }
+}
+
+/// The SAME user root/file source remains in the policy and source owners;
+/// configuration was parsed from the bounded original bytes held by `source`.
+/// None has a caller-data constructor, Clone, Serialize or mutable getter.
+pub struct CapturedTerminalStartup {
+    configuration: Config,
+    policy: CapturedPolicy,
+    source: RetainedUserConfigurationSource,
+}
+impl fmt::Debug for CapturedTerminalStartup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CapturedTerminalStartup([private])")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartupPrerequisite {
+    ReviewedNormalTerminalRouting,
+    FreshConversationSharedAcrossAllLanes,
+    FullRequestedFeaturesAndActualNativeViews,
+    OwnedKeyAndApprovedDetectorBeforeGuestExecution,
+    VoiceAndNativeInspectionIntegration,
+    FinalSourceAndNativeValidation,
+}
+
+/// Obligations retained through consuming access; these are not host-policy
+/// permissions or evidence that any feature, native view or gate is ready.
+pub struct StartupRequirements {
+    pending: [StartupPrerequisite; 6],
+}
+impl StartupRequirements {
+    fn pending() -> Self {
+        Self {
+            pending: [
+                StartupPrerequisite::ReviewedNormalTerminalRouting,
+                StartupPrerequisite::FreshConversationSharedAcrossAllLanes,
+                StartupPrerequisite::FullRequestedFeaturesAndActualNativeViews,
+                StartupPrerequisite::OwnedKeyAndApprovedDetectorBeforeGuestExecution,
+                StartupPrerequisite::VoiceAndNativeInspectionIntegration,
+                StartupPrerequisite::FinalSourceAndNativeValidation,
+            ],
+        }
+    }
+    pub fn prerequisites(&self) -> &[StartupPrerequisite] {
+        &self.pending
+    }
+    pub fn require_normal_activation(&self) -> Result<()> {
+        Err(StartupError::NotYetAvailable)
+    }
+}
+impl fmt::Debug for StartupRequirements {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PrivateStartupRequirements([pending])")
+    }
+}
+
+pub struct OwnedTerminalStartup {
+    configuration: Config,
+    policy: CapturedPolicy,
+    source: RetainedUserConfigurationSource,
+    requirements: StartupRequirements,
+}
+impl fmt::Debug for OwnedTerminalStartup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OwnedTerminalStartup([private])")
+    }
+}
+
+impl CapturedTerminalStartup {
+    pub fn recheck(&self) -> Result<()> {
+        self.source.recheck().map_err(policy_error)?;
+        self.policy.recheck().map_err(policy_error)?;
+        self.source.recheck().map_err(policy_error)
+    }
+    pub fn configuration(&self) -> Result<&Config> {
+        self.recheck()?;
+        Ok(&self.configuration)
+    }
+    pub fn policy(&self) -> Result<&CapturedPolicy> {
+        self.recheck()?;
+        Ok(&self.policy)
+    }
+    pub fn into_owned(self) -> Result<OwnedTerminalStartup> {
+        self.recheck()?;
+        Ok(OwnedTerminalStartup {
+            configuration: self.configuration,
+            policy: self.policy,
+            source: self.source,
+            requirements: StartupRequirements::pending(),
+        })
+    }
+}
+impl OwnedTerminalStartup {
+    pub fn configuration(&self) -> Result<&Config> {
+        self.source.recheck().map_err(policy_error)?;
+        self.policy.recheck().map_err(policy_error)?;
+        self.source.recheck().map_err(policy_error)?;
+        Ok(&self.configuration)
+    }
+    pub fn requirements(&self) -> &StartupRequirements {
+        &self.requirements
+    }
+    pub fn into_configuration_policy(
+        self,
+    ) -> Result<(
+        Config,
+        CapturedPolicy,
+        RetainedUserConfigurationSource,
+        StartupRequirements,
+    )> {
+        self.source.recheck().map_err(policy_error)?;
+        self.policy.recheck().map_err(policy_error)?;
+        self.source.recheck().map_err(policy_error)?;
+        Ok((
+            self.configuration,
+            self.policy,
+            self.source,
+            self.requirements,
+        ))
+    }
+}
+
+impl TerminalStartupCapture {
+    /// Actual argv is parsed without a new selector or command. Normal main
+    /// continues to use Config::load and does not call this private helper.
+    pub fn capture_actual() -> Result<Self> {
+        let cli = crate::Cli::try_parse().map_err(|_| StartupError::Invocation)?;
+        Self::capture_for_parsed_cli(&cli)
+    }
+    pub(crate) fn capture_for_parsed_cli(cli: &crate::Cli) -> Result<Self> {
+        let controls = ActualTerminalControls::capture(cli);
+        match capture_user_source(&UserSourceOrigin::Actual)? {
+            SourceSelection::Legacy(configuration) => Ok(Self::Legacy(configuration)),
+            SourceSelection::Proposed(source) => {
+                controls.refuse_unsupported(&source)?;
+                Ok(Self::Captured(finish_source(source)?))
+            }
+        }
+    }
+}
+
+fn policy_error(error: PolicyError) -> StartupError {
+    match error {
+        PolicyError::Invalid => StartupError::Invalid,
+        PolicyError::Source => StartupError::Source,
+        PolicyError::NotYetAvailable => StartupError::NotYetAvailable,
+    }
+}
+
+struct ActualTerminalControls {
+    other_frontend: bool,
+    one_shot: bool,
+    resume: bool,
+    terminal: bool,
+}
+impl ActualTerminalControls {
+    fn capture(cli: &crate::Cli) -> Self {
+        Self {
+            other_frontend: cli.command.is_some(),
+            one_shot: cli.message.is_some(),
+            resume: cli.session.is_some(),
+            terminal: std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        }
+    }
+    fn refuse_unsupported(&self, source: &CapturedUserConfiguration) -> Result<()> {
+        if self.other_frontend {
+            return Err(StartupError::Frontend);
+        }
+        if self.one_shot {
+            return Err(StartupError::OneShot);
+        }
+        if self.resume {
+            return Err(StartupError::Resume);
+        }
+        if !self.terminal {
+            return Err(StartupError::Terminal);
+        }
+        #[cfg(not(feature = "gadgets"))]
+        {
+            let _ = source;
+            Err(StartupError::DetectorUnavailable)
+        }
+        #[cfg(feature = "gadgets")]
+        {
+            if source.has_identifiers() {
+                return Err(StartupError::IdentifiersUnavailable);
+            }
+            Ok(())
+        }
+    }
+}
+
+enum UserSourceOrigin {
+    Actual,
+    #[cfg(all(test, unix))]
+    OwnedFixture(std::path::PathBuf),
+}
+enum LegacyPresence {
+    Any,
+    ObservedFile,
+}
+impl UserSourceOrigin {
+    fn capture_root(&self) -> crate::privacy_key::Result<ConfigRoot> {
+        match self {
+            Self::Actual => ConfigRoot::capture_actual(),
+            #[cfg(all(test, unix))]
+            Self::OwnedFixture(path) => ConfigRoot::capture_owned_startup_fixture(path.clone()),
+        }
+    }
+    fn legacy_only(
+        &self,
+        unavailable: StartupError,
+        presence: LegacyPresence,
+    ) -> Result<SourceSelection> {
+        let loaded = match self {
+            Self::Actual => Config::load(),
+            #[cfg(all(test, unix))]
+            Self::OwnedFixture(path) => {
+                Config::load_owned_startup_fixture(&path.join("config.json"))
+            }
+        };
+        // The unchanged legacy loader already rejects enabled or malformed
+        // actual user policy. It can never turn these errors into privacy-off.
+        let configuration = loaded.map_err(|error| {
+            if error.downcast_ref::<PolicyError>() == Some(&PolicyError::NotYetAvailable) {
+                unavailable
+            } else if error.downcast_ref::<PolicyError>() == Some(&PolicyError::Invalid) {
+                StartupError::Invalid
+            } else {
+                StartupError::Source
+            }
+        })?;
+        if matches!(presence, LegacyPresence::ObservedFile) && configuration.is_none() {
+            return Err(StartupError::Source);
+        }
+        Ok(SourceSelection::Legacy(configuration))
+    }
+}
+
+enum SourceSelection {
+    Legacy(Option<Config>),
+    Proposed(CapturedUserConfiguration),
+}
+fn capture_user_source(origin: &UserSourceOrigin) -> Result<SourceSelection> {
+    let root = match origin.capture_root() {
+        Ok(root) => root,
+        Err(KeyError::Changed) => return Err(StartupError::Source),
+        Err(KeyError::SecureStorageUnsupported) => {
+            return origin.legacy_only(StartupError::SecureStorageUnsupported, LegacyPresence::Any);
+        }
+        Err(_) => return origin.legacy_only(StartupError::Source, LegacyPresence::Any),
+    };
+    let source = match CapturedUserConfiguration::capture(root) {
+        Ok(source) => source,
+        Err(UserConfigurationCaptureError::BeforeSource(KeyError::Changed | KeyError::Io)) => {
+            return Err(StartupError::Source);
+        }
+        Err(UserConfigurationCaptureError::BeforeSource(_)) => {
+            return origin.legacy_only(StartupError::Source, LegacyPresence::ObservedFile);
+        }
+        Err(UserConfigurationCaptureError::Invalid) => return Err(StartupError::Invalid),
+        Err(UserConfigurationCaptureError::Refused(error)) => return Err(policy_error(error)),
+    };
+    if source.is_enabled() {
+        Ok(SourceSelection::Proposed(source))
+    } else {
+        let configuration = source.into_legacy_configuration().map_err(policy_error)?;
+        Ok(SourceSelection::Legacy(configuration))
+    }
+}
+
+fn finish_source(source: CapturedUserConfiguration) -> Result<CapturedTerminalStartup> {
+    let (configuration, policy, retained_source) = source
+        .into_configuration_and_policy()
+        .map_err(policy_error)?;
+    Ok(CapturedTerminalStartup {
+        configuration: configuration.ok_or(StartupError::Invalid)?,
+        policy,
+        source: retained_source,
+    })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::path::PathBuf;
+
+    struct OwnedUserFile {
+        _temporary: tempfile::TempDir,
+        root: PathBuf,
+    }
+    impl OwnedUserFile {
+        fn new() -> Self {
+            let temporary = tempfile::tempdir().expect("isolated fixture directory");
+            let root = temporary
+                .path()
+                .canonicalize()
+                .expect("canonical fixture parent")
+                .join("user");
+            fs::create_dir(&root).expect("isolated user directory");
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+                .expect("private fixture mode");
+            Self {
+                _temporary: temporary,
+                root,
+            }
+        }
+        fn write(&self, bytes: &[u8]) {
+            fs::write(self.root.join("config.json"), bytes).expect("synthetic user source");
+            fs::set_permissions(
+                self.root.join("config.json"),
+                fs::Permissions::from_mode(0o600),
+            )
+            .expect("synthetic source mode");
+        }
+        fn origin(&self) -> UserSourceOrigin {
+            UserSourceOrigin::OwnedFixture(self.root.clone())
+        }
+        fn captured(&self) -> CapturedTerminalStartup {
+            match capture_user_source(&self.origin()).expect("owned user source capture") {
+                SourceSelection::Proposed(source) => {
+                    finish_source(source).expect("captured policy completion")
+                }
+                SourceSelection::Legacy(_) => panic!("expected actual user proposal"),
+            }
+        }
+        fn no_owned_effects(&self, before: &[u8]) {
+            let after = fs::read(self.root.join("config.json")).expect("unchanged user source");
+            assert!(after == before, "capture changed the user source");
+            let entries = fs::read_dir(&self.root)
+                .expect("fixture directory contents")
+                .map(|entry| entry.expect("fixture directory entry").file_name())
+                .collect::<Vec<_>>();
+            assert!(
+                entries.len() == 1 && entries[0] == "config.json",
+                "capture created an additional user file"
+            );
+        }
+    }
+
+    fn enabled_user_source() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "model": "synthetic-local-model",
+            "api_key": "${UNSELECTED_STARTUP_CREDENTIAL}",
+            "unknown_setting": {"keep": [1, 2, 3]},
+            "privacy": {
+                "enabled": true,
+                "detector": {
+                    "gadget": "synthetic-detector",
+                    "function": "detect",
+                    "component_sha256": "ab".repeat(32),
+                    "manifest_sha256": "cd".repeat(32)
+                },
+                "identifiers": [],
+                "file_data": []
+            }
+        }))
+        .expect("synthetic source encoding")
+    }
+
+    #[test]
+    fn privacy_startup_actual_user_source_owns_config_policy_and_consumed_requirements() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let captured = fixture.captured();
+        let configuration = captured.configuration().expect("captured configuration");
+        assert!(configuration.model.as_deref() == Some("synthetic-local-model"));
+        assert!(configuration.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
+        assert!(configuration.extra["unknown_setting"]["keep"] == serde_json::json!([1, 2, 3]));
+        let detector = captured
+            .policy()
+            .expect("captured policy")
+            .proposed_detector()
+            .expect("unchanged source")
+            .expect("actual user proposal");
+        assert!(detector.gadget() == "synthetic-detector");
+        assert!(detector.component_pin() == &[0xab; 32]);
+        assert!(detector.manifest_pin() == &[0xcd; 32]);
+        let owned = captured.into_owned().expect("consuming source ownership");
+        assert!(matches!(
+            owned.requirements().require_normal_activation(),
+            Err(StartupError::NotYetAvailable)
+        ));
+        let (configuration, policy, source, requirements) = owned
+            .into_configuration_policy()
+            .expect("same configuration and policy owners");
+        assert!(configuration.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
+        assert!(policy.proposed_detector().expect("held source").is_some());
+        assert!(source.recheck().is_ok());
+        assert!(
+            requirements
+                .prerequisites()
+                .contains(&StartupPrerequisite::FullRequestedFeaturesAndActualNativeViews)
+        );
+        assert!(requirements.require_normal_activation().is_err());
+        fixture.no_owned_effects(&bytes);
+    }
+
+    #[test]
+    fn privacy_startup_project_and_merged_config_cannot_select_actual_user_policy() {
+        let fixture = OwnedUserFile::new();
+        let project = fixture
+            ._temporary
+            .path()
+            .canonicalize()
+            .expect("fixture project parent")
+            .join("project/.craftsman");
+        fs::create_dir_all(&project).expect("synthetic project directory");
+        fs::write(project.join("config.json"), enabled_user_source())
+            .expect("untrusted project source");
+        assert!(matches!(
+            capture_user_source(&fixture.origin()),
+            Ok(SourceSelection::Legacy(None))
+        ));
+        let bytes = br#"{"model":"synthetic-local-model","privacy":{"enabled":false}}"#;
+        fixture.write(bytes);
+        let mut merged = match capture_user_source(&fixture.origin()).expect("disabled user source")
+        {
+            SourceSelection::Legacy(Some(configuration)) => configuration,
+            _ => panic!("disabled user source did not remain legacy"),
+        };
+        let caller: Config =
+            serde_json::from_slice(&enabled_user_source()).expect("synthetic caller configuration");
+        merged
+            .extra
+            .insert("privacy".into(), caller.extra["privacy"].clone());
+        assert!(merged.extra["privacy"]["enabled"] == true);
+        match capture_user_source(&fixture.origin()).expect("actual source remains unchanged") {
+            SourceSelection::Legacy(Some(configuration)) => {
+                assert!(configuration.extra["privacy"]["enabled"] == false);
+            }
+            _ => panic!("caller or project data selected privacy"),
+        }
+        fixture.no_owned_effects(bytes);
+    }
+
+    #[test]
+    fn privacy_startup_absent_and_disabled_legacy_files_preserve_loader_behavior() {
+        let fixture = OwnedUserFile::new();
+        let missing = fixture.root.join("missing-user");
+        assert!(matches!(
+            capture_user_source(&UserSourceOrigin::OwnedFixture(missing.clone())),
+            Ok(SourceSelection::Legacy(None))
+        ));
+        assert!(!missing.exists(), "capture created an absent user root");
+        let bytes = br#"{"api_key":"${UNSELECTED_STARTUP_CREDENTIAL}","model":"fixture-model","privacy":{"enabled":false},"legacy_unknown":{"keep":7}}"#;
+        fixture.write(bytes);
+        // This is a valid legacy directory but not a private-key directory.
+        fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o755))
+            .expect("legacy fixture directory mode");
+        let original = Config::load_owned_startup_fixture(&fixture.root.join("config.json"))
+            .expect("same original loader")
+            .expect("legacy user configuration");
+        let captured = match capture_user_source(&fixture.origin()).expect("legacy passthrough") {
+            SourceSelection::Legacy(Some(configuration)) => configuration,
+            _ => panic!("disabled configuration changed startup mode"),
+        };
+        assert!(
+            serde_json::to_value(original).expect("original configuration value")
+                == serde_json::to_value(&captured).expect("captured configuration value")
+        );
+        assert!(captured.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
+        fixture.no_owned_effects(bytes);
+        fixture.write(&enabled_user_source());
+        assert!(matches!(
+            capture_user_source(&fixture.origin()),
+            Err(StartupError::Source)
+        ));
+    }
+
+    #[test]
+    fn privacy_startup_legacy_size_remains_distinct_from_selected_source_bounds() {
+        let fixture = OwnedUserFile::new();
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "unknown_large_legacy_field": "x".repeat(crate::privacy_key::root::CONFIG_LIMIT + 1)
+        }))
+        .expect("large legacy source encoding");
+        fixture.write(&bytes);
+        let original = Config::load_owned_startup_fixture(&fixture.root.join("config.json"))
+            .expect("uncapped absent-policy legacy parse")
+            .expect("existing legacy configuration");
+        let configuration =
+            match capture_user_source(&fixture.origin()).expect("legacy size behavior") {
+                SourceSelection::Legacy(Some(configuration)) => configuration,
+                _ => panic!("legacy field selected privacy"),
+            };
+        assert!(
+            serde_json::to_value(original).expect("original configuration")
+                == serde_json::to_value(configuration).expect("preserved configuration")
+        );
+        fixture.no_owned_effects(&bytes);
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "privacy": {"enabled": false},
+            "unknown_large_legacy_field": "x".repeat(crate::privacy_key::root::CONFIG_LIMIT + 1)
+        }))
+        .expect("bounded-policy source encoding");
+        fixture.write(&bytes);
+        assert!(Config::load_owned_startup_fixture(&fixture.root.join("config.json")).is_err());
+        assert!(matches!(
+            capture_user_source(&fixture.origin()),
+            Err(StartupError::Invalid)
+        ));
+        fixture.no_owned_effects(&bytes);
+    }
+
+    #[test]
+    fn privacy_startup_disabled_legacy_links_remain_legacy_without_source_authority() {
+        let fixture = OwnedUserFile::new();
+        let bytes = br#"{"privacy":{"enabled":false},"unrelated_user_field":[1,2,3]}"#;
+        let target = fixture._temporary.path().join("legacy-source.json");
+        fs::write(&target, bytes).expect("synthetic legacy target");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+            .expect("synthetic legacy target mode");
+        let named = fixture.root.join("config.json");
+        symlink(&target, &named).expect("legacy symlink");
+        for hardlink in [false, true] {
+            if hardlink {
+                fs::remove_file(&named).expect("remove only synthetic fixture symlink");
+                fs::hard_link(&target, &named).expect("legacy second hard link");
+            }
+            let original = Config::load_owned_startup_fixture(&named)
+                .expect("original legacy link behavior")
+                .expect("legacy linked source");
+            let captured =
+                match capture_user_source(&fixture.origin()).expect("legacy link capture") {
+                    SourceSelection::Legacy(Some(configuration)) => configuration,
+                    _ => panic!("legacy linked source minted private authority"),
+                };
+            assert!(
+                serde_json::to_value(original).expect("original legacy configuration")
+                    == serde_json::to_value(captured).expect("captured legacy configuration")
+            );
+            fixture.no_owned_effects(bytes);
+        }
+    }
+
+    #[test]
+    fn privacy_startup_malformed_actual_policy_never_becomes_legacy() {
+        let cases: &[&[u8]] = &[
+            br#"{"privacy":{"enabled":"yes"}}"#,
+            br#"{"privacy":{"enabled":true}}"#,
+            br#"{"privacy":{"enabled":false,"caller_grant":true}}"#,
+            br#"{"privacy":{"enabled":false},"privacy":{"enabled":false}}"#,
+            br#"{"privacy":{"enabled":false},"model":[]}"#,
+            b"\xff",
+        ];
+        for bytes in cases {
+            let fixture = OwnedUserFile::new();
+            fixture.write(bytes);
+            assert!(matches!(
+                capture_user_source(&fixture.origin()),
+                Err(StartupError::Invalid)
+            ));
+            fixture.no_owned_effects(bytes);
+        }
+    }
+
+    #[test]
+    fn privacy_startup_replaced_and_mutated_user_source_refuses_before_access() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let captured = fixture.captured();
+        let replacement = fixture.root.join("replacement.json");
+        fs::write(&replacement, &bytes).expect("synthetic replacement source");
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o600))
+            .expect("replacement source mode");
+        fs::rename(&replacement, fixture.root.join("config.json"))
+            .expect("actual source replacement");
+        assert!(matches!(
+            captured.configuration(),
+            Err(StartupError::Source)
+        ));
+        assert!(matches!(captured.policy(), Err(StartupError::Source)));
+        assert!(matches!(captured.into_owned(), Err(StartupError::Source)));
+        fixture.no_owned_effects(&bytes);
+        let captured = fixture.captured();
+        let changed = bytes
+            .iter()
+            .map(|byte| if *byte == b'a' { b'b' } else { *byte })
+            .collect::<Vec<_>>();
+        fixture.write(&changed);
+        assert!(matches!(
+            captured.configuration(),
+            Err(StartupError::Source)
+        ));
+        assert!(matches!(captured.into_owned(), Err(StartupError::Source)));
+        fixture.no_owned_effects(&changed);
+    }
+
+    #[test]
+    fn privacy_startup_held_root_identity_and_link_rules_cannot_be_rebound() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let captured = fixture.captured();
+        let old = fixture.root.with_file_name("old-user");
+        fs::rename(&fixture.root, &old).expect("retained root rename");
+        fs::create_dir(&fixture.root).expect("synthetic replacement root");
+        fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o700))
+            .expect("replacement private mode");
+        fixture.write(&bytes);
+        assert!(matches!(
+            captured.configuration(),
+            Err(StartupError::Source)
+        ));
+        assert!(matches!(captured.into_owned(), Err(StartupError::Source)));
+        fixture.no_owned_effects(&bytes);
+
+        let hardlinked = OwnedUserFile::new();
+        hardlinked.write(&bytes);
+        let other = hardlinked._temporary.path().join("other-source.json");
+        fs::hard_link(hardlinked.root.join("config.json"), &other)
+            .expect("synthetic second hard link");
+        assert!(matches!(
+            capture_user_source(&hardlinked.origin()),
+            Err(StartupError::Source)
+        ));
+        hardlinked.no_owned_effects(&bytes);
+
+        let linked = OwnedUserFile::new();
+        let other = linked._temporary.path().join("other-source.json");
+        fs::write(&other, &bytes).expect("synthetic symlink target");
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o600))
+            .expect("synthetic target mode");
+        symlink(&other, linked.root.join("config.json")).expect("synthetic user symlink");
+        assert!(matches!(
+            capture_user_source(&linked.origin()),
+            Err(StartupError::Source)
+        ));
+        linked.no_owned_effects(&bytes);
+    }
+
+    #[test]
+    fn privacy_startup_fixed_debug_and_errors_do_not_render_captured_config() {
+        let fixture = OwnedUserFile::new();
+        let bytes = enabled_user_source();
+        fixture.write(&bytes);
+        let captured = fixture.captured();
+        let rendered = format!("{captured:?}");
+        assert!(!rendered.contains("synthetic-local-model"));
+        assert!(!rendered.contains("UNSELECTED_STARTUP_CREDENTIAL"));
+        assert!(!rendered.contains("synthetic-detector"));
+        let owned = captured.into_owned().expect("captured source ownership");
+        let rendered = format!("{owned:?} {:?}", owned.requirements());
+        assert!(!rendered.contains("UNSELECTED_STARTUP_CREDENTIAL"));
+        assert!(!rendered.contains("synthetic-detector"));
+        let (configuration, policy, source, requirements) = owned
+            .into_configuration_policy()
+            .expect("same retained configuration");
+        assert!(configuration.api_key == "${UNSELECTED_STARTUP_CREDENTIAL}");
+        assert!(source.recheck().is_ok());
+        let rendered = format!(
+            "{policy:?} {source:?} {requirements:?} {}",
+            StartupError::Source
+        );
+        assert!(!rendered.contains("UNSELECTED_STARTUP_CREDENTIAL"));
+        assert!(!rendered.contains("synthetic-detector"));
+        fixture.no_owned_effects(&bytes);
+    }
+}

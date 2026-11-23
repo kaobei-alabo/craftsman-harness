@@ -112,6 +112,11 @@ impl ConfigRoot {
     }
 
     #[cfg(all(test, unix))]
+    pub(crate) fn capture_owned_startup_fixture(path: PathBuf) -> Result<Self> {
+        Self::capture(path)
+    }
+
+    #[cfg(all(test, unix))]
     pub(crate) fn capture_owned_test_root(path: &std::path::Path) -> Result<Self> {
         Self::capture(path.to_owned())
     }
@@ -381,6 +386,46 @@ impl fmt::Debug for FileLease {
     }
 }
 impl FileLease {
+    /// Duplicate this already-held source without opening a caller pathname.
+    pub(crate) fn duplicate_owned(&self) -> Result<Self> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let copy = Self {
+                file: self.file.try_clone().map_err(|_| KeyError::Io)?,
+                metadata: self.metadata.clone(),
+                identity: self.identity,
+                private: self.private,
+                parent: self.parent.try_clone().map_err(|_| KeyError::Io)?,
+                name: self.name.clone(),
+            };
+            copy.recheck()?;
+            Ok(copy)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    /// Refusal-only re-verification of this descriptor's bounded original
+    /// config bytes. Neither bytes nor a source owner can be supplied by it.
+    pub(crate) fn verify_configuration_bytes(&self, expected: &[u8]) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let actual = self.read_bounded(CONFIG_LIMIT, Some(expected.len()))?;
+            if actual.as_slice() != expected {
+                return Err(KeyError::Changed);
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = expected;
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
     pub(crate) fn recheck(&self) -> Result<()> {
         #[cfg(unix)]
         {

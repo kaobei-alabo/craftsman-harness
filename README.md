@@ -16,6 +16,44 @@ then use it as a tool in the next model round.
 
 ![Craftsman terminal with a block-drawn 匠 mark, small hammer and gray/turquoise model connection status](docs/assets/craftsman-splash.png)
 
+## Harness flow
+
+This is the current interactive path. Local commands handle setup, pickers and
+inspection; commands that expand into prompts enter the same agent loop.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
+flowchart TD
+    Q["Your input"] --> R{"Local action?"}
+    R -->|Yes| C["Local command handler"]
+    C --> O["Terminal response / status"]
+    R -->|Agent prompt| P["Prepare instructions, history and tools<br/>Context / compaction / stop checks"]
+    P --> M["Configured model API"]
+    M -->|Final answer| S["Save completed work"]
+    S --> O
+    M -->|Tool calls| G["Mode, permission and approval gate"]
+    G -->|Native tool allowed| N["Host tools<br/>Files, shell, web, configured MCP"]
+    G -->|Gadget allowed| W["WASM gadget<br/>Wasmtime + approved capabilities"]
+    N --> H["Record actual result<br/>Local Turso history + checkpoint hooks"]
+    W --> H
+    G -->|Refused| H
+    H --> P
+    P -->|Cancel, error or limit| S
+    M -->|Request fails| S
+    classDef wasm fill:#dcefee,stroke:#408b8b,color:#263238;
+    class W wasm;
+```
+
+The model can repeat the tool loop before answering. Replies stream through the
+terminal UI; configured verification and failure controls can request more work
+or stop the turn. WASM contains **gadget code**; host tools keep their own
+execution and permission boundaries. Models and MCP connect remotely only when
+configured; session data stays local.
+
+Code entry points: [submission routing](crates/craftsman-rs/src/tui/commands.rs),
+[session construction](crates/craftsman-rs/src/agent.rs),
+[agent loop](crates/craftsman-harness/src/agent.rs).
+
 ## From a task to a new tool
 
 > “Build a gadget that totals CSV numbers, then use it on `10, -4, 7`.”
@@ -35,30 +73,43 @@ shell commands retain their separate permission checks.
 Text statistics, slug generation, checked CSV totals and JSON inspection have
 already been built and used in [live model sessions](docs/live-gadget-evaluation.md).
 
-Also in development: [**privacy hooks**](docs/privacy-hooks.md) that mask
-supported personal data before model requests and restore it in local replies
-and permitted data-file edits. The encrypted vault, source-built detector and
-[default-absent send guard](docs/privacy-send.md) are private foundations.
-Normal-session privacy activation remains unavailable.
+## Privacy flow — prototype, not active in normal sessions
 
-The local, unmerged source now combines [key and policy ownership](docs/privacy-key.md),
-an [owned password popup and private entry](docs/privacy-bootstrap.md),
-[committed source/model views](docs/privacy-provenance.md) and
-[restoration consumers](docs/privacy-restore.md). Local macOS fixtures exercise
-actual human approvals, captured Contact-data restoration, checkpoints and
-fresh `/clear`. Recorded inputs, replies, actual results and usage remain
-original; the model gets a separate view, and source records grant no tool
-permission. Unsupported frontends and representations refuse.
+The unmerged privacy work adds a required hook around model requests. It keeps
+the original local records and gives the model a separate masked view.
 
-The private file consumer checks the actual containing before image before
-restoring an alias or reporting selector matches. Unsupported contact objects
-refuse uniformly; final image, user policy, human decision and tool permission
-checks remain required. This internal check introduces no new policy API.
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
+flowchart TD
+    U["Private session start<br/>User unlocks mapping vault"] --> V[("Encrypted original ↔ masked map<br/>Local Turso / libSQL")]
+    U --> I
+    I["Original messages + actual tool results"] --> H["Required hook<br/>Detect supported data and mask model view"]
+    V -. lookup / store .-> H
+    H --> M["Configured model API<br/>Masked copy only"]
+    M -->|Reply| D["Restore committed display reply"]
+    D --> O["Terminal display"]
+    M -->|Supported data-file edit| B["Validate destination, whole before image<br/>and editable data fields"]
+    B --> F["Restore allowed data fields<br/>Validate final images + review + permission"]
+    F --> W["Actual file change + checkpoint"]
+    W --> I
+    M -->|Other tool call| N["Normal tool gate and execution<br/>Record result; arguments stay masked"]
+    N --> I
+    V -. restore .-> D
+    V -. restore .-> F
+    H -->|Required check fails| X["Stop required model work<br/>Preserve actual input and completed effects"]
+    B -->|Unsupported / stale| E["Refuse file call<br/>Record actual outcome"]
+    F -->|Refused| E
+    E --> I
+```
 
-Independent combined-source review, the recorded native unwind-size warning,
-full-suite/platform/hosted validation and later merged-main/install gates
-remain open. Earlier failures and unknown causes are retained. These local
-checks do not mean normal startup, complete privacy or release readiness.
+**The password belongs to this prototype's mapping vault.** It unwraps the
+vault key at private-session startup; private `/clear` retires the old session
+and asks again. Model access uses your configured API keys. The mapping is
+encrypted; conversation history and checkpoints retain their original local
+format. This is currently tested private code, with normal startup and
+activation still unwired. Supported file restoration is limited to validated
+Contact data; shell commands, paths, source code and arbitrary MCP arguments
+are not restoration destinations. See [privacy development](docs/privacy-hooks.md).
 
 ## Planned WASM enhancement
 
@@ -66,6 +117,9 @@ Rust gadgets already run in Wasmtime. Work has resumed on a common sandbox for
 compatible **Python, JavaScript and TypeScript** skill/plugin scripts, followed
 by a file-change review layer. The session and model loop stay shared; the
 [script runner](docs/wasm-script-runner.md) is not yet shipped.
+
+<details>
+<summary>Planned script sandbox — what changes</summary>
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"nodeSpacing":24,"rankSpacing":28,"wrappingWidth":230,"subGraphTitleMargin":{"top":14,"bottom":14}}}}%%
@@ -104,6 +158,8 @@ flowchart TB
 Script/source approval remains separate. Native build/shell commands and MCP
 connections retain their own execution boundaries; the proposed script sandbox
 does not contain those host operations. See [current runtime details](docs/runtime-status.md).
+
+</details>
 
 ## Built for your workflow
 
@@ -169,14 +225,6 @@ documents and folders containing several projects are supported too.
 [Failure controls](docs/failure-controls.md) ·
 [Privacy hook development](docs/privacy-hooks.md) ·
 [Private send guard](docs/privacy-send.md) ·
-[Private key and bootstrap](docs/privacy-bootstrap.md) ·
-[Private admission core](docs/privacy-admission.md) ·
-[Privacy provenance](docs/privacy-provenance.md) ·
-[Privacy restoration](docs/privacy-restore.md) ·
 [Development and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
-
-Private source-view work also has a separate local core correction branch for
-immutable event retention and cancellation; it remains unselected and awaits
-application integration, full validation and independent review.

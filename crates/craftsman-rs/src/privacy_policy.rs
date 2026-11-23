@@ -109,6 +109,154 @@ pub struct CapturedPolicy {
     root: ConfigRoot,
     source: Option<FileLease>,
 }
+
+pub(crate) enum UserConfigurationCaptureError {
+    BeforeSource(crate::privacy_key::KeyError),
+    Invalid,
+    Refused(PolicyError),
+}
+
+/// Issued only by reading a retained actual ConfigRoot (or its cfg(test)
+/// fixture equivalent). No caller Config/JSON/pin/flag constructor exists.
+/// Rule-directory capture waits until the actual frontend controls pass.
+pub(crate) struct CapturedUserConfiguration {
+    configuration: Option<crate::config::Config>,
+    policy: Policy,
+    root: ConfigRoot,
+    source: Option<FileLease>,
+    bytes: Option<Zeroizing<Vec<u8>>>,
+}
+
+/// Opaque startup-only original bytes and SAME held root/file source. It must
+/// stay beside the returned CapturedPolicy; ordinary policy owners are unchanged.
+pub struct RetainedUserConfigurationSource {
+    root: ConfigRoot,
+    source: Option<FileLease>,
+    bytes: Option<Zeroizing<Vec<u8>>>,
+}
+impl fmt::Debug for RetainedUserConfigurationSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RetainedUserConfigurationSource([private])")
+    }
+}
+impl RetainedUserConfigurationSource {
+    pub fn recheck(&self) -> Result<()> {
+        self.root.recheck().map_err(|_| PolicyError::Source)?;
+        match (&self.source, &self.bytes) {
+            (Some(source), Some(bytes)) => source
+                .verify_configuration_bytes(bytes)
+                .map_err(|_| PolicyError::Source)?,
+            (None, None) => self
+                .root
+                .verify_config_absent()
+                .map_err(|_| PolicyError::Source)?,
+            _ => return Err(PolicyError::Source),
+        }
+        self.root.recheck().map_err(|_| PolicyError::Source)
+    }
+}
+
+impl CapturedUserConfiguration {
+    pub(crate) fn capture(
+        root: ConfigRoot,
+    ) -> std::result::Result<Self, UserConfigurationCaptureError> {
+        let read = root
+            .read_user_config()
+            .map_err(UserConfigurationCaptureError::BeforeSource)?;
+        let (configuration, policy, source, bytes) = match read {
+            Some((bytes, source)) => {
+                let configuration: crate::config::Config = serde_json::from_slice(&bytes)
+                    .map_err(|_| UserConfigurationCaptureError::Invalid)?;
+                let policy = if configuration.extra.contains_key("privacy") {
+                    parse_user_source(&bytes).map_err(UserConfigurationCaptureError::Refused)?
+                } else {
+                    Policy::Absent
+                };
+                (Some(configuration), policy, Some(source), Some(bytes))
+            }
+            None => (None, Policy::Absent, None, None),
+        };
+        let captured = Self {
+            configuration,
+            policy,
+            root,
+            source,
+            bytes,
+        };
+        captured
+            .recheck()
+            .map_err(UserConfigurationCaptureError::Refused)?;
+        Ok(captured)
+    }
+
+    fn recheck(&self) -> Result<()> {
+        self.root.recheck().map_err(|_| PolicyError::Source)?;
+        match (&self.source, &self.bytes) {
+            (Some(source), Some(bytes)) => source
+                .verify_configuration_bytes(bytes)
+                .map_err(|_| PolicyError::Source)?,
+            (None, None) => self
+                .root
+                .verify_config_absent()
+                .map_err(|_| PolicyError::Source)?,
+            _ => return Err(PolicyError::Source),
+        }
+        self.root.recheck().map_err(|_| PolicyError::Source)
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        matches!(self.policy, Policy::Proposed(_))
+    }
+
+    #[cfg(feature = "gadgets")]
+    pub(crate) fn has_identifiers(&self) -> bool {
+        matches!(&self.policy, Policy::Proposed(policy) if !policy.literals.is_empty())
+    }
+
+    pub(crate) fn into_configuration_and_policy(
+        self,
+    ) -> Result<(
+        Option<crate::config::Config>,
+        CapturedPolicy,
+        RetainedUserConfigurationSource,
+    )> {
+        self.recheck()?;
+        let retained_source = RetainedUserConfigurationSource {
+            root: self
+                .root
+                .duplicate_owned()
+                .map_err(|_| PolicyError::Source)?,
+            source: self
+                .source
+                .as_ref()
+                .map(FileLease::duplicate_owned)
+                .transpose()
+                .map_err(|_| PolicyError::Source)?,
+            bytes: self.bytes,
+        };
+        let mut policy = CapturedPolicy {
+            policy: self.policy,
+            root: self.root,
+            source: self.source,
+        };
+        if let Policy::Proposed(proposed) = &mut policy.policy {
+            for rule in &mut proposed.file_rules {
+                rule.capture()?;
+            }
+        }
+        policy.recheck()?;
+        retained_source.recheck()?;
+        Ok((self.configuration, policy, retained_source))
+    }
+
+    pub(crate) fn into_legacy_configuration(self) -> Result<Option<crate::config::Config>> {
+        self.recheck()?;
+        if self.is_enabled() {
+            return Err(PolicyError::NotYetAvailable);
+        }
+        Ok(self.configuration)
+    }
+}
 impl fmt::Debug for CapturedPolicy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("CapturedPrivacyPolicy([private])")
