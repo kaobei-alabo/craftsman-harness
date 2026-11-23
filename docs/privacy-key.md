@@ -8,6 +8,12 @@ Normal sessions retain their existing behavior when user privacy policy is
 absent or disabled. An enabled user policy refuses as not yet available before
 frontend/store/provider initialization; malformed policy does not turn it off.
 
+The [private startup options component](privacy-startup.md) also retains actual
+parsed terminal overrides and the existing host allow-list source. Its opaque
+approval-start owner derives one source-bound live state with unchanged normal
+precedence; it is neither a detector/source grant nor normal activation. Captured
+entry glue and final native proof remain separate work.
+
 ## Password envelope
 
 The vault gets a random 32-byte key, independent of model API credentials. Only

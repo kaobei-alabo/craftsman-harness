@@ -1,13 +1,18 @@
 //! Private actual-user startup capture. Nothing in normal main/TUI dispatch
 //! calls it. Captured selection is a proposal, never activation or approval.
-use crate::config::Config;
+use crate::config::{Config, PermissionMode};
+use crate::hitl::ApprovalState;
 use crate::privacy_key::{ConfigRoot, KeyError};
 use crate::privacy_policy::{
     CapturedPolicy, CapturedUserConfiguration, PolicyError, RetainedUserConfigurationSource,
     UserConfigurationCaptureError,
 };
 use clap::Parser;
-use std::{fmt, io::IsTerminal};
+use std::{
+    fmt,
+    io::IsTerminal,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StartupError {
@@ -33,6 +38,8 @@ pub enum StartupError {
     IdentifiersUnavailable,
     #[error("Normal terminal privacy activation is not yet available.")]
     NotYetAvailable,
+    #[error("The captured terminal approval source is unavailable or foreign.")]
+    ApprovalSource,
 }
 pub type Result<T> = std::result::Result<T, StartupError>;
 
@@ -55,6 +62,9 @@ pub struct CapturedTerminalStartup {
     configuration: Config,
     policy: CapturedPolicy,
     source: RetainedUserConfigurationSource,
+    // Only the actual parsed invocation fills this. Root-only test/legacy
+    // captures cannot stand in for a normal terminal's option origin.
+    options: Option<CapturedTerminalOptions>,
 }
 impl fmt::Debug for CapturedTerminalStartup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -76,6 +86,7 @@ pub enum StartupPrerequisite {
 /// permissions or evidence that any feature, native view or gate is ready.
 pub struct StartupRequirements {
     pending: [StartupPrerequisite; 6],
+    options: Option<CapturedTerminalOptions>,
 }
 impl StartupRequirements {
     fn pending() -> Self {
@@ -88,6 +99,7 @@ impl StartupRequirements {
                 StartupPrerequisite::VoiceAndNativeInspectionIntegration,
                 StartupPrerequisite::FinalSourceAndNativeValidation,
             ],
+            options: None,
         }
     }
     pub fn prerequisites(&self) -> &[StartupPrerequisite] {
@@ -96,10 +108,114 @@ impl StartupRequirements {
     pub fn require_normal_activation(&self) -> Result<()> {
         Err(StartupError::NotYetAvailable)
     }
+    pub fn terminal_options(&self) -> Option<&CapturedTerminalOptions> {
+        self.options.as_ref()
+    }
 }
 impl fmt::Debug for StartupRequirements {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PrivateStartupRequirements([pending])")
+    }
+}
+
+/// Actual parsed terminal input, not user policy, source approval, model
+/// compatibility or readiness. No public from-flags/Config/state constructor.
+pub struct CapturedTerminalOptions {
+    permission_mode: Option<PermissionMode>,
+    auto_approve: bool,
+    mouse_capture: bool,
+    environment_shell_allow_list: Vec<String>,
+    identity: Arc<()>,
+    approval: OnceLock<Arc<Mutex<ApprovalState>>>,
+}
+impl fmt::Debug for CapturedTerminalOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CapturedTerminalOptions([private])")
+    }
+}
+impl CapturedTerminalOptions {
+    fn capture(cli: &crate::Cli) -> Self {
+        // Reuse the original host source exactly: missing/non-Unicode means no
+        // entries, comma-separated values are trimmed and empty entries ignored.
+        let environment_shell_allow_list = ApprovalState::default()
+            .with_env_allow_list()
+            .shell_allow_list;
+        Self {
+            permission_mode: cli
+                .permission_mode
+                .as_deref()
+                .and_then(PermissionMode::parse),
+            auto_approve: cli.auto_approve,
+            mouse_capture: cli.mouse || !cli.no_mouse,
+            environment_shell_allow_list,
+            identity: Arc::new(()),
+            approval: OnceLock::new(),
+        }
+    }
+    pub fn permission_mode_override(&self) -> Option<PermissionMode> {
+        self.permission_mode
+    }
+    pub fn auto_approve_override(&self) -> bool {
+        self.auto_approve
+    }
+    pub fn mouse_capture(&self) -> bool {
+        self.mouse_capture
+    }
+    fn approval_start(&self, cfg: &Config) -> CapturedApprovalStart {
+        let state = self.approval.get_or_init(|| {
+            // SAME normal precedence, derived without changing the original
+            // captured Config. Auto wins even over an explicit Plan override.
+            let auto = self.auto_approve || cfg.auto_approve;
+            let mut shell_allow_list = cfg.shell_allow_list.clone();
+            shell_allow_list.extend(self.environment_shell_allow_list.iter().cloned());
+            Arc::new(Mutex::new(ApprovalState {
+                mode: if auto {
+                    PermissionMode::BypassPermissions
+                } else {
+                    self.permission_mode.unwrap_or(cfg.permission_mode)
+                },
+                auto_approve: auto,
+                auto_approve_network: auto || cfg.auto_approve_web(),
+                shell_allow_list,
+            }))
+        });
+        CapturedApprovalStart {
+            identity: self.identity.clone(),
+            state: state.clone(),
+        }
+    }
+}
+
+/// One actual startup's live state. Copying equal ApprovalState values cannot
+/// construct this owner or bind them to another startup/requirements object.
+pub struct CapturedApprovalStart {
+    identity: Arc<()>,
+    state: Arc<Mutex<ApprovalState>>,
+}
+impl fmt::Debug for CapturedApprovalStart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CapturedApprovalStart([private])")
+    }
+}
+impl CapturedApprovalStart {
+    /// Caller must first recheck the actual bootstrap/conversation source, then
+    /// pass its retained requirements. This is a binding/refusal check only.
+    pub fn state_for(
+        &self,
+        requirements: &StartupRequirements,
+    ) -> Result<Arc<Mutex<ApprovalState>>> {
+        let options = requirements
+            .options
+            .as_ref()
+            .ok_or(StartupError::ApprovalSource)?;
+        let state = options.approval.get().ok_or(StartupError::ApprovalSource)?;
+        if !Arc::ptr_eq(&self.identity, &options.identity) || !Arc::ptr_eq(&self.state, state) {
+            return Err(StartupError::ApprovalSource);
+        }
+        if self.state.is_poisoned() {
+            return Err(StartupError::ApprovalSource);
+        }
+        Ok(self.state.clone())
     }
 }
 
@@ -131,11 +247,13 @@ impl CapturedTerminalStartup {
     }
     pub fn into_owned(self) -> Result<OwnedTerminalStartup> {
         self.recheck()?;
+        let mut requirements = StartupRequirements::pending();
+        requirements.options = self.options;
         Ok(OwnedTerminalStartup {
             configuration: self.configuration,
             policy: self.policy,
             source: self.source,
-            requirements: StartupRequirements::pending(),
+            requirements,
         })
     }
 }
@@ -148,6 +266,20 @@ impl OwnedTerminalStartup {
     }
     pub fn requirements(&self) -> &StartupRequirements {
         &self.requirements
+    }
+    /// Issue the same cached live state from this original source and actual
+    /// invocation only, before the existing consuming four-owner handoff.
+    pub fn approval_start(&self) -> Result<CapturedApprovalStart> {
+        self.source.recheck().map_err(policy_error)?;
+        self.policy.recheck().map_err(policy_error)?;
+        let options = self
+            .requirements
+            .options
+            .as_ref()
+            .ok_or(StartupError::ApprovalSource)?;
+        let approval = options.approval_start(&self.configuration);
+        self.source.recheck().map_err(policy_error)?;
+        Ok(approval)
     }
     pub fn into_configuration_policy(
         self,
@@ -182,7 +314,10 @@ impl TerminalStartupCapture {
             SourceSelection::Legacy(configuration) => Ok(Self::Legacy(configuration)),
             SourceSelection::Proposed(source) => {
                 controls.refuse_unsupported(&source)?;
-                Ok(Self::Captured(finish_source(source)?))
+                let options = CapturedTerminalOptions::capture(cli);
+                let mut captured = finish_source(source)?;
+                captured.options = Some(options);
+                Ok(Self::Captured(captured))
             }
         }
     }
@@ -326,8 +461,12 @@ fn finish_source(source: CapturedUserConfiguration) -> Result<CapturedTerminalSt
         configuration: configuration.ok_or(StartupError::Invalid)?,
         policy,
         source: retained_source,
+        options: None,
     })
 }
+
+#[cfg(all(test, unix))]
+mod options_tests;
 
 #[cfg(all(test, unix))]
 mod tests {
