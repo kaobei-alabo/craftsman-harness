@@ -167,6 +167,35 @@ fn erased<T>(
     Box::pin(task)
 }
 
+/// `tokio::task::block_in_place` through one closure type.
+///
+/// `block_in_place` is compiled again, with the blocking task that takes
+/// over the worker behind it, for every distinct closure it is given.
+/// [`block_in_place`] hands every closure to that very function as the same
+/// borrowed closure, so that code exists once for all of them.
+///
+/// Nothing else differs from a direct call at the same place: tokio is asked
+/// in the same way, on the calling thread, and the work runs there, once,
+/// before this returns what the work returned. The work needs to be neither
+/// `Send` nor `'static` and may borrow from its caller. A panic in it passes
+/// through, and so does tokio's own where blocking in place is not allowed.
+#[track_caller]
+pub(crate) fn block_in_place<T>(work: impl FnOnce() -> T) -> T {
+    let mut work = Some(work);
+    let mut returned = None;
+    let mut run = || {
+        if let Some(work) = work.take() {
+            returned = Some(work());
+        }
+    };
+    let erased: &mut dyn FnMut() = &mut run;
+    tokio::task::block_in_place(erased);
+    match returned {
+        Some(value) => value,
+        None => unreachable!("tokio ran the work before it returned"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,5 +487,87 @@ mod tests {
             task.as_mut().poll(&mut context),
             Poll::Ready(Err("the task's own error"))
         );
+    }
+
+    #[test]
+    fn work_blocked_in_place_runs_once_where_it_was_called_while_the_runtime_goes_on() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, mpsc};
+        let wait = std::time::Duration::from_secs(30);
+        // One worker thread. A second task can run while the first blocks
+        // only because tokio handed the worker's other work to another
+        // thread, which is what `block_in_place` is asked for.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let on_the_calling_thread = Arc::new(AtomicBool::new(false));
+        let returned_its_own = Arc::new(AtomicBool::new(false));
+        let panic_passed_through = Arc::new(AtomicBool::new(false));
+        let facts = (
+            runs.clone(),
+            on_the_calling_thread.clone(),
+            returned_its_own.clone(),
+            panic_passed_through.clone(),
+        );
+        let (done, finished) = mpsc::channel::<()>();
+        drop(spawn_unit_on(runtime.handle(), async move {
+            let (runs, on_the_calling_thread, returned_its_own, panic_passed_through) = facts;
+            let (reply, replies) = mpsc::channel::<()>();
+            drop(spawn_unit(async move {
+                reply.send(()).unwrap();
+            }));
+            // The work borrows from its caller and holds what is neither
+            // `Send` nor `'static`.
+            let caller = std::thread::current().id();
+            let borrowed = String::from("borrowed");
+            let unsendable = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let returned: Result<usize, mpsc::RecvTimeoutError> = block_in_place(|| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                unsendable.set(unsendable.get() + 1);
+                on_the_calling_thread
+                    .store(std::thread::current().id() == caller, Ordering::SeqCst);
+                // Waits for the second task, which only the runtime can run.
+                replies.recv_timeout(wait).map(|()| borrowed.len())
+            });
+            returned_its_own.store(
+                returned == Ok(borrowed.len()) && unsendable.get() == 1,
+                Ordering::SeqCst,
+            );
+            // A panic in the work passes through with its payload, and the
+            // worker blocks in place again afterwards.
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                block_in_place(|| -> u8 { panic!("fixture panic") })
+            }));
+            let payload = caught
+                .err()
+                .and_then(|payload| payload.downcast_ref::<&str>().copied());
+            panic_passed_through.store(
+                payload == Some("fixture panic") && block_in_place(|| 7u8) == 7,
+                Ordering::SeqCst,
+            );
+            done.send(()).unwrap();
+        }));
+        finished
+            .recv_timeout(wait)
+            .expect("the task that blocked in place returned");
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert!(on_the_calling_thread.load(Ordering::SeqCst));
+        assert!(returned_its_own.load(Ordering::SeqCst));
+        assert!(panic_passed_through.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn blocking_in_place_is_tokios_own_refusal_where_tokio_refuses_it() {
+        // This test's runtime has one thread and no worker to hand work to.
+        // Tokio refuses that with a panic. The helper has no other way to run
+        // the work: the panic passes through and the work never runs.
+        let ran = std::cell::Cell::new(false);
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            block_in_place(|| ran.set(true))
+        }));
+        assert!(refused.is_err());
+        assert!(!ran.get());
     }
 }
