@@ -60,6 +60,30 @@ inspection and final validation as obligations. They do not infer compatibility
 from model names or protocol labels, omit requested capabilities, or switch a
 model or protocol. `require_normal_activation` always refuses as unavailable.
 
+The private parsed-options component now retains the actual CLI permission-mode
+override, auto-approve bit and mouse choice inside those still-pending requirements,
+plus the existing `CRAFTSMAN_CLI_SHELL_ALLOW_LIST` source captured once. Missing or
+non-Unicode environment values add nothing; comma-separated nonempty entries keep
+their original trim/order/duplicate behavior. Neither values nor their getters
+issue policy, source/capability approval, model support or readiness.
+
+`OwnedTerminalStartup::approval_start` rechecks the original user source and derives
+one cached live approval owner. It preserves normal precedence without mutating
+Config: CLI mode overrides user mode, then CLI OR user auto-approve forces Bypass
+even with explicit Plan; web auto uses that same auto flag OR the user's existing
+web switch, and the user shell list precedes the actual environment entries.
+`CapturedApprovalStart::state_for` accepts only that startup's retained options and
+same live state identity after the consuming moves. A copied matching state,
+foreign requirements, absent actual options or poisoned state cannot substitute.
+The same Arc retains actual class-specific Always effects through build/clear;
+issuing again never resets or replays them.
+
+The component is compiled privately. Core must still connect the captured owned
+entry to this opaque owner after checking its actual bootstrap requirements;
+raw-Arc trusted-host prototype compatibility stays separate and unselected.
+Ordinary isolated source/options child checks prove only this component, not real
+TTY/secret/UI/model/native readiness or normal dispatch.
+
 The private consuming composition now exists as
 `OwnedTerminalStartup::into_private_bootstrap(workspace)`. It moves the
 configuration, actual policy, retained source and requirements into one private
