@@ -206,11 +206,23 @@ pub(super) struct Frontend {
     /// actual return or the retirement ends them.
     listings: usize,
     /// The ordinary terminal's local voice owner while this frontend has
-    /// one: the controller, and the task that hands its events to this
-    /// frontend's own UI channel. Both are retired before any password
-    /// prompt and inside the retirement's 30-second bound.
+    /// one: the controller, and the receiver of that controller's own
+    /// events. This frontend takes them from that receiver itself, so an
+    /// event is current because the owned controller sent it, and whatever
+    /// a controller sent is discarded with its receiver when it is retired.
+    /// It is retired before any password prompt and inside the retirement's
+    /// 30-second bound.
     #[cfg(feature = "voice")]
-    voice: Option<(crate::voice::VoiceController, tokio::task::JoinHandle<()>)>,
+    voice: Option<(
+        crate::voice::VoiceController,
+        mpsc::UnboundedReceiver<crate::voice::VoiceEvent>,
+    )>,
+    /// The dictation was ended here: by the person's cancel, by the draft
+    /// bound, by a refused start or by a retirement. Until a start is next
+    /// acted on, nothing its controller still sends adds text, ends a
+    /// session or shows it as live. No event changes this.
+    #[cfg(feature = "voice")]
+    voice_ended: bool,
     /// Shared with the shutdown work of a controller that a restart
     /// retired, for as long as that work has not returned. While it is
     /// shared, no new controller is started.
@@ -290,6 +302,8 @@ impl Frontend {
             listings: 0,
             #[cfg(feature = "voice")]
             voice: None,
+            #[cfg(feature = "voice")]
+            voice_ended: true,
             #[cfg(feature = "voice")]
             voice_retiring: Arc::new(()),
         })
@@ -421,45 +435,12 @@ impl Frontend {
                     Err(_) => break,
                 },
             };
-            // A voice event that arrives while this frontend owns no
-            // controller was sent by one it has retired: it changes nothing
-            // of the voice state that was reset after it.
+            // No voice event comes through this channel: the owned
+            // controller's events are taken from its own receiver
+            // (`voice_events`). One that did arrive here has no owner.
             #[cfg(feature = "voice")]
-            if matches!(&event, UiEvent::Voice(_)) && self.voice.is_none() {
+            if matches!(&event, UiEvent::Voice(_)) {
                 continue;
-            }
-            // Dictated text enters the same draft as typed text and keeps
-            // its bound. A segment that would take the draft past it is
-            // refused whole and the dictation is cancelled; the earlier
-            // draft stays as it is.
-            #[cfg(feature = "voice")]
-            if let UiEvent::Voice(dictated) = &event
-                && self.app.voice.active()
-                && let Some(extra) = dictated_bytes(dictated, self.app.voice.committed.len())
-                && self
-                    .app
-                    .input
-                    .len()
-                    .checked_add(extra)
-                    .is_none_or(|size| size > crate::privacy_hook::MAX_TEXT_BYTES)
-            {
-                crate::tui::input::request_voice_cancel(&mut self.app);
-                self.app.push_error("This whole private input exceeds its byte bound; the earlier draft is retained.");
-                continue;
-            }
-            // The end of a dictation can add one separator and can submit
-            // the draft with no key behind it. A dictation that was already
-            // ended here, by the person or by the bound above, adds and
-            // submits nothing; a live one adds no separator to a draft that
-            // is at its bound. What it submits is within that bound.
-            #[cfg(feature = "voice")]
-            if let UiEvent::Voice(crate::voice::VoiceEvent::SessionFinished { .. }) = &event {
-                if !self.app.voice.active() {
-                    continue;
-                }
-                if self.app.input.len() >= crate::privacy_hook::MAX_TEXT_BYTES {
-                    self.app.voice.marker = None;
-                }
             }
             let session = self
                 .built
@@ -579,24 +560,95 @@ impl Frontend {
                 .push_error("Voice input has no reviewed private adapter in this entry.");
         }
     }
-    /// What the ordinary input owner asks of the voice, done by the ordinary
-    /// local controller that this frontend owns. Its events go to this
-    /// frontend's own UI channel and from there to the ordinary handler, so
-    /// dictated text enters the same composer draft as typed text and is
-    /// submitted as the same private input. The settings are the captured
+    /// What the owned controller has sent since the last pass, taken from
+    /// that controller's own receiver and handed to the ordinary handler,
+    /// so dictated text enters the same composer draft as typed text and is
+    /// submitted as the same private input. Each pass takes one batch.
+    ///
+    /// Three things are decided here, before the ordinary handler sees an
+    /// event:
+    /// - A dictation that was ended here stays ended. Until a start is next
+    ///   acted on, a partial or final segment and a session's end are
+    ///   dropped, and so is a state that would show the dictation as live:
+    ///   no text arrives and nothing is submitted with no key behind it.
+    /// - Dictated text keeps the bound of typed and pasted input. A segment
+    ///   that could take the draft past it is refused whole, the dictation
+    ///   ends here, and the earlier draft stays as it is.
+    /// - The end of a live dictation can add one separator; at the bound it
+    ///   adds none, so what it submits is within the bound.
+    #[cfg(feature = "voice")]
+    fn voice_events(&mut self) {
+        use crate::voice::{VoiceEvent, VoiceState};
+        for _ in 0..EVENT_BATCH {
+            let event = match &mut self.voice {
+                Some((_, received)) => match received.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => return,
+                },
+                None => return,
+            };
+            if self.voice_ended
+                && !matches!(
+                    event,
+                    VoiceEvent::State(VoiceState::Idle | VoiceState::Paused) | VoiceEvent::Error(_)
+                )
+            {
+                continue;
+            }
+            if self.app.voice.active()
+                && let Some(extra) = dictated_bytes(&event, self.app.voice.committed.len())
+                && self
+                    .app
+                    .input
+                    .len()
+                    .checked_add(extra)
+                    .is_none_or(|size| size > crate::privacy_hook::MAX_TEXT_BYTES)
+            {
+                self.voice_ended = true;
+                crate::tui::input::request_voice_cancel(&mut self.app);
+                self.app.push_error("This whole private input exceeds its byte bound; the earlier draft is retained.");
+                continue;
+            }
+            if matches!(event, VoiceEvent::SessionFinished { .. })
+                && self.app.input.len() >= crate::privacy_hook::MAX_TEXT_BYTES
+            {
+                self.app.voice.marker = None;
+            }
+            let session = match &self.built {
+                Some(built) => Some(built.session_for_terminal()),
+                None => None,
+            };
+            privacy_approval::handle(&mut self.app, UiEvent::Voice(event), &self.ui, session);
+        }
+    }
+    /// One pass of the owned voice: the controller's events, then what the
+    /// ordinary input owner asks of it, done by the ordinary local
+    /// controller that this frontend owns. A request that ends the
+    /// dictation here ends it before the events are looked at; a start
+    /// makes it live only after them. The settings are the captured
     /// source's own.
     ///
     /// The controller's model cache is the `models` directory of this
     /// conversation's captured configuration root, taken from the built
     /// session after a source check, and not the ambient configuration
     /// directory. That root is a path that was just checked, not a held
-    /// descriptor. Without the captured download opt-in the controller
-    /// creates that directory when it is missing and changes nothing else:
-    /// no entry is promoted or removed and nothing is downloaded. A start
+    /// descriptor, and nothing here confines the controller to it. On a
+    /// start the controller creates that directory, empty, when it is
+    /// missing: a local cache effect, undone by removing the directory, and
+    /// so not read-only. Without the captured download opt-in it changes
+    /// nothing else: no entry is promoted or removed and nothing is
+    /// downloaded. There is no fallback to the ambient directory: a start
     /// before the session is built has no such root and is refused.
     #[cfg(feature = "voice")]
     fn voice_request(&mut self) {
         use crate::tui::input::VoiceRequest;
+        if matches!(
+            self.app.voice_request,
+            Some(VoiceRequest::Cancel | VoiceRequest::Recreate)
+        ) {
+            self.voice_ended = true;
+        }
+        self.voice_events();
         let Some(request) = self.app.voice_request.take() else {
             return;
         };
@@ -624,24 +676,17 @@ impl Frontend {
             let (config, root) = match captured {
                 Ok(captured) => captured,
                 Err(line) => {
+                    self.voice_ended = true;
                     crate::tui::input::request_voice_cancel(&mut self.app);
                     self.app.voice_request = None;
                     self.app.push_error(line);
                     return;
                 }
             };
-            let (events, mut received) = mpsc::unbounded_channel();
-            let ui = self.bridge.tx.clone();
-            let forward = tokio::spawn(async move {
-                while let Some(event) = received.recv().await {
-                    if ui.send(UiEvent::Voice(event)).is_err() {
-                        break;
-                    }
-                }
-            });
+            let (events, received) = mpsc::unbounded_channel();
             self.voice = Some((
                 crate::voice::VoiceController::spawn_with_model_root(config, events, root),
-                forward,
+                received,
             ));
         }
         if matches!(request, VoiceRequest::Recreate) {
@@ -650,21 +695,19 @@ impl Frontend {
             // new one from the captured settings. The shutdown is this
             // frontend's own local work, joined by the retirement.
             //
-            // Its event task is ended first, before that work exists and
-            // before the state is reset: the retired controller sends this
-            // frontend nothing more, and what it had already sent is
-            // dropped on arrival, because no controller is owned. It is told
-            // to cancel at once, which stops its session and releases
-            // capture. The work holds `voice_retiring` until the controller
-            // and the event task have really ended; no new controller is
-            // started before that.
-            if let Some((controller, forward)) = self.voice.take() {
-                forward.abort();
+            // The controller's receiver is dropped first, before that work
+            // exists and before the state is reset: everything the retired
+            // controller sent and this frontend had not taken is discarded
+            // with it, and nothing it sends later can arrive. It is told to
+            // cancel at once, which stops its session and releases capture.
+            // The work holds `voice_retiring` until the controller has
+            // really ended; no new controller is started before that.
+            if let Some((controller, received)) = self.voice.take() {
+                drop(received);
                 controller.cancel();
                 let retiring = self.voice_retiring.clone();
                 let future: Pin<Box<dyn Future<Output = Returned> + Send>> = Box::pin(async move {
                     controller.shutdown().await;
-                    let _ = forward.await;
                     drop(retiring);
                     Returned::Listing(Ok("Voice input was shut down and reset.".into()))
                 });
@@ -680,7 +723,12 @@ impl Frontend {
             return;
         };
         match request {
-            VoiceRequest::Start => controller.start(),
+            // A start that is acted on: the one thing that makes a dictation
+            // live again after it was ended here.
+            VoiceRequest::Start => {
+                self.voice_ended = false;
+                controller.start()
+            }
             VoiceRequest::StopAndFinalize => controller.stop_and_finalize(),
             VoiceRequest::CancelSegment => controller.cancel_segment(),
             VoiceRequest::Cancel | VoiceRequest::Recreate => controller.cancel(),
@@ -723,20 +771,19 @@ impl Frontend {
         self.voice_request();
         true
     }
-    /// Cancels and shuts the owned voice controller down for real, then
-    /// ends its event task. Called first in every retirement, so before any
-    /// password prompt of a fresh clear and inside the 30-second bound. The
-    /// controller's own shutdown stops capture and transcription. The event
-    /// task is aborted and then awaited: it would otherwise run until every
-    /// sender of the controller is gone, and a sender kept somewhere would
-    /// hold up every cleanup behind it. The UI receiver is closed by then.
+    /// Ends the dictation here, then cancels and shuts the owned voice
+    /// controller down for real. Called first in every retirement, so
+    /// before any password prompt of a fresh clear and inside the 30-second
+    /// bound. The controller's own shutdown stops capture and
+    /// transcription. Its receiver is dropped before that: what it sent and
+    /// was not taken is discarded, and no event task exists to wait for.
     #[cfg(feature = "voice")]
     async fn retire_voice(&mut self) {
-        if let Some((controller, forward)) = self.voice.take() {
+        self.voice_ended = true;
+        if let Some((controller, received)) = self.voice.take() {
+            drop(received);
             controller.cancel();
             controller.shutdown().await;
-            forward.abort();
-            let _ = forward.await;
         }
         crate::tui::input::request_voice_cancel(&mut self.app);
         self.app.voice_request = None;
@@ -1434,13 +1481,12 @@ impl Drop for Frontend {
         self.app.closing = true;
         self.receiver.close();
         self.app.cancel_pending_prompts();
-        // An owned voice controller is told to cancel and its event task is
-        // aborted; nothing can be awaited here, and nothing is claimed about
-        // native capture that was still stopping.
+        // An owned voice controller is told to cancel and its receiver is
+        // dropped with it; nothing can be awaited here, and nothing is
+        // claimed about native capture that was still stopping.
         #[cfg(feature = "voice")]
-        if let Some((controller, forward)) = self.voice.take() {
+        if let Some((controller, _received)) = self.voice.take() {
             controller.cancel();
-            forward.abort();
         }
         // JoinSet aborts only owned async waiters. It does not claim interrupted
         // native/blocking work or completed cleanup when this future is dropped.

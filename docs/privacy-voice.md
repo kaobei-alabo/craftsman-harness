@@ -10,65 +10,76 @@ Nothing here is hardware validation.
 ## Voice input
 
 A build with voice input, in a private conversation whose captured settings
-keep `voice.enabled`, owns the ordinary local voice controller. What changed:
+keep `voice.enabled`, owns the ordinary local voice controller.
 
 - **Model cache under the captured root.** The controller is started with the
   configuration root this conversation captured, taken from its built session
-  after a source check. Its model cache is that root's `models` directory and
-  never the ambient configuration directory. The root is a path that was just
-  checked, not a held descriptor: later access is by that path.
-- **Nothing existing changes without the download opt-in.** With the captured
-  `voice.allow_model_download` off, a model file of the expected size is used
-  as it is, and anything else is the controller's own missing-model answer.
-  No partial download is hashed, promoted or removed and no connection is
-  made. One effect remains: the controller creates the empty `models`
-  directory when it is missing. With the opt-in on, the controller's ordinary
-  cache handling runs in that directory, including its download.
-- **No start before the session is built.** Until then there is no captured
-  root to give the controller; the voice key is refused with a fixed line.
+  after a source check. Its model cache is that root's `models` directory.
+  There is no fallback to the ambient configuration directory: without a
+  captured root the start is refused, which is also what happens before the
+  session is built. The root is a path that was just checked. It is not a
+  held descriptor, later access is by that path, and nothing confines the
+  controller to it.
+- **What a start changes.** On a voice start the controller creates the
+  `models` directory, empty, when it is missing. That is a local cache
+  effect which removing the directory undoes; the start is therefore not
+  read-only. With the captured `voice.allow_model_download` off it changes
+  nothing else: a model file of the expected size is used as it is, anything
+  else is the controller's own missing-model answer, no partial download is
+  hashed, promoted or removed, and no connection is made. With the opt-in
+  on, the controller's ordinary cache handling runs in that directory,
+  including its download.
 - **Restart.** After three failed sessions the controller answers every start
   with its own pause line, which names `/voice on`. No key asks for a
   restart, so the private terminal answers that one command, as the built-in
   one, only while the captured source holds and has voice input on. It turns
   nothing on and changes no setting; a conversation without voice input and
-  every other `/voice` form keep the general refusal. The restart ends the
-  old controller's event task first, tells the controller to cancel, and
-  shuts it down for real as local work of the frontend: the status reports
-  it until it has returned, a settings change waits for it, and a retirement
+  every other `/voice` form keep the general refusal. The restart drops the
+  old controller's receiver first, tells the controller to cancel, and shuts
+  it down for real as local work of the frontend: the status reports it
+  until it has returned, a settings change waits for it, and a retirement
   awaits it inside its 30-second bound. A voice key pressed before that work
   has returned is refused. Afterwards a key starts a new controller with a
   new failure count.
-- **Events of a retired controller change nothing.** A voice event that
-  arrives while the frontend owns no controller is dropped.
+- **Events come from the owned controller's own receiver.** The frontend
+  holds each controller's event receiver and takes a batch from it on every
+  pass of its loop; no task forwards them and they do not pass through the
+  frontend's general event channel. An event is current because the owned
+  controller sent it. When a controller is retired or restarted its receiver
+  is dropped, and everything it had sent and the frontend had not taken is
+  discarded with it.
+- **A dictation ended here stays ended.** The frontend keeps its own mark,
+  set by the person's cancel, by the draft bound, by a refused start and by
+  a retirement or restart, and cleared only when a start is next acted on.
+  No event changes it. While it is set, a partial or final segment and a
+  session's end are dropped, and so is a state that would show the dictation
+  as live: no text arrives and nothing is submitted with no key behind it.
+  Finishing a dictation with the voice key, or with Enter, is not ending it
+  here: its last segment and its end arrive as before.
 - **Draft bound through the end of a dictation.** A partial or final segment
   that could take the draft past the bound of typed and pasted input is
-  refused whole and the dictation is cancelled. The end of a dictation can
-  add one separator and can submit the draft with no key behind it: one that
-  was already ended in the terminal, by the person or by the bound, adds and
-  submits nothing, and a live one adds no separator to a draft at its bound.
+  refused whole and the dictation ends here; the earlier draft stays. The
+  end of a live dictation can add one separator; at the bound it adds none,
+  so a draft it submits is within the bound.
 
 Limits that stay as they were: a frontend that is dropped, and not retired,
-tells its controller to cancel and aborts its event task without awaiting
-either; the controller's task then lives until the runtime ends. A final
-model file is trusted by its size. The error line that names the model file
-is built from the ambient configuration directory; that is display only.
+tells its controller to cancel without awaiting it; the controller's task
+then lives until the runtime ends. A final model file is trusted by its
+size. The error line that names the model file is built from the ambient
+configuration directory; that is display only.
 
 ## Shell escape
 
 `!command` runs in the workspace the conversation was captured for. The
 frontend gives that directory to the ordinary executor, together with the
-cancellation turn the command runs under; the process's current directory is
-not used. The conversation's source check, which includes the workspace's
-identity, runs before the command and again before its output is shown. An
-empty command, the output format, the limit and the process handling are the
-ordinary escape's. A line typed while other work runs, and a refused line,
-are kept as typed.
-
-The executor is given the turn as an argument and is not run inside an
-entered turn scope. Both reach the same executor with the same turn. The
-entered scope would be compiled once more for this call: measured, 1,524
-bytes of unwind data in the unit-test binary of the gadget test mode, which
-had 220 bytes of room. As written the correction takes 32.
+frontend's own cancellation turn; the process's current directory is not
+used. The executor reads only the turn it is given: the same refusal of a
+cancelled turn, process group, kill, drain and partial capture as before.
+The conversation's source check, which includes the workspace's identity,
+runs before the command and again before its output is shown; the directory
+is then used by path. An empty command, the output format, the limit and
+the process handling are the ordinary escape's. A line typed while other
+work runs, and a refused line, are kept as typed.
 
 ## What was run, and what was not
 
@@ -88,28 +99,84 @@ build with voice input:
   general refusal; one request and one recorded input remain;
 - the two earlier voice cases and the earlier shell case, unchanged.
 
-Unit cases, in the voice-enabled unit-test binary only: the cache of an
-owner's root next to the ordinary cache, with the real controller started on
-an empty root; and the executor in a directory that is not the process's own.
+In those cases every voice event the terminal showed was taken from the
+owned controller's own receiver, which is the only path there is.
+
+Unit case in the core and gadget test modes: the executor in a directory
+that is not the process's own, with the ordinary escape beside it and a
+cancelled turn that spawns nothing.
+
+Unit case in a build with voice input only, because the voice module exists
+only there: the cache of an owner's root next to the ordinary cache, with
+the real controller started on an empty root. That unit-test binary is
+outside both full test modes and links past the unwind limit with the
+linker's warning, so its passes are not clean evidence.
 
 Source only, not exercised: every path that needs a dictated text, which is
-the draft bound, the separator at the bound and the dropped late end of a
-dictation; a start while a retired controller is still stopping; a dropped
-event of a retired controller; a start before the session is built; the
+the draft bound, the separator at the bound and everything the ended mark
+drops; a start while a retired controller is still stopping; the discarded
+events of a retired controller; a start before the session is built; the
 download opt-in; a workspace that differs from the process's directory in a
 running terminal. No microphone, model, download or transcription was used
 and no voice event was supplied by a test.
 
+## Unwind data of the unit-test binaries
+
+The unit-test binary of the gadget test mode must stay under 16,777,216
+bytes of unwind data. These are the sizes of that section in the binary
+Cargo selected, read from its section header.
+
+On this branch, which stands on `670d750`:
+
+| Source | Bytes | Under the limit | Linker warning |
+|---|---|---|---|
+| `670d750` | 16,775,932 | 1,284 | no |
+| this branch, with the executor's unit case in every mode | 16,776,272 | 944 | no |
+
+The correction and its unit case take 340 bytes there. The core test mode's
+unit-test binary holds 9,156,948 bytes.
+
+Earlier, on `2e1b7d2` and then `4372ca1`, the same binary had 220 and 188
+bytes to spare, and these were read while the correction was shaped:
+
+| Source | Bytes | Under the limit | Linker warning |
+|---|---|---|---|
+| `2e1b7d2` | 16,776,996 | 220 | no |
+| first form: a formatted sibling inside an entered turn scope, and a unit case | 16,779,208 | 1,992 over | yes |
+| the same without the unit case | 16,778,864 | 1,648 over | yes |
+| the turn as an argument, no entered scope | 16,777,340 | 124 over | yes |
+| a plain match in place of one closure | 16,777,244 | 28 over | no |
+| the executor's own future, formatted by its caller | 16,777,096 | 120 | no |
+| the forwarder inlined (`4372ca1`) | 16,777,028 | 188 | no |
+| `4372ca1` with the unit case in every mode, its results taken by `let`-`else` | 16,777,360 | 144 over | yes |
+| the same case driven by a hand-written poll loop | 16,777,476 | 260 over | yes |
+| the same case with both outcomes of each result matched | 16,777,344 | 128 over | yes |
+| that case, and the event handler's session lookup as a plain match | 16,777,280 | 64 over | yes |
+| that case, and all three session lookups as plain matches | 16,777,068 | 148 | no |
+| two session lookups as plain matches, no unit case | 16,776,848 | 368 | no |
+| those two lookups and the unit case in every mode | 16,777,160 | 56 | no |
+
+Two things follow. Entering a turn scope for the shell escape cost 1,524
+bytes there, which is why the executor is given the turn. And one more unit
+case cost more than 300 bytes, which that binary did not have at `4372ca1`:
+the case fitted there only with session lookups of the frontend rewritten
+as plain matches. That rewrite is not on this branch. The base gained room,
+and the three lookups are as they were.
+
+The voice-enabled unit-test binary held 17,267,944 bytes at `4372ca1`,
+490,728 past the limit; it was not linked again.
+
 ## Open
 
-- A strictly read-only start would also not create the `models` directory.
-  Two retained cases read that directory after a refused start, so it is
-  still created; removing that is one statement.
-- The unit case of the executor is compiled only where voice input is. The
-  gadget test mode's unit-test binary has 16,777,028 bytes of unwind data on
-  this branch, 188 under the unchanged limit with no linker warning; it had
-  220 of room before. That case took 344 in its first form.
-- The voice-enabled unit-test binary is outside both full test modes. It
-  holds 17,267,944 bytes of unwind data, 490,728 past the limit, and links
-  with the linker's warning about that. The four unit cases ran in it.
+- After a dictation is cancelled here, the mark is cleared by the next start
+  that is acted on. Events that the cancelled session sent after the cancel
+  was issued and before its controller acted on it, and that arrive after
+  such a start, would count for the new dictation. The controller answers
+  every cancel with an idle state, so one more mark could hold a start until
+  that answer; it is not there.
+- Cancelling one segment while speaking is not such a mark. As in the
+  ordinary terminal, a partial of that segment which its session had already
+  sent can still be inserted, within the bound. The controller answers a
+  segment's cancel with an event of its own, which could close this the same
+  way.
 - Linux, hosted runs, a microphone and a real model remain unvalidated.
