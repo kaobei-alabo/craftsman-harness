@@ -179,11 +179,12 @@ pub async fn run_shell_escape(cmd: &str, settings: &ShellSettings) -> String {
 /// with [`ExecRaw::format`] and [`ExecFailure::text`].
 ///
 /// This is the executor's own future, and the turn is an argument and not
-/// the task's entered one. A second formatted escape and a second entered
-/// scope would each be compiled once more into the unit-test binary of the
-/// gadget test mode, which has no unwind room for either: the scope alone
-/// measured 1,524 bytes against 220. Inlined, this forwards and adds no
-/// function of its own there.
+/// the task's entered one. The executor reads only the turn it is given, so
+/// that turn reaches the same refusal, process group, kill and drain as a
+/// turn entered around [`execute_impl`] would. A second formatted escape or
+/// a second entered scope would each be compiled once more for this one
+/// caller; this only forwards, and is inlined into it. The measurements
+/// behind that are in `docs/privacy-voice.md`, not here.
 #[cfg(unix)]
 #[inline(always)]
 pub(crate) fn execute_escape_in<'a>(
@@ -920,39 +921,45 @@ mod tests {
     /// it is given: a turn that was cancelled before the call spawns nothing
     /// there. The ordinary escape still runs where the process is.
     ///
-    /// The unit-test binary of the gadget test mode has no unwind room for
-    /// one more case: 188 bytes with this correction, and this case took
-    /// 344 in its first form. So it is compiled only where voice input is,
-    /// with the other unit case of the private voice and shell correction.
-    #[cfg(all(unix, feature = "voice"))]
+    /// It runs in every test mode. The unit-test binary of the gadget test
+    /// mode has little unwind room, so the case asks for nothing that would
+    /// be compiled for it alone: the two directories are compared as the
+    /// text the commands print, and each result is taken apart by the match
+    /// the private frontend uses, which names both outcomes.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_captured_directory_executor_runs_in_that_directory_and_not_the_current_one() {
         let dir = tempfile::tempdir().unwrap();
         let captured = dir.path().canonicalize().unwrap();
         let settings = ShellSettings::default();
         let here = std::env::current_dir().unwrap().canonicalize().unwrap();
-        assert_ne!(captured, here);
+        let (there, here) = (
+            format!("{}\n", captured.display()),
+            format!("{}\n", here.display()),
+        );
+        assert_ne!(there, here);
         let session = craftsman_harness::SessionCancellation::new();
         let turn = session.new_turn();
-        let mut raw =
-            execute_escape_in("pwd -P; echo err >&2; exit 3", &captured, &settings, &turn)
+        let shown =
+            match execute_escape_in("pwd -P; echo err >&2; exit 3", &captured, &settings, &turn)
                 .await
-                .unwrap();
+            {
+                Ok(mut raw) => raw.format(&settings).0,
+                Err(mut failure) => panic!("the executor did not run: {}", failure.text(&settings)),
+            };
         assert_eq!(
-            raw.format(&settings).0,
-            format!(
-                "{}\n\n--- stderr ---\nerr\n\n[exit code 3]",
-                captured.display()
-            )
+            shown,
+            format!("{there}\n--- stderr ---\nerr\n\n[exit code 3]")
         );
-        assert_eq!(
-            run_shell_escape("pwd -P", &settings).await,
-            format!("{}\n", here.display())
-        );
+        assert_eq!(run_shell_escape("pwd -P", &settings).await, here);
         turn.cancel();
-        let mut refused = execute_escape_in("touch ran", &captured, &settings, &turn)
-            .await
-            .unwrap_err();
+        let mut refused = match execute_escape_in("touch ran", &captured, &settings, &turn).await {
+            Err(refused) => refused,
+            Ok(mut raw) => panic!(
+                "the executor ran under a cancelled turn: {}",
+                raw.format(&settings).0
+            ),
+        };
         assert!(matches!(refused, ExecFailure::Cancelled { partial: None }));
         assert_eq!(
             refused.text(&settings),
