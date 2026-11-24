@@ -181,12 +181,8 @@ pub async fn run_shell_escape(cmd: &str, settings: &ShellSettings) -> String {
 /// This is the executor's own future, and the turn is an argument and not
 /// the task's entered one. The executor reads only the turn it is given, so
 /// that turn reaches the same refusal, process group, kill and drain as a
-/// turn entered around [`execute_impl`] would. A second formatted escape or
-/// a second entered scope would each be compiled once more for this one
-/// caller; this only forwards, and is inlined into it. The measurements
-/// behind that are in `docs/privacy-voice.md`, not here.
+/// turn entered around [`execute_impl`] would.
 #[cfg(unix)]
-#[inline(always)]
 pub(crate) fn execute_escape_in<'a>(
     cmd: &'a str,
     cwd: &'a Path,
@@ -921,9 +917,7 @@ mod tests {
     /// it is given: a turn that was cancelled before the call spawns nothing
     /// there. The ordinary escape still runs where the process is.
     ///
-    /// It runs in every test mode. The unit-test binary of the gadget test
-    /// mode has little unwind room, so the case asks for nothing that would
-    /// be compiled for it alone: the two directories are compared as the
+    /// It runs in every test mode. The two directories are compared as the
     /// text the commands print, and each result is taken apart by the match
     /// the private frontend uses, which names both outcomes.
     #[cfg(unix)]

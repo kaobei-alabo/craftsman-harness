@@ -220,12 +220,14 @@ pub(super) struct Frontend {
     /// The dictation was ended here: by the person's cancel, by the draft
     /// bound, by a refused start or by a retirement. Until a start is next
     /// acted on, nothing its controller still sends adds text, ends a
-    /// session or shows it as live. No event changes this.
+    /// session or shows it as live. No event changes this. Each of these
+    /// ends also leaves no controller owned, so the start that clears the
+    /// mark has a controller of its own.
     #[cfg(feature = "voice")]
     voice_ended: bool,
-    /// Shared with the shutdown work of a controller that a restart
-    /// retired, for as long as that work has not returned. While it is
-    /// shared, no new controller is started.
+    /// Shared with the shutdown work of a controller that a cancel or a
+    /// restart retired, for as long as that work has not returned. While it
+    /// is shared, no new controller is started.
     #[cfg(feature = "voice")]
     voice_retiring: Arc<()>,
 }
@@ -624,9 +626,9 @@ impl Frontend {
     /// One pass of the owned voice: the controller's events, then what the
     /// ordinary input owner asks of it, done by the ordinary local
     /// controller that this frontend owns. A request that ends the
-    /// dictation here ends it before the events are looked at; a start
-    /// makes it live only after them. The settings are the captured
-    /// source's own.
+    /// dictation here ends it before the events are looked at, and then
+    /// retires the controller; a start makes a dictation live only after
+    /// them. The settings are the captured source's own.
     ///
     /// The controller's model cache is the `models` directory of this
     /// conversation's captured configuration root, taken from the built
@@ -656,7 +658,7 @@ impl Frontend {
             let owner = self.owner.clone();
             let captured = match (self.configuration.source(&owner), self.built.as_ref()) {
                 (Err(error), _) => Err(error.to_string()),
-                // The shutdown of a restarted controller has not returned.
+                // The shutdown of a retired controller has not returned.
                 (Ok(_), _) if Arc::strong_count(&self.voice_retiring) > 1 => Err(
                     "The earlier voice controller is still stopping; voice input was not started."
                         .to_owned(),
@@ -689,34 +691,46 @@ impl Frontend {
                 received,
             ));
         }
-        if matches!(request, VoiceRequest::Recreate) {
-            // As in the ordinary terminal: the controller is shut down for
-            // real and the voice state starts over. The next Start spawns a
-            // new one from the captured settings. The shutdown is this
-            // frontend's own local work, joined by the retirement.
+        if matches!(request, VoiceRequest::Recreate | VoiceRequest::Cancel) {
+            // A restart, as in the ordinary terminal, and equally a
+            // dictation that the person or the draft bound ended here: the
+            // controller is retired and shut down for real, and the next
+            // start spawns a new one from the captured settings. The
+            // shutdown is this frontend's own local work, joined by the
+            // retirement.
             //
-            // The controller's receiver is dropped first, before that work
-            // exists and before the state is reset: everything the retired
-            // controller sent and this frontend had not taken is discarded
-            // with it, and nothing it sends later can arrive. It is told to
-            // cancel at once, which stops its session and releases capture.
-            // The work holds `voice_retiring` until the controller has
-            // really ended; no new controller is started before that.
+            // The order is what keeps a cancelled session out of the next
+            // dictation. The mark was set and the batch taken above. Here
+            // the controller's receiver is dropped first, before that work
+            // exists: everything the controller sent and this frontend had
+            // not taken is discarded with it, and nothing it sends later
+            // has anywhere to arrive. It is told to cancel at once, which
+            // stops its session and releases capture. The work holds
+            // `voice_retiring` until the controller's own task has ended,
+            // and no controller is started before that. So the start that
+            // next clears the mark has a new controller and a new receiver,
+            // whatever the old session still did.
             if let Some((controller, received)) = self.voice.take() {
                 drop(received);
                 controller.cancel();
                 let retiring = self.voice_retiring.clone();
+                let line = match request {
+                    VoiceRequest::Recreate => "Voice input was shut down and reset.",
+                    _ => "Voice input was stopped.",
+                };
                 let future: Pin<Box<dyn Future<Output = Returned> + Send>> = Box::pin(async move {
                     controller.shutdown().await;
                     drop(retiring);
-                    Returned::Listing(Ok("Voice input was shut down and reset.".into()))
+                    Returned::Listing(Ok(line.into()))
                 });
                 self.work.spawn(future);
                 self.listings += 1;
             }
-            self.app.voice.state = crate::voice::VoiceState::Idle;
-            self.app.voice.partials_enabled = None;
-            self.app.dirty = true;
+            if matches!(request, VoiceRequest::Recreate) {
+                self.app.voice.state = crate::voice::VoiceState::Idle;
+                self.app.voice.partials_enabled = None;
+                self.app.dirty = true;
+            }
             return;
         }
         let Some((controller, _)) = &self.voice else {
@@ -724,14 +738,18 @@ impl Frontend {
         };
         match request {
             // A start that is acted on: the one thing that makes a dictation
-            // live again after it was ended here.
+            // live again after it was ended here. Whenever the mark is set
+            // no controller is owned, so this controller was either spawned
+            // just above, after the earlier one's shutdown returned, or its
+            // last dictation was not ended here.
             VoiceRequest::Start => {
                 self.voice_ended = false;
                 controller.start()
             }
             VoiceRequest::StopAndFinalize => controller.stop_and_finalize(),
             VoiceRequest::CancelSegment => controller.cancel_segment(),
-            VoiceRequest::Cancel | VoiceRequest::Recreate => controller.cancel(),
+            // Carried out above; neither reaches an owned controller here.
+            VoiceRequest::Cancel | VoiceRequest::Recreate => {}
         }
     }
     /// `/voice on`: the ordinary terminal's own command for the restart

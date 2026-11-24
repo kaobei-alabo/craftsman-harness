@@ -34,33 +34,46 @@ keep `voice.enabled`, owns the ordinary local voice controller.
   restart, so the private terminal answers that one command, as the built-in
   one, only while the captured source holds and has voice input on. It turns
   nothing on and changes no setting; a conversation without voice input and
-  every other `/voice` form keep the general refusal. The restart drops the
-  old controller's receiver first, tells the controller to cancel, and shuts
-  it down for real as local work of the frontend: the status reports it
-  until it has returned, a settings change waits for it, and a retirement
-  awaits it inside its 30-second bound. A voice key pressed before that work
-  has returned is refused. Afterwards a key starts a new controller with a
-  new failure count.
+  every other `/voice` form keep the general refusal. The restart retires
+  the controller as described next.
+- **Retiring a controller.** A restart, the person's cancel of a dictation
+  and the draft bound retire the owned controller in the same way and in
+  this order. Its receiver is dropped. It is told to cancel, which stops its
+  session and releases capture. Then it is shut down for real as local work
+  of the frontend, which holds a token until the controller's own task has
+  ended: the status reports that work until it has returned, a settings
+  change waits for it, and a retirement of the conversation awaits it inside
+  its 30-second bound. A voice key pressed before it has returned is refused
+  with a fixed line, and nothing is started for the person afterwards. A
+  line says when the controller has stopped. The next voice key starts a new
+  controller, which loads the model again and counts failures anew. The
+  ordinary terminal keeps its controller through a cancel; the private one
+  does not.
 - **Events come from the owned controller's own receiver.** The frontend
   holds each controller's event receiver and takes a batch from it on every
   pass of its loop; no task forwards them and they do not pass through the
   frontend's general event channel. An event is current because the owned
-  controller sent it. When a controller is retired or restarted its receiver
-  is dropped, and everything it had sent and the frontend had not taken is
-  discarded with it.
+  controller sent it. When a controller is retired its receiver is dropped,
+  and everything it had sent and the frontend had not taken is discarded
+  with it.
 - **A dictation ended here stays ended.** The frontend keeps its own mark,
   set by the person's cancel, by the draft bound, by a refused start and by
   a retirement or restart, and cleared only when a start is next acted on.
   No event changes it. While it is set, a partial or final segment and a
   session's end are dropped, and so is a state that would show the dictation
   as live: no text arrives and nothing is submitted with no key behind it.
-  Finishing a dictation with the voice key, or with Enter, is not ending it
-  here: its last segment and its end arrive as before.
+  Each of these ends leaves no controller owned, and no controller is
+  started before the retired one's task has ended. So the start that clears
+  the mark has a new controller with a new receiver, and whatever the
+  cancelled session still sent has nowhere to arrive. This rests on who owns
+  the controller and its receiver, not on time. Finishing a dictation with
+  the voice key, or with Enter, is not ending it here: its last segment and
+  its end arrive as before, and the controller stays.
 - **Draft bound through the end of a dictation.** A partial or final segment
   that could take the draft past the bound of typed and pasted input is
   refused whole and the dictation ends here; the earlier draft stays. The
   end of a live dictation can add one separator; at the bound it adds none,
-  so a draft it submits is within the bound.
+  so dictation does not take a draft that it submits past the bound.
 
 Limits that stay as they were: a frontend that is dropped, and not retired,
 tells its controller to cancel without awaiting it; the controller's task
@@ -100,7 +113,11 @@ build with voice input:
 - the two earlier voice cases and the earlier shell case, unchanged.
 
 In those cases every voice event the terminal showed was taken from the
-owned controller's own receiver, which is the only path there is.
+owned controller's own receiver, which is the only path there is, and the
+restart ran the retirement of a controller for real. No case cancels a
+dictation: on this host a session ends at its model check before a person
+could cancel it. The cancel and the draft bound select that same retirement
+and are not run.
 
 Unit case in the core and gadget test modes: the executor in a directory
 that is not the process's own, with the ordinary escape beside it and a
@@ -114,11 +131,13 @@ linker's warning, so its passes are not clean evidence.
 
 Source only, not exercised: every path that needs a dictated text, which is
 the draft bound, the separator at the bound and everything the ended mark
-drops; a start while a retired controller is still stopping; the discarded
-events of a retired controller; a start before the session is built; the
-download opt-in; a workspace that differs from the process's directory in a
-running terminal. No microphone, model, download or transcription was used
-and no voice event was supplied by a test.
+drops; a cancelled dictation and the new controller after it; a start while
+a retired controller is still stopping; the discarded events of a retired
+controller; a start before the session is built; the download opt-in; a
+workspace that differs from the process's directory in a running terminal.
+In particular nothing shows, on a real device, a transcript that was queued
+when its dictation was cancelled. No microphone, model, download or
+transcription was used and no voice event was supplied by a test.
 
 ## Unwind data of the unit-test binaries
 
@@ -131,10 +150,11 @@ On this branch, which stands on `670d750`:
 | Source | Bytes | Under the limit | Linker warning |
 |---|---|---|---|
 | `670d750` | 16,775,932 | 1,284 | no |
-| this branch, with the executor's unit case in every mode | 16,776,272 | 944 | no |
+| `2750805`: the executor's unit case in every mode, its forwarder forced inline | 16,776,272 | 944 | no |
+| this branch: the forwarder an ordinary function | 16,776,388 | 828 | no |
 
-The correction and its unit case take 340 bytes there. The core test mode's
-unit-test binary holds 9,156,948 bytes.
+The correction and its unit case take 456 bytes there. The core test mode's
+unit-test binary holds 9,156,940 bytes.
 
 Earlier, on `2e1b7d2` and then `4372ca1`, the same binary had 220 and 188
 bytes to spare, and these were read while the correction was shaped:
@@ -156,27 +176,27 @@ bytes to spare, and these were read while the correction was shaped:
 | two session lookups as plain matches, no unit case | 16,776,848 | 368 | no |
 | those two lookups and the unit case in every mode | 16,777,160 | 56 | no |
 
-Two things follow. Entering a turn scope for the shell escape cost 1,524
-bytes there, which is why the executor is given the turn. And one more unit
-case cost more than 300 bytes, which that binary did not have at `4372ca1`:
-the case fitted there only with session lookups of the frontend rewritten
-as plain matches. That rewrite is not on this branch. The base gained room,
-and the three lookups are as they were.
+Two things were read off these. Entering a turn scope for the shell escape
+cost 1,524 bytes there; the executor is given the turn, which reaches the
+same executor code. And one more unit case cost more than 300 bytes, which
+that binary did not have at `4372ca1`: the case fitted there only with
+session lookups of the frontend rewritten as plain matches. That rewrite is
+not on this branch: the base gained room and the three lookups are as they
+were. The executor's forwarder was forced inline for the same reason and is
+an ordinary function again. What remains from that time is that the
+frontend formats the executor's result itself, with the ordinary escape's
+two formatters.
 
 The voice-enabled unit-test binary held 17,267,944 bytes at `4372ca1`,
 490,728 past the limit; it was not linked again.
 
 ## Open
 
-- After a dictation is cancelled here, the mark is cleared by the next start
-  that is acted on. Events that the cancelled session sent after the cancel
-  was issued and before its controller acted on it, and that arrive after
-  such a start, would count for the new dictation. The controller answers
-  every cancel with an idle state, so one more mark could hold a start until
-  that answer; it is not there.
-- Cancelling one segment while speaking is not such a mark. As in the
-  ordinary terminal, a partial of that segment which its session had already
-  sent can still be inserted, within the bound. The controller answers a
-  segment's cancel with an event of its own, which could close this the same
-  way.
+- Cancelling one segment while speaking is not an end here and sets no
+  mark; the controller stays. As in the ordinary terminal, a partial of that
+  segment which its session had already sent can still be inserted, within
+  the bound.
+- A cancel costs the private terminal its controller: the next start loads
+  the model again, and failures before the cancel no longer count towards
+  the pause.
 - Linux, hosted runs, a microphone and a real model remain unvalidated.
