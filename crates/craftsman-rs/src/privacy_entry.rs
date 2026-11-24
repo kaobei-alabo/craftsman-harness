@@ -19,14 +19,14 @@ use std::sync::{Arc, Mutex, Weak};
 
 mod approval_ui;
 mod inline;
-pub(crate) use approval_ui::{
-    PrivacyApprovalDecision, PrivacyApprovalPrompt, PrivacyApprovalRequest,
-};
+pub(crate) use approval_ui::PrivacyApprovalPrompt;
 // The receiver's side: the terminal's modal on unix, and cases everywhere.
+// The request and the decision are named through this module only by that
+// receiver; the gate's own producer takes them from `approval_ui` itself.
 #[cfg(any(unix, test))]
 pub(crate) use approval_ui::{
-    PrivacyApprovalPresentation, PrivacyApprovalUi, PrivacyApprovalView,
-    register_privacy_approval_ui,
+    PrivacyApprovalDecision, PrivacyApprovalPresentation, PrivacyApprovalRequest,
+    PrivacyApprovalUi, PrivacyApprovalView, register_privacy_approval_ui,
 };
 pub(crate) use inline::{InlineDecisionInput, InlineDecisionProducer};
 
