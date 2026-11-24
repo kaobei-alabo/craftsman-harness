@@ -60,6 +60,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 /// The most bytes of a file an edit is derived for.
 const MAX_FILE: usize = 256 * 1024;
 
@@ -140,7 +152,7 @@ fn validate_held_update(
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
 
-    let held = file.metadata().map_err(|_| FileRefusal::Stale)?;
+    let held = or_return!(file.metadata(), FileRefusal::Stale);
     if !held.is_file()
         || held.nlink() != 1
         || held.uid() != unsafe { libc::geteuid() }
@@ -149,8 +161,10 @@ fn validate_held_update(
     {
         return Err(FileRefusal::Stale);
     }
-    let name =
-        std::ffi::CString::new(name.as_encoded_bytes()).map_err(|_| FileRefusal::Unsupported)?;
+    let name = or_return!(
+        std::ffi::CString::new(name.as_encoded_bytes()),
+        FileRefusal::Unsupported
+    );
     let mut named = std::mem::MaybeUninit::<libc::stat>::uninit();
     // SAFETY: directory is retained and live, name is NUL-terminated, and
     // fstatat initializes named only on success. No link is followed.
@@ -505,8 +519,8 @@ impl PrivacySession {
                 // which must be the directory just observed, and the file's
                 // own name in it.
                 let name = path.file_name().ok_or(FileRefusal::Unsupported)?;
-                let resolved = std::fs::canonicalize(parent).map_err(|_| FileRefusal::Stale)?;
-                let again = std::fs::metadata(&resolved).map_err(|_| FileRefusal::Stale)?;
+                let resolved = or_return!(std::fs::canonicalize(parent), FileRefusal::Stale);
+                let again = or_return!(std::fs::metadata(&resolved), FileRefusal::Stale);
                 if !again.is_dir() || identity(&again) != identity(&held) {
                     return Err(FileRefusal::Stale);
                 }
@@ -550,8 +564,8 @@ impl PrivacySession {
                 }
                 // The destination: the opened file as the host resolves its
                 // path, which must name that same file.
-                let bound = std::fs::canonicalize(&path).map_err(|_| FileRefusal::Stale)?;
-                let again = std::fs::symlink_metadata(&bound).map_err(|_| FileRefusal::Stale)?;
+                let bound = or_return!(std::fs::canonicalize(&path), FileRefusal::Stale);
+                let again = or_return!(std::fs::symlink_metadata(&bound), FileRefusal::Stale);
                 if !again.is_file() || identity(&again) != identity(&opened) {
                     return Err(FileRefusal::Stale);
                 }
@@ -560,10 +574,12 @@ impl PrivacySession {
                     return Err(FileRefusal::NoRule);
                 }
                 let mut text = Zeroizing::new(String::new());
-                (&mut file)
-                    .take(MAX_FILE as u64 + 1)
-                    .read_to_string(&mut text)
-                    .map_err(|_| FileRefusal::NoRule)?;
+                or_return!(
+                    (&mut file)
+                        .take(MAX_FILE as u64 + 1)
+                        .read_to_string(&mut text),
+                    FileRefusal::NoRule
+                );
                 if text.len() > MAX_FILE {
                     return Err(FileRefusal::NoRule);
                 }
@@ -801,8 +817,10 @@ impl DerivedFileOperation {
                 let mut file = {
                     use std::os::fd::{AsRawFd, FromRawFd};
                     let name = self.path.file_name().ok_or(FileRefusal::Unsupported)?;
-                    let name = std::ffi::CString::new(name.as_encoded_bytes())
-                        .map_err(|_| FileRefusal::Unsupported)?;
+                    let name = or_return!(
+                        std::ffi::CString::new(name.as_encoded_bytes()),
+                        FileRefusal::Unsupported
+                    );
                     let descriptor = unsafe {
                         libc::openat(
                             effect.directory().as_raw_fd(),
@@ -839,7 +857,7 @@ impl DerivedFileOperation {
                 identity: bound,
             } => {
                 let parent = self.path.parent().ok_or(FileRefusal::Stale)?;
-                let observed = std::fs::metadata(parent).map_err(|_| FileRefusal::Stale)?;
+                let observed = or_return!(std::fs::metadata(parent), FileRefusal::Stale);
                 let effect_request = FileEffectRequest::issued(&held.data_request, &observed)?;
                 let effect = policy
                     .retained_file_effect(&effect_request)
@@ -848,15 +866,13 @@ impl DerivedFileOperation {
                 self.owner.live().map_err(FileRefusal::Stopped)?;
                 // The path still names the file that was opened, and the
                 // file still holds what was read and shown.
-                let named =
-                    std::fs::symlink_metadata(&self.path).map_err(|_| FileRefusal::Stale)?;
+                let named = or_return!(std::fs::symlink_metadata(&self.path), FileRefusal::Stale);
                 if !named.is_file() || identity(&named) != *bound {
                     return Err(FileRefusal::Stale);
                 }
                 let mut current = Zeroizing::new(String::new());
                 file.seek(SeekFrom::Start(0)).map_err(failed)?;
-                file.read_to_string(&mut current)
-                    .map_err(|_| FileRefusal::Stale)?;
+                or_return!(file.read_to_string(&mut current), FileRefusal::Stale);
                 if Some(current.as_str()) != held.old.as_ref().map(|old| old.as_str()) {
                     return Err(FileRefusal::Stale);
                 }

@@ -150,6 +150,25 @@ impl SubagentGate {
                 None,
             )
         });
+        // This constructed gate tells its conversation what it holds: the
+        // approval prompt, the two correlated owners and the prompt for
+        // private decisions, by address.
+        if let Some(boundary) = boundary {
+            use crate::privacy_session::held_address;
+            let correlated = match &self.correlated {
+                Some((prompt, sink)) => [
+                    &**prompt as *const _ as *const () as usize,
+                    &**sink as *const _ as *const () as usize,
+                ],
+                None => [0; 2],
+            };
+            boundary.gate_constructed([
+                held_address!(&self.approval_prompt),
+                correlated[0],
+                correlated[1],
+                held_address!(&self.privacy_prompt),
+            ]);
+        }
         self
     }
     async fn call_tracked(

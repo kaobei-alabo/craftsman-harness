@@ -12,6 +12,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SupportedDataApplication {
     ContactLinesV1,
@@ -204,7 +216,7 @@ impl<'a> BeforeFilter<'a> {
         application: SupportedDataApplication,
         text: &'a str,
     ) -> Result<Self, FileRefusal> {
-        let values = checked_values(application, text, &[]).map_err(|_| FileRefusal::NoRule)?;
+        let values = or_return!(checked_values(application, text, &[]), FileRefusal::NoRule);
         Ok(Self {
             application,
             text,
@@ -285,8 +297,8 @@ impl FileEffectRequest {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let owned = parent.try_clone().map_err(|_| FileRefusal::Stale)?;
-            let meta = owned.metadata().map_err(|_| FileRefusal::Stale)?;
+            let owned = or_return!(parent.try_clone(), FileRefusal::Stale);
+            let meta = or_return!(owned.metadata(), FileRefusal::Stale);
             if !meta.is_dir() || meta.dev() != self.parent_device || meta.ino() != self.parent_inode
             {
                 return Err(FileRefusal::Stale);
@@ -330,12 +342,15 @@ fn check_json_ranges(
     if application != SupportedDataApplication::ContactJsonV1 {
         return Ok(());
     }
-    let indexed = JsonRanges::index(text.as_bytes())
-        .map_err(|_| FileRefusal::Restore(crate::privacy_restore::RestoreError::Input))?;
+    let indexed = or_return!(
+        JsonRanges::index(text.as_bytes()),
+        FileRefusal::Restore(crate::privacy_restore::RestoreError::Input)
+    );
     for range in ranges {
-        let located = indexed
-            .locate(range.clone())
-            .map_err(|_| FileRefusal::Restore(crate::privacy_restore::RestoreError::Input))?;
+        let located = or_return!(
+            indexed.locate(range.clone()),
+            FileRefusal::Restore(crate::privacy_restore::RestoreError::Input)
+        );
         match indexed.path(located.string()).as_deref() {
             Some([PathStep::Key("owner" | "note")]) => {}
             _ => return Err(FileRefusal::Unsupported),
@@ -466,7 +481,7 @@ fn permitted_values(
             // Closed contact-record schema, not generic JSON or a caller's
             // pointer list. Schema/config/auth/script fields are unsupported.
             let value: serde_json::Value =
-                serde_json::from_str(text).map_err(|_| FileRefusal::Unsupported)?;
+                or_return!(serde_json::from_str(text), FileRefusal::Unsupported);
             let record = value.as_object().ok_or(FileRefusal::Unsupported)?;
             if !record.contains_key("owner")
                 || record
@@ -478,8 +493,10 @@ fn permitted_values(
             {
                 return Err(FileRefusal::Unsupported);
             }
-            let indexed = JsonRanges::index(text.as_bytes())
-                .map_err(|_| FileRefusal::Restore(crate::privacy_restore::RestoreError::Input))?;
+            let indexed = or_return!(
+                JsonRanges::index(text.as_bytes()),
+                FileRefusal::Restore(crate::privacy_restore::RestoreError::Input)
+            );
             let mut values = Vec::new();
             for (index, string) in indexed.strings().iter().enumerate() {
                 if string.role() != StringRole::Value {

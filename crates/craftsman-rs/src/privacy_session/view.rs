@@ -1699,6 +1699,39 @@ impl ConversationBoundary {
         [replies, files, verification, controls]
     }
 
+    /// A delegated agent's tool gate that was just constructed for this
+    /// conversation says what it holds. Gates that disagree leave a value
+    /// that equals no request.
+    pub(crate) fn gate_constructed(&self, held: [usize; 4]) {
+        let gates = &self.controls.gates;
+        let first = gates[4].fetch_add(1, Ordering::AcqRel) == 0;
+        let mut place = 0;
+        while place < held.len() {
+            if first {
+                gates[place].store(held[place], Ordering::Release);
+            } else if gates[place].load(Ordering::Acquire) != held[place] {
+                gates[place].store(usize::MAX, Ordering::Release);
+            }
+            place += 1;
+        }
+    }
+
+    /// What the delegated agents' tool gates hold; none while no gate was
+    /// constructed.
+    #[cfg(unix)]
+    pub(crate) fn delegated_gates(&self) -> Option<[usize; 4]> {
+        let gates = &self.controls.gates;
+        if gates[4].load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        Some([
+            gates[0].load(Ordering::Acquire),
+            gates[1].load(Ordering::Acquire),
+            gates[2].load(Ordering::Acquire),
+            gates[3].load(Ordering::Acquire),
+        ])
+    }
+
     /// Whether a string value of `args` holds a placeholder this
     /// conversation issued, with a marker or without one. What cannot be
     /// decided counts as holding one.

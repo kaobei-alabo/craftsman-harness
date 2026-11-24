@@ -243,6 +243,18 @@ impl Agent {
         defs
     }
 
+    /// Whether the session cancellation owner installed on this agent is
+    /// `expected`'s own: the same owner, not an equal or a child one, or none
+    /// where `expected` is none. For a host that kept a clone of the owner
+    /// it handed the builder. It reads and changes nothing else.
+    pub fn cancellation_session_is(&self, expected: Option<&crate::SessionCancellation>) -> bool {
+        match (&self.cancellation_session, expected) {
+            (Some(installed), Some(expected)) => installed.same_owner(expected),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     /// Compare a trusted tool handle with the actual immutable registry entry.
     /// A model-supplied name or an overriding host tool does not establish type.
     pub fn registered_tool_matches(&self, name: &str, expected: &Arc<dyn Tool>) -> bool {

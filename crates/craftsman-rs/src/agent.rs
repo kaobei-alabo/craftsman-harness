@@ -1324,7 +1324,7 @@ impl SessionExtras {
         }
         #[cfg(feature = "gadgets")]
         {
-            facts[fact::ALLOWED_GADGETS] = self.allowed_gadgets.len();
+            facts[fact::ALLOWED_GADGETS] = crate::gadgets::allowed_mark(&self.allowed_gadgets);
         }
         facts
     }
@@ -1974,9 +1974,11 @@ async fn build_session_with_capture_profile(
         return None;
     }
     let context_options = if construction.prepared().is_none() && extras.context_compilation {
-        produced!(extras, CONTEXT);
         match crate::context_compiler::ContextOptions::parse(cfg.extra.get("context")) {
-            Ok(options) => options,
+            Ok(options) => {
+                produced!(extras, CONTEXT);
+                options
+            }
             Err(error) => {
                 if let Some(sink) = &extras.activity_sink {
                     sink(&error.to_string());
@@ -1988,9 +1990,11 @@ async fn build_session_with_capture_profile(
         crate::context_compiler::ContextOptions::default()
     };
     let failure_options = if construction.prepared().is_none() && extras.failure_controls {
-        produced!(extras, FAILURE);
         match crate::failure_control::Settings::parse(cfg.extra.get("failure_control")) {
-            Ok(options) => options,
+            Ok(options) => {
+                produced!(extras, FAILURE);
+                options
+            }
             Err(error) => {
                 if let Some(sink) = &extras.activity_sink {
                     sink(error);
@@ -2073,7 +2077,6 @@ async fn build_session_with_capture_profile(
         None
     };
     let verification_plan = if construction.prepared().is_none() && extras.verification {
-        produced!(extras, VERIFICATION);
         let captured_config = cfg.clone();
         let captured_root = cwd.clone();
         match crate::util::spawn_blocking(move || {
@@ -2081,7 +2084,10 @@ async fn build_session_with_capture_profile(
         })
         .await
         {
-            Ok(Ok(plan)) => plan,
+            Ok(Ok(plan)) => {
+                produced!(extras, VERIFICATION);
+                plan
+            }
             result => {
                 let error = match result {
                     Ok(Err(error)) => error,
@@ -2204,6 +2210,16 @@ async fn build_session_with_capture_profile(
         Some(_) => Arc::new(|_: &str| {}),
         None => stdout_sink(),
     };
+    if let Some(selection) = &extras.privacy_view {
+        // The object the delegated and the summary provider are given. Each
+        // of them says in its own receipt what it was given.
+        selection
+            .report()
+            .accept(crate::privacy_session::Accept::Part(
+                crate::privacy_session::ComposedPart::ChildSink,
+                &*child_sink as *const _ as *const () as usize,
+            ));
+    }
     // A frontend that shows the replies of a privacy conversation is given
     // each one when the agent has retained it. Until then the main model's
     // stream is held and shown nowhere.
@@ -2215,49 +2231,23 @@ async fn build_session_with_capture_profile(
         _ => None,
     };
     if let (Some(selection), Some(display)) = (&extras.privacy_view, &reply_display) {
-        use crate::privacy_session::{Accept, ComposedPart};
-        let report = selection.report();
-        report.accept(Accept::Part(
-            ComposedPart::ReplyDisplay,
-            Arc::as_ptr(display) as usize,
-        ));
-        report.accept(Accept::Part(
-            ComposedPart::ReplySink,
-            owner_address!(&extras.human_reply_sink),
-        ));
-    }
-    if let Some(selection) = &extras.privacy_view {
-        // What the next two statements install: the display's own sink in
-        // place of the requested token sink when there is a display, else
-        // the requested one; and the requested round sink in both cases.
-        use crate::privacy_session::{Accept, ComposedPart};
-        let report = selection.report();
-        report.accept(Accept::Part(
-            ComposedPart::TokenSink,
-            match &reply_display {
-                Some(display) => Arc::as_ptr(display) as usize,
-                None => owner_address!(&extras.token_sink),
-            },
-        ));
-        report.accept(Accept::Part(
-            ComposedPart::RoundSink,
-            owner_address!(&extras.round_sink),
-        ));
+        // The constructed display itself: what it holds, and the sinks it
+        // hands on, are read from it and compared with what the provider
+        // says it was given.
+        selection
+            .report()
+            .accept(crate::privacy_session::Accept::Consumer(
+                crate::privacy_session::consumer::DISPLAY,
+                display.clone(),
+            ));
     }
     let main_sink = match &reply_display {
         Some(display) => display.token_sink(),
         None => extras.token_sink.unwrap_or_else(stdout_sink),
     };
     let main_round_sink: Option<RoundSink> = match &reply_display {
-        Some(display) => {
-            let (display, inner) = (display.clone(), extras.round_sink.clone());
-            Some(Arc::new(move || {
-                display.round_started();
-                if let Some(inner) = &inner {
-                    inner();
-                }
-            }))
-        }
+        // The display's own notification, then the requested sink.
+        Some(display) => Some(display.round_sink(extras.round_sink.clone())),
         None => extras.round_sink.clone(),
     };
     // ORIGINAL declared identity snapshot, not display labels or caller aliases.
@@ -2790,24 +2780,18 @@ async fn build_session_with_capture_profile(
             options.prompt = extras.approval_prompt.clone();
             options.allowed_gadgets = extras.allowed_gadgets.clone();
             options.trust_workspace = extras.trust_workspace;
-            if let Some(selection) = &extras.privacy_view {
-                selection
-                    .report()
-                    .accept(crate::privacy_session::Accept::Part(
-                        crate::privacy_session::ComposedPart::AllowedGadgets,
-                        extras.allowed_gadgets.len(),
-                    ));
-            }
-            if extras.trust_workspace {
-                produced!(extras, TRUST_WORKSPACE);
-            }
             options.workspace_checkpoints = workspace_checkpoints.clone();
             crate::gadgets::GadgetRuntime::new(&cwd, &crate::config::config_dir(), options)
                 .map_err(Into::into)
         });
         match runtime {
             Ok(runtime) => {
+                // Said once the runtime exists; what it holds as allowed
+                // and trusted is read from the runtime by the host.
                 produced!(extras, LOCAL_GADGETS);
+                if extras.trust_workspace {
+                    produced!(extras, TRUST_WORKSPACE);
+                }
                 let runtime = Arc::new(runtime);
                 shared_tools.extend(runtime.tools());
                 Some(runtime)
@@ -3251,8 +3235,9 @@ async fn build_session_with_capture_profile(
                 let memory =
                     MemoryMiddleware::new(backend.clone(), vec!["/memories/AGENTS.md".into()]);
                 if extras.task_focused_memory {
+                    let memory = memory.task_focused();
                     produced!(extras, MEMORY);
-                    memory.task_focused()
+                    memory
                 } else {
                     memory
                 }
@@ -3341,32 +3326,7 @@ async fn build_session_with_capture_profile(
             .map(|mw| gate.wrap_middleware(mw))
             .collect();
     } else {
-        if let Some(selection) = &extras.privacy_view {
-            // The owners the next statement installs, as they are held here.
-            use crate::privacy_session::{Accept, ComposedPart};
-            let report = selection.report();
-            report.accept(Accept::Part(
-                ComposedPart::ActivitySink,
-                owner_address!(&extras.activity_sink),
-            ));
-            report.accept(Accept::Part(
-                ComposedPart::ToolActivitySink,
-                owner_address!(&extras.tool_activity_sink),
-            ));
-            report.accept(Accept::Part(
-                ComposedPart::ApprovalPrompt,
-                owner_address!(&extras.approval_prompt),
-            ));
-            report.accept(Accept::Part(
-                ComposedPart::CallPrompt,
-                owner_address!(&extras.call_approval_prompt),
-            ));
-            report.accept(Accept::Part(
-                ComposedPart::PrivacyPrompt,
-                owner_address!(&extras.privacy_approval_prompt),
-            ));
-        }
-        middleware.push(Arc::new(
+        let gate = Arc::new(
             ApprovalMiddleware::new_at(
                 approval,
                 activity_to_stderr,
@@ -3379,16 +3339,35 @@ async fn build_session_with_capture_profile(
             .with_verification(verification.clone())
             .with_privacy_prompt(extras.privacy_approval_prompt.clone())
             .with_privacy_boundary(privacy_boundary.as_ref()),
-        ));
+        );
+        if let Some(selection) = &extras.privacy_view {
+            // The constructed gate itself: the prompts and sinks it holds
+            // are read from it, and it must be one of the kept middleware.
+            selection
+                .report()
+                .accept(crate::privacy_session::Accept::Consumer(
+                    crate::privacy_session::consumer::APPROVAL,
+                    gate.clone(),
+                ));
+        }
+        middleware.push(gate);
     }
 
     if construction.prepared().is_none() && extras.task_workflow {
-        produced!(extras, WORKFLOW);
         // A transparent observer inside the unchanged approval gate sees only
         // actual admitted tool calls. It never dispatches/retries/approves work.
-        middleware.push(Arc::new(
-            crate::task_workflow::TaskWorkflowMiddleware::default(),
-        ));
+        let workflow: Arc<dyn AgentMiddleware> =
+            Arc::new(crate::task_workflow::TaskWorkflowMiddleware::default());
+        if let Some(selection) = &extras.privacy_view {
+            selection
+                .report()
+                .accept(crate::privacy_session::Accept::Part(
+                    crate::privacy_session::ComposedPart::Workflow,
+                    Arc::as_ptr(&workflow) as *const () as usize,
+                ));
+        }
+        produced!(extras, WORKFLOW);
+        middleware.push(workflow);
     }
     if let Some(controller) = &verification {
         middleware.push(controller.clone() as Arc<dyn AgentMiddleware>);
@@ -3585,30 +3564,46 @@ async fn build_session_with_capture_profile(
                 .clone()
         })
         .collect();
+    // For a privacy selection: every tool as this builder installs it, kept
+    // to be compared with the agent's own registry entry of its name once
+    // the agent exists. That covers the file wrappers, the verifier, the
+    // question tool and the extra tools.
+    let recorded = extras.privacy_view.is_some();
+    let mut installed: Vec<Arc<dyn Tool>> = Vec::new();
     for tool in registered_tools {
+        if recorded {
+            installed.push(tool.clone());
+        }
         builder = builder.tool(tool);
     }
     if let Some(controller) = &verification {
-        builder = builder.tool(Arc::new(crate::verification::VerifyTool(
-            controller.clone(),
-        )));
+        let verifier: Arc<dyn Tool> = Arc::new(crate::verification::VerifyTool(controller.clone()));
+        if recorded {
+            installed.push(verifier.clone());
+        }
+        builder = builder.tool(verifier);
     }
 
     // ask_user: mid-task clarification. Interactive only in the REPL (activity
     // goes to stdout there); in one-shot mode (activity_to_stderr) there's no
     // human, so the tool declines cleanly instead of blocking on stdin.
-    if let Some(selection) = &extras.privacy_view {
-        selection
-            .report()
-            .accept(crate::privacy_session::Accept::Part(
-                crate::privacy_session::ComposedPart::AskPrompt,
-                owner_address!(&extras.ask_user_prompt),
-            ));
-    }
-    let ask_user: Arc<dyn Tool> = Arc::new(crate::ask_user::AskUserTool::new(
+    let question = Arc::new(crate::ask_user::AskUserTool::new(
         construction.prepared().is_none() && !activity_to_stderr,
         extras.ask_user_prompt.clone(),
     ));
+    if let Some(selection) = &extras.privacy_view {
+        // The constructed tool itself: the prompt it holds is read from it.
+        selection
+            .report()
+            .accept(crate::privacy_session::Accept::Consumer(
+                crate::privacy_session::consumer::QUESTION,
+                question.clone(),
+            ));
+    }
+    let ask_user: Arc<dyn Tool> = question;
+    if recorded {
+        installed.push(ask_user.clone());
+    }
     #[cfg(feature = "gadgets")]
     let capture_identity_tool = pending_script_capture.as_ref().map(|_| ask_user.clone());
     builder = builder.tool(match construction.gate() {
@@ -3631,6 +3626,9 @@ async fn build_session_with_capture_profile(
         installed_tools.1 = installed_tools
             .1
             .wrapping_add(&*t as *const _ as *const () as usize);
+        if recorded {
+            installed.push(t.clone());
+        }
         builder = builder.tool(t);
     }
     if let Some(selection) = &extras.privacy_view {
@@ -3644,6 +3642,19 @@ async fn build_session_with_capture_profile(
     }
 
     let agent = builder.build();
+    if let Some(selection) = &extras.privacy_view {
+        // Each installed tool is the agent's own registry entry of its
+        // name: a tool that another one replaced is not.
+        let mut registered = true;
+        for tool in &installed {
+            registered &= agent.registered_tool_matches(&tool.def().name, tool);
+        }
+        if registered {
+            selection
+                .report()
+                .accept(crate::privacy_session::Accept::Registered);
+        }
+    }
     #[cfg(feature = "gadgets")]
     let script_capture = match pending_script_capture {
         Some(capture) => {

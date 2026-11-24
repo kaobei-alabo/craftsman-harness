@@ -241,7 +241,32 @@ pub struct GadgetRuntime {
     catalog_seen: Mutex<BTreeSet<String>>,
 }
 
+/// One number for a set of allowed gadget ids: how many there are, with
+/// every byte of every id folded in, in the set's own order; zero for the
+/// empty set. Equal sets give equal numbers. It serves to compare what a
+/// request allowed with what a constructed runtime holds; two different
+/// sets could give one number, so it is a comparison and not a proof.
+pub(crate) fn allowed_mark(allowed: &BTreeSet<String>) -> usize {
+    let mut mark = allowed.len();
+    for id in allowed {
+        for byte in id.as_bytes() {
+            mark = mark.wrapping_mul(31).wrapping_add(*byte as usize);
+        }
+        mark = mark.wrapping_mul(31).wrapping_add(id.len());
+    }
+    mark
+}
+
 impl GadgetRuntime {
+    /// What this runtime itself holds from its construction: the mark of
+    /// its allowed gadget ids, and whether it trusts the workspace.
+    pub(crate) fn allowance(&self) -> (usize, bool) {
+        (
+            allowed_mark(&self.options.allowed_gadgets),
+            self.options.trust_workspace,
+        )
+    }
+
     pub fn new(
         workspace: &Path,
         config: &Path,

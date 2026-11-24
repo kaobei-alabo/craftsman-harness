@@ -136,6 +136,13 @@ impl ViewChatProvider {
                 #[cfg(unix)]
                 native: false,
                 accepted: Default::default(),
+                sinks: [
+                    std::sync::atomic::AtomicUsize::new(&*sink as *const _ as *const () as usize),
+                    Default::default(),
+                    Default::default(),
+                    // Given so far: the token sink.
+                    std::sync::atomic::AtomicUsize::new(1),
+                ],
             }),
             client,
             session,
@@ -154,6 +161,12 @@ impl ViewChatProvider {
         round_sink: Option<RoundSink>,
         status_sink: Option<ActivitySink>,
     ) -> Self {
+        use std::sync::atomic::Ordering;
+        // The receipt states what this provider is given here.
+        self.receipt.sinks[1].store(super::held_address!(&round_sink), Ordering::Release);
+        self.receipt.sinks[2].store(super::held_address!(&status_sink), Ordering::Release);
+        // Given now, none or not: the round sink and the status sink.
+        self.receipt.sinks[3].fetch_or(6, Ordering::AcqRel);
         self.round_sink = round_sink;
         self.status_sink = status_sink;
         self
@@ -268,6 +281,13 @@ impl ViewNativeProvider {
                 #[cfg(unix)]
                 native: true,
                 accepted: Default::default(),
+                sinks: [
+                    std::sync::atomic::AtomicUsize::new(&*sink as *const _ as *const () as usize),
+                    Default::default(),
+                    Default::default(),
+                    // Given so far: the token sink.
+                    std::sync::atomic::AtomicUsize::new(1),
+                ],
             }),
             client,
             session,
@@ -292,6 +312,13 @@ impl ViewNativeProvider {
     /// The frontend's notification before each request, as the ordinary
     /// provider has it.
     pub fn with_round_sink(mut self, round_sink: Option<RoundSink>) -> Self {
+        // The receipt states what this provider is given here.
+        self.receipt.sinks[1].store(
+            super::held_address!(&round_sink),
+            std::sync::atomic::Ordering::Release,
+        );
+        // Given now, none or not: the round sink.
+        self.receipt.sinks[3].fetch_or(2, std::sync::atomic::Ordering::AcqRel);
         self.round_sink = round_sink;
         self
     }

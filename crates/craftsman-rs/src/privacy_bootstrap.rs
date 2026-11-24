@@ -15,6 +15,18 @@ use crate::tui::privacy_unlock::OwnedSecretTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BootstrapError {
     #[error("The private bootstrap key operation stopped: {0}")]
@@ -71,7 +83,7 @@ impl Workspace {
         if !path.is_absolute() {
             return Err(BootstrapError::Workspace);
         }
-        let canonical = std::fs::canonicalize(path).map_err(|_| BootstrapError::Workspace)?;
+        let canonical = or_return!(std::fs::canonicalize(path), BootstrapError::Workspace);
         #[cfg(unix)]
         {
             let captured = Self {
@@ -100,13 +112,11 @@ impl Workspace {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let held = self
-                .directory
-                .metadata()
-                .map_err(|_| BootstrapError::Workspace)?;
-            let named = Self::open(&self.canonical)?
-                .metadata()
-                .map_err(|_| BootstrapError::Workspace)?;
+            let held = or_return!(self.directory.metadata(), BootstrapError::Workspace);
+            let named = or_return!(
+                Self::open(&self.canonical)?.metadata(),
+                BootstrapError::Workspace
+            );
             if !held.is_dir()
                 || !named.is_dir()
                 || held.dev() != named.dev()
@@ -214,16 +224,15 @@ impl OwnedTerminalStartup {
         self.bootstrap(workspace, false)
     }
     fn bootstrap(self, workspace: &Path, reserve: bool) -> Result<PrivateBootstrap> {
-        let (configuration, policy, source, requirements) = self
-            .into_configuration_policy()
-            .map_err(|error| match error {
-                StartupError::Source => BootstrapError::ConfigurationChanged,
-                StartupError::Invalid => BootstrapError::Policy(PolicyError::Invalid),
-                StartupError::NotYetAvailable => {
-                    BootstrapError::Policy(PolicyError::NotYetAvailable)
-                }
-                _ => BootstrapError::Source,
-            })?;
+        let (configuration, policy, source, requirements) = match self.into_configuration_policy() {
+            Ok(owners) => owners,
+            Err(StartupError::Source) => return Err(BootstrapError::ConfigurationChanged),
+            Err(StartupError::Invalid) => return Err(BootstrapError::Policy(PolicyError::Invalid)),
+            Err(StartupError::NotYetAvailable) => {
+                return Err(BootstrapError::Policy(PolicyError::NotYetAvailable));
+            }
+            Err(_) => return Err(BootstrapError::Source),
+        };
         let policy = PolicyOwner::Startup(Arc::new(StartupOwners {
             configuration,
             policy,
@@ -413,23 +422,28 @@ fn pinned_detector(
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     };
-    let pin = DetectorPin::supplied_by_host(
-        selected.gadget(),
-        selected.function(),
-        &hex(selected.component_pin()),
-        &hex(selected.manifest_pin()),
-    )
-    .map_err(|_| BootstrapError::Source)?;
+    let pin = or_return!(
+        DetectorPin::supplied_by_host(
+            selected.gadget(),
+            selected.function(),
+            &hex(selected.component_pin()),
+            &hex(selected.manifest_pin()),
+        ),
+        BootstrapError::Source
+    );
     workspace.recheck()?;
     // Runtime creation does not read/compile/describe a guest. Its pinned
     // call rechecks owned bytes, hashes, zero capabilities and stored exact
     // source approval BEFORE compilation/describe/guest execution.
-    let pinned = policy
-        .root()
-        .with_captured_path(|root| {
-            PinnedDetector::new(&workspace.canonical, root, pin).map_err(|_| KeyError::Root)
-        })
-        .map_err(|_| BootstrapError::Source)?;
+    let pinned = or_return!(
+        policy.root().with_captured_path(|root| {
+            match PinnedDetector::new(&workspace.canonical, root, pin) {
+                Ok(pinned) => Ok(pinned),
+                Err(_) => Err(KeyError::Root),
+            }
+        }),
+        BootstrapError::Source
+    );
     policy.recheck()?;
     workspace.recheck()?;
     Ok(pinned)
@@ -472,10 +486,11 @@ impl PrivateConversation {
     /// root-only retirement recaptures after source/workspace rechecks. Both
     /// delay reservation until unlock; equal bytes or paths renew no authority.
     pub(crate) fn capture_after_retirement(&self) -> Result<PrivateBootstrap> {
-        self.policy.recheck().map_err(|error| match error {
-            PolicyError::Source => BootstrapError::ConfigurationChanged,
-            error => BootstrapError::Policy(error),
-        })?;
+        match self.policy.recheck() {
+            Ok(()) => {}
+            Err(PolicyError::Source) => return Err(BootstrapError::ConfigurationChanged),
+            Err(error) => return Err(BootstrapError::Policy(error)),
+        }
         self.workspace.recheck()?;
         if let PolicyOwner::Startup(owners) = &self.policy {
             let policy = PolicyOwner::Startup(owners.clone());
@@ -524,10 +539,11 @@ impl PrivateConversation {
         result
     }
     fn check_key_and_policy(&self) -> Result<()> {
-        self.policy.recheck().map_err(|error| match error {
-            PolicyError::Source => BootstrapError::ConfigurationChanged,
-            error => BootstrapError::Policy(error),
-        })?;
+        match self.policy.recheck() {
+            Ok(()) => {}
+            Err(PolicyError::Source) => return Err(BootstrapError::ConfigurationChanged),
+            Err(error) => return Err(BootstrapError::Policy(error)),
+        }
         self.workspace.recheck()?;
         // Sample the retained key/source owner without copying raw key bytes.
         self.unlocked.recheck_key_source()?;
@@ -673,6 +689,7 @@ impl PrivateConversation {
         extras.workspace_root = Some(self.workspace.canonical.clone());
         // The request as this frontend made it, before the builder takes it.
         let request = extras.original();
+        let cancellation = extras.cancellation_session.clone();
         let selection = self.selection().map_err(PrivateBuildError::Refused)?;
         let report = selection.report();
         extras.privacy_view = Some(selection);
@@ -722,6 +739,7 @@ impl PrivateConversation {
                 report,
                 boundary: view.boundary().clone(),
                 request,
+                cancellation,
             },
             None => {
                 return Err(self
@@ -737,6 +755,7 @@ impl PrivateConversation {
             &self.session,
             self.requires_inspectable_provider_items(),
             &witness.request,
+            witness.cancellation.as_ref(),
         ) {
             return Err(self
                 .refuse_materialized(session, PrivateBuildError::Refused(refusal))
@@ -918,6 +937,9 @@ struct BuildWitness {
     report: Arc<crate::privacy_session::SelectionReport>,
     boundary: Arc<crate::privacy_session::ConversationBoundary>,
     request: [usize; crate::agent::REQUEST_FACTS],
+    /// The frontend's own cancellation owner, kept beside the one it handed
+    /// the builder: the agent's installed owner is compared with this one.
+    cancellation: Option<craftsman_harness::SessionCancellation>,
 }
 #[derive(thiserror::Error)]
 pub enum PrivateTurnError {
@@ -990,6 +1012,7 @@ impl PrivateBuiltSession {
                             self.owner.requires_inspectable_provider_items()
                         },
                         &self.witness.request,
+                        self.witness.cancellation.as_ref(),
                     )
                     .is_err()
             {
@@ -1162,7 +1185,7 @@ impl PrivateBuiltSession {
                 return Err(match self.owner.check_sources() {
                     Ok(()) => line,
                     Err(_) => format!(
-                        "{line} The conversation has ended; its record remains in the thread store."
+                        "{line} The conversation has ended; what was last saved of it remains in the thread store."
                     ),
                 });
             }

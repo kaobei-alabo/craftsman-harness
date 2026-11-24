@@ -11,6 +11,18 @@ mod live;
 #[cfg(unix)]
 mod settings;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 /// What the owned interactive router lends the frontend it selected: the
 /// person's own settings changes for the running private conversation. A
 /// frontend without one refuses every settings change, as it always did.
@@ -121,7 +133,7 @@ pub enum PrivateTerminalError {
     /// The conversation was retired for a settings change of the person's
     /// own and has no successor. Nothing of it is discarded silently.
     #[error(
-        "The conversation was retired for a settings change and could not be carried into a new private scope. {0} It has ended; its record up to that point remains in the thread store."
+        "The conversation was retired for a settings change and could not be carried into a new private scope. {0} It has ended; what was last saved of it remains in the thread store."
     )]
     CarryOver(String),
 }
@@ -544,14 +556,14 @@ impl UnixPopup {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return Err(KeyError::Terminal);
         }
-        let shutdown = Shutdown::install().map_err(|_| KeyError::Terminal)?;
-        let guard = TerminalGuard::enter(false).map_err(|_| KeyError::Terminal)?;
+        let shutdown = or_return!(Shutdown::install(), KeyError::Terminal);
+        let guard = or_return!(TerminalGuard::enter(false), KeyError::Terminal);
         let panic = guard.panic_hook(shutdown.cancellation.clone());
-        let descriptor = guard
-            .retained_secret_input()
-            .map_err(|_| KeyError::Terminal)?;
-        let terminal = Terminal::new(SafeBackend(CrosstermBackend::new(std::io::stdout())))
-            .map_err(|_| KeyError::Terminal)?;
+        let descriptor = or_return!(guard.retained_secret_input(), KeyError::Terminal);
+        let terminal = or_return!(
+            Terminal::new(SafeBackend(CrosstermBackend::new(std::io::stdout()))),
+            KeyError::Terminal
+        );
         Ok(Self {
             terminal,
             input: SecretInput::new(descriptor),
@@ -904,7 +916,7 @@ impl SecretInput {
             self.in_paste = false;
             // Validate the owned bytes before conversion, so a UTF-8 error
             // never owns a non-zeroizing FromUtf8Error copy of the secret.
-            std::str::from_utf8(&self.paste).map_err(|_| KeyError::Passphrase)?;
+            or_return!(std::str::from_utf8(&self.paste), KeyError::Passphrase);
             let bytes = std::mem::take(&mut *self.paste);
             // SAFETY: the preceding check covers exactly these unchanged bytes.
             let text = unsafe { String::from_utf8_unchecked(bytes) };

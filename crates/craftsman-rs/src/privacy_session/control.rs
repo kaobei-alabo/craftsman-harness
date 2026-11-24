@@ -62,6 +62,10 @@ fn own_source(of: &'static str) -> SourceRef {
 pub(super) struct Installed {
     pub(super) policy: OnceLock<Weak<SelectedControls>>,
     pub(super) completion: OnceLock<Weak<SelectedVerification>>,
+    /// What the delegated agents' tool gates of this conversation hold, as
+    /// each constructed gate said, and in the last place how many gates
+    /// said so; all ones once two of them disagreed.
+    pub(super) gates: [std::sync::atomic::AtomicUsize; 5],
 }
 
 impl Installed {

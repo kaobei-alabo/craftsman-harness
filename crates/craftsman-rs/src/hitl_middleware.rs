@@ -36,6 +36,22 @@ pub struct ApprovalMiddleware {
     verification: Option<Arc<crate::verification::VerificationController>>,
 }
 
+/// What this gate holds of a request's owners, read from the gate: the two
+/// activity sinks, the approval prompt, the call prompt and the prompt for
+/// private decisions.
+impl crate::privacy_session::Consumer for ApprovalMiddleware {
+    fn held(&self) -> [usize; 5] {
+        use crate::privacy_session::held_address;
+        [
+            held_address!(&self.activity_sink),
+            held_address!(&self.tool_activity_sink),
+            held_address!(&self.approval_prompt),
+            held_address!(&self.call_approval_prompt),
+            held_address!(&self.privacy_prompt),
+        ]
+    }
+}
+
 impl ApprovalMiddleware {
     #[cfg(test)]
     pub fn new(

@@ -244,21 +244,67 @@ pub struct ReplyDisplay {
     hold: Arc<HeldStream>,
     session: Arc<PrivacySession>,
     show: HumanReplySink,
+    /// The one sink this display gives the root agent's provider.
+    sink: crate::agent::TokenSink,
+    /// The round sink this display made and the requested one it calls, by
+    /// address; zero until it was made.
+    round: [std::sync::atomic::AtomicUsize; 2],
+}
+
+/// What this display holds, read from the display: the frontend's reply
+/// sink, the sink it gives the provider, the round sink it made and the
+/// requested round sink that one calls.
+impl super::Consumer for ReplyDisplay {
+    fn held(&self) -> [usize; 5] {
+        [
+            &*self.show as *const _ as *const () as usize,
+            &*self.sink as *const _ as *const () as usize,
+            self.round[0].load(std::sync::atomic::Ordering::Acquire),
+            self.round[1].load(std::sync::atomic::Ordering::Acquire),
+            0,
+        ]
+    }
 }
 
 impl ReplyDisplay {
     pub fn new(session: Arc<PrivacySession>, show: HumanReplySink) -> Arc<Self> {
+        let hold = HeldStream::new();
         Arc::new(Self {
-            hold: HeldStream::new(),
+            sink: hold.sink(),
+            hold,
             session,
             show,
+            round: Default::default(),
         })
     }
 
     /// The sink to give the root agent's provider in place of the
     /// frontend's.
     pub fn token_sink(&self) -> crate::agent::TokenSink {
-        self.hold.sink()
+        self.sink.clone()
+    }
+
+    /// The round sink to give the root agent's provider: this display's own
+    /// notification, then the requested sink. The display keeps which two
+    /// objects those are, so that it can say what it made and what it calls.
+    pub(crate) fn round_sink(
+        self: &Arc<Self>,
+        requested: Option<crate::agent::RoundSink>,
+    ) -> crate::agent::RoundSink {
+        let display = self.clone();
+        let inner = super::held_address!(&requested);
+        let sink: crate::agent::RoundSink = Arc::new(move || {
+            display.round_started();
+            if let Some(requested) = &requested {
+                requested();
+            }
+        });
+        self.round[0].store(
+            &*sink as *const _ as *const () as usize,
+            std::sync::atomic::Ordering::Release,
+        );
+        self.round[1].store(inner, std::sync::atomic::Ordering::Release);
+        sink
     }
 
     /// A model round begins. What an earlier round streamed and never

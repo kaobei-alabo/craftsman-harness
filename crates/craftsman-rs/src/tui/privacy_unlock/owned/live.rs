@@ -120,6 +120,18 @@ fn dictated_bytes(event: &crate::voice::VoiceEvent, held: usize) -> Option<usize
     }
 }
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 async fn local_work(work: LocalWork, owner: Arc<PrivateConversation>) -> Returned {
     const STOPPED: &str = "The private source owner stopped; this local result is not shown.";
     let before = owner.check_sources().is_ok();
@@ -199,7 +211,7 @@ impl Frontend {
             owner
                 .check_sources()
                 .map_err(PrivateTerminalError::Source)?;
-            popup.check().map_err(|_| PrivateTerminalError::Terminal)?;
+            or_return!(popup.check(), PrivateTerminalError::Terminal);
             if !popup.secret_reader {
                 return Err(PrivateTerminalError::Terminal);
             }
@@ -211,15 +223,11 @@ impl Frontend {
             if !(cfg!(feature = "voice") && configuration.is_captured()) {
                 check_voice_configuration(cfg)?;
             }
-            popup
-                .input
-                .finish_input()
-                .map_err(|_| PrivateTerminalError::Terminal)?;
-            let cancellation = popup
-                .shutdown
-                .cancellation
-                .child()
-                .map_err(|_| PrivateTerminalError::Cancelled)?;
+            or_return!(popup.input.finish_input(), PrivateTerminalError::Terminal);
+            let cancellation = or_return!(
+                popup.shutdown.cancellation.child(),
+                PrivateTerminalError::Cancelled
+            );
             let (tx, receiver) = mpsc::unbounded_channel();
             let bridge = UiBridge { tx };
             let (prompt, ui) = privacy_approval::register(&bridge);
@@ -370,15 +378,17 @@ impl Frontend {
         {
             return Err(PrivateTerminalError::Terminal);
         }
-        draw_session(
+        match draw_session(
             &mut self.popup.inner.terminal,
             &mut self.app,
             cfg,
             session,
             pending,
             &self.approval,
-        )
-        .map_err(|_| PrivateTerminalError::Terminal)
+        ) {
+            Ok(drawn) => Ok(drawn),
+            Err(_) => Err(PrivateTerminalError::Terminal),
+        }
     }
     fn events(&mut self, first: UiEvent) {
         let mut next = Some(first);
@@ -977,7 +987,7 @@ impl Frontend {
                 }
             }
             Ok(code) => {
-                cursor.map_err(|_| PrivateTerminalError::Terminal)?;
+                or_return!(cursor, PrivateTerminalError::Terminal);
                 Ok(code)
             }
         }
@@ -1092,13 +1102,14 @@ impl Frontend {
         // still belong to the moved NORMAL owner, before a password is asked.
         // Bound this handoff; overflow refuses instead of dropping draft data.
         let mut retained = 0;
-        while crossterm::event::poll(Duration::ZERO)
-            .map_err(|_| PrivateTerminalError::InputHandoff)?
-        {
+        while or_return!(
+            crossterm::event::poll(Duration::ZERO),
+            PrivateTerminalError::InputHandoff
+        ) {
             if retained >= EVENT_BATCH {
                 return Err(PrivateTerminalError::InputHandoff);
             }
-            let event = crossterm::event::read().map_err(|_| PrivateTerminalError::InputHandoff)?;
+            let event = or_return!(crossterm::event::read(), PrivateTerminalError::InputHandoff);
             if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press
                 && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('c' | 'C')))
@@ -1141,11 +1152,10 @@ impl Frontend {
             }?;
             self.configuration.check_bootstrap(&bootstrap)?;
             self.popup.inner.secret_reader = true;
-            self.popup
-                .inner
-                .input
-                .finish_input()
-                .map_err(|_| PrivateTerminalError::InputHandoff)?;
+            or_return!(
+                self.popup.inner.input.finish_input(),
+                PrivateTerminalError::InputHandoff
+            );
             match bootstrap.unlock_private(&mut self.popup).await {
                 Ok(fresh) => break Arc::new(fresh),
                 Err(error) => match (carry, &mut self.popup.inner.settings) {
@@ -1166,13 +1176,10 @@ impl Frontend {
         fresh
             .check_sources()
             .map_err(PrivateTerminalError::Source)?;
-        let cancellation = self
-            .popup
-            .inner
-            .shutdown
-            .cancellation
-            .child()
-            .map_err(|_| PrivateTerminalError::Cancelled)?;
+        let cancellation = or_return!(
+            self.popup.inner.shutdown.cancellation.child(),
+            PrivateTerminalError::Cancelled
+        );
         let (tx, receiver) = mpsc::unbounded_channel();
         let bridge = UiBridge { tx };
         let (prompt, ui) = privacy_approval::register(&bridge);

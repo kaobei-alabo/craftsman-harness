@@ -18,6 +18,19 @@ pub struct AskUserTool {
     prompt: Option<AskUserPrompt>,
 }
 
+/// The prompt this tool holds, read from the tool.
+impl crate::privacy_session::Consumer for AskUserTool {
+    fn held(&self) -> [usize; 5] {
+        [
+            crate::privacy_session::held_address!(&self.prompt),
+            0,
+            0,
+            0,
+            0,
+        ]
+    }
+}
+
 impl AskUserTool {
     pub fn new(interactive: bool, prompt: Option<AskUserPrompt>) -> Self {
         Self {

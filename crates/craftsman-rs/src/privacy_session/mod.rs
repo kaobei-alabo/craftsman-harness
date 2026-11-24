@@ -338,13 +338,22 @@ struct Accepted {
     /// The receipt of each lane's view provider, kept weakly: the provider
     /// that issued it holds it, and it is gone when that provider is.
     lanes: [Option<std::sync::Weak<WireReceipt>>; 3],
+    /// The consumers the builder constructed, kept weakly, in the places of
+    /// [`consumer`]. What each holds is read from it, never from the
+    /// request.
+    consumers: [Option<std::sync::Weak<dyn Consumer>>; 3],
+    /// Every tool the builder installed is the agent's own registry entry
+    /// of that name.
+    registered: bool,
     /// Whether the builder installed each lane's provider, said at the
     /// statement that installs it. An accepted provider that was never
     /// installed anywhere may be gone; an installed one may not.
     bound: [bool; 3],
-    /// The address of each composed part and installed owner, zero while
-    /// absent, in the order of [`ComposedPart`].
+    /// The address or number of each composed part, in the order of
+    /// [`ComposedPart`], and which of them the builder stated, as bits in
+    /// that order. A part stated as zero is not a part never stated.
     parts: [usize; COMPOSED_PARTS],
+    stated: usize,
     /// The builder decided about the controller adapters.
     controllers: bool,
     /// The choices of the request the builder acted on, each set at the
@@ -354,6 +363,33 @@ struct Accepted {
     /// source path.
     middleware: Option<Vec<std::sync::Weak<dyn craftsman_harness::AgentMiddleware>>>,
 }
+
+/// A consumer the builder constructed for a selection: the approval gate,
+/// the question tool or the reply display. The record keeps a weak
+/// reference to the consumer itself and reads from it what it holds of the
+/// request's owners, by address and zero for none. A statement about the
+/// request cannot stand in for this.
+pub(crate) trait Consumer: Send + Sync {
+    fn held(&self) -> [usize; 5];
+}
+
+/// The places of the constructed consumers in the record.
+pub(crate) mod consumer {
+    pub(crate) const APPROVAL: usize = 0;
+    pub(crate) const QUESTION: usize = 1;
+    pub(crate) const DISPLAY: usize = 2;
+}
+
+/// The address of the object an optional owner holds, zero for none.
+macro_rules! held_address {
+    ($owner:expr) => {
+        match $owner {
+            Some(owner) => &**owner as *const _ as *const () as usize,
+            None => 0,
+        }
+    };
+}
+pub(crate) use held_address;
 
 /// The model lanes of a session: the root agent's, the delegated agents'
 /// and the summarizer's.
@@ -369,8 +405,6 @@ pub(crate) enum ModelLane {
 /// of the original request, recorded where the builder installs each.
 #[derive(Clone, Copy)]
 pub(crate) enum ComposedPart {
-    /// The frontend's display of committed replies.
-    ReplyDisplay,
     /// The review of file writes and edits.
     FileReview,
     /// The adapter around the configured verification controller.
@@ -381,33 +415,17 @@ pub(crate) enum ComposedPart {
     VerificationOriginal,
     /// The context and failure controls that adapter was made for.
     ControlsOriginal,
-    /// The prompt for private decisions.
-    PrivacyPrompt,
-    /// The prompt for ordinary approvals.
-    ApprovalPrompt,
-    /// The prompt for approvals of a single call.
-    CallPrompt,
-    /// Where activity lines go.
-    ActivitySink,
-    /// Where tool activity goes.
-    ToolActivitySink,
-    /// Where the display hands committed replies.
-    ReplySink,
-    /// The prompt for questions to the person.
-    AskPrompt,
-    /// What the main stream is given: the display itself when there is one,
-    /// in place of the requested token sink; else the requested sink.
-    TokenSink,
-    /// The requested round sink, where the main lane's round sink is made.
-    RoundSink,
+    /// The quiet sink the builder makes for the delegated and the summary
+    /// lane. Each of those providers says in its receipt what it was given.
+    ChildSink,
+    /// The workflow middleware, where the builder made one.
+    Workflow,
     /// How many extra tools were installed, and the sum of their addresses.
+    /// Both are always stated; no extra tool is stated as zero.
     ExtraTools,
     ExtraToolIdentities,
-    /// How many gadgets the gadget runtime was told are allowed.
-    #[cfg(feature = "gadgets")]
-    AllowedGadgets,
 }
-pub(crate) const COMPOSED_PARTS: usize = 18;
+pub(crate) const COMPOSED_PARTS: usize = 9;
 
 /// One thing the builder accepted, said at the place where it took it.
 pub(crate) enum Accept<'a> {
@@ -417,6 +435,11 @@ pub(crate) enum Accept<'a> {
     Lane(ModelLane, &'a Arc<WireReceipt>),
     /// This lane's accepted provider is installed, here.
     Bound(ModelLane),
+    /// This constructed consumer, in this place of [`consumer`].
+    Consumer(usize, Arc<dyn Consumer>),
+    /// Every tool the builder installed was compared with the agent's own
+    /// registry entry of its name and is that entry.
+    Registered,
     /// As this part, the object at this address, which the builder made or
     /// installed.
     Part(ComposedPart, usize),
@@ -448,6 +471,12 @@ pub struct WireReceipt {
     /// The address of the selection's report that accepted this provider,
     /// with the lane in its low bits; zero until then.
     pub(super) accepted: std::sync::atomic::AtomicUsize,
+    /// The sinks this provider was given, by address and zero for none: the
+    /// token sink in its constructor, the round sink and the status sink
+    /// where it takes them. The last place says which of the three it was
+    /// given at all, as bits in that order: a sink given as none is not a
+    /// sink never given. The provider states all of it itself.
+    pub(super) sinks: [std::sync::atomic::AtomicUsize; 4],
 }
 
 impl SelectionReport {
@@ -483,10 +512,20 @@ impl SelectionReport {
                 }
             },
             Accept::Bound(lane) => record.bound[lane as usize] = true,
-            Accept::Part(part, address) => match record.parts[part as usize] {
-                0 => record.parts[part as usize] = address,
-                held => again = held != address,
+            Accept::Consumer(place, consumer) => match &record.consumers[place] {
+                Some(_) => again = true,
+                None => record.consumers[place] = Some(Arc::downgrade(&consumer)),
             },
+            Accept::Registered => record.registered = true,
+            Accept::Part(part, address) => {
+                let bit = 1 << part as usize;
+                if record.stated & bit == 0 {
+                    record.stated |= bit;
+                    record.parts[part as usize] = address;
+                } else {
+                    again = record.parts[part as usize] != address;
+                }
+            }
             Accept::Controllers => record.controllers |= true,
             Accept::Produced(choice) => record.produced |= 1 << choice,
             Accept::Middleware(kept) => match &record.middleware {
@@ -509,8 +548,12 @@ impl SelectionReport {
     /// For the host that made the selection: what the builder accepted is
     /// what `built` was built from, for the request that was made.
     /// - **The request.** The builder built from the very request the host
-    ///   made (`request`), and installed that request's own prompts and
-    ///   sinks where it installs them.
+    ///   made (`request`).
+    /// - **The consumers.** The approval gate, the question tool and the
+    ///   reply display that the builder constructed are alive, and each
+    ///   holds the request's own prompts and sinks: read from the consumer,
+    ///   not from the request. The approval gate is one of the kept
+    ///   middleware; the display is the one the boundary holds.
     /// - **The lanes.** The builder accepted a provider for each of the three
     ///   lanes, and installed the root agent's. Every provider it installed
     ///   is alive: an installed provider that was dropped or replaced leaves
@@ -518,16 +561,32 @@ impl SelectionReport {
     ///   that was installed nowhere may be gone. Each live receipt holds this
     ///   conversation and its guard and was accepted by this selection for
     ///   that lane. None is native where the policy requires inspectable
-    ///   items.
+    ///   items. Each states the sinks it was given and which it was given
+    ///   at all: the root agent's the display's own, or the request's where
+    ///   there is no display, with the activity sink where that provider
+    ///   takes one; the other two the quiet sink the builder made and no
+    ///   other.
+    /// - **The owners.** The cancellation owner installed on the agent is
+    ///   the one the host handed over and still holds (`cancellation`), or
+    ///   none where none was requested. The delegated agents' tool gates
+    ///   hold the request's own owners, as each constructed gate said.
+    /// - **The tools.** Every tool the builder installed is the agent's own
+    ///   registry entry of its name. The gadget runtime the built session
+    ///   holds exists exactly where the builder says it made one, and what
+    ///   that runtime itself holds as allowed and trusted is what the
+    ///   request allowed and trusted.
     /// - **The choices.** The builder acted on each choice of the request at
-    ///   its own place: exactly the requested ones where the choice alone
-    ///   decides, and no unrequested one where the configuration decides
-    ///   too. No output owner, send guard or script capture was requested;
-    ///   a privacy conversation has no place that installs them.
-    /// - **The parts.** The display, the file review and the controller
-    ///   adapters are the objects the boundary holds; an adapter exists
-    ///   exactly for each controller the builder made, and those controllers
-    ///   are the built session's own.
+    ///   its own place, after its work succeeded: exactly the requested ones
+    ///   where the choice alone decides, and no unrequested one where the
+    ///   configuration decides too. A controller or a workflow part exists
+    ///   only for a requested choice. No output owner, send guard or script
+    ///   capture was requested; a privacy conversation has no place that
+    ///   installs them.
+    /// - **The parts.** The file review and the controller adapters are the
+    ///   objects the boundary holds, and it reports an adapter only after
+    ///   the agent's installed controllers were found to fit it; an adapter
+    ///   exists exactly for each controller the builder made, and those
+    ///   controllers are the built session's own.
     /// - **The middleware.** Every kept middleware is still there and still
     ///   states a source path itself.
     #[cfg(unix)]
@@ -537,7 +596,9 @@ impl SelectionReport {
         session: &Arc<PrivacySession>,
         inspectable: bool,
         request: &[usize; crate::agent::REQUEST_FACTS],
+        cancellation: Option<&craftsman_harness::SessionCancellation>,
     ) -> Result<(), BuildRefusal> {
+        use crate::agent::request_fact::{self as fact, choice};
         use craftsman_harness::provenance::ViewSupport;
         let Some(view) = &built.privacy_view else {
             return Err(BuildRefusal::RequestedPart);
@@ -547,6 +608,25 @@ impl SelectionReport {
             return Err(BuildRefusal::RequestedPart);
         }
         let record = self.accepted.lock().unwrap();
+        let part = &record.parts;
+        let [replies, files, verification, controls] = view.boundary().installed();
+        // What each constructed consumer itself holds, read from it while it
+        // is alive. One that was constructed and is gone refuses.
+        let mut held = [[0usize; 5]; 3];
+        let mut at = [0usize; 3];
+        let mut place = 0;
+        while place < record.consumers.len() {
+            if let Some(kept) = &record.consumers[place] {
+                let Some(live) = kept.upgrade() else {
+                    return Err(BuildRefusal::RequestedPart);
+                };
+                held[place] = live.held();
+                at[place] = Arc::as_ptr(&live) as *const () as usize;
+            }
+            place += 1;
+        }
+        let gate = held[consumer::APPROVAL];
+        let display = held[consumer::DISPLAY];
         let guard = session.send_guard();
         let mut lane = 0;
         while lane < record.lanes.len() {
@@ -567,6 +647,37 @@ impl SelectionReport {
                     if inspectable && receipt.native {
                         return Err(BuildRefusal::OpaqueProviderItems);
                     }
+                    // The sinks this provider says it was given, and which
+                    // of them it was given at all.
+                    let given = [
+                        receipt.sinks[0].load(Ordering::Acquire),
+                        receipt.sinks[1].load(Ordering::Acquire),
+                        receipt.sinks[2].load(Ordering::Acquire),
+                        receipt.sinks[3].load(Ordering::Acquire),
+                    ];
+                    // The root agent's provider is given a round sink, and
+                    // a status sink where it is not the native one, which
+                    // takes none. The other two are given a token sink only.
+                    let expected = if lane != ModelLane::Main as usize {
+                        [part[ComposedPart::ChildSink as usize], 0, 0, 1]
+                    } else {
+                        let (token, round) = match replies {
+                            0 => (request[fact::TOKEN_SINK], request[fact::ROUND_SINK]),
+                            _ => (display[1], display[2]),
+                        };
+                        match receipt.native {
+                            true => [token, round, 0, 3],
+                            false => [token, round, request[fact::ACTIVITY_SINK], 7],
+                        }
+                    };
+                    if given[0] != expected[0]
+                        || given[1] != expected[1]
+                        || given[2] != expected[2]
+                        || given[3] != expected[3]
+                        || given[0] == 0
+                    {
+                        return Err(BuildRefusal::RequestedPart);
+                    }
                 }
                 // Installed and gone. The root agent's is always installed.
                 None if record.bound[lane] || lane == ModelLane::Main as usize => {
@@ -580,6 +691,10 @@ impl SelectionReport {
         let Some(kept) = &record.middleware else {
             return Err(BuildRefusal::RequestedPart);
         };
+        // The approval gate and the workflow part, where there is one, are
+        // among the kept middleware by object.
+        let mut gate_kept = false;
+        let mut workflow_kept = part[ComposedPart::Workflow as usize] == 0;
         let mut index = 0;
         while index < kept.len() {
             let stated = match kept[index].upgrade() {
@@ -592,10 +707,11 @@ impl SelectionReport {
             if !stated {
                 return Err(BuildRefusal::RequestedPart);
             }
+            let address = kept[index].as_ptr() as *const () as usize;
+            gate_kept |= address == at[consumer::APPROVAL];
+            workflow_kept |= address == part[ComposedPart::Workflow as usize];
             index += 1;
         }
-        let part = &record.parts;
-        let [replies, files, verification, controls] = view.boundary().installed();
         let verifier = match &built.verification {
             Some(controller) => Arc::as_ptr(controller) as usize,
             None => 0,
@@ -604,7 +720,6 @@ impl SelectionReport {
             Some(controller) => Arc::as_ptr(controller) as usize,
             None => 0,
         };
-        use crate::agent::request_fact::{self as fact, choice};
         // Where the choice alone decides, the builder acted exactly on the
         // requested ones. Where the user's configuration decides too
         // (gadgets), it acted on no unrequested one.
@@ -624,32 +739,82 @@ impl SelectionReport {
             || choices & never != 0
             || choices & (1 << choice::WORKSPACE_ROOT) == 0
             || request[fact::OUTPUT_CLOSED] != 0
-            || part[ComposedPart::TokenSink as usize]
-                != if replies != 0 {
-                    replies
-                } else {
-                    request[fact::TOKEN_SINK]
-                }
-            || part[ComposedPart::RoundSink as usize] != request[fact::ROUND_SINK]
+            // The parts a choice produces exist only for that choice.
+            || (verifier != 0 && choices & (1 << choice::VERIFICATION) == 0)
+            || (controller != 0
+                && choices & ((1 << choice::CONTEXT) | (1 << choice::FAILURE)) == 0)
+            || (part[ComposedPart::Workflow as usize] != 0)
+                != (choices & (1 << choice::WORKFLOW) != 0)
+            || !workflow_kept
+            // The cancellation owner on the agent is the host's own.
+            || cancellation.is_some() != (choices & (1 << choice::CANCELLATION) != 0)
+            || !built.agent.cancellation_session_is(cancellation)
             || part[ComposedPart::ExtraTools as usize] != request[fact::EXTRA_TOOLS]
             || part[ComposedPart::ExtraToolIdentities as usize]
                 != request[fact::EXTRA_TOOL_IDENTITIES]
+            || !record.registered
         {
             return Err(BuildRefusal::RequestedPart);
         }
-        // The gadget runtime, where the builder made one, was told exactly
-        // the gadgets the request allows.
+        // The parts every selection states, zero or not; the workflow part
+        // is stated exactly where there is one.
+        let always = (1 << ComposedPart::FileReview as usize)
+            | (1 << ComposedPart::ChildSink as usize)
+            | (1 << ComposedPart::ExtraTools as usize)
+            | (1 << ComposedPart::ExtraToolIdentities as usize);
+        if record.stated & always != always
+            || (record.stated & (1 << ComposedPart::Workflow as usize) != 0)
+                != (part[ComposedPart::Workflow as usize] != 0)
+        {
+            return Err(BuildRefusal::RequestedPart);
+        }
+        // The gadget runtime of the built session: it exists exactly where
+        // the builder says it made one, and what the runtime itself holds
+        // as allowed and as trusted is what the request allowed and
+        // trusted. Read from the runtime, not from a statement.
         #[cfg(feature = "gadgets")]
-        if part[ComposedPart::AllowedGadgets as usize] != 0
-            && part[ComposedPart::AllowedGadgets as usize] != request[fact::ALLOWED_GADGETS]
+        match &built.gadgets {
+            Some(runtime) => {
+                let (allowed, trusted) = runtime.allowance();
+                if record.produced & (1 << choice::LOCAL_GADGETS) == 0
+                    || allowed != request[fact::ALLOWED_GADGETS]
+                    || trusted != (choices & (1 << choice::TRUST_WORKSPACE) != 0)
+                {
+                    return Err(BuildRefusal::RequestedPart);
+                }
+            }
+            None => {
+                if record.produced & (1 << choice::LOCAL_GADGETS) != 0 {
+                    return Err(BuildRefusal::RequestedPart);
+                }
+            }
+        }
+        // What the delegated agents' tool gates hold, as each constructed
+        // gate said to this conversation's boundary; none where no gate was.
+        if let Some(gates) = view.boundary().delegated_gates()
+            && (gates[0] != request[fact::APPROVAL_PROMPT]
+                || gates[1] != request[fact::DELEGATED_TOOL_OWNERS]
+                || gates[2] != request[fact::DELEGATED_TOOL_OWNERS + 1]
+                || gates[3] != request[fact::PRIVACY_PROMPT])
         {
             return Err(BuildRefusal::RequestedPart);
         }
         if record.request.as_ref() != Some(request)
             || !record.controllers
-            || part[ComposedPart::ReplyDisplay as usize] != replies
+            // The consumers hold the request's own owners.
+            || at[consumer::APPROVAL] == 0
+            || !gate_kept
+            || gate[0] != request[fact::ACTIVITY_SINK]
+            || gate[1] != request[fact::TOOL_ACTIVITY_SINK]
+            || gate[2] != request[fact::APPROVAL_PROMPT]
+            || gate[3] != request[fact::CALL_PROMPT]
+            || gate[4] != request[fact::PRIVACY_PROMPT]
+            || at[consumer::QUESTION] == 0
+            || held[consumer::QUESTION][0] != request[fact::ASK_PROMPT]
+            || at[consumer::DISPLAY] != replies
             || (replies != 0) != (request[fact::REPLY_SINK] != 0)
-            || part[ComposedPart::ReplySink as usize] != request[fact::REPLY_SINK]
+            || display[0] != request[fact::REPLY_SINK]
+            || (replies != 0 && display[3] != request[fact::ROUND_SINK])
             || files == 0
             || part[ComposedPart::FileReview as usize] != files
             || part[ComposedPart::Verification as usize] != verification
@@ -658,12 +823,6 @@ impl SelectionReport {
             || part[ComposedPart::ControlsOriginal as usize] != controller
             || (verification != 0) != (verifier != 0)
             || (controls != 0) != (controller != 0)
-            || part[ComposedPart::PrivacyPrompt as usize] != request[fact::PRIVACY_PROMPT]
-            || part[ComposedPart::ApprovalPrompt as usize] != request[fact::APPROVAL_PROMPT]
-            || part[ComposedPart::CallPrompt as usize] != request[fact::CALL_PROMPT]
-            || part[ComposedPart::ActivitySink as usize] != request[fact::ACTIVITY_SINK]
-            || part[ComposedPart::ToolActivitySink as usize] != request[fact::TOOL_ACTIVITY_SINK]
-            || part[ComposedPart::AskPrompt as usize] != request[fact::ASK_PROMPT]
         {
             return Err(BuildRefusal::RequestedPart);
         }

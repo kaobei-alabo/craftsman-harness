@@ -2364,7 +2364,7 @@ fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversa
     // What a person might type at an ordinary composer. Here it is typed at
     // the password prompt of a locked conversation.
     const ORDINARY: &str = "Summarize the earlier answer now.";
-    const ENDED: &str = "The settings change itself was written to the user file. It has ended; its record up to that point remains in the thread store.";
+    const ENDED: &str = "The settings change itself was written to the user file. It has ended; what was last saved of it remains in the thread store.";
     #[derive(Clone, Copy, PartialEq)]
     enum End {
         Retry,
@@ -2408,7 +2408,7 @@ fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversa
             assert_eq!(code, 1);
             assert!(
                 plain(&output).contains(&squeezed(
-                    "Error: The conversation was retired for a settings change and could not be carried into a new private scope. The private terminal entry was cancelled. The settings change was not written. It has ended; its record up to that point remains in the thread store."
+                    "Error: The conversation was retired for a settings change and could not be carried into a new private scope. The private terminal entry was cancelled. The settings change was not written. It has ended; what was last saved of it remains in the thread store."
                 )),
                 "{}",
                 plain(&output)

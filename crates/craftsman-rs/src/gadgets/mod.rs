@@ -25,8 +25,8 @@ pub(crate) mod surfaces;
 mod tools;
 
 pub use catalogue::GadgetCatalogMiddleware;
-pub(crate) use runtime::PinnedSource;
 pub use runtime::{GadgetRuntime, RuntimeOptions};
+pub(crate) use runtime::{PinnedSource, allowed_mark};
 
 use craftsman_harness::ToolErrorKind;
 use serde::Serialize;

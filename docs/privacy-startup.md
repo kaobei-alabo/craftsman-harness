@@ -175,21 +175,40 @@ count, a name or a supported-feature flag.
   that installs a lane's provider (the root agent's builder, a delegated
   agent's specification, the summarizer) it says that the lane is
   installed.
-- **Said once.** The request, each lane's receipt, each part and the
-  middleware are recorded once. A second, different statement of one of
-  them is kept out of the record and refuses the selection.
-- **Each composed part and installed owner.** The builder records the
-  address of the reply display, the file review, the controllers it made and
-  their adapters, and of the prompts and sinks at the place where it installs
-  them.
+- **What each provider was given.** The same receipt states the sinks its
+  provider was given, by object: the token sink in the constructor, the
+  round sink and the status sink where the provider takes them. It also
+  states which of the three it was given at all, so a sink given as none is
+  told from a sink never given.
+- **Said once.** The request, each lane's receipt, each part, each consumer
+  and the middleware are recorded once. A second, different statement of
+  one of them is kept out of the record and refuses the selection. Which
+  parts were stated is kept beside their values: a part stated as zero is
+  not a part never stated.
+- **Each constructed consumer.** The approval gate, the question tool and
+  the reply display are recorded as the constructed objects themselves,
+  kept weakly. What each holds of the request's prompts and sinks is read
+  from that object when the witness is checked, not from the request.
+- **Each composed part.** The builder records the address of the file
+  review, of the controllers it made and their adapters, of the quiet sink
+  it makes for the delegated and the summary lane and of the workflow part,
+  and the count and addresses of the extra tools.
+- **Each delegated tool gate.** A gate constructed for a delegated agent of
+  this conversation tells the conversation's boundary what it holds: the
+  approval prompt, the two correlated owners and the prompt for private
+  decisions. Gates that disagree leave a value that equals no request.
 - **Every middleware it kept**, after it found that each has a source path.
-- **Each choice it acted on.** At the place where the builder acts on a
-  choice of the request (round limits, workflow, memory, verification,
-  context, failure controls, the cancellation owner, model interruption,
-  the gadget runtime and its options) it says so.
-- **What it installed for the main stream and the tools.** The main stream's
-  sink, the round sink, and the extra tools as they are installed, by
-  object.
+- **Each choice it acted on.** The builder says that it acted on a choice of
+  the request (round limits, workflow, memory, verification, context,
+  failure controls, the cancellation owner, model interruption, the gadget
+  runtime and its options) at the place where the choice's own work has
+  succeeded: after the context or failure setting parsed, after the
+  verification plan loaded, after the gadget runtime was constructed.
+- **The installed tools.** Once the agent exists, every tool the builder
+  installed (the registered tools with the file wrappers, the verifier,
+  the question tool, the extra tools) is compared with the agent's own
+  registry entry of its name, and the builder says so only if each is that
+  entry.
 
 The conversation accepts a built session only when all of this holds:
 
@@ -202,20 +221,36 @@ The conversation accepts a built session only when all of this holds:
   its guard and carries this selection and that lane; none is the native
   provider, because the policy requires that everything sent can be
   inspected;
+- each live receipt states the sinks the builder gives that lane and no
+  other: the root agent's provider the display's own token sink and the
+  round sink the display made, or the request's two where there is no
+  display, and the request's activity sink where that provider takes a
+  status sink; the other two lanes the quiet sink the builder made, alone;
+- the approval gate, the question tool and the display are alive and are
+  the installed ones: the gate is one of the kept middleware, the display
+  is the object the root agent's boundary holds. Read from them, the gate
+  holds the request's activity sinks, approval prompts and decision
+  prompt, the question tool the request's question prompt, and the display
+  the request's reply sink and, behind the round sink it made, the
+  request's round sink;
+- the cancellation owner installed on the agent is the one the frontend
+  handed over and still holds, by owner, or none where none was requested;
+- the delegated agents' tool gates, where one was constructed, hold the
+  request's own approval prompt, correlated owners and decision prompt;
+- every tool the builder installed is the agent's own registry entry of its
+  name, and the extra tools are the request's own by count and address;
+- the gadget runtime of the built session exists exactly where the builder
+  says it made one, and what that runtime itself holds as allowed gadgets
+  and as workspace trust is what the request allowed and trusted;
 - the builder acted on exactly the requested choices where the choice alone
   decides, and on no unrequested one where the configuration decides too;
-  no output owner, send guard or script capture was requested, because a
-  privacy conversation has no place that installs them;
-- the main stream is given the display itself when there is one, in place of
-  the requested token sink, and otherwise the requested sink; the round sink
-  and the installed extra tools are the request's own; where the builder
-  made the gadget runtime, it was told as many allowed gadgets as the
-  request names;
-- the display, the file review and the adapters are the very objects the
-  root agent's boundary holds; an adapter exists exactly for each controller
-  the builder made, and those controllers are the built session's own;
-- the installed decision prompt, approval prompts, question prompt, activity
-  sinks and reply sink are the request's own objects;
+  a verifier, a controller or a workflow part exists only for a requested
+  choice, and the workflow part is one of the kept middleware; no output
+  owner, send guard or script capture was requested, because a privacy
+  conversation has no place that installs them;
+- the file review and the adapters are the very objects the root agent's
+  boundary holds; an adapter exists exactly for each controller the builder
+  made, and those controllers are the built session's own;
 - every kept middleware is still there and still states a source path.
 
 A build that fails is shut down for real and refused with the builder's own
@@ -237,33 +272,44 @@ remains the gate.
 - Where the user's configuration decides with the choice (the gadget
   runtime), the check is that nothing unrequested was produced, not that the
   requested part exists.
-- **The prompts and sinks are taken from the request, not from the
-  consumer.** The builder records each at the statement that installs it,
-  from the request it holds there. That shows the builder reached that
-  statement with the request's own object. It does not read the object back
-  from the approval middleware, the question tool or the display that was
-  constructed, and keeps no reference to those consumers, so the later
-  comparison at issuance is of two recorded values. Reading them back from
-  the live consumers is not implemented.
-- The cancellation owner, and the owner handed to each checked provider,
-  are recorded as installed, not by object.
-- A provider's receipt does not state the sinks that provider was given.
-  The output-closed wrapper is not recorded; a request that has an output
-  owner is refused instead. Of the registered tools only the question tool
-  is compared with the agent's own registry entry; the extra tools are
-  recorded by count and address, the file wrappers and the verifier tool
-  are not.
+- What a consumer holds is read from the constructed consumer. That the
+  approval gate is the installed one is shown by its place among the kept
+  middleware, and for the display by the boundary's own reference. For the
+  question tool it is shown by the registry comparison of the tools.
+- The cancellation owner is compared with the agent's installed one by
+  owner (`Agent::cancellation_session_is`). The owner handed to each
+  checked provider is not compared.
+- The output-closed wrapper is not recorded; a request that has an output
+  owner is refused instead.
+- The registry comparison is by name: a tool that a later one of the same
+  name replaced is not the registry's entry, and that refuses the build.
+  It covers the root agent's registry. A delegated agent's own tools are
+  covered only by what its tool gate says it holds.
+- The allowed gadgets are compared as one number folded from the count and
+  the bytes of the ids, taken from the request before the build and from
+  the constructed runtime after it. Two different sets could give one
+  number; it is a comparison, not a proof.
 - The choices are compared as the request's bits with the bits the builder
-  set where it acted. For the two controllers the produced object is
-  compared as well; for the other choices it is not.
+  set where its work succeeded. For the two controllers, the workflow part
+  and the gadget runtime the produced object is compared as well; for
+  round limits, memory, model interruption and the cancellation choice the
+  bit is what is compared (the cancellation owner itself is compared as
+  said above).
 - The middleware witness is of the root agent's list. The delegated agents'
-  own parts are outside it.
-- The controller adapters are compared by object with what the boundary
-  holds. The framework checks their binding at every entry of the agent (a
-  turn, a compaction, a retirement); the witness does not record that such
-  a check passed, and reports a live adapter whether or not one has.
+  own parts are outside it, apart from their tool gates and the provider of
+  their lane.
+- **The controllers.** The framework validates the installed controllers'
+  bindings and the middleware chain itself at every typed entry of the agent
+  (a turn, a compaction, a retirement, an adoption). That is unchanged and
+  is the check that protects a conversation. The witness compares the
+  adapters by object with what the boundary holds, and at a build it does
+  so before the first entry: there it lists an adapter that no entry has
+  validated yet. That is a listing, not a validation.
 - A build whose witness disagrees has never been produced by a test: the
-  cases show that real builds satisfy it.
+  cases show that real builds satisfy it, with the display and without one.
+  No case builds a private session on a native wire through the witness;
+  that the native provider states a round sink and no status sink is read
+  from its source.
 
 Not implemented, and refused when a startup requests it: a model wire whose
 provider items cannot be inspected. It is never downgraded or recorded as
@@ -280,9 +326,11 @@ The private terminal then owns the ordinary local voice controller.
   text and is submitted as the same private input.
 - It is cancelled and shut down for real first in every retirement, so
   before the password prompt of a fresh clear and inside the 30-second bound.
-  Its event task is aborted and then awaited there: left to end by itself
-  it would wait for every sender of the controller, and one kept anywhere
-  would hold up the cleanup behind it.
+  Its event task is aborted and then awaited there. That order is
+  defensive: a task left to end by itself waits for every sender of the
+  controller, and a sender kept anywhere would hold up the cleanup behind
+  it. No such kept sender has been shown; the order does not correct an
+  observed failure.
 - A voice key typed before a password prompt asks for nothing afterwards:
   the request is dropped before the prompt, and the voice starts only on a
   new one.
@@ -456,8 +504,11 @@ The steps, in order:
    use that the person allowed during the conversation. An earlier
    "always" does not: it lets the gate decide a reviewed write itself,
    which a start would be refused for, so the new conversation asks again.
-   A failure here ends the terminal with a fixed error; the record up to
-   the retirement is in the thread store.
+   A failure here ends the terminal with a fixed error. What the thread
+   store then holds is the conversation's last save that succeeded: the
+   recorded state in plain text, under the store's unchanged retention of
+   50 rows for a thread. Nothing later than that save is there, and a save
+   that failed is not.
 
 What the adoption does with each recorded message:
 
@@ -508,7 +559,9 @@ What is refused, with the conversation kept:
 Limits: the conversation is ended before the file is written, so a failure
 after the retirement (a file that no longer proposes privacy, a refused
 adoption, a cancelled unlock, a third refused password) ends the terminal
-and the conversation is not resumed; its record is in the thread store.
+and the conversation is not resumed. The thread store holds its last save
+that succeeded, as plain recorded state within the store's 50 rows for a
+thread, and nothing later.
 Every error after the retirement says that the conversation was retired and
 what became of the change: not written; written; refused, with nothing
 replaced and why; or replaced, or possibly replaced, and not verified. A

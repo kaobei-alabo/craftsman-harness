@@ -32,8 +32,8 @@
 //!    error after the retirement ends the terminal with what became of
 //!    the change and where the record is.
 //! 5. **Adopted.** The new session adopts the record. A failure here ends
-//!    the terminal with a fixed error; the record up to the retirement is in
-//!    the thread store.
+//!    the terminal with a fixed error; the thread store holds the last save
+//!    that succeeded, within its retention, and nothing later.
 //!
 //! No model, tool or hook is replayed, and nothing of the old conversation
 //! is sent anywhere. Refreshing a catalog over the network, provider setup,
