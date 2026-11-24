@@ -23,7 +23,12 @@
 //!    conversation: it is carried over under the settings it had, and the
 //!    refusal is shown.
 //! 4. **Unlocked and built** by the frontend, as for a fresh clear, for the
-//!    successor binding the retirement named.
+//!    successor binding the retirement named. A password that the vault
+//!    refuses does not end the conversation: the record stays here, the
+//!    startup is captured again without another write, and the password is
+//!    asked again, up to the three attempts one key owner allows. A
+//!    cancelled unlock or a third refusal ends the terminal with what
+//!    became of the change and where the record is.
 //! 5. **Adopted.** The new session adopts the record. A failure here ends
 //!    the terminal with a fixed error; the record up to the retirement is in
 //!    the thread store.
@@ -45,7 +50,9 @@ use super::{
 use crate::config::{Config, PermissionMode};
 use crate::hitl::ApprovalState;
 use crate::model_controls::ModelSelection;
-use crate::privacy_bootstrap::{CarriedConversation, PrivateBootstrap, PrivateBuiltSession};
+use crate::privacy_bootstrap::{
+    BootstrapError, CarriedConversation, PrivateBootstrap, PrivateBuiltSession,
+};
 use crate::tui::{app::App, modals::AppAction};
 use std::sync::{Arc, Mutex};
 
@@ -66,11 +73,19 @@ pub(super) struct RouterSettings {
     /// A manual compaction that the last line started and the frontend has
     /// not taken yet.
     compaction: Option<std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>>,
+    /// The pending handoff: the validated change, and from the retirement
+    /// until the adoption the retired conversation itself. Both stay here
+    /// through a refused password.
     prepared: Option<Prepared>,
     carried: Option<CarriedConversation>,
+    /// Whether the change was handed to the writer. That happens once,
+    /// however often the startup is captured again.
+    committed: bool,
     /// Why the write did not complete, when the conversation is carried
     /// over all the same.
     unwritten: Option<String>,
+    /// Passwords the vault refused since the retirement.
+    refused: u8,
 }
 
 /// What a thinking-token budget for `model`, or for the current model, would
@@ -448,6 +463,7 @@ impl SettingsAuthority for RouterSettings {
             match retired {
                 Ok(carried) => {
                     self.carried = Some(carried);
+                    (self.committed, self.unwritten, self.refused) = (false, None, 0);
                     Returned::Listing(Ok(String::new()))
                 }
                 Err(line) => {
@@ -465,13 +481,17 @@ impl SettingsAuthority for RouterSettings {
         let (Some(prepared), Some(carried)) = (&self.prepared, &self.carried) else {
             return Err(PrivateTerminalError::InputHandoff);
         };
-        // The person's own change. A refusal is kept and shown after the
-        // conversation was carried over under whatever the file now holds.
-        self.unwritten =
-            match crate::privacy_startup::commit(&prepared.original, &prepared.candidate) {
-                Ok(()) => None,
-                Err(error) => Some(format!("The settings change did not complete. {error}")),
-            };
+        // The person's own change, handed to the writer once. A refusal is
+        // kept and shown after the conversation was carried over under
+        // whatever the file now holds. A capture that is asked for again,
+        // after a refused password, writes nothing.
+        if !std::mem::replace(&mut self.committed, true) {
+            self.unwritten =
+                match crate::privacy_startup::commit(&prepared.original, &prepared.candidate) {
+                    Ok(()) => None,
+                    Err(error) => Some(format!("The settings change did not complete. {error}")),
+                };
+        }
         let (bootstrap, start) = crate::privacy_startup::recapture()?;
         let bootstrap = match bootstrap.carrying(carried) {
             Ok(bootstrap) => bootstrap,
@@ -502,12 +522,42 @@ impl SettingsAuthority for RouterSettings {
         Ok(bootstrap)
     }
 
+    fn locked(&mut self, error: BootstrapError) -> Result<u8, PrivateTerminalError> {
+        use crate::privacy_key::KeyError;
+        // A password the vault refused, or an entry that cannot be one.
+        let refused = matches!(
+            error,
+            BootstrapError::Key(KeyError::Unlock | KeyError::Passphrase)
+        );
+        if refused {
+            // As many passwords as one key owner takes.
+            self.refused = self.refused.saturating_add(1);
+            if self.refused < 3 && self.carried.is_some() {
+                return Ok(3 - self.refused);
+            }
+        }
+        let why = match error {
+            _ if refused => "The vault did not open with any of three passwords.".to_owned(),
+            BootstrapError::Key(KeyError::Cancelled) => "The unlock was cancelled.".to_owned(),
+            error => error.to_string(),
+        };
+        // What became of the change itself belongs to the last word: a
+        // write that was made is never reported as absent.
+        let change = match (self.committed, &self.unwritten) {
+            (false, _) => "The settings change was not handed to the writer.",
+            (true, None) => "The settings change itself was written to the user file.",
+            (true, Some(unwritten)) => unwritten,
+        };
+        Err(PrivateTerminalError::CarryOver(format!("{why} {change}")))
+    }
+
     fn adopt<'a>(&'a mut self, built: Option<&'a PrivateBuiltSession>) -> SettingsWork<'a> {
         Box::pin(async move {
             let (Some(built), Some(carried)) = (built, self.carried.take()) else {
                 return Returned::Listing(Err("No retired conversation is waiting.".into()));
             };
             let prepared = self.prepared.take();
+            (self.committed, self.refused) = (false, 0);
             if let Err(reason) = built.adopt(&carried).await {
                 return Returned::Listing(Err(reason));
             }

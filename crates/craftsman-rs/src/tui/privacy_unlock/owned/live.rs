@@ -1014,29 +1014,43 @@ impl Frontend {
         }
         drop(input);
         self.built = None; // no closed lane/client/view is used for the rebuild
-        let bootstrap = match (carry, &mut self.popup.inner.settings) {
-            // The change is committed and the startup captured anew, for
-            // the successor of the conversation that was just retired. Its
-            // approval state takes the place of the retired start's.
-            (true, Some(authority)) => authority.recapture(&mut self.approval),
-            (true, None) => Err(PrivateTerminalError::InputHandoff),
-            (false, _) => old
-                .capture_after_retirement()
-                .map_err(PrivateTerminalError::Source),
-        }?;
-        self.configuration.check_bootstrap(&bootstrap)?;
-        self.popup.inner.secret_reader = true;
-        self.popup
-            .inner
-            .input
-            .finish_input()
-            .map_err(|_| PrivateTerminalError::InputHandoff)?;
-        let fresh = Arc::new(
-            bootstrap
-                .unlock_private(&mut self.popup)
-                .await
-                .map_err(PrivateTerminalError::Source)?,
-        );
+        // A conversation that was retired for a settings change is kept
+        // through a refused password. Its authority says whether the handoff
+        // goes on; the password is then asked again through this same
+        // secret reader, for a startup captured anew and the successor
+        // binding the retirement named. Until the vault opens nothing else
+        // reads input and no work is admitted. A clear has no record to
+        // keep and ends on its first refusal, as before.
+        let fresh = loop {
+            let bootstrap = match (carry, &mut self.popup.inner.settings) {
+                // The change is committed, once, and the startup captured
+                // anew, for the successor of the conversation that was just
+                // retired. Its approval state takes the place of the
+                // retired start's.
+                (true, Some(authority)) => authority.recapture(&mut self.approval),
+                (true, None) => Err(PrivateTerminalError::InputHandoff),
+                (false, _) => old
+                    .capture_after_retirement()
+                    .map_err(PrivateTerminalError::Source),
+            }?;
+            self.configuration.check_bootstrap(&bootstrap)?;
+            self.popup.inner.secret_reader = true;
+            self.popup
+                .inner
+                .input
+                .finish_input()
+                .map_err(|_| PrivateTerminalError::InputHandoff)?;
+            match bootstrap.unlock_private(&mut self.popup).await {
+                Ok(fresh) => break Arc::new(fresh),
+                Err(error) => match (carry, &mut self.popup.inner.settings) {
+                    (true, Some(authority)) => match authority.locked(error) {
+                        Ok(left) => self.popup.inner.refused = left,
+                        Err(last) => return Err(last),
+                    },
+                    _ => return Err(PrivateTerminalError::Source(error)),
+                },
+            }
+        };
         // A clear starts another thread; a carried conversation keeps its
         // own, in a scope of its own.
         if (fresh.thread_id() == old_id) != carry {

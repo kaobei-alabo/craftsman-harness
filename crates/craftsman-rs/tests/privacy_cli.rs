@@ -2271,3 +2271,253 @@ fn actual_normal_settings_changes_carry_the_private_conversation_into_a_new_scop
     let (_, last) = private.last().unwrap();
     assert_eq!(last["messages"].as_array().unwrap().len(), 5);
 }
+
+/// A password that the vault refuses after a settings change retired the
+/// conversation, through the real binary. The conversation is not dropped
+/// and the terminal does not end: the retired record stays with the pending
+/// handoff, the password prompt says what happened and how many attempts
+/// are left, and nothing but that prompt reads input.
+///
+/// What it shows, in three conversations:
+/// - *retry:* after one refused password, an ordinary-looking line typed at
+///   the prompt is a second refused password and nothing else; the right
+///   password then carries the conversation over. The file was written
+///   once, before the first prompt. The earlier transcript and the draft
+///   typed behind the command are still there, the usage totals came along,
+///   and the next request goes to the new model with the earlier roles in a
+///   new scope's alias. No request was made while it was locked;
+/// - *cancel:* Escape at the prompt after a refusal ends the terminal with
+///   one error that says the unlock was cancelled, that the change was
+///   written, and where the record is;
+/// - *three refusals:* the third ends it the same way, as one key owner
+///   would.
+///
+/// In all three the store holds the one private thread with the record up
+/// to the retirement, and neither refused entry is echoed or sent.
+#[cfg(feature = "gadgets")]
+#[test]
+fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversation() {
+    const REFUSED: &str = "That password did not open the vault. The conversation is kept, locked.";
+    const WRONG: &str = "  synthetic-other-vault-passphrase  ";
+    // What a person might type at an ordinary composer. Here it is typed at
+    // the password prompt of a locked conversation.
+    const ORDINARY: &str = "Summarize the earlier answer now.";
+    const ENDED: &str = "The settings change itself was written to the user file. It has ended; its record up to that point remains in the thread store.";
+    #[derive(Clone, Copy, PartialEq)]
+    enum End {
+        Retry,
+        Cancel,
+        ThreeRefusals,
+    }
+    for end in [End::Retry, End::Cancel, End::ThreeRefusals] {
+        let setup = approved(Script::Carry);
+        // The user's own file for this case: one named provider with two
+        // models on this case's loopback endpoint, and the policy that pins
+        // the installed detector.
+        let file = |selected: &str| {
+            format!(
+                r#"{{"model":"fixture/{selected}","providers":{{"fixture":{{"protocol":"openai_chat_completions","base_url":"{}","api_key":"fixture-key","models":{{"first-model":{{"label":"First"}},"second-model":{{"label":"Second"}}}}}}}},"harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"privacy":{{"enabled":true,"detector":{{"gadget":"privacy-detector","function":"detect","component_sha256":"{}","manifest_sha256":"{}"}}}}}}"#,
+                setup.server.uri(),
+                setup.component,
+                setup.manifest
+            )
+        };
+        let authored = setup.home.user(&file("first-model"));
+        initialize(&setup.home);
+        let key = setup.key();
+        let changed = file("second-model");
+
+        let mut terminal = Terminal::start(&setup.home, &[]);
+        terminal.unlock();
+        terminal.send(format!("{TYPED}\r").as_bytes());
+        terminal.wait_for("Planned for alice@example.invalid.");
+        assert_eq!(setup.home.user_bytes(), authored);
+
+        // The change, with ordinary input typed behind it before any
+        // password is asked. That input is a draft, not secret type-ahead.
+        terminal.send(b"/model fixture/second-model\r  Follow up");
+        terminal.wait_for("Unlock private privacy key");
+        terminal.send(format!("{WRONG}\r").as_bytes());
+        terminal.wait_for("Two more attempts.");
+        // Locked: the prompt says so, no composer is up, the change was
+        // written once, and nothing was asked of the model.
+        let locked = |terminal: &Terminal| {
+            let shown = screen(&terminal.output);
+            assert!(shown.contains(REFUSED), "{shown}");
+            assert!(shown.contains("Unlock private privacy key again to continue it."));
+            assert!(!shown.contains("message · Ctrl+J newline"), "{shown}");
+            assert_eq!(String::from_utf8(setup.home.user_bytes()).unwrap(), changed);
+            assert_eq!(setup.private_requests().len(), 2);
+        };
+        locked(&terminal);
+
+        let output = match end {
+            End::Retry => {
+                // An ordinary-looking line is a password here, and refused.
+                terminal.send(format!("{ORDINARY}\r").as_bytes());
+                terminal.wait_for("One more attempt.");
+                locked(&terminal);
+                // The right password: the same prompt, then the composer of
+                // the conversation that adopted the record.
+                terminal.unlock();
+                terminal.wait_for("Model: fixture/second-model");
+                let shown = screen(&terminal.output);
+                assert!(shown.contains("Planned for alice@example.invalid."));
+                assert!(!shown.contains(REFUSED));
+                // The draft typed behind the command is still the draft.
+                terminal.wait_for("  Follow up");
+                assert_eq!(setup.private_requests().len(), 2);
+                terminal.send(b" for alice@example.invalid.  \r");
+                terminal.wait_for("Carried reply for alice@example.invalid.");
+                // Three replies of three and two tokens each: the totals of
+                // the retired conversation came along.
+                terminal.send(b"/status\r");
+                terminal.wait_for("tokens: input 9, output 6");
+                terminal.send(b"/quit\r");
+                let (output, code) = terminal.finish();
+                assert_eq!(code, 0, "{}", plain(&output));
+                output
+            }
+            End::Cancel => {
+                terminal.send(b"\x1b");
+                let (output, code) = terminal.finish();
+                assert_eq!(code, 1);
+                assert!(
+                    plain(&output).contains(&squeezed(&format!(
+                        "Error: The conversation was retired for a settings change and could not be carried into a new private scope. The unlock was cancelled. {ENDED}"
+                    ))),
+                    "{}",
+                    plain(&output)
+                );
+                output
+            }
+            End::ThreeRefusals => {
+                terminal.send(format!("{ORDINARY}\r").as_bytes());
+                terminal.wait_for("One more attempt.");
+                locked(&terminal);
+                // An entry too short to be a vault password counts as well.
+                terminal.send(b"short\r");
+                let (output, code) = terminal.finish();
+                assert_eq!(code, 1);
+                assert!(
+                    plain(&output).contains(&squeezed(&format!(
+                        "Error: The conversation was retired for a settings change and could not be carried into a new private scope. The vault did not open with any of three passwords. {ENDED}"
+                    ))),
+                    "{}",
+                    plain(&output)
+                );
+                output
+            }
+        };
+        // Neither refused entry was echoed, and the change stands as it
+        // was written, once.
+        for entry in [WRONG, ORDINARY] {
+            assert!(
+                !output
+                    .windows(entry.len())
+                    .any(|window| window == entry.as_bytes()),
+                "a refused entry was echoed"
+            );
+        }
+        setup.assert_unchanged(changed.as_bytes(), &key);
+
+        let requests = setup.private_requests();
+        for request in &requests {
+            let text = std::str::from_utf8(&request.body).unwrap();
+            assert!(!text.contains(WRONG) && !text.contains(ORDINARY));
+        }
+        // One private thread in every ending, with one unbroken save
+        // sequence.
+        assert_eq!(setup.private_threads().len(), 1);
+        let history = thread_history(&setup.runtime, &setup.home);
+        let private: Vec<&(u64, serde_json::Value)> = history
+            .iter()
+            .filter(|(_, state)| {
+                typed_inputs(state).first().map(String::as_str) != Some("Check the detector.")
+            })
+            .collect();
+        let saved: Vec<u64> = private.iter().map(|(seq, _)| *seq).collect();
+        assert_eq!(saved, (0..saved.len() as u64).collect::<Vec<_>>());
+        let (_, last) = private.last().unwrap();
+        let recorded: Vec<&str> = last["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| {
+                !message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.starts_with("<gadget_catalog_update sha256=\""))
+            })
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        if end != End::Retry {
+            // The record up to the retirement, as it was stored: nothing
+            // was added to it or taken from it afterwards.
+            assert_eq!(requests.len(), 2);
+            assert_eq!(typed_inputs(last), [TYPED]);
+            assert_eq!(recorded, ["user", "assistant", "tool", "assistant"]);
+            continue;
+        }
+        // Three private requests: two in the first scope and, after the
+        // unlock, one in the second, to the newly selected model.
+        let bodies: Vec<serde_json::Value> = requests
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        let models: Vec<&str> = bodies
+            .iter()
+            .map(|body| body["model"].as_str().unwrap())
+            .collect();
+        assert_eq!(models, ["first-model", "first-model", "second-model"]);
+        let aliases: Vec<String> = bodies.iter().map(request_alias).collect();
+        assert_eq!(aliases[0], aliases[1]);
+        assert_ne!(aliases[1], aliases[2]);
+        assert!(
+            !std::str::from_utf8(&requests[2].body)
+                .unwrap()
+                .contains(aliases[0].as_str()),
+            "a retired alias was sent"
+        );
+        // The carried record as the new model is given it: the earlier
+        // roles, call and result in order, then the completed draft.
+        let carried: Vec<&serde_json::Value> = bodies[2]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| {
+                message["role"] != "system"
+                    && !message["content"].as_str().is_some_and(|content| {
+                        content.starts_with("<gadget_catalog_update sha256=\"")
+                    })
+            })
+            .collect();
+        let roles: Vec<&str> = carried
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "assistant", "user"]);
+        assert_eq!(carried[1]["tool_calls"][0]["id"], "plan-reply");
+        assert_eq!(carried[2]["tool_call_id"], "plan-reply");
+        assert_eq!(
+            carried[3]["content"],
+            format!("Planned for {}.", aliases[2]).as_str()
+        );
+        assert_eq!(
+            carried[4]["content"],
+            format!("  Follow up for {}.  ", aliases[2]).as_str()
+        );
+        // The stored record: every input in order, as it was typed.
+        assert_eq!(typed_inputs(last), [TYPED, FOLLOW]);
+        assert_eq!(
+            recorded,
+            [
+                "user",
+                "assistant",
+                "tool",
+                "assistant",
+                "user",
+                "assistant"
+            ]
+        );
+    }
+}

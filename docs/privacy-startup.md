@@ -380,7 +380,15 @@ The steps, in order:
    `enable`, and the startup of this same invocation is captured anew. A
    write that changed nothing does not end the conversation: it is carried
    over under the settings it had, and the refusal is shown.
-4. **Unlocked and built.** The vault password is asked again. The new
+4. **Unlocked and built.** The vault password is asked again. A password
+   that the vault refuses does not end the conversation. The retired record
+   stays with the pending change, and the prompt says that the conversation
+   is kept and how many attempts are left. The startup is then captured
+   again, without another write, and the password is asked again through
+   the same secret reader, for the same successor. Until the vault opens
+   nothing else reads input and no work is admitted: a line typed there is
+   a password. There are three attempts, as many as one key owner takes;
+   an entry that cannot be a vault password counts as one. The new
    conversation keeps the thread and gets a vault scope of its own: its
    namespace names how many scopes the thread had before, so it is never the
    retired one, and its placeholders differ.
@@ -409,8 +417,10 @@ What the adoption does with each recorded message:
 - A stored todo keeps naming the reply that wrote it, now by that reply's
   new source.
 
-No model, tool or hook is replayed, and the retired originals are sent
-nowhere. The earlier transcript stays on the screen.
+No turn, model request, tool call or harness hook is replayed, and the
+retired originals are sent to no model. The adoption does run the detector:
+admitting raw text anew in the new scope is the pinned detector's own call,
+as for any other input. The earlier transcript stays on the screen.
 
 What is refused, with the conversation kept:
 
@@ -435,10 +445,12 @@ What is refused, with the conversation kept:
   ordinary catalog's own; no budget has been written by this path.
 
 Limits: the conversation is ended before the file is written, so a failure
-after the retirement (a wrong password, a file that no longer proposes
-privacy, a refused adoption) ends the terminal and the conversation is not
-resumed; its record is in the thread store. Sub-agents' own records are not
-carried.
+after the retirement (a file that no longer proposes privacy, a refused
+adoption, a cancelled unlock, a third refused password) ends the terminal
+and the conversation is not resumed; its record is in the thread store. For
+a cancelled unlock and a third refusal the error says which it was and what
+became of the change: that it was written, or why it was not. Sub-agents'
+own records are not carried.
 
 The router applies the same rule to a start: when the invocation's own
 option or the captured file selects a mode that decides file writes, or an
@@ -536,8 +548,8 @@ and identifiers are the user's own later edits.
   through its own `main` on synthetic user files in a private temporary
   directory, with a synthetic model that the test itself serves on a
   loopback address.
-  It has thirteen cases. Nine need the gadgets feature, and one more needs
-  voice input too, so the full test modes run twelve and three of them.
+  It has fourteen cases. Ten need the gadgets feature, and one more needs
+  voice input too, so the full test modes run thirteen and three of them.
   - *Setup through the real runtime.* The ordinary terminal runs once: the
     synthetic model calls the detector gadget, and the person approves its
     first use at the real prompt, which names the gadget and the hash of its
@@ -579,6 +591,21 @@ and identifiers are the user's own later edits.
     summarizer request. The store has one private thread with one unbroken
     save sequence, and its record before the compaction holds every input
     in order.
+  - *A refused password after a settings retirement.* Three conversations.
+    In each, `/model` retires the conversation with a draft typed behind
+    the command, and a wrong password gives the prompt that says the
+    conversation is kept; the file was written once and no request was
+    made. In the first, an ordinary-looking line typed at that prompt is a
+    second refused password and nothing else. The right password then
+    carries the record over: the earlier transcript and the draft are
+    there, the usage totals came along, and the next request goes to the
+    new model with the earlier roles, call and result under a new alias.
+    In the second, Escape ends the terminal with one error that names the
+    cancelled unlock, the written change and the thread store. In the
+    third, a third refused entry ends it the same way. Each store holds
+    one private thread with one unbroken save sequence, with the record up
+    to the retirement in the two that ended. No refused entry is echoed or
+    sent.
   - *A mode that decides file writes* is refused at the start: by the
     status for each such mode of the file, and by the router on a real
     terminal for the file's mode, the file's automatic approval and both
@@ -644,12 +671,13 @@ evidence for the correction and that run is not. Runs of these cases under
 artificial load, made before the cause was read from the recordings, are
 no evidence either way and are not counted.
 
-The gadget test binary's unwind section is 16,776,928 bytes, 288 under
-the unchanged 16,777,216-byte limit, with no linker warning. That is 84
-bytes more than on the carried-conversation commit; what this binary links
-of the later changes is the start's mode check and the four added stages.
-The budget selection and the wire check are not linked into it and add
-nothing. The first
+The gadget test binary's unwind section is 16,776,828 bytes, 388 under
+the unchanged 16,777,216-byte limit, with no linker warning. The start's
+mode check and the four added stages had brought it to 288 under, 84 bytes
+more than on the carried-conversation commit. The unlock loop of the retry
+then replaced an adapter call with a plain match in the function that this
+binary links, and the section is 100 bytes smaller. The budget selection,
+the wire check and the retry's own state are not linked into it. The first
 wiring of the settings flow was 1,932 bytes over. What that binary reaches
 of it now adds no generic instantiation there: the adoption fact behind a
 commit is held erased, an adopted message is made of the parts the request
@@ -663,7 +691,8 @@ issuance, cancellation of a task that is actually running, voice capture and
 transcription, a cancelled shell escape, a settings change whose write or
 adoption fails after the retirement, a carried conversation with host notes
 of a background agent or with a summary, the model and effort pickers
-through a terminal, a budget selection that is written, a cancelled
+through a terminal, a budget selection that is written, a signal or a
+changed user file during the retry prompt, a cancelled
 compaction, the staging entry's removal and
 leftover report after a refusal past its creation, a failure after the
 rename, non-default permission options and an Always effect

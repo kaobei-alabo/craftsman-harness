@@ -49,14 +49,24 @@ trait SettingsAuthority: Send {
         built: Option<&'a crate::privacy_bootstrap::PrivateBuiltSession>,
         busy: bool,
     ) -> SettingsWork<'a>;
-    /// After the frontend retired its owners: commits the change and
+    /// After the frontend retired its owners: commits the change, once, and
     /// captures this invocation's startup anew for the successor. `live`
     /// becomes that startup's own approval state, with what the person
-    /// granted during the conversation kept.
+    /// granted during the conversation kept. Asked again after a refused
+    /// password, it captures the startup again and writes nothing.
     fn recapture(
         &mut self,
         live: &mut std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
     ) -> std::result::Result<crate::privacy_bootstrap::PrivateBootstrap, PrivateTerminalError>;
+    /// The unlock for the successor ended with `error`. `Ok`: the vault
+    /// refused the password and the retired conversation is kept for that
+    /// many more attempts; the frontend asks for the next one through the
+    /// same secret reader. `Err`: the handoff is over, with the last error
+    /// to report.
+    fn locked(
+        &mut self,
+        error: crate::privacy_bootstrap::BootstrapError,
+    ) -> std::result::Result<u8, PrivateTerminalError>;
     /// After the successor's session was built: adopts the retired record
     /// into it. Returns the line to show, or why nothing was adopted.
     fn adopt<'a>(
@@ -263,7 +273,12 @@ impl OwnedSecretTerminal {
     pub async fn unlock(&mut self, operations: &PrivateKeyOperations) -> Result<UnlockedVault> {
         #[cfg(unix)]
         let result = async {
-            let phrase = self.inner.prompt(Prompt::Unlock).await?;
+            // After a refused password the prompt says so, once.
+            let prompt = match std::mem::take(&mut self.inner.refused) {
+                0 => Prompt::Unlock,
+                left => Prompt::UnlockAgain(left),
+            };
+            let phrase = self.inner.prompt(prompt).await?;
             self.inner.work(Box::pin(operations.unlock(phrase))).await
         }
         .await;
@@ -477,6 +492,10 @@ enum Prompt {
     Initialize,
     Confirm,
     Unlock,
+    /// The unlock of a conversation that was retired for a settings change,
+    /// after the vault refused a password. The conversation is kept, for
+    /// this many more attempts.
+    UnlockAgain(u8),
 }
 #[cfg(unix)]
 impl Prompt {
@@ -485,6 +504,12 @@ impl Prompt {
             Self::Initialize => "Initialize private privacy key",
             Self::Confirm => "Confirm private passphrase",
             Self::Unlock => "Unlock private privacy key",
+            Self::UnlockAgain(1) => {
+                "That password did not open the vault. The conversation is kept, locked.\nUnlock private privacy key again to continue it. One more attempt."
+            }
+            Self::UnlockAgain(_) => {
+                "That password did not open the vault. The conversation is kept, locked.\nUnlock private privacy key again to continue it. Two more attempts."
+            }
         }
     }
 }
@@ -500,6 +525,10 @@ struct UnixPopup {
     shutdown: Shutdown,
     ui_events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::session_bridge::UiEvent>>,
     secret_reader: bool,
+    /// The vault refused the last password of a kept conversation, which has
+    /// this many attempts left; the next unlock prompt says so. Zero
+    /// otherwise.
+    refused: u8,
     /// Lent by the owned interactive router alone; see [`SettingsAuthority`].
     settings: Option<Box<dyn SettingsAuthority>>,
 }
@@ -526,6 +555,7 @@ impl UnixPopup {
             shutdown,
             ui_events: None,
             secret_reader: true,
+            refused: 0,
             settings: None,
         })
     }
