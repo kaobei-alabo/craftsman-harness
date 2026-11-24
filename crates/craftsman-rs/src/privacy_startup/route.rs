@@ -396,7 +396,7 @@ pub(crate) fn commit(
     match root.replace_user_config(lease, held, candidate) {
         Ok(()) => {}
         Err((_, crate::privacy_key::root::WRITTEN)) => {
-            return Err(StartupError::WrittenThenChanged.into());
+            return Err(StartupError::SettingWrittenThenChanged.into());
         }
         // The rename was refused and the staging name was gone afterwards.
         Err((_, crate::privacy_key::root::UNCONFIRMED)) => {
@@ -412,11 +412,11 @@ pub(crate) fn commit(
     }
     drop(source);
     let Ok(written) = actual_source() else {
-        return Err(StartupError::WrittenThenChanged.into());
+        return Err(StartupError::SettingWrittenThenChanged.into());
     };
     match written.recheck_original() {
         Ok((_, Some((bytes, _)))) if written.is_enabled() && bytes == candidate => Ok(()),
-        _ => Err(StartupError::WrittenThenChanged.into()),
+        _ => Err(StartupError::SettingWrittenThenChanged.into()),
     }
 }
 

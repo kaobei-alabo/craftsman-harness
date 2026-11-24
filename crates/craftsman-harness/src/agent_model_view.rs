@@ -2121,7 +2121,10 @@ impl Agent {
     /// this is a delegated agent, an approval is parked, an accepted input
     /// is still waiting, the turn was cancelled, a recorded message has no
     /// source the retiring boundary gives, or the todo list names a reply
-    /// that is no longer recorded.
+    /// that is no longer recorded. One refusal is not without effect: when
+    /// the recorded messages no longer agree with the sources kept beside
+    /// them, the source view is closed and this agent takes no further
+    /// entry. The host must not report that conversation as kept.
     ///
     /// Notifications addressed to this agent are recorded first, as the
     /// ordinary transfer records them, and the boundary is asked for the

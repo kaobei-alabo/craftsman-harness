@@ -1275,7 +1275,14 @@ impl Frontend {
                 && let Some(authority) = &self.popup.inner.settings
                 && authority.pending()
             {
-                self.fresh_clear(true).await?;
+                // An error after the retirement says that the conversation
+                // was retired and what became of the change.
+                if let Err(error) = self.fresh_clear(true).await {
+                    return Err(match &mut self.popup.inner.settings {
+                        Some(authority) => authority.ended(error),
+                        None => error,
+                    });
+                }
                 continue;
             }
             if let Some(built) = self.built.as_mut() {

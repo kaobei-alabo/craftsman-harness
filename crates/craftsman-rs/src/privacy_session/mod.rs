@@ -637,6 +637,14 @@ impl SelectionReport {
         {
             return Err(BuildRefusal::RequestedPart);
         }
+        // The gadget runtime, where the builder made one, was told exactly
+        // the gadgets the request allows.
+        #[cfg(feature = "gadgets")]
+        if part[ComposedPart::AllowedGadgets as usize] != 0
+            && part[ComposedPart::AllowedGadgets as usize] != request[fact::ALLOWED_GADGETS]
+        {
+            return Err(BuildRefusal::RequestedPart);
+        }
         if record.request.as_ref() != Some(request)
             || !record.controllers
             || part[ComposedPart::ReplyDisplay as usize] != replies

@@ -82,14 +82,15 @@ impl std::fmt::Debug for RetiredConversation {
 
 impl RetiredConversation {
     /// The binding of the one conversation that may adopt this record: the
-    /// same thread and workspace, one scope further.
-    pub(crate) fn successor(&self) -> FreshConversationBinding {
+    /// same thread and workspace, one scope further. `None` when the
+    /// thread has no further scope to give: a scope is never used twice.
+    pub(crate) fn successor(&self) -> Option<FreshConversationBinding> {
         let binding = &self.inner.binding;
-        FreshConversationBinding {
+        Some(FreshConversationBinding {
             thread_id: binding.thread_id.clone(),
             workspace: binding.workspace.clone(),
-            generation: binding.generation.saturating_add(1),
-        }
+            generation: binding.generation.checked_add(1)?,
+        })
     }
 
     /// Whether the conversation this was read from has ended.
@@ -373,7 +374,7 @@ impl ConversationAdopter for Adoption<'_> {
                 || !retired.ended()
                 || new.thread_id != old.thread_id
                 || new.workspace != old.workspace
-                || new.generation != old.generation.saturating_add(1)
+                || Some(new.generation) != old.generation.checked_add(1)
             {
                 return Err(self.unbound());
             }

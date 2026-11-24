@@ -67,6 +67,11 @@ trait SettingsAuthority: Send {
         &mut self,
         error: crate::privacy_bootstrap::BootstrapError,
     ) -> std::result::Result<u8, PrivateTerminalError>;
+    /// An error of the frontend after this authority retired a conversation
+    /// and before a successor adopted it: the same error, saying that the
+    /// conversation was retired and what became of the change. Any other
+    /// error is returned as it is.
+    fn ended(&mut self, error: PrivateTerminalError) -> PrivateTerminalError;
     /// After the successor's session was built: adopts the retired record
     /// into it. Returns the line to show, or why nothing was adopted.
     fn adopt<'a>(

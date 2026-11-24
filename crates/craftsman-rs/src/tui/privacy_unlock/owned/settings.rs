@@ -15,7 +15,9 @@
 //!    anything is touched. A refusal is a line; the conversation goes on.
 //! 2. **Retired.** The conversation must be idle. Its agent retires and
 //!    issues its whole record; the send guard, the vault scope and the key
-//!    close. A refusal before the agent's retirement keeps the conversation.
+//!    close. A refusal before the agent's retirement keeps the conversation,
+//!    except for a record that no longer agrees with its sources, which
+//!    closes it; the line says which it was.
 //! 3. **Written and recaptured.** After the frontend retired its owners: the
 //!    candidate is committed through the retained source's staged,
 //!    identity-bound writer, and the startup of this same invocation is
@@ -26,9 +28,9 @@
 //!    successor binding the retirement named. A password that the vault
 //!    refuses does not end the conversation: the record stays here, the
 //!    startup is captured again without another write, and the password is
-//!    asked again, up to the three attempts one key owner allows. A
-//!    cancelled unlock or a third refusal ends the terminal with what
-//!    became of the change and where the record is.
+//!    asked again, up to the three attempts one key owner allows. Every
+//!    error after the retirement ends the terminal with what became of
+//!    the change and where the record is.
 //! 5. **Adopted.** The new session adopts the record. A failure here ends
 //!    the terminal with a fixed error; the record up to the retirement is in
 //!    the thread store.
@@ -64,8 +66,6 @@ struct Prepared {
     candidate: Vec<u8>,
     /// The ordinary terminal's line for the change.
     line: String,
-    /// Whether the change is the permission mode.
-    mode: bool,
 }
 
 #[derive(Default)]
@@ -78,12 +78,9 @@ pub(super) struct RouterSettings {
     /// through a refused password.
     prepared: Option<Prepared>,
     carried: Option<CarriedConversation>,
-    /// Whether the change was handed to the writer. That happens once,
+    /// What became of the change at the writer. It is handed over once,
     /// however often the startup is captured again.
-    committed: bool,
-    /// Why the write did not complete, when the conversation is carried
-    /// over all the same.
-    unwritten: Option<String>,
+    write: Write,
     /// Passwords the vault refused since the retirement.
     refused: u8,
 }
@@ -103,11 +100,39 @@ fn budget_config(cfg: &Config, model: Option<&str>, budget: u32) -> Result<Confi
     Ok(candidate)
 }
 
+/// What became of a change at the writer.
+#[derive(Default)]
+enum Write {
+    /// It was not handed to the writer.
+    #[default]
+    NotAsked,
+    /// Written and read back.
+    Written,
+    /// Refused with nothing replaced; the line says why.
+    Refused(String),
+    /// Replaced, or possibly replaced, and not verified; the line says
+    /// which. It is never treated as unwritten.
+    Unverified(String),
+}
+
 enum Change {
     /// What the ordinary terminal's model, effort or budget selection would
     /// save, or its refusal.
     Model(Result<Config, String>),
     Mode(PermissionMode),
+}
+
+impl Write {
+    /// What the last word of a carry-over that ended says about the change
+    /// itself. A write that was made, or may have been, is never reported
+    /// as absent.
+    fn told(&self) -> &str {
+        match self {
+            Self::NotAsked => "The settings change was not written.",
+            Self::Written => "The settings change itself was written to the user file.",
+            Self::Refused(line) | Self::Unverified(line) => line,
+        }
+    }
 }
 
 impl RouterSettings {
@@ -124,7 +149,6 @@ impl RouterSettings {
         built.carriable()?;
         let name = |key: &str| key.to_owned();
         let mut edits = Vec::new();
-        let mode = matches!(change, Change::Mode(_));
         let (expected, line) = match change {
             Change::Model(candidate) => {
                 let candidate = candidate?;
@@ -242,6 +266,13 @@ impl RouterSettings {
             Ok(original) => original,
             Err(error) => return Err(error.to_string()),
         };
+        // The file that would be changed is the one this conversation was
+        // captured from: the same bytes, under the lease the conversation
+        // still holds. A fresh read of the user root alone would not show
+        // that.
+        if !built.captured_from(&original) {
+            return Err("The user file is not the one this conversation was captured from; nothing was changed.".into());
+        }
         let candidate = match crate::privacy_startup::edited(&original, &edits) {
             Ok(candidate) => candidate,
             Err(error) => return Err(error.to_string()),
@@ -267,7 +298,6 @@ impl RouterSettings {
             original,
             candidate,
             line,
-            mode,
         });
         Ok(())
     }
@@ -463,7 +493,7 @@ impl SettingsAuthority for RouterSettings {
             match retired {
                 Ok(carried) => {
                     self.carried = Some(carried);
-                    (self.committed, self.unwritten, self.refused) = (false, None, 0);
+                    (self.write, self.refused) = (Write::NotAsked, 0);
                     Returned::Listing(Ok(String::new()))
                 }
                 Err(line) => {
@@ -485,11 +515,21 @@ impl SettingsAuthority for RouterSettings {
         // kept and shown after the conversation was carried over under
         // whatever the file now holds. A capture that is asked for again,
         // after a refused password, writes nothing.
-        if !std::mem::replace(&mut self.committed, true) {
-            self.unwritten =
+        if matches!(self.write, Write::NotAsked) {
+            use crate::privacy_startup::StartupError;
+            self.write =
                 match crate::privacy_startup::commit(&prepared.original, &prepared.candidate) {
-                    Ok(()) => None,
-                    Err(error) => Some(format!("The settings change did not complete. {error}")),
+                    Ok(()) => Write::Written,
+                    // The file was replaced, or may have been.
+                    Err(
+                        error @ PrivateTerminalError::Startup(
+                            StartupError::SettingWrittenThenChanged
+                            | StartupError::RenameUnconfirmed,
+                        ),
+                    ) => Write::Unverified(error.to_string()),
+                    Err(error) => {
+                        Write::Refused(format!("The settings change did not complete. {error}"))
+                    }
                 };
         }
         let (bootstrap, start) = crate::privacy_startup::recapture()?;
@@ -498,9 +538,11 @@ impl SettingsAuthority for RouterSettings {
             Err(error) => return Err(PrivateTerminalError::Source(error)),
         };
         let approval = OwnedSecretTerminal::captured_approval(&bootstrap, &start)?;
-        // What the person granted during the conversation stays granted. A
-        // new permission mode is taken as the ordinary terminal takes it:
-        // without the earlier "always".
+        // The shell commands and the network use that the person allowed
+        // during the conversation stay allowed. An earlier "always" does
+        // not come along: it lets the gate decide a reviewed write itself,
+        // which a start of this conversation would be refused for, and the
+        // permission mode may have changed. The person is asked again.
         let earlier = match live.lock() {
             Ok(state) => state.clone(),
             Err(_) => return Err(PrivateTerminalError::ApprovalSource),
@@ -514,9 +556,6 @@ impl SettingsAuthority for RouterSettings {
             }
         }
         state.auto_approve_network |= earlier.auto_approve_network;
-        if !prepared.mode || self.unwritten.is_some() {
-            state.auto_approve |= earlier.auto_approve;
-        }
         drop(state);
         *live = approval;
         Ok(bootstrap)
@@ -541,14 +580,18 @@ impl SettingsAuthority for RouterSettings {
             BootstrapError::Key(KeyError::Cancelled) => "The unlock was cancelled.".to_owned(),
             error => error.to_string(),
         };
-        // What became of the change itself belongs to the last word: a
-        // write that was made is never reported as absent.
-        let change = match (self.committed, &self.unwritten) {
-            (false, _) => "The settings change was not handed to the writer.",
-            (true, None) => "The settings change itself was written to the user file.",
-            (true, Some(unwritten)) => unwritten,
-        };
-        Err(PrivateTerminalError::CarryOver(format!("{why} {change}")))
+        Err(PrivateTerminalError::CarryOver(format!(
+            "{why} {}",
+            self.write.told()
+        )))
+    }
+
+    fn ended(&mut self, error: PrivateTerminalError) -> PrivateTerminalError {
+        // Only after a retirement, and not for an error that says it itself.
+        if self.carried.is_none() || matches!(error, PrivateTerminalError::CarryOver(_)) {
+            return error;
+        }
+        PrivateTerminalError::CarryOver(format!("{error} {}", self.write.told()))
     }
 
     fn adopt<'a>(&'a mut self, built: Option<&'a PrivateBuiltSession>) -> SettingsWork<'a> {
@@ -557,14 +600,16 @@ impl SettingsAuthority for RouterSettings {
                 return Returned::Listing(Err("No retired conversation is waiting.".into()));
             };
             let prepared = self.prepared.take();
-            (self.committed, self.refused) = (false, 0);
+            let write = std::mem::take(&mut self.write);
+            self.refused = 0;
             if let Err(reason) = built.adopt(&carried).await {
-                return Returned::Listing(Err(reason));
+                // The last word says what became of the change as well.
+                return Returned::Listing(Err(format!("{reason} {}", write.told())));
             }
-            Returned::Listing(Ok(match (self.unwritten.take(), prepared) {
-                (Some(unwritten), _) => unwritten,
-                (None, Some(prepared)) => prepared.line,
-                (None, None) => String::new(),
+            Returned::Listing(Ok(match (write, prepared) {
+                (Write::Refused(line) | Write::Unverified(line), _) => line,
+                (_, Some(prepared)) => prepared.line,
+                (_, None) => String::new(),
             }))
         })
     }

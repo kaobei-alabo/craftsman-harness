@@ -86,6 +86,10 @@ pub enum StartupError {
     )]
     RenameUnconfirmed,
     #[error(
+        "The setting was written, but the user configuration could not be verified afterwards or then read differently. `craftsman privacy status` shows its present state."
+    )]
+    SettingWrittenThenChanged,
+    #[error(
         "The user configuration was not replaced. The staging name `config.json.privacy-enable` could not be confirmed as the file this command created; that entry was left in place."
     )]
     StagedLeftover,

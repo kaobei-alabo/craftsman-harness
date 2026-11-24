@@ -304,7 +304,9 @@ impl PrivateBootstrap {
     pub(crate) fn carrying(mut self, carried: &CarriedConversation) -> Result<Self> {
         self.policy.recheck()?;
         self.workspace.recheck()?;
-        let binding = carried.retired.successor();
+        let Some(binding) = carried.retired.successor() else {
+            return Err(BootstrapError::Session(SessionStop::Scope));
+        };
         if self.binding.is_some() || !binding.is_for(&self.workspace.canonical) {
             return Err(BootstrapError::Workspace);
         }
@@ -1028,6 +1030,16 @@ impl PrivateBuiltSession {
         use crate::privacy_session::CapturedUserPolicy;
         self.owner.requires_inspectable_provider_items()
     }
+    /// Whether `original` is, byte for byte, the user file this
+    /// conversation was captured from, with the retained root and lease
+    /// checked again. A conversation without a startup has no such file.
+    #[cfg(unix)]
+    pub(crate) fn captured_from(&self, original: &[u8]) -> bool {
+        match self.owner.policy.startup() {
+            Some(owners) => owners.source.holds(original),
+            None => false,
+        }
+    }
     /// The captured user configuration root and the captured workspace,
     /// for the extensions this conversation's start could see.
     #[cfg(unix)]
@@ -1141,7 +1153,19 @@ impl PrivateBuiltSession {
         let usage = *self.session.usage.lock().unwrap();
         let transfer = match self.session.agent.retire_conversation_with_view().await {
             Ok(transfer) => transfer,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                // The agent refuses most retirements with the conversation
+                // as it was. A record that no longer agrees with its
+                // sources closes the conversation instead, and the line
+                // must not say that it was kept.
+                let line = error.to_string();
+                return Err(match self.owner.check_sources() {
+                    Ok(()) => line,
+                    Err(_) => format!(
+                        "{line} The conversation has ended; its record remains in the thread store."
+                    ),
+                });
+            }
         };
         self.owner.close();
         Ok(CarriedConversation {

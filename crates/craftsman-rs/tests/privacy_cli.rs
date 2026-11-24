@@ -2348,7 +2348,11 @@ fn actual_normal_settings_changes_carry_the_private_conversation_into_a_new_scop
 ///   one error that says the unlock was cancelled, that the change was
 ///   written, and where the record is;
 /// - *three refusals:* the third ends it the same way, as one key owner
-///   would.
+///   would;
+/// - *cancelled before the prompt:* Ctrl-C typed behind the command ends
+///   the terminal after the retirement and before the file is written. The
+///   one error says that the conversation was retired, that the entry was
+///   cancelled and that the change was not written; the file is as it was.
 ///
 /// In all three the store holds the one private thread with the record up
 /// to the retirement, and neither refused entry is echoed or sent.
@@ -2366,8 +2370,14 @@ fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversa
         Retry,
         Cancel,
         ThreeRefusals,
+        CancelledBeforeThePrompt,
     }
-    for end in [End::Retry, End::Cancel, End::ThreeRefusals] {
+    for end in [
+        End::Retry,
+        End::Cancel,
+        End::ThreeRefusals,
+        End::CancelledBeforeThePrompt,
+    ] {
         let setup = approved(Script::Carry);
         // The user's own file for this case: one named provider with two
         // models on this case's loopback endpoint, and the policy that pins
@@ -2391,6 +2401,25 @@ fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversa
         terminal.wait_for("Planned for alice@example.invalid.");
         assert_eq!(setup.home.user_bytes(), authored);
 
+        if end == End::CancelledBeforeThePrompt {
+            // The retirement happened; the writer was not reached.
+            terminal.send(b"/model fixture/second-model\r\x03");
+            let (output, code) = terminal.finish();
+            assert_eq!(code, 1);
+            assert!(
+                plain(&output).contains(&squeezed(
+                    "Error: The conversation was retired for a settings change and could not be carried into a new private scope. The private terminal entry was cancelled. The settings change was not written. It has ended; its record up to that point remains in the thread store."
+                )),
+                "{}",
+                plain(&output)
+            );
+            setup.assert_unchanged(&authored, &key);
+            assert_eq!(setup.private_requests().len(), 2);
+            let threads = setup.private_threads();
+            assert_eq!(threads.len(), 1);
+            assert_eq!(typed_inputs(&threads[0]), [TYPED]);
+            continue;
+        }
         // The change, with ordinary input typed behind it before any
         // password is asked. That input is a draft, not secret type-ahead.
         terminal.send(b"/model fixture/second-model\r  Follow up");
@@ -2466,6 +2495,7 @@ fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversa
                 );
                 output
             }
+            End::CancelledBeforeThePrompt => unreachable!("that ending left the loop above"),
         };
         // Neither refused entry was echoed, and the change stands as it
         // was written, once.

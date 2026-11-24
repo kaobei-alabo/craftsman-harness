@@ -208,7 +208,9 @@ The conversation accepts a built session only when all of this holds:
   privacy conversation has no place that installs them;
 - the main stream is given the display itself when there is one, in place of
   the requested token sink, and otherwise the requested sink; the round sink
-  and the installed extra tools are the request's own;
+  and the installed extra tools are the request's own; where the builder
+  made the gadget runtime, it was told as many allowed gadgets as the
+  request names;
 - the display, the file review and the adapters are the very objects the
   root agent's boundary holds; an adapter exists exactly for each controller
   the builder made, and those controllers are the built session's own;
@@ -417,16 +419,20 @@ The steps, in order:
    anything is touched: they differ from the file in exactly those places,
    the policy member is untouched and still the valid enabled one, the
    candidate parses as a startup would take it, and what it then means is
-   what the ordinary selection would have saved. The wire of the selected
-   model is checked here as well, because the build of the new conversation
-   would refuse it only after the retirement. A refusal is a line; the
-   conversation goes on.
+   what the ordinary selection would have saved. The file must be, byte for
+   byte, the one the conversation was captured from, under the lease the
+   conversation still holds: a fresh read of the user root alone is not
+   taken for that. The wire of the selected model is checked here as well,
+   because the build of the new conversation would refuse it only after
+   the retirement. A refusal is a line; the conversation goes on.
 2. **Retired.** The conversation must be idle: no running turn, no local
    work, no running background task and no parked approval. Its own record
    of every private value is read while it is live. Then the agent retires:
    it issues its whole record and closes the source view, and with it the
    send guard, the vault scope and the key. A refusal up to here keeps the
-   conversation as it was.
+   conversation as it was, with one exception: a record that no longer
+   agrees with the sources kept beside it closes the conversation, and the
+   line then says that it has ended.
 3. **Written and recaptured.** After the frontend retired its owners, the
    candidate is committed through the same staged, identity-bound writer as
    `enable`, and the startup of this same invocation is captured anew. A
@@ -443,12 +449,15 @@ The steps, in order:
    an entry that cannot be a vault password counts as one. The new
    conversation keeps the thread and gets a vault scope of its own: its
    namespace names how many scopes the thread had before, so it is never the
-   retired one, and its placeholders differ.
+   retired one, and its placeholders differ. A thread whose scopes are used
+   up gets no further one: the count is checked, never reused.
 5. **Adopted.** The new agent adopts the record; see below. The session's
-   usage totals and what the person granted during the conversation (shell
-   allow-list entries, "always") come along. A failure here ends the
-   terminal with a fixed error; the record up to the retirement is in the
-   thread store.
+   usage totals come along, and so do the shell commands and the network
+   use that the person allowed during the conversation. An earlier
+   "always" does not: it lets the gate decide a reviewed write itself,
+   which a start would be refused for, so the new conversation asks again.
+   A failure here ends the terminal with a fixed error; the record up to
+   the retirement is in the thread store.
 
 What the adoption does with each recorded message:
 
@@ -499,10 +508,29 @@ What is refused, with the conversation kept:
 Limits: the conversation is ended before the file is written, so a failure
 after the retirement (a file that no longer proposes privacy, a refused
 adoption, a cancelled unlock, a third refused password) ends the terminal
-and the conversation is not resumed; its record is in the thread store. For
-a cancelled unlock and a third refusal the error says which it was and what
-became of the change: that it was written, or why it was not. Sub-agents'
-own records are not carried.
+and the conversation is not resumed; its record is in the thread store.
+Every error after the retirement says that the conversation was retired and
+what became of the change: not written; written; refused, with nothing
+replaced and why; or replaced, or possibly replaced, and not verified. A
+write that was made or may have been made is never told as unwritten.
+Sub-agents' own records are not carried.
+
+Known defects of the carry-over, from the independent review, not yet
+corrected:
+
+- **The check before the retirement is weaker than the adoption.** It
+  accepts a record by the kind of each source. The adoption also requires
+  that each source fits its message, that a host note or summary has its
+  commit, that the content matches and that renamed placeholders do not
+  overlap. A record that fails one of those fails after the retirement and
+  the write, and the terminal ends, with the error described above.
+- **The adoption is awaited where it stands.** While every retired value
+  and raw capture is admitted again, the terminal draws nothing and
+  observes no input, cancellation or shutdown.
+- **The retired scope is closed but not released.** Each adopted commit
+  keeps the whole transfer, and with it the retired record, its sources
+  and the retired conversation's owner, for the life of the successor;
+  repeated changes chain them.
 
 The router applies the same rule to a start: when the invocation's own
 option or the captured file selects a mode that decides file writes, or an
@@ -647,7 +675,7 @@ and identifiers are the user's own later edits.
     summarizer request. The store has one private thread with one unbroken
     save sequence, and its record before the compaction holds every input
     in order.
-  - *A refused password after a settings retirement.* Three conversations.
+  - *A refused password after a settings retirement.* Four conversations.
     In each, `/model` retires the conversation with a draft typed behind
     the command, and a wrong password gives the prompt that says the
     conversation is kept; the file was written once and no request was
@@ -658,9 +686,13 @@ and identifiers are the user's own later edits.
     new model with the earlier roles, call and result under a new alias.
     In the second, Escape ends the terminal with one error that names the
     cancelled unlock, the written change and the thread store. In the
-    third, a third refused entry ends it the same way. Each store holds
-    one private thread with one unbroken save sequence, with the record up
-    to the retirement in the two that ended. No refused entry is echoed or
+    third, a third refused entry ends it the same way. In the fourth,
+    Ctrl-C typed behind the command ends the terminal after the retirement
+    and before the writer: the one error says that the conversation was
+    retired, that the entry was cancelled and that the change was not
+    written, and the file is as it was. Each store holds one private
+    thread with one unbroken save sequence, with the record up to the
+    retirement in the three that ended. No refused entry is echoed or
     sent.
   - *A mode that decides file writes* is refused at the start: by the
     status for each such mode of the file, and by the router on a real
@@ -733,7 +765,7 @@ evidence for the correction and that run is not. Runs of these cases under
 artificial load, made before the cause was read from the recordings, are
 no evidence either way and are not counted.
 
-The gadget test binary's unwind section is 16,777,004 bytes, 212 under
+The gadget test binary's unwind section is 16,776,996 bytes, 220 under
 the unchanged 16,777,216-byte limit, with no linker warning. The start's
 mode check and the four added stages had brought it to 288 under, 84 bytes
 more than on the carried-conversation commit. The unlock loop of the retry
@@ -742,7 +774,8 @@ binary links, which left 388. The corrections after the independent
 review are linked into this binary: the lanes' record, the record that is
 said once, the writer's phase and the shell escape's directory check.
 Written with adapter calls they left 40 bytes; as plain matches that do
-the same work they leave 212. The budget selection, the wire check, the
+the same work they left 212, and 220 with the phase disclosure, whose call
+site is a match as well. The budget selection, the wire check, the
 retry's own state and the voice corrections are not linked into it. The first
 wiring of the settings flow was 1,932 bytes over. What that binary reaches
 of it now adds no generic instantiation there: the adoption fact behind a
@@ -758,7 +791,9 @@ transcription, a cancelled shell escape, a settings change whose write or
 adoption fails after the retirement, a carried conversation with host notes
 of a background agent or with a summary, the model and effort pickers
 through a terminal, a budget selection that is written, a signal or a
-changed user file during the retry prompt, a cancelled
+changed user file during the retry prompt, a write that is replaced and
+not verified, a user file that is not the captured one, a thread whose
+scopes are used up, a retirement refused for an inconsistent record, a cancelled
 compaction, the staging entry's removal and
 leftover report after a refusal past its creation, a failure after the
 rename, non-default permission options and an Always effect
