@@ -425,7 +425,7 @@ missed every stage after the password in the inherited screen reader; an
 inherited case asserts the capture's `Invalid` answer for an unparsable file,
 so a line-and-column answer was withdrawn.
 
-The gadget test binary's unwind section is 16,776,464 bytes, 752 under
+The gadget test binary's unwind section is 16,776,564 bytes, 652 under
 the unchanged 16,777,216-byte limit, with no linker warning. The five
 captured cases' scripts and their three child functions are each folded into
 one future, token for token, which is where the room for the witness came

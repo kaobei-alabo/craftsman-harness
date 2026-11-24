@@ -1178,7 +1178,7 @@ pub struct SessionExtras {
 }
 
 /// How many facts [`SessionExtras::original`] states.
-pub(crate) const REQUEST_FACTS: usize = 14;
+pub(crate) const REQUEST_FACTS: usize = 16;
 /// Where each fact of [`SessionExtras::original`] is.
 pub(crate) mod request_fact {
     pub(crate) const PRIVACY_PROMPT: usize = 0;
@@ -1196,6 +1196,8 @@ pub(crate) mod request_fact {
     pub(crate) const EXTRA_TOOL_IDENTITIES: usize = 12;
     #[cfg(feature = "gadgets")]
     pub(crate) const ALLOWED_GADGETS: usize = 13;
+    /// The two owners that the delegated agents' tools are handed.
+    pub(crate) const DELEGATED_TOOL_OWNERS: usize = 14;
 }
 
 /// The address of the object an optional owner hands over, zero for none.
@@ -1228,6 +1230,10 @@ impl SessionExtras {
         facts[fact::CALL_PROMPT] = owner_address!(&self.call_approval_prompt);
         facts[fact::ASK_PROMPT] = owner_address!(&self.ask_user_prompt);
         facts[fact::OUTPUT_CLOSED] = owner_address!(&self.output_closed);
+        if let Some((first, second)) = &self.delegated_tool_callbacks {
+            facts[fact::DELEGATED_TOOL_OWNERS] = &**first as *const _ as *const () as usize;
+            facts[fact::DELEGATED_TOOL_OWNERS + 1] = &**second as *const _ as *const () as usize;
+        }
         #[cfg(feature = "gadgets")]
         let gadgets = [
             self.local_gadgets,
