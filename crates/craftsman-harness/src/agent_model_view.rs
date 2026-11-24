@@ -2113,6 +2113,22 @@ fn not_transferable(why: &'static str) -> AgentError {
 }
 
 impl Agent {
+    /// Asks the selected boundary to validate this agent's installed
+    /// controllers now, exactly as every tracked entry does before anything
+    /// else, and does nothing more: no turn, model request, tool, hook or
+    /// checkpoint. Every typed entry validates the same before it does
+    /// anything, so no conversation depends on this call. It is for a host
+    /// whose record of a build lists the installed controllers before the
+    /// first entry and must not list one that was never validated. It is
+    /// the same check with the same refusals, not a relaxation of one; an
+    /// agent without a selected boundary is refused.
+    pub fn validate_view_controllers(&self) -> Result<(), AgentError> {
+        match self.supported_view() {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Retires this selected agent's conversation and issues it for one
     /// adoption by a newly built agent.
     ///

@@ -62,6 +62,11 @@ fn own_source(of: &'static str) -> SourceRef {
 pub(super) struct Installed {
     pub(super) policy: OnceLock<Weak<SelectedControls>>,
     pub(super) completion: OnceLock<Weak<SelectedVerification>>,
+    /// Whether the installed controllers of this boundary's own agent were
+    /// found to fit these adapters at the boundary's last validation. The
+    /// validation is of that agent's bindings and of no other's; it is
+    /// false before the first one and after one that failed.
+    pub(super) fitted: std::sync::atomic::AtomicBool,
     /// What the delegated agents' tool gates of this conversation hold, as
     /// each constructed gate said, and in the last place how many gates
     /// said so; all ones once two of them disagreed.

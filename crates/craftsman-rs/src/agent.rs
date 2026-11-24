@@ -3654,6 +3654,14 @@ async fn build_session_with_capture_profile(
                 .report()
                 .accept(crate::privacy_session::Accept::Registered);
         }
+        // The boundary's own validation of the controllers this builder
+        // installed, run now, before the session is handed out: the
+        // conversation records from it that they fit. No turn runs for it.
+        if agent.validate_view_controllers().is_err() {
+            selection
+                .report()
+                .refuse(crate::privacy_session::BuildRefusal::RequestedPart);
+        }
     }
     #[cfg(feature = "gadgets")]
     let script_capture = match pending_script_capture {

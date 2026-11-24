@@ -301,10 +301,14 @@ remains the gate.
 - **The controllers.** The framework validates the installed controllers'
   bindings and the middleware chain itself at every typed entry of the agent
   (a turn, a compaction, a retirement, an adoption). That is unchanged and
-  is the check that protects a conversation. The witness compares the
-  adapters by object with what the boundary holds, and at a build it does
-  so before the first entry: there it lists an adapter that no entry has
-  validated yet. That is a listing, not a validation.
+  is the check that protects a conversation. The witness adds one
+  qualification for the time before the first entry: the builder runs that
+  same validation once before it hands the session out
+  (`Agent::validate_view_controllers`, which runs no turn, model request,
+  tool, hook or checkpoint), and the boundary lists an adapter only after
+  its last validation found the installed controllers to fit. Without it
+  the witness of a build would list an adapter that no entry had validated
+  yet; it is not a second or a weaker check.
 - A build whose witness disagrees has never been produced by a test: the
   cases show that real builds satisfy it, with the display and without one.
   No case builds a private session on a native wire through the witness;

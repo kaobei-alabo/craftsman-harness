@@ -1688,12 +1688,15 @@ impl ConversationBoundary {
             Some(review) => Arc::as_ptr(review) as usize,
             None => 0,
         };
+        // An adapter is reported only after this boundary's own agent's
+        // installed controllers were found to fit the adapters held here.
+        let fitted = self.controls.fitted.load(Ordering::Acquire);
         let verification = match self.controls.completion.get() {
-            Some(adapter) if adapter.strong_count() != 0 => adapter.as_ptr() as usize,
+            Some(adapter) if fitted && adapter.strong_count() != 0 => adapter.as_ptr() as usize,
             _ => 0,
         };
         let controls = match self.controls.policy.get() {
-            Some(adapter) if adapter.strong_count() != 0 => adapter.as_ptr() as usize,
+            Some(adapter) if fitted && adapter.strong_count() != 0 => adapter.as_ptr() as usize,
             _ => 0,
         };
         [replies, files, verification, controls]
@@ -2003,7 +2006,12 @@ impl ModelViewBoundary for ConversationBoundary {
         bindings: &ActualControllerBindings,
     ) -> Result<(), AgentError> {
         self.require_agent(bindings.owner())?;
-        if !self.controls.fit(bindings) {
+        // The outcome of this validation, with the agent it was for, is
+        // what `installed` reports from: a fit that was not found here is
+        // not reported.
+        let fit = self.controls.fit(bindings);
+        self.controls.fitted.store(fit, Ordering::Release);
+        if !fit {
             return Err(AgentError::State(
                 "This conversation has no verified controller sources.".into(),
             ));
