@@ -9,10 +9,10 @@
 //!
 //! 1. **Asked.** The ordinary `/model`, `/effort` and `/mode` forms and their
 //!    pickers. The ordinary selection decides what the change means: a named
-//!    `provider/model` keeps its id, and an effort is written where that
-//!    model's own options live. The candidate bytes of the user file are
-//!    built and validated as a whole here, before anything is touched. A
-//!    refusal is a line; the conversation goes on.
+//!    `provider/model` keeps its id, and an effort or a thinking-token
+//!    budget is written where that model's own options live. The candidate
+//!    bytes of the user file are built and validated as a whole here, before
+//!    anything is touched. A refusal is a line; the conversation goes on.
 //! 2. **Retired.** The conversation must be idle. Its agent retires and
 //!    issues its whole record; the send guard, the vault scope and the key
 //!    close. A refusal before the agent's retirement keeps the conversation.
@@ -73,8 +73,25 @@ pub(super) struct RouterSettings {
     unwritten: Option<String>,
 }
 
+/// What a thinking-token budget for `model`, or for the current model, would
+/// save: the candidate of the ordinary terminal's budget selection
+/// (`model_commands::select_budget`), made by the same setter. Read-only.
+fn budget_config(cfg: &Config, model: Option<&str>, budget: u32) -> Result<Config, String> {
+    let mut candidate = cfg.clone();
+    if let Some(model) = model {
+        candidate.model = Some(model.into());
+    }
+    let Some(model) = candidate.model.clone() else {
+        return Err("No model selected.".into());
+    };
+    crate::provider_config::set_budget(&mut candidate, &model, budget)?;
+    Ok(candidate)
+}
+
 enum Change {
-    Model(ModelSelection),
+    /// What the ordinary terminal's model, effort or budget selection would
+    /// save, or its refusal.
+    Model(Result<Config, String>),
     Mode(PermissionMode),
 }
 
@@ -94,14 +111,32 @@ impl RouterSettings {
         let mut edits = Vec::new();
         let mode = matches!(change, Change::Mode(_));
         let (expected, line) = match change {
-            Change::Model(selection) => {
-                // What the ordinary terminal's selection would save.
-                let candidate = crate::tui::model_commands::selected_config(cfg, selection)?;
+            Change::Model(candidate) => {
+                let candidate = candidate?;
                 let model = candidate.model.clone().unwrap_or_default();
+                // The successor is built on the wire this selection names. A
+                // named provider's native protocol sends back items that
+                // cannot be inspected (`LlmClient::configured`). Where the
+                // policy requires that they can, the build refuses that
+                // wire, and it would do so only after the retirement. It is
+                // refused here instead, with the build's own reason.
+                if !candidate.providers.is_empty()
+                    && built.requires_inspectable_items()
+                    && crate::provider_config::selection(&candidate, &model)?
+                        .provider
+                        .protocol
+                        != crate::provider_config::Protocol::OpenaiChatCompletions
+                {
+                    return Err(format!(
+                        "{} Nothing was changed.",
+                        crate::privacy_session::BuildRefusal::OpaqueProviderItems
+                    ));
+                }
                 if candidate.model != cfg.model {
                     edits.push((vec![name("model")], serde_json::Value::from(model.as_str())));
                 }
-                // A named model's effort lives with that provider's model.
+                // A named model's effort or budget lives with that provider's
+                // model.
                 if candidate.providers != cfg.providers {
                     let chosen = crate::provider_config::selection(&candidate, &model)?;
                     let reasoning = chosen
@@ -233,16 +268,23 @@ impl SettingsAuthority for RouterSettings {
         prompt: &mut Option<String>,
     ) -> bool {
         self.compaction = None;
+        use crate::tui::model_commands::selected_config;
         let change = match asked {
             SettingsAsked::Action(AppAction::ChooseModel(model)) => {
                 crate::tui::model_commands::show_model_effort_picker(cfg, app, model.clone());
                 return true;
             }
             SettingsAsked::Action(AppAction::SelectModelEffort { model, effort }) => {
-                Change::Model(ModelSelection {
-                    model: Some(model.clone()),
-                    effort: Some(*effort),
-                })
+                Change::Model(selected_config(
+                    cfg,
+                    ModelSelection {
+                        model: Some(model.clone()),
+                        effort: Some(*effort),
+                    },
+                ))
+            }
+            SettingsAsked::Action(AppAction::SelectModelBudget { model, budget }) => {
+                Change::Model(budget_config(cfg, Some(model), *budget))
             }
             SettingsAsked::Action(AppAction::SelectMode(mode)) => Change::Mode(*mode),
             SettingsAsked::Action(_) => return false,
@@ -267,7 +309,7 @@ impl SettingsAuthority for RouterSettings {
                     (Some("/model"), Some(_), _) => {
                         let tokens = line.split_whitespace().skip(1);
                         match crate::model_controls::parse_selection(tokens) {
-                            Ok(selection) => Change::Model(selection),
+                            Ok(selection) => Change::Model(selected_config(cfg, selection)),
                             Err(error) => {
                                 app.push_error(error);
                                 return true;
@@ -278,18 +320,33 @@ impl SettingsAuthority for RouterSettings {
                         crate::tui::model_commands::show_effort_picker(cfg, app);
                         return true;
                     }
+                    // Digits are a thinking-token budget for the current
+                    // model of a named provider, as in the ordinary terminal.
                     (Some("/effort"), Some(value), None)
-                        if !value.bytes().all(|byte| byte.is_ascii_digit()) =>
+                        if !cfg.providers.is_empty()
+                            && value.bytes().all(|byte| byte.is_ascii_digit()) =>
                     {
+                        match value.parse::<u32>() {
+                            Ok(budget) => Change::Model(budget_config(cfg, None, budget)),
+                            Err(_) => {
+                                app.push_error("Thinking token budget exceeds its limit.");
+                                return true;
+                            }
+                        }
+                    }
+                    (Some("/effort"), Some(value), None) => {
                         let effort = match value {
                             "default" => Ok(None),
                             value => crate::model_controls::ReasoningEffort::parse(value).map(Some),
                         };
                         match effort {
-                            Ok(effort) => Change::Model(ModelSelection {
-                                model: None,
-                                effort: Some(effort),
-                            }),
+                            Ok(effort) => Change::Model(selected_config(
+                                cfg,
+                                ModelSelection {
+                                    model: None,
+                                    effort: Some(effort),
+                                },
+                            )),
                             Err(error) => {
                                 app.push_error(error);
                                 return true;

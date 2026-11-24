@@ -28,6 +28,8 @@ const LIMIT: Duration = Duration::from_secs(60);
 const SECRET: &str = "  synthetic-vault-e\u{301}-passphrase  ";
 const PINS: &str = r#""detector":{"gadget":"privacy-detector","function":"detect","component_sha256":"0000000000000000000000000000000000000000000000000000000000000000","manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
 const NOT_YET: &str = "Enabled privacy is not yet available in this version.";
+#[cfg(feature = "gadgets")]
+const MODE_AT_START: &str = "The permission mode of this start decides file writes without asking. With privacy enabled, a write that restores private values would then not be shown first. Start with `plan` or `manual`; nothing was unlocked.";
 /// The status line of a passed read-only preflight. It names what a start
 /// still has to check; it asserts no unlock, approval, support or readiness.
 #[cfg(feature = "gadgets")]
@@ -576,6 +578,26 @@ fn privacy_status_reports_the_local_state_and_only_a_preflight() {
             )
         );
     }
+    // A permission mode that decides file writes without asking is refused
+    // before the key is looked at. A build without the detector feature
+    // gives that feature's refusal first, as it does for every source.
+    #[cfg(feature = "gadgets")]
+    let decided = MODE_AT_START;
+    #[cfg(not(feature = "gadgets"))]
+    let decided = "The private terminal requires the source-built detector feature.";
+    for mode in ["accept-edits", "bypass-permissions", "auto"] {
+        home.user(&enabled(&format!(
+            r#""permission_mode":"{mode}",{VOICE_OFF}"#
+        )));
+        assert_eq!(
+            home.run(&["privacy", "status"]),
+            (
+                format!("{missing}\n{enabled_line}\nInteractive startup: refused. {decided}\n"),
+                0
+            ),
+            "{mode}"
+        );
+    }
     // Read-only: nothing but the synthetic user file is there.
     assert_eq!(home.entries(), ["config.json"]);
 }
@@ -649,6 +671,18 @@ fn actual_normal_startup_answers_early_and_init_stays_create_only() {
             r#"{"voice":{"enabled":false},"privacy":{"enabled":true}}"#.to_owned(),
             "The captured user configuration is invalid.",
         ),
+        // A permission mode of the file that decides file writes itself,
+        // and the file's own automatic approval.
+        (
+            enabled(&format!(
+                r#""permission_mode":"bypass-permissions",{VOICE_OFF}"#
+            )),
+            MODE_AT_START,
+        ),
+        (
+            enabled(&format!(r#""auto_approve":true,{VOICE_OFF}"#)),
+            MODE_AT_START,
+        ),
         (
             enabled(VOICE_OFF),
             "No mapping-vault key exists yet. Run `craftsman privacy init` first; nothing was unlocked.",
@@ -664,6 +698,26 @@ fn actual_normal_startup_answers_early_and_init_stays_create_only() {
         );
         assert_eq!(code, 1);
         // No alternate screen was entered and nothing was created.
+        assert!(!output.windows(8).any(|window| window == b"\x1b[?1049h"));
+        assert_eq!(home.user_bytes(), user);
+        assert_eq!(home.entries(), ["config.json"]);
+    }
+
+    // The invocation's own options decide the mode before the file does:
+    // they are refused the same way, on a file that asks.
+    for arguments in [
+        ["--auto-approve"].as_slice(),
+        ["--permission-mode", "accept-edits"].as_slice(),
+    ] {
+        let home = Home::new();
+        let user = home.user(&enabled(VOICE_OFF));
+        let (output, code) = Terminal::start(&home, arguments).finish();
+        assert!(
+            plain(&output).contains(&squeezed(&format!("Error: {MODE_AT_START}"))),
+            "{arguments:?}: {}",
+            plain(&output)
+        );
+        assert_eq!(code, 1);
         assert!(!output.windows(8).any(|window| window == b"\x1b[?1049h"));
         assert_eq!(home.user_bytes(), user);
         assert_eq!(home.entries(), ["config.json"]);
@@ -1907,7 +1961,10 @@ fn request_alias(body: &serde_json::Value) -> String {
 /// carries the whole record into a new scope of the same thread.
 ///
 /// What it shows:
-/// - a refused selection changes nothing and asks for no password;
+/// - a refused selection changes nothing and asks for no password: one the
+///   catalog refuses, a model on a wire whose provider items cannot be
+///   inspected, and a thinking-token budget the current model does not
+///   declare;
 /// - a permission mode that decides file writes without asking is refused
 ///   the same way;
 /// - the file keeps every byte but the changed values: the named
@@ -1928,11 +1985,12 @@ fn request_alias(body: &serde_json::Value) -> String {
 fn actual_normal_settings_changes_carry_the_private_conversation_into_a_new_scope() {
     let setup = approved(Script::Carry);
     // The user's own file for this case: one named provider with two models
-    // on this case's loopback endpoint, and the policy that pins the
-    // installed detector.
+    // on this case's loopback endpoint, a second one on a native protocol
+    // that is never contacted, and the policy that pins the installed
+    // detector.
     let providers = |selected: &str, reasoning: &str| {
         format!(
-            r#""model":"fixture/{selected}","providers":{{"fixture":{{"protocol":"openai_chat_completions","base_url":"{}","api_key":"fixture-key","models":{{"first-model":{{"label":"First","settings":{{"reasoning":null}}}},"second-model":{{"label":"Second","reasoning_controls":{{"type":"effort","values":["low","high"]}},"settings":{{"reasoning":{reasoning}}}}}}}}}}},"harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"unknown":{{"kept":[1,2,3],"model":"nested, not \"this\" one"}},"privacy":{{"enabled":true,"detector":{{"gadget":"privacy-detector","function":"detect","component_sha256":"{}","manifest_sha256":"{}"}}}}"#,
+            r#""model":"fixture/{selected}","providers":{{"fixture":{{"protocol":"openai_chat_completions","base_url":"{}","api_key":"fixture-key","models":{{"first-model":{{"label":"First","settings":{{"reasoning":null}}}},"second-model":{{"label":"Second","reasoning_controls":{{"type":"effort","values":["low","high"]}},"settings":{{"reasoning":{reasoning}}}}}}}}},"claude":{{"protocol":"anthropic_messages","base_url":"http://127.0.0.1:9","api_key":"fixture-key","models":{{"deep":{{"label":"Deep","reasoning_controls":{{"type":"budget","min":1024,"max":4096}}}}}}}}}},"harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"unknown":{{"kept":[1,2,3],"model":"nested, not \"this\" one"}},"privacy":{{"enabled":true,"detector":{{"gadget":"privacy-detector","function":"detect","component_sha256":"{}","manifest_sha256":"{}"}}}}"#,
             setup.server.uri(),
             setup.component,
             setup.manifest
@@ -1960,6 +2018,21 @@ fn actual_normal_settings_changes_carry_the_private_conversation_into_a_new_scop
     // nothing written.
     terminal.send(b"/model nowhere/none\r");
     terminal.wait_for("Unknown model provider.");
+    assert!(!screen(&terminal.output).contains("Unlock private privacy key"));
+    assert_eq!(setup.home.user_bytes(), authored);
+
+    // A model whose wire sends back provider items that cannot be
+    // inspected. The build of its conversation would refuse that wire, and
+    // only after the retirement, so the selection is refused first: a line,
+    // no password prompt, nothing written, and the conversation goes on.
+    terminal.send(b"/model claude/deep\r");
+    terminal.wait_for("The policy requires inspectable provider items");
+    assert!(!screen(&terminal.output).contains("Unlock private privacy key"));
+    assert_eq!(setup.home.user_bytes(), authored);
+    // A thinking-token budget is the ordinary selection too. The current
+    // model declares none, and the ordinary refusal is the line.
+    terminal.send(b"/effort 2048\r");
+    terminal.wait_for("Reasoning setting is not declared for this model.");
     assert!(!screen(&terminal.output).contains("Unlock private privacy key"));
     assert_eq!(setup.home.user_bytes(), authored);
 

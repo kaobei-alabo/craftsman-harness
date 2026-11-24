@@ -325,10 +325,9 @@ runs, the terminal does the following.
   escape, and nothing is restored into it. While work is running or an
   approval is parked, the command waits as it was typed.
 - **Still refused,** each with its own line and nothing changed: a model
-  catalog refresh over the network (`/model --refresh`), a numeric effort,
-  the mode cycle key, provider setup, harness, agent and voice-model
-  selection, reopening a session, `/rewind`, `/session`, `/tasks message`
-  and `/lsp restart`.
+  catalog refresh over the network (`/model --refresh`), the mode cycle
+  key, provider setup, harness, agent and voice-model selection, reopening
+  a session, `/rewind`, `/session`, `/tasks message` and `/lsp restart`.
 - **Fixed-text OSC 7501 status** is reported with the ordinary change-only
   reporter, unless `terminal.osc7501` is false. Only fixed states and
   messages are written.
@@ -357,14 +356,18 @@ do this: the router lends it the authority, and every other entry holds none.
 The steps, in order:
 
 1. **Asked.** The ordinary selection decides what the change means. A named
-   `provider/model` keeps its id; an effort is written where that model's own
-   options live (`providers.<provider>.models.<id>.settings.reasoning`, or
+   `provider/model` keeps its id; an effort or a thinking-token budget
+   (`/effort TOKENS`, or the budget choice of the picker) is written where
+   that model's own options live
+   (`providers.<provider>.models.<id>.settings.reasoning`, or
    `model_settings.<model>.reasoning_effort` without named providers). The
    candidate bytes of the whole file are built and validated here, before
    anything is touched: they differ from the file in exactly those places,
    the policy member is untouched and still the valid enabled one, the
    candidate parses as a startup would take it, and what it then means is
-   what the ordinary selection would have saved. A refusal is a line; the
+   what the ordinary selection would have saved. The wire of the selected
+   model is checked here as well, because the build of the new conversation
+   would refuse it only after the retirement. A refusal is a line; the
    conversation goes on.
 2. **Retired.** The conversation must be idle: no running turn, no local
    work, no running background task and no parked approval. Its own record
@@ -422,14 +425,28 @@ What is refused, with the conversation kept:
   write, so a write that restores private values would not be shown first.
   `plan` and `manual` are taken. A start whose own option fixes the mode
   refuses a mode change too, because the file would not decide it;
-- a model selection that the ordinary catalog refuses.
+- a model selection that the ordinary catalog refuses;
+- **a model on a wire whose provider items cannot be inspected.** A named
+  provider with a native protocol (`openai_responses`, `anthropic_messages`,
+  `gemini_generate_content`) sends back such items, and the policy requires
+  that everything a provider is sent can be inspected. The line is the
+  build's own reason. A thinking-token budget is accepted only by such
+  wires, so today a budget selection ends in this refusal or in the
+  ordinary catalog's own; no budget has been written by this path.
 
 Limits: the conversation is ended before the file is written, so a failure
 after the retirement (a wrong password, a file that no longer proposes
 privacy, a refused adoption) ends the terminal and the conversation is not
 resumed; its record is in the thread store. Sub-agents' own records are not
-carried. A start in a non-asking mode that the user's own file or option
-selects is not changed by this and keeps the gate's existing behaviour.
+carried.
+
+The router applies the same rule to a start: when the invocation's own
+option or the captured file selects a mode that decides file writes, or an
+automatic approval, the start is refused before any terminal or key effect,
+and `craftsman privacy status` reports it. Nothing is changed for the user.
+The private captured entry, which no normal route selects, takes the mode it
+is given; five inherited cases state that there the gate's automatic policy
+decides a reviewed write.
 
 ### Status, initialization and enabling
 
@@ -546,7 +563,9 @@ and identifiers are the user's own later edits.
     inspection commands and a task cancellation that finds no such task;
     its request count shows that none reached the model.
   - *Settings changes inside a conversation.* One conversation with a named
-    provider and two models. A selection the catalog refuses and a
+    provider and two models, and a second provider on a native protocol
+    that is never contacted. A selection the catalog refuses, a model of
+    the native provider, a budget the current model does not declare and a
     non-asking permission mode each give a line, no password prompt and an
     unchanged file. `/model` with an effort, then `/mode plan`, each retire
     the conversation, write the file, ask for the password and carry the
@@ -560,6 +579,11 @@ and identifiers are the user's own later edits.
     summarizer request. The store has one private thread with one unbroken
     save sequence, and its record before the compaction holds every input
     in order.
+  - *A mode that decides file writes* is refused at the start: by the
+    status for each such mode of the file, and by the router on a real
+    terminal for the file's mode, the file's automatic approval and both
+    options of the invocation, each before any terminal effect. A build
+    without the detector feature gives that feature's refusal first.
   - *Refusals:* the status text for each local state; which invocations are
     routed; the router's early refusals on a real terminal, including an
     invalid status setting before any terminal effect; every `enable`
@@ -585,7 +609,11 @@ found one alone. In this slice: the carry case's first run expected no
 catalog note among the carried messages, and it is carried like every other;
 its first compaction expected a conversation too short to summarize, and the
 agent summarized it; and the report check expected a reply as the last work,
-where it was the compaction. A rule that asked a person about every reviewed
+where it was the compaction. The status check for the modes that decide
+writes first expected the mode refusal in every build; a build without the
+detector feature answers with that feature's refusal first, as it does for
+every source, and the expectation now says so. A rule that asked a person
+about every reviewed
 write under an automatic permission mode was tried and withdrawn: five
 inherited cases state that the gate's automatic policy decides such a write,
 so the non-asking modes are refused instead. Earlier ones: the cases' first run with status reports
@@ -593,8 +621,35 @@ missed every stage after the password in the inherited screen reader; an
 inherited case asserts the capture's `Invalid` answer for an unparsable file,
 so a line-and-column answer was withdrawn.
 
-The gadget test binary's unwind section is 16,776,844 bytes, 372 under
-the unchanged 16,777,216-byte limit, with no linker warning. The first
+**A fresh-clear case of the unit-test binary failed twice,** once in the
+full run on the carried-conversation commit (the inherited
+`actual_fresh_clear_reacquires…` case) and once in a run of the module (its
+captured twin). Both stopped at the last stage, 60 seconds after the
+follow-up was typed, with the first reply and an empty composer on the
+screen. The terminal bytes that each failure recorded show the cause, and
+it is in the test driver. The password prompt after a clear is drawn top
+down over the earlier screen, so its first row and the old composer line
+are on the screen together until the rows between them are drawn. In both
+recordings the stage for the prompt and the next stage for the composer
+are first true at the same byte. When a read from the terminal ended
+there, the case typed the password and then at once the follow-up, at the
+prompt, which discards what is queued behind the password; no second
+request was made. The four sequences that wait for a composer after that
+password now wait for the prompt's last row first. Replayed over both
+recordings, the composer stage then matches only the new session's
+composer. No deadline, assertion or screen reading changed, and the real
+binary's cases already waited for the prompt to be gone. The ten entry
+cases passed once afterwards; the failure was rare, so the replay is the
+evidence for the correction and that run is not. Runs of these cases under
+artificial load, made before the cause was read from the recordings, are
+no evidence either way and are not counted.
+
+The gadget test binary's unwind section is 16,776,928 bytes, 288 under
+the unchanged 16,777,216-byte limit, with no linker warning. That is 84
+bytes more than on the carried-conversation commit; what this binary links
+of the later changes is the start's mode check and the four added stages.
+The budget selection and the wire check are not linked into it and add
+nothing. The first
 wiring of the settings flow was 1,932 bytes over. What that binary reaches
 of it now adds no generic instantiation there: the adoption fact behind a
 commit is held erased, an adopted message is made of the parts the request
@@ -608,7 +663,8 @@ issuance, cancellation of a task that is actually running, voice capture and
 transcription, a cancelled shell escape, a settings change whose write or
 adoption fails after the retirement, a carried conversation with host notes
 of a background agent or with a summary, the model and effort pickers
-through a terminal, a cancelled compaction, the staging entry's removal and
+through a terminal, a budget selection that is written, a cancelled
+compaction, the staging entry's removal and
 leftover report after a refusal past its creation, a failure after the
 rename, non-default permission options and an Always effect
 through the terminal, the terminal entry's own refusals, a mouse event,

@@ -1021,6 +1021,13 @@ impl PrivateBuiltSession {
             .startup()
             .and_then(|owners| owners.requirements.terminal_options())
     }
+    /// Whether this conversation's policy requires that everything a
+    /// provider is sent can be inspected, as its own build was held to.
+    #[cfg(unix)]
+    pub(crate) fn requires_inspectable_items(&self) -> bool {
+        use crate::privacy_session::CapturedUserPolicy;
+        self.owner.requires_inspectable_provider_items()
+    }
     /// The captured user configuration root and the captured workspace,
     /// for the extensions this conversation's start could see.
     #[cfg(unix)]

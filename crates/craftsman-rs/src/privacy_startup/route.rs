@@ -48,7 +48,8 @@ pub(crate) async fn normal_route(
 }
 
 /// What the router decides read-only, before a terminal, a password or any
-/// key work: the source turns voice off, the four owners move into the
+/// key work: the source turns voice off, the permission mode of this start
+/// still asks before a file write, the four owners move into the
 /// bootstrap for the current directory, and the key files exist. It unlocks
 /// nothing, reaches no model and runs no guest. The detector's stored source
 /// approval is not sampled here: the pinned call checks it before any guest
@@ -59,6 +60,7 @@ fn preflight(
     reserve: bool,
 ) -> std::result::Result<PrivateBootstrap, PrivateTerminalError> {
     require_voice_off(startup.configuration()?)?;
+    require_asking_mode(&startup)?;
     let Ok(workspace) = std::env::current_dir() else {
         return Err(PrivateTerminalError::Source(BootstrapError::Workspace));
     };
@@ -82,6 +84,25 @@ impl From<BootstrapError> for PrivateTerminalError {
     fn from(error: BootstrapError) -> Self {
         Self::Source(error)
     }
+}
+
+/// The permission mode this start would run under still asks before a file
+/// write: the mode of the invocation's own option, or else the captured
+/// file's, and no automatic approval from either. See
+/// [`mode_asks_before_writes`]. Nothing is changed for the user.
+fn require_asking_mode(startup: &OwnedTerminalStartup) -> Result<()> {
+    let configuration = startup.configuration()?;
+    let (mut mode, mut automatic) = (configuration.permission_mode, configuration.auto_approve);
+    if let Some(options) = startup.requirements().terminal_options() {
+        if let Some(chosen) = options.permission_mode_override() {
+            mode = chosen;
+        }
+        automatic |= options.auto_approve_override();
+    }
+    if automatic || !mode_asks_before_writes(mode) {
+        return Err(StartupError::ModeDecidesWritesAtStart);
+    }
+    Ok(())
 }
 
 /// A build without voice input refuses a source that does not turn voice

@@ -118,7 +118,10 @@ enable --detector <id>` adds the policy to a user file that has none, and
 enables privacy; nothing is enabled without that explicit command or your own
 edit. Inside a private conversation `/model`, `/effort` and `/mode` change
 that setting: the conversation is retired, the password is asked again, and
-its whole record is carried into a new vault scope of the same thread. The
+its whole record is carried into a new vault scope of the same thread. A
+permission mode that writes files without asking is refused, at the start
+and as a change, and so is a model whose connection returns items that
+cannot be inspected. The
 private terminal is narrower than the ordinary one: read-only commands such
 as `/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs
 locally, a background task can be cancelled, `/compact` summarizes and your

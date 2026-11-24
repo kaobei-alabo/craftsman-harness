@@ -11,6 +11,13 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::m
 const TYPED: &str = "  Handle alice@example.invalid and +886 912 345 678.  ";
 const FOLLOW: &str = "  Follow up for alice@example.invalid.  ";
 const CONTACT_FILE: &str = "Contact delivered alice@example.invalid";
+/// The last row of the password prompt. The prompt is drawn top down over
+/// the earlier screen, so its first row can be up while the old composer
+/// line is still below it; once this row is up, that line is gone. A case
+/// that types a password after a fresh clear and then waits for the new
+/// composer waits for this row first, so the composer it finds is the new
+/// session's and what it types next is not typed at the prompt.
+const WHOLE_PROMPT: &str = "Enter confirms. Escape or Ctrl-C cancels this key operation.";
 
 fn actual_alias(request: &Request) -> String {
     let value: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
@@ -412,6 +419,7 @@ fn actual_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
             .await;
         pty.send(b"/clear\r").await;
         pty.expect("Unlock private privacy key").await;
+        pty.expect(WHOLE_PROMPT).await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
         pty.send(format!("{FOLLOW}\r").as_bytes()).await;
@@ -501,6 +509,7 @@ fn actual_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
         // the terminal asks for another password. It is not secret type-ahead.
         pty.send(b"/clear\r  Follow up").await;
         pty.expect("Unlock private privacy key").await;
+        pty.expect(WHOLE_PROMPT).await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
         pty.expect("  Follow up").await;
@@ -821,6 +830,7 @@ async fn captured_script(script: Captured) {
             .await;
         pty.send(b"/clear\r").await;
         pty.expect("Unlock private privacy key").await;
+        pty.expect(WHOLE_PROMPT).await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
         pty.send(format!("{FOLLOW}\r").as_bytes()).await;
@@ -904,6 +914,7 @@ async fn captured_script(script: Captured) {
         // the terminal asks for another password. It is not secret type-ahead.
         pty.send(b"/clear\r  Follow up").await;
         pty.expect("Unlock private privacy key").await;
+        pty.expect(WHOLE_PROMPT).await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
         pty.expect("  Follow up").await;

@@ -97,6 +97,10 @@ pub enum StartupError {
         "That permission mode decides file writes without asking. With privacy enabled, a write that restores private values would then not be shown first. Use `plan` or `manual`. Nothing was changed."
     )]
     ModeDecidesWrites,
+    #[error(
+        "The permission mode of this start decides file writes without asking. With privacy enabled, a write that restores private values would then not be shown first. Start with `plan` or `manual`; nothing was unlocked."
+    )]
+    ModeDecidesWritesAtStart,
 }
 pub type Result<T> = std::result::Result<T, StartupError>;
 
