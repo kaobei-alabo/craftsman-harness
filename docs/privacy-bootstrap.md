@@ -1,14 +1,16 @@
 # Private owned password input and conversation bootstrap
 
 This slice implements real owned-terminal init/unlock and key/user-policy/
-pinned-detector/conversation composition. It remains private and unselected.
-There is no public `privacy init`, `status`, `enable`, `/privacy`, ACP, `-m` or
-service route. Normal enabled privacy policy still refuses before frontend,
-store or provider effects. The existing absent/disabled path is unchanged.
+pinned-detector/conversation composition. On this unmerged branch the owned
+interactive `craftsman` invocation selects it for an enabled user policy, and
+`craftsman privacy status` and `craftsman privacy init` are its explicit
+commands. There is no `enable` writer, `/privacy`, ACP, `-m` or service route:
+for those an enabled policy still refuses before frontend, store or provider
+effects. The existing absent/disabled path is unchanged.
 
-The private [startup capture](privacy-startup.md) now keeps the actual user
-configuration, source and policy together for a later fresh-terminal route.
-That route and normal init/status/enable commands remain unavailable.
+The [startup capture and interactive route](privacy-startup.md) keeps the
+actual user configuration, source and policy together from the parsed
+invocation to this composition.
 
 ## Password input
 
@@ -196,6 +198,13 @@ deadline; all ten passed with the verification script's four test threads. That
 first failure is retained; no assertion or deadline was changed, and its cause
 is not established.
 
+Five normal cases run the same five scripts through the production router, as
+`main` calls it for an interactive invocation. Each shares its script with the
+captured case, so assertions and deadlines are the same. A further case covers
+the router's early answers and `privacy init` on synthetic user files. Details
+and the retained first failure of that case are in
+[privacy-startup.md](privacy-startup.md).
+
 The ordinary macOS clear checks exercise actual owned PTYs, real key/KDF/vault,
 captured policy, approved source-built WASM and the shared Chat builder. Fresh
 clear, Escape/Ctrl-C cancellation and decoded ordinary draft retention pass,
@@ -234,8 +243,9 @@ restoration grant. ContactJsonV1 has the compiled whole-document/value-only
 validator and retained-effect source path; the owned terminal FullEntry proves
 ContactLinesV1, not a general JSON or platform claim. The earlier constant-only,
 NoRule, responder/missing-field and partial captures remain failed or narrower
-evidence. Normal selectors/activation, password input during live work without
-retirement, platform/full17/hosted/native/security review remain open.
+evidence. Password input during live work without retirement and
+platform/full17/hosted/native/security review remain open; the interactive
+selector that came later is described in [privacy-startup.md](privacy-startup.md).
 
 The new fixtures use exact argv-marked native PTYs, private temporary roots,
 synthetic passwords, real KDF/envelope/vault IO, and an approved source-built
@@ -281,7 +291,8 @@ read-only access cannot replace it with merged configuration. Its private
 full-session request takes no Config and sends all requested extras to the same
 builder; the older request refuses substituted configuration. Fresh retirement
 keeps the original owner and requirements without reparsing or rebinding it.
-Normal routing and startup-to-frontend acquisition remain unwired. No source
-record or pending requirement grants activation, tool permission or native
-support. The current composition's isolated checks/measurement remain separate
-from earlier c33 full17 and private FullEntry evidence.
+The interactive router now hands these owners to this composition; see
+[privacy-startup.md](privacy-startup.md). No source record or requirement
+grants tool permission or native support. The current composition's isolated
+checks/measurement remain separate from earlier c33 full17 and private
+FullEntry evidence.

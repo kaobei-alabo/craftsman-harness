@@ -43,7 +43,7 @@ mod oneshot_io;
 mod picker;
 mod platform_os;
 mod plugins;
-// Private key/policy owners; no init/unlock/enable CLI or frontend selector.
+// Key/policy owners of the owned private terminal; there is no enable writer.
 #[doc(hidden)]
 pub mod privacy_bootstrap;
 #[doc(hidden)]
@@ -52,7 +52,7 @@ pub mod privacy_cli;
 pub mod privacy_key;
 #[doc(hidden)]
 pub mod privacy_policy;
-// Actual user-source startup capture only; normal routing remains unchanged.
+// Actual user-source startup capture and the owned interactive route.
 #[doc(hidden)]
 pub mod privacy_startup;
 #[doc(hidden)]
@@ -161,6 +161,11 @@ enum Cmd {
     },
     /// Open the guided first-run setup flow.
     Setup,
+    /// Show the local privacy state or create the mapping-vault key.
+    Privacy {
+        #[command(subcommand)]
+        command: privacy_cli::Command,
+    },
     /// Run the agent as an Agent Client Protocol (ACP) server over stdio.
     AcpServe {
         /// Permission behavior: plan, accept-edits, manual, bypass-permissions, or auto.
@@ -189,6 +194,20 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> anyhow::Result<std::process::ExitCode> {
     let cli = Cli::parse();
+    // The explicit local key commands never load a model configuration.
+    if let Some(Cmd::Privacy { command }) = &cli.command {
+        privacy_cli::run(command).await?;
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    // Only the owned interactive invocation can be a privacy conversation. Its
+    // actual user source is captured before the loader and every terminal,
+    // store, provider or helper effect. Every other frontend keeps the loader.
+    if cli.command.is_none()
+        && cli.message.is_none()
+        && let Some(code) = privacy_startup::normal_route(&cli).await?
+    {
+        return Ok(std::process::ExitCode::from(code as u8));
+    }
     let mut cfg = Config::load()?.unwrap_or_default();
     if let Some(mode) = cli
         .permission_mode
@@ -211,6 +230,8 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     match cli.command {
         #[cfg(feature = "gadgets")]
         Some(Cmd::Gadgets { command }) => gadgets::cli::run(cfg, command).await,
+        // Handled above, before the loader.
+        Some(Cmd::Privacy { .. }) => Ok(()),
         Some(Cmd::Setup) => {
             return tui::run(
                 cfg,

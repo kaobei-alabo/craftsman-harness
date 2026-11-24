@@ -1,6 +1,7 @@
 //! Private owned-input/key/policy/conversation and full-session composition.
-//! Normal CLI/frontend routing never selects it; compiled private construction
-//! and pending startup requirements do not authorize normal activation.
+//! Only the owned interactive router selects it, through the startup capture.
+//! A startup's requirements stay incomplete until that router and this
+//! composition's own bound session complete them.
 use crate::privacy_cli::{FilePresence, PrivateKeyOperations};
 use crate::privacy_key::{ConfigRoot, KeyError, UnlockedVault};
 use crate::privacy_policy::RetainedUserConfigurationSource;
@@ -199,7 +200,8 @@ impl PolicyOwner {
 
 impl OwnedTerminalStartup {
     /// Consume only the actual startup issuer's configuration, policy, source
-    /// and still-pending requirements. Normal main/TUI routing never calls it.
+    /// and still-incomplete requirements. The owned interactive router and the
+    /// private captured entry are its callers.
     /// Workspace capture/reservation reuse the existing actual native owners.
     pub fn into_private_bootstrap(self, workspace: &Path) -> Result<PrivateBootstrap> {
         let (configuration, policy, source, requirements) = self
@@ -235,7 +237,7 @@ impl OwnedTerminalStartup {
 
 /// These owners all come from the SAME captured actual user ConfigRoot. The
 /// policy is loaded before any project merge or key operation. A proposed
-/// enabled policy is usable only by this unselected private entry; normal
+/// enabled policy is usable only through this owner; every other frontend's
 /// Config::load still refuses enabled privacy as not-yet-available.
 pub struct PrivateBootstrap {
     policy: PolicyOwner,
@@ -652,10 +654,16 @@ impl PrivateConversation {
                 .refuse_materialized(session, PrivateBuildError::Source(error))
                 .await);
         }
-        Ok(PrivateBuiltSession {
+        let built = PrivateBuiltSession {
             session,
             owner: self.clone(),
-        })
+        };
+        // This actual bound session is the evidence its startup's entry needs.
+        // A startup that no router selected stays incomplete all the same.
+        if let Some(owners) = self.policy.startup() {
+            owners.requirements.complete_owned_entry(&built);
+        }
+        Ok(built)
     }
     /// The shared builder had already materialized `session` when this
     /// owner's binding or source check refused it. A startup-issued owner
@@ -783,8 +791,8 @@ impl std::fmt::Debug for PrivateBuildError {
     }
 }
 
-/// Holds actual owners through the unselected private full-session path and
-/// every shared lane. User-facing startup routing remains unwired.
+/// Holds actual owners through the private full-session path and every
+/// shared lane.
 pub struct PrivateBuiltSession {
     session: crate::agent::Session,
     owner: Arc<PrivateConversation>,

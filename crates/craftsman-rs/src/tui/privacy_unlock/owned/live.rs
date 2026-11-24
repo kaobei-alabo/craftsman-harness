@@ -642,6 +642,18 @@ impl Frontend {
         Ok(())
     }
     async fn loop_inner(&mut self) -> Result<i32, PrivateTerminalError> {
+        // A startup that the normal router selected takes input only once
+        // every prerequisite was completed for it. A startup that no router
+        // selected is the private entry, whose requirements stay incomplete.
+        if let Some(requirements) = self
+            .owner
+            .startup_requirements()
+            .map_err(PrivateTerminalError::Source)?
+            && requirements.normal_routing_selected()
+            && requirements.require_normal_activation().is_err()
+        {
+            return Err(PrivateTerminalError::Build(PrivateBuildError::Unavailable));
+        }
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {

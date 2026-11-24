@@ -74,10 +74,12 @@ shell commands retain their separate permission checks.
 Text statistics, slug generation, checked CSV totals and JSON inspection have
 already been built and used in [live model sessions](docs/live-gadget-evaluation.md).
 
-## Privacy flow — prototype, not active in normal sessions
+## Privacy flow — prototype, off unless your own configuration enables it
 
 The unmerged privacy work adds a required hook around model requests. It keeps
-the original local records and gives the model a separate masked view.
+the original local records and gives the model a separate masked view. On this
+branch the interactive `craftsman` startup takes this path only when your own
+user configuration enables a privacy policy; every other session is unchanged.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
@@ -109,11 +111,16 @@ and asks again. Model access uses your configured API keys. The vault encrypts
 stored originals and uses keyed lookup indexes; original messages, tool results,
 history and checkpoints keep their existing plaintext form. Workspace files
 keep their current contents. Only recognized supported values are masked;
-unrecognized content is sent as written. This private prototype has local test
-evidence, with user-facing startup and activation still unwired.
+unrecognized content is sent as written. `craftsman privacy status` reports the
+local state and `craftsman privacy init` creates the key; neither enables
+anything, and there is no enable command. The private terminal is narrower
+than the ordinary one: no voice, no slash commands beyond `/clear` and
+`/quit`, no settings saves, no session resume. This prototype has local test
+evidence only; it is not merged, installed or validated on hosted runners.
 Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments
-are not restoration destinations. See [privacy development](docs/privacy-hooks.md).
+are not restoration destinations. See [privacy development](docs/privacy-hooks.md)
+and [startup, status and init](docs/privacy-startup.md).
 
 ## Planned WASM enhancement
 

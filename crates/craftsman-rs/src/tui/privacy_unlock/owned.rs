@@ -31,6 +31,8 @@ pub enum PrivateTerminalError {
         "The captured terminal approval source is unavailable or foreign; nothing was unlocked."
     )]
     ApprovalSource,
+    #[error("{0}")]
+    Startup(crate::privacy_startup::StartupError),
 }
 impl std::fmt::Debug for PrivateTerminalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -240,8 +242,8 @@ impl OwnedSecretTerminal {
     /// caller configuration or approval state can become its build, voice,
     /// renderer or permission authority: the live approval state is the one
     /// the same startup issued, taken through the bootstrap's own retained
-    /// requirements. Normal dispatch never calls this path and requirements
-    /// stay pending.
+    /// requirements. The owned interactive router enters here after it
+    /// selected the startup; any other caller's requirements stay incomplete.
     pub async fn run_captured_private(
         self,
         bootstrap: crate::privacy_bootstrap::PrivateBootstrap,

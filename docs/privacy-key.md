@@ -1,11 +1,14 @@
 # Private key and trusted policy ownership
 
-This is an unselected Step A foundation, not an enabled privacy feature. There
-is no `privacy init`, `unlock`, `status` or `enable` CLI route and no automatic
-unlock popup in the normal terminal. The private app owners are `privacy_key::KeyManager`,
+This is the Step A key and policy foundation. On this unmerged branch,
+`craftsman privacy status` and `craftsman privacy init` select its explicit
+operations, and the interactive `craftsman` invocation asks for the vault
+password when the actual user file enables a policy. There is no `unlock` or
+`enable` command. The private app owners are `privacy_key::KeyManager`,
 `privacy_policy::CapturedPolicy` and `privacy_cli::PrivateKeyOperations`.
 Normal sessions retain their existing behavior when user privacy policy is
-absent or disabled. An enabled user policy refuses as not yet available before
+absent or disabled. For every frontend other than the interactive terminal an
+enabled user policy still refuses as not yet available before
 frontend/store/provider initialization; malformed policy does not turn it off.
 
 The [private startup options component](privacy-startup.md) also retains actual
@@ -14,7 +17,8 @@ approval-start owner derives one source-bound live state with unchanged normal
 precedence; it is neither a detector/source grant nor normal activation. The
 captured private entry now takes that owner and checks it against its own
 bootstrap before any key work; ordinary captured terminal cases cover it.
-Normal startup routing and final native proof remain separate work.
+The interactive router now enters through it; hosted and native proof remain
+separate work.
 
 ## Password envelope
 
@@ -124,7 +128,9 @@ file appearing after captured absence fail its source recheck.
 }
 ```
 
-This schema is a proposal constraint, not a working activation example. IDs and
+This schema is a proposal constraint, with placeholder pins. The interactive
+route also needs a created key, `voice.enabled:false`, no identifiers and the
+detector's stored source approval; see [privacy-startup.md](privacy-startup.md). IDs and
 function names are restricted ASCII up to 64 bytes; each pin is exactly 64
 lowercase hex characters. There are at most 64 distinct nonempty literal
 identifiers, each at most 256 UTF-8 bytes, 16 KiB combined. The policy's encoded

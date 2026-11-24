@@ -1,6 +1,43 @@
-//! Private explicit operations only. No clap command/flag, enable writer or
-//! frontend selects these; presence is not unlock, ownership approval or privacy.
-use crate::privacy_key::{ConfigRoot, KeyManager, Passphrase, Result, UnlockedVault};
+//! Explicit local key operations and the `craftsman privacy` command that
+//! selects them. There is no enable writer; presence is not unlock, ownership
+//! approval or privacy.
+use crate::privacy_key::{ConfigRoot, KeyError, KeyManager, Passphrase, Result, UnlockedVault};
+
+/// `craftsman privacy <command>`. Neither command enables privacy, changes the
+/// user configuration or sends a model request.
+#[derive(clap::Subcommand)]
+pub enum Command {
+    /// Show the local privacy policy, mapping-vault key and startup state. Read-only.
+    Status,
+    /// Create the local mapping-vault key and vault. Create-only; asks for a new password twice.
+    Init,
+}
+
+pub async fn run(command: &Command) -> crate::privacy_bootstrap::Result<()> {
+    use crate::privacy_bootstrap::{BootstrapError, PrivateBootstrap};
+    match command {
+        Command::Status => println!("{}", crate::privacy_startup::status()),
+        Command::Init => {
+            let Ok(workspace) = std::env::current_dir() else {
+                return Err(BootstrapError::Workspace);
+            };
+            let bootstrap = PrivateBootstrap::capture_actual(&workspace)?;
+            // Refuse before any terminal or password prompt. The create-only
+            // worker checks absence again; nothing is adopted or replaced.
+            if bootstrap.status()? != FilePresence::Missing {
+                return Err(BootstrapError::Key(KeyError::AlreadyInitialized));
+            }
+            let mut terminal = crate::tui::privacy_unlock::OwnedSecretTerminal::enter()?;
+            let created = bootstrap.initialize(&mut terminal).await;
+            drop(terminal);
+            created?;
+            println!(
+                "The mapping-vault key and vault were created. Privacy is not enabled by this command."
+            );
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilePresence {
