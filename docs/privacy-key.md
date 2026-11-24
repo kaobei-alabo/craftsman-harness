@@ -11,8 +11,10 @@ frontend/store/provider initialization; malformed policy does not turn it off.
 The [private startup options component](privacy-startup.md) also retains actual
 parsed terminal overrides and the existing host allow-list source. Its opaque
 approval-start owner derives one source-bound live state with unchanged normal
-precedence; it is neither a detector/source grant nor normal activation. Captured
-entry glue and final native proof remain separate work.
+precedence; it is neither a detector/source grant nor normal activation. The
+captured private entry now takes that owner and checks it against its own
+bootstrap before any key work; ordinary captured terminal cases cover it.
+Normal startup routing and final native proof remain separate work.
 
 ## Password envelope
 

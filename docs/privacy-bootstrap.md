@@ -184,6 +184,18 @@ Escape/Ctrl-C cancels the entry explicitly; it does not keep the old agent alive
 or fall back to privacy-off. Pre-build scope rotation is distinct. There is no
 reopen, transfer, replay or source-receipt renewal.
 
+The captured entry `run_captured_private` takes no Config and no caller-built
+approval state. Its configuration is borrowed from the startup owner after a
+source check, and its live approval state is the one the same startup issued,
+bound to the bootstrap's own retained requirements before any key work (see
+[privacy-startup.md](privacy-startup.md)). Five ordinary captured terminal cases
+repeat the entry, safe-entry and three fresh-clear scripts below through this
+entry with the same assertions and deadlines. In their first run with ten such
+cases in parallel one existing legacy fresh-clear case missed a 60-second stage
+deadline; all ten passed with the verification script's four test threads. That
+first failure is retained; no assertion or deadline was changed, and its cause
+is not established.
+
 The ordinary macOS clear checks exercise actual owned PTYs, real key/KDF/vault,
 captured policy, approved source-built WASM and the shared Chat builder. Fresh
 clear, Escape/Ctrl-C cancellation and decoded ordinary draft retention pass,

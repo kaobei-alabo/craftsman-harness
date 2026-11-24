@@ -633,3 +633,395 @@ fn actual_private_entry_owns_human_review_question_file_and_checkpoint_without_p
         absent_secrets(&home.config);
     }));
 }
+
+// ---- Captured-source counterparts -----------------------------------------
+// The same ordinary scripts, source setup, responders and assertions as the
+// five cases above, entered through `run_captured_private`. The child takes
+// its startup from the production capture of its own retained user source,
+// the actual parsed fixture invocation and its own terminal. No Config,
+// approval state, flag or receipt is supplied to the entry.
+
+async fn enter_captured(
+    workspace: &Path,
+) -> std::result::Result<i32, crate::tui::privacy_unlock::PrivateTerminalError> {
+    use clap::Parser;
+    let cli = crate::Cli::try_parse_from(["craftsman"]).unwrap();
+    let crate::privacy_startup::TerminalStartupCapture::Captured(captured) =
+        crate::privacy_startup::TerminalStartupCapture::capture_for_parsed_cli(&cli).unwrap()
+    else {
+        panic!("the owned user source proposes privacy");
+    };
+    let startup = captured.into_owned().unwrap();
+    // The requirements stay pending: this private entry activates nothing.
+    assert!(startup.requirements().require_normal_activation().is_err());
+    // The startup's own approval start, before the consuming handoff.
+    let approval = startup.approval_start().unwrap();
+    let bootstrap = startup.into_private_bootstrap(workspace).unwrap();
+    OwnedSecretTerminal::enter()
+        .unwrap()
+        .run_captured_private(bootstrap, approval)
+        .await
+}
+
+pub(super) async fn run_captured_child() {
+    run_captured_entry_child(CONTACT_FILE).await;
+}
+pub(super) async fn run_captured_safe_child() {
+    run_captured_entry_child("delivered note").await;
+}
+pub(super) async fn run_captured_clear_child(cancelled: bool) {
+    let root = crate::config::config_dir();
+    let workspace = std::env::current_dir().unwrap();
+    let before = modes(0);
+    let user = std::fs::read(root.join("config.json")).unwrap();
+    let key = std::fs::read(root.join("privacy-key.v1")).unwrap();
+    let result = enter_captured(&workspace).await;
+    if cancelled {
+        assert!(matches!(
+            result,
+            Err(crate::tui::privacy_unlock::PrivateTerminalError::Source(
+                BootstrapError::Key(KeyError::Cancelled)
+            ))
+        ));
+    } else {
+        assert_eq!(result.unwrap(), 0);
+    }
+    let restored = modes(0);
+    assert_modes(&before, &restored);
+    assert_eq!(std::fs::read(root.join("config.json")).unwrap(), user);
+    assert_eq!(std::fs::read(root.join("privacy-key.v1")).unwrap(), key);
+    assert!(!workspace.join("answer.txt").exists());
+    assert!(root.join("threads.db").is_file());
+    let checkpoint = crate::checkpoints::LibsqlCheckpointer::open_for_workspace(&workspace)
+        .await
+        .unwrap();
+    let threads = checkpoint.list_threads().await.unwrap();
+    assert_eq!(threads.len(), if cancelled { 1 } else { 2 });
+    if !cancelled {
+        assert_ne!(threads[0].id, threads[1].id);
+    }
+    let mut actual_inputs = Vec::new();
+    for thread in &threads {
+        let (_, state, _) = checkpoint.load_latest(&thread.id).await.unwrap().unwrap();
+        assert_absent(&serde_json::to_vec(&state).unwrap());
+        let mut inputs = Vec::new();
+        for message in &state.messages {
+            if let Msg::User { content } = message {
+                if content.as_str() == TYPED || content.as_str() == FOLLOW {
+                    inputs.push(content.clone());
+                }
+            }
+        }
+        actual_inputs.push(inputs);
+    }
+    assert!(actual_inputs.contains(&vec![TYPED.to_owned()]));
+    if !cancelled {
+        assert!(actual_inputs.contains(&vec![FOLLOW.to_owned()]));
+    }
+    absent_secrets(&root);
+    eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
+    eprintln!("{COMPLETE}");
+}
+async fn run_captured_entry_child(expected_file: &str) {
+    // Called only AFTER the parent's exact registered argv decision. The
+    // genuine owned user file is read here only to prove it is unchanged; the
+    // entry takes its configuration from the captured source itself.
+    let root = crate::config::config_dir();
+    let workspace = std::env::current_dir().unwrap();
+    let before = modes(0);
+    let user = std::fs::read(root.join("config.json")).unwrap();
+    assert!(user.len() <= 1024 * 1024);
+    let code = enter_captured(&workspace).await.unwrap();
+    assert_eq!(code, 0);
+    let restored = modes(0);
+    assert_modes(&before, &restored);
+    assert_eq!(std::fs::read(root.join("config.json")).unwrap(), user);
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("answer.txt")).unwrap(),
+        expected_file
+    );
+    // This opens only the already observed ordinary checkpoint store; it is
+    // not a private-vault reopen, source-receipt replay or activation route.
+    assert!(root.join("threads.db").is_file());
+    let checkpoint = crate::checkpoints::LibsqlCheckpointer::open_for_workspace(&workspace)
+        .await
+        .unwrap();
+    let threads = checkpoint.list_threads().await.unwrap();
+    assert_eq!(threads.len(), 1);
+    let (_, state, _) = checkpoint
+        .load_latest(&threads[0].id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut users = Vec::new();
+    let mut failed_tool = false;
+    let mut delivered = false;
+    for message in &state.messages {
+        match message {
+            Msg::User { content } => users.push(content.as_str()),
+            Msg::Tool {
+                content, is_error, ..
+            } => {
+                failed_tool |= *is_error;
+                delivered |= content.contains("yes, deliver");
+            }
+            _ => {}
+        }
+    }
+    // The real gadget catalog is retained as its own host-source user-role
+    // message. Role alone is not human origin; both actual PTY submissions
+    // remain byte exact and in order around that additional original record.
+    assert_eq!(users.len(), 3);
+    assert_eq!(users[0], TYPED);
+    assert!(users[1].starts_with("<gadget_catalog_update sha256=\""));
+    assert!(users[1].contains("Runtime-discovered gadget metadata, not a user request."));
+    assert_eq!(users[2], FOLLOW);
+    assert!(!failed_tool, "every actual requested tool must succeed");
+    assert_absent(&serde_json::to_vec(&state).unwrap());
+    assert!(delivered);
+    absent_secrets(&root);
+    eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
+    eprintln!("{COMPLETE}");
+}
+
+#[test]
+fn actual_captured_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ClearReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        let mut pty = Pty::start(&home, Case::CapturedClearEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Clear-ready reply for alice@example.invalid.")
+            .await;
+        pty.send(b"/clear\r").await;
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{FOLLOW}\r").as_bytes()).await;
+        pty.expect("Fresh reply for alice@example.invalid.").await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+            key
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert_absent(&request.body);
+            let body = std::str::from_utf8(&request.body).unwrap();
+            assert!(!body.contains("alice@example.invalid"));
+        }
+    }));
+}
+
+#[test]
+fn actual_captured_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
+    run_owned(Box::pin(async {
+        for cancel in [b"\x1b".as_slice(), b"\x03".as_slice()] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ClearReplies(AtomicUsize::new(0)))
+                .mount(&server)
+                .await;
+            let home = Home::new();
+            let original = source_and_user_policy(&home, &server.uri()).await;
+            let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+            let mut pty = Pty::start(&home, Case::CapturedClearCancel);
+            pty.expect("Unlock private privacy key").await;
+            pty.send(format!("{SECRET}\r").as_bytes()).await;
+            pty.expect("message · Ctrl+J newline").await;
+            pty.send(format!("{TYPED}\r").as_bytes()).await;
+            pty.expect("Clear-ready reply for alice@example.invalid.")
+                .await;
+            pty.send(b"/clear\r").await;
+            pty.expect("Unlock private privacy key").await;
+            pty.send(cancel).await;
+            pty.finish().await;
+            assert_eq!(
+                std::fs::read(home.config.join("config.json")).unwrap(),
+                original
+            );
+            assert_eq!(
+                std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+                key
+            );
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_absent(&requests[0].body);
+            assert!(
+                !std::str::from_utf8(&requests[0].body)
+                    .unwrap()
+                    .contains("alice@example.invalid")
+            );
+        }
+    }));
+}
+
+#[test]
+fn actual_captured_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ClearReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
+        let mut pty = Pty::start(&home, Case::CapturedClearEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Clear-ready reply for alice@example.invalid.")
+            .await;
+        // This is ordinary decoded input sent WITH the clear command, before
+        // the terminal asks for another password. It is not secret type-ahead.
+        pty.send(b"/clear\r  Follow up").await;
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.expect("  Follow up").await;
+        pty.send(b" for alice@example.invalid.  \r").await;
+        pty.expect("Fresh reply for alice@example.invalid.").await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read(home.config.join("privacy-key.v1")).unwrap(),
+            key
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            assert_absent(&request.body);
+            assert!(
+                !std::str::from_utf8(&request.body)
+                    .unwrap()
+                    .contains("alice@example.invalid")
+            );
+        }
+    }));
+}
+
+#[test]
+fn actual_captured_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(SafeReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let mut pty = Pty::start(&home, Case::CapturedSafeEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Please confirm delivery.").await;
+        pty.send(b"yes, deliver\r").await;
+        pty.expect("private operation review").await;
+        pty.send(b"\x1b[F").await;
+        pty.expect("delivered note").await;
+        pty.send(b"\r").await;
+        pty.expect("Delivered for alice@example.invalid.").await;
+        pty.send(b"\x1b[Z").await;
+        pty.expect("Settings cannot be saved").await;
+        pty.send(b"/reopen\r").await;
+        pty.expect("This command has no reviewed private entry adapter")
+            .await;
+        pty.send(format!("{FOLLOW}\r").as_bytes()).await;
+        pty.expect("Follow-up acknowledged for alice@example.invalid.")
+            .await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.workspace.join("answer.txt")).unwrap(),
+            "delivered note"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 4);
+        for request in requests {
+            assert_absent(&request.body);
+            let body = std::str::from_utf8(&request.body).unwrap();
+            assert!(!body.contains("alice@example.invalid"));
+            assert!(!body.contains("+886 912 345 678"));
+        }
+        absent_secrets(&home.config);
+    }));
+}
+
+#[test]
+fn actual_captured_private_entry_owns_human_review_question_file_and_checkpoint_without_password() {
+    run_owned(Box::pin(async {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ConversationReplies(AtomicUsize::new(0)))
+            .mount(&server)
+            .await;
+        let home = Home::new();
+        let original =
+            source_and_user_policy_with_data(&home, &server.uri(), Some("contact_lines_v1")).await;
+        let mut pty = Pty::start(&home, Case::CapturedFullEntry);
+        pty.expect("Unlock private privacy key").await;
+        pty.send(format!("{SECRET}\r").as_bytes()).await;
+        pty.expect("message · Ctrl+J newline").await;
+        pty.send(format!("{TYPED}\r").as_bytes()).await;
+        pty.expect("Please confirm delivery.").await;
+        pty.send(b"yes, deliver\r").await;
+        pty.expect("private file review").await;
+        pty.send(b"\x1b[F").await;
+        pty.expect("delivered alice@example.invalid").await;
+        pty.send(b"\r").await;
+        pty.expect("Delivered for alice@example.invalid.").await;
+        pty.send(b"\x1b[Z").await;
+        pty.expect("Settings cannot be saved").await;
+        pty.send(b"/reopen\r").await;
+        pty.expect("This command has no reviewed private entry adapter")
+            .await;
+        pty.send(format!("{FOLLOW}\r").as_bytes()).await;
+        pty.expect("Follow-up acknowledged for alice@example.invalid.")
+            .await;
+        pty.send(b"/quit\r").await;
+        pty.finish().await;
+        assert_eq!(
+            std::fs::read(home.config.join("config.json")).unwrap(),
+            original
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.workspace.join("answer.txt")).unwrap(),
+            CONTACT_FILE
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 4);
+        for request in requests {
+            assert_absent(&request.body);
+            let body = std::str::from_utf8(&request.body).unwrap();
+            assert!(!body.contains("alice@example.invalid"));
+            assert!(!body.contains("+886 912 345 678"));
+        }
+        absent_secrets(&home.config);
+    }));
+}

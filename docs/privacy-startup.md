@@ -78,11 +78,26 @@ foreign requirements, absent actual options or poisoned state cannot substitute.
 The same Arc retains actual class-specific Always effects through build/clear;
 issuing again never resets or replays them.
 
-The component is compiled privately. Core must still connect the captured owned
-entry to this opaque owner after checking its actual bootstrap requirements;
-raw-Arc trusted-host prototype compatibility stays separate and unselected.
-Ordinary isolated source/options child checks prove only this component, not real
-TTY/secret/UI/model/native readiness or normal dispatch.
+The captured owned entry is now connected to this opaque owner.
+`OwnedSecretTerminal::run_captured_private` takes the `CapturedApprovalStart`
+in place of a caller-built approval state. Before any key work the bootstrap
+rechecks its source and lends its retained requirements, and `state_for` yields
+the live state only for the start issued with them. A bootstrap without startup
+requirements is refused as unavailable, and a foreign or unavailable start with
+the fixed approval-source refusal; nothing is unlocked in either case. The same
+Arc then reaches the bridge extras, the build, the renderer and the fresh-clear
+rebuild unchanged. The caller must take `approval_start` before
+`into_private_bootstrap` consumes the startup. The raw-Arc `run_private` stays
+as the separate, unselected caller-Config route.
+
+Five ordinary captured terminal cases enter through this path in a marked child:
+the production capture of the child's own retained user file, the real parsed
+fixture invocation and the child's own terminal, then the approval start and the
+consuming four-owner handoff. They repeat the existing entry, question, opaque
+review, file, checkpoint, settings-refusal and fresh-clear scripts with the
+same assertions and deadlines. They prove this private entry under those
+scripts. They are not real-user, normal-dispatch, activation or native-platform
+proof, and a cancelled or refused construction is not among them.
 
 The private consuming composition now exists as
 `OwnedTerminalStartup::into_private_bootstrap(workspace)`. It moves the
