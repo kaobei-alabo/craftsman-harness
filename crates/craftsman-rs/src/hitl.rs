@@ -270,7 +270,7 @@ fn apply_always(state: &mut ApprovalState, tool: &str) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn apply_always_to_captured_options_fixture(state: &mut ApprovalState, tool: &str) {
     apply_always(state, tool);
 }

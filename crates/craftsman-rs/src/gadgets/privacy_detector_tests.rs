@@ -3075,6 +3075,31 @@ mod compiler_environment {
             SetupStateRoot::new(value)
         }
 
+        /// Every supervisor of this module tree whose marked child prepares
+        /// the installed compiler: its helper, its marker and the modes in
+        /// which that child does. The three fixtures below the first two
+        /// build the detector from source in their one selected mode, and
+        /// their child reads the same transported state as the others.
+        const SUPERVISORS: [(&str, &str, &[&str]); 5] = [
+            (HELPER, MARKER, &["suite", "collect"]),
+            (NATIVE_HELPER, NATIVE_MARKER, &["guest"]),
+            (
+                super::super::pinned_hook::HELPER,
+                super::super::pinned_hook::MARKER,
+                &["suite"],
+            ),
+            (
+                super::super::restore_wires::HELPER,
+                super::super::restore_wires::MARKER,
+                &["suite"],
+            ),
+            (
+                super::super::view_wires::HELPER,
+                super::super::view_wires::MARKER,
+                &["suite"],
+            ),
+        ];
+
         fn needs_setup_state_comparison(command: &Command) -> bool {
             let arguments: Vec<_> = command.get_args().map(OsStr::to_owned).collect();
             if arguments.iter().any(|value| {
@@ -3084,22 +3109,23 @@ mod compiler_environment {
             }) {
                 return false;
             }
-            let source_values = registered_marker_values(&arguments, MARKER);
-            let installed_values = registered_marker_values(&arguments, NATIVE_MARKER);
-            let source_count = arguments.iter().filter(|value| *value == HELPER).count();
-            let installed_count = arguments
-                .iter()
-                .filter(|value| *value == NATIVE_HELPER)
-                .count();
-            let source_helper = source_count == 1
-                && installed_count == 0
-                && installed_values.is_empty()
-                && matches!(source_values.as_slice(), [Some("suite" | "collect")]);
-            let installed_helper = installed_count == 1
-                && source_count == 0
-                && source_values.is_empty()
-                && matches!(installed_values.as_slice(), [Some("guest")]);
-            source_helper || installed_helper
+            // Exactly one registered helper, once, with exactly one marker
+            // of its own in one of its modes, and nothing of another
+            // registered supervisor: neither its helper nor its marker.
+            let mut selected = false;
+            let mut index = 0;
+            while index < SUPERVISORS.len() {
+                let (helper, prefix, modes) = SUPERVISORS[index];
+                index += 1;
+                let count = arguments.iter().filter(|value| *value == helper).count();
+                let values = registered_marker_values(&arguments, prefix);
+                match (count, values.as_slice()) {
+                    (0, []) => {}
+                    (1, [Some(mode)]) if !selected && modes.contains(mode) => selected = true,
+                    _ => return false,
+                }
+            }
+            selected
         }
 
         fn registered_marker_values<'a>(
@@ -5244,6 +5270,70 @@ mod compiler_environment {
                 .kind,
                 Kind::DuplicateField
             );
+        }
+
+        #[test]
+        fn the_three_building_fixtures_request_machine_state_transport_in_their_one_mode() {
+            use super::super::{pinned_hook, restore_wires, view_wires};
+            let fixtures = [
+                (pinned_hook::HELPER, pinned_hook::MARKER),
+                (restore_wires::HELPER, restore_wires::MARKER),
+                (view_wires::HELPER, view_wires::MARKER),
+            ];
+            // Each form: the value of the fixture's own marker (none when
+            // empty), then one more argument made of a prefix and a value,
+            // and whether that command is selected. The prefix `own` stands
+            // for the fixture's own marker and `again` for its own helper.
+            //
+            // Selected in the mode in which its child builds, and in that
+            // mode alone: not as its own cases start it unselected, not in
+            // an inexact form, not beside another registered helper or
+            // marker, and not when a state is already transported.
+            let forms: [(&str, &str, &str, bool); 10] = [
+                ("suite", "", "", true),
+                ("", "", "", false),
+                ("collect", "", "", false),
+                ("unknown", "", "", false),
+                ("suite", "own", "suite", false),
+                ("suite", MARKER, "suite", false),
+                ("suite", NATIVE_MARKER, "guest", false),
+                ("suite", HELPER, "", false),
+                ("suite", "again", "", false),
+                ("suite", STATE_MARKER, "2f", false),
+            ];
+            let mut fixture = 0;
+            while fixture < fixtures.len() {
+                let (helper, prefix) = fixtures[fixture];
+                fixture += 1;
+                let mut form = 0;
+                while form < forms.len() {
+                    let (own, more, value, selected) = forms[form];
+                    form += 1;
+                    let mut command = Command::new("owned-unused-supervisor-program");
+                    command.arg("--ignored").arg("--exact").arg(helper);
+                    command.arg("--nocapture");
+                    if !own.is_empty() {
+                        command.arg(format!("{prefix}{own}"));
+                    }
+                    match more {
+                        "" => {}
+                        "own" => {
+                            command.arg(format!("{prefix}{value}"));
+                        }
+                        "again" => {
+                            command.arg(helper);
+                        }
+                        _ => {
+                            command.arg(format!("{more}{value}"));
+                        }
+                    }
+                    assert_eq!(
+                        needs_setup_state_comparison(&command),
+                        selected,
+                        "{helper} {own} {more} {value}"
+                    );
+                }
+            }
         }
 
         #[test]

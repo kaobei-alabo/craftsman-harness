@@ -178,7 +178,10 @@ original records locally and gives the model a separate masked view.
   in a supported file write. Shell commands, paths, source code and other
   tool arguments are not restored.
 - **Restrictions.** It runs in the `manual` or `plan` permission mode, with a
-  model connection whose items can be inspected; others are refused.
+  model connection whose items can be inspected; others are refused. In this
+  version the interactive privacy start and the restoration into files exist
+  on Unix systems only: on Windows a start with a privacy policy is refused,
+  and the ordinary file tools work as they always do.
 - **Voice.** In a build with voice input, cancelling a dictation retires the
   voice controller, so the next start loads the model again. Finishing a
   dictation normally keeps it.

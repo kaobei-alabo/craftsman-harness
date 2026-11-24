@@ -214,9 +214,16 @@ async fn privacy_view_builder_fixture() {
     repeated_arguments(&directory, &vault, &activity).await;
     compaction_lane(&directory, &vault, &activity).await;
     delegation(&directory, &vault, &activity).await;
-    restoration(&directory, &vault, &activity).await;
-    delegated_restoration(&directory, &vault, &activity).await;
-    automatic_policy(&directory, &vault, &activity).await;
+    // These three assert a written file. The private file effect is
+    // issued on unix alone (`privacy_session/file_data.rs`).
+    #[cfg(unix)]
+    {
+        restoration(&directory, &vault, &activity).await;
+        delegated_restoration(&directory, &vault, &activity).await;
+        automatic_policy(&directory, &vault, &activity).await;
+    }
+    #[cfg(not(unix))]
+    restoration_refused_where_no_file_effect_exists(&directory, &vault, &activity).await;
     terminal_display(&directory, &vault).await;
     refusals(&directory, &vault, &activity).await;
     eprintln!("{DONE}");
@@ -1191,7 +1198,23 @@ impl PlainTextFiles {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
-        Self(options.open(directory).unwrap())
+        // On Windows a directory is opened with backup semantics, and a
+        // link in its place is opened itself and not followed. Without
+        // that the system refuses the open of a directory (code 5).
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let held = options.open(directory).unwrap();
+        // The handle is the directory itself and not a link in its place,
+        // which the unix flags refuse at the open.
+        #[cfg(windows)]
+        assert!(crate::privacy_session::fixture_directory::directory_identity(&held).is_some());
+        Self(held)
     }
 }
 
@@ -1209,6 +1232,13 @@ impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
             if held.dev() != named.dev() || held.ino() != named.ino() {
                 return None;
             }
+        }
+        // Elsewhere the same question is asked of two handles, the held
+        // directory and the named parent. A target without an identity
+        // for a directory has no parent that is the held one.
+        #[cfg(not(unix))]
+        if !crate::privacy_session::fixture_directory::names_held_directory(&self.0, parent) {
+            return None;
         }
         request
             .check_application(crate::privacy_session::SupportedDataApplication::ContactLinesV1)
@@ -1266,6 +1296,7 @@ impl wiremock::Respond for FromInput {
 /// Restoration in a built session: the approval gate shows a person the
 /// real content of a file write, the file gets that content, the recorded
 /// call keeps the placeholder, and the person reads the reply with the value.
+#[cfg(unix)]
 async fn restoration(
     directory: &std::path::Path,
     vault: &Vault,
@@ -1403,6 +1434,154 @@ async fn restoration(
     assert_eq!(private_file_started(&ordinary.lock().unwrap()), 2);
 }
 
+/// The same built session where no private file effect exists
+/// (`privacy_session/file_data.rs`, `FileEffectRequest::issued`, unix alone).
+/// The approval gate still shows a person the real content, the real file
+/// tool still runs, and its write is the unsupported refusal: no file, no
+/// workspace checkpoint to take back, the recorded call keeps the
+/// placeholder and the person reads the reply with the value. A refusal by
+/// the person and a policy without a rule are what they are on unix. The
+/// fixture policy names the file by the identity of its retained directory;
+/// the application's own policy names no file on such a target.
+#[cfg(not(unix))]
+async fn restoration_refused_where_no_file_effect_exists(
+    directory: &std::path::Path,
+    vault: &Vault,
+    activity: &Arc<Mutex<Vec<String>>>,
+) {
+    let typed = format!("Who handles {EMAIL}?");
+    // What the approval prompt was shown, and what it answers.
+    let shown: Arc<Mutex<Vec<String>>> = Arc::default();
+    let ordinary: Arc<Mutex<Vec<ToolActivityEvent>>> = Arc::default();
+    let approve = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let run = |file: &'static str, with_rule: bool| {
+        let (shown, approve, typed) = (shown.clone(), approve.clone(), typed.clone());
+        let activity = activity.clone();
+        let ordinary = ordinary.clone();
+        async move {
+            let note = directory.join(file);
+            let server = MockServer::start().await;
+            let path = note.clone();
+            mount_once(
+                &server,
+                1,
+                Mock::given(method("POST")).respond_with(FromInput(Box::new(move |placeholder| {
+                    reply(
+                        "chat",
+                        0,
+                        Some((
+                            "call-write",
+                            "write_file",
+                            &json!({"file_path": path, "content": format!("Contact {placeholder} today.")}),
+                        )),
+                        "",
+                    )
+                }))),
+            )
+            .await;
+            Mock::given(method("POST"))
+                .respond_with(FromInput(Box::new(|placeholder| {
+                    answer("chat", &[&format!("Saved it for {placeholder}.")])
+                })))
+                .mount(&server)
+                .await;
+            let cfg = config("chat", &server);
+            let owner = privacy(vault, directory).await;
+            let policy: Arc<dyn crate::privacy_session::CapturedUserPolicy> = match with_rule {
+                true => Arc::new(PlainTextFiles::at(directory)),
+                false => Arc::new(FixturePolicy::default()),
+            };
+            let selection = PrivacyViewSelection::from_user_policy(policy, owner.clone()).unwrap();
+            let prompt: ApprovalPrompt = Arc::new(move |_, _, details| {
+                shown.lock().unwrap().push(details.to_owned());
+                match approve.load(std::sync::atomic::Ordering::SeqCst) {
+                    true => ApprovalPromptResult::Approve,
+                    false => ApprovalPromptResult::Reject("not this one".into()),
+                }
+            });
+            let session = build(&cfg, directory, None, None, &activity, |extras| {
+                extras.tool_activity_sink = Some(Arc::new(move |event| {
+                    ordinary.lock().unwrap().push(event);
+                }));
+                extras.privacy_view = Some(selection);
+                extras.privacy_approval_prompt = Some(fixture_bound_approval(prompt.clone()));
+                extras.approval_prompt = Some(prompt);
+            })
+            .await
+            .expect("a session with a file rule is built");
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(_) = view.turn(&session.agent, &typed).await.unwrap() else {
+                panic!("the turn finishes");
+            };
+            let requests = sent(&server).await;
+            assert!(requests.iter().all(|body| !body.contains(EMAIL)));
+            let messages = session.agent.state.lock().unwrap().messages.clone();
+            let sources = session.agent.recorded_sources().unwrap();
+            // The recorded call still holds the placeholder.
+            let recorded_content = match &messages[1] {
+                Msg::Assistant { tool_calls, .. } => {
+                    tool_calls[0].args["content"].as_str().unwrap().to_owned()
+                }
+                _ => panic!("the call is recorded"),
+            };
+            assert!(recorded_content.contains("pv1-") && !recorded_content.contains(EMAIL));
+            let result = match &messages[2] {
+                Msg::Tool { content, .. } => content.clone(),
+                _ => panic!("the result is recorded"),
+            };
+            // A person reads the reply with the value; the record keeps the
+            // placeholder.
+            let human = owner.human_reply(sources[3].as_ref().unwrap()).unwrap();
+            assert_eq!(
+                human.read(str::to_owned).unwrap(),
+                format!("Saved it for {EMAIL}.")
+            );
+            assert!(matches!(&messages[3], Msg::Assistant { content, .. }
+                if content.contains("pv1-") && !content.contains(EMAIL)));
+            assert!(owner.check().is_ok());
+            let undone = undo_last_write(&session, &note).await;
+            session.lsp.shutdown().await;
+            (note, result, undone)
+        }
+    };
+
+    // Approved by the person: the prompt showed the real content, the file
+    // tool ran, and its write was the refusal. Nothing was written, so no
+    // checkpoint holds a write to take back.
+    let (note, result, undone) = run("restored-note.txt", true).await;
+    assert!(!note.exists() && undone.is_none());
+    assert_eq!(
+        result,
+        crate::privacy_session::FileRefusal::Unsupported.to_string()
+    );
+    let details = shown.lock().unwrap().clone();
+    assert_eq!(details.len(), 1);
+    assert!(details[0].contains(&format!("Contact {EMAIL} today.")));
+    assert!(!details[0].contains("pv1-"));
+
+    // Rejected by the person: nothing is written.
+    approve.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (note, result, undone) = run("rejected-note.txt", true).await;
+    assert!(!note.exists() && undone.is_none());
+    assert!(result.contains("not this one"), "{result}");
+    assert_eq!(shown.lock().unwrap().len(), 2);
+
+    // No rule in the user's policy: the tool refuses before anyone is
+    // asked, and nothing is written.
+    approve.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (note, result, undone) = run("unruled-note.txt", false).await;
+    assert!(!note.exists() && undone.is_none());
+    assert_eq!(
+        result,
+        crate::privacy_session::FileRefusal::NoRule.to_string()
+    );
+    assert_eq!(shown.lock().unwrap().len(), 2);
+
+    // The ordinary lifecycle sink saw the same two started file calls as on
+    // unix, with the model's arguments and no value.
+    assert_eq!(private_file_started(&ordinary.lock().unwrap()), 2);
+}
+
 fn private_file_started(events: &[ToolActivityEvent]) -> usize {
     let mut count = 0;
     for event in events {
@@ -1443,8 +1622,10 @@ async fn undo_last_write(session: &Session, note: &std::path::Path) -> Option<St
 
 /// The delegated agent's first reply: it asks to write its own input, as
 /// its request carries it, to a file.
+#[cfg(unix)]
 struct WritesItsInput(std::path::PathBuf);
 
+#[cfg(unix)]
 impl wiremock::Respond for WritesItsInput {
     fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
         let input = content_at(request, 1);
@@ -1473,6 +1654,7 @@ impl wiremock::Respond for WritesItsInput {
 /// telephone alias. Its own gate shows a person the real content, the real
 /// file tool writes it with its workspace checkpoint, and the delegated
 /// agent's call keeps the placeholders.
+#[cfg(unix)]
 async fn delegated_restoration(
     directory: &std::path::Path,
     vault: &Vault,
@@ -1606,6 +1788,7 @@ async fn delegated_restoration(
 /// that the policy allows file changes: the root agent's next write and a
 /// delegated agent's write are decided by that policy on their real content,
 /// nobody is asked again, and the files hold the value.
+#[cfg(unix)]
 async fn automatic_policy(
     directory: &std::path::Path,
     vault: &Vault,

@@ -35,6 +35,10 @@ mod control;
 mod deadline_tests;
 mod file_data;
 mod file_view;
+// The retained directory of a file fixture where the target is not unix:
+// on Windows its identity by handle.
+#[cfg(all(test, not(unix)))]
+pub(crate) mod fixture_directory;
 mod human;
 // Private lexical facts used by the full-image contact-data validator;
 // parser facts themselves grant no source, policy or effect authority.

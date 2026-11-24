@@ -169,7 +169,9 @@ impl std::fmt::Debug for OwnedSecretTerminal {
 /// Only the separate private entry constructors select these variants. A
 /// captured variant carries no Config: every use checks the actual owner.
 enum FrontendConfiguration {
-    Legacy(crate::config::Config),
+    // The configuration is read by the owned frontend, which is compiled
+    // on unix; another target keeps the variant and no value in it.
+    Legacy(#[cfg(unix)] crate::config::Config),
     Captured,
 }
 impl FrontendConfiguration {
@@ -181,7 +183,7 @@ impl FrontendConfiguration {
             .captured_configuration()
             .map_err(PrivateTerminalError::Source)?;
         match (self, captured) {
-            (Self::Legacy(_), None) => Ok(()),
+            (Self::Legacy(..), None) => Ok(()),
             (Self::Captured, Some(cfg)) => {
                 // A build with voice input owns the ordinary controller for
                 // a captured startup. A build without it refuses a source
@@ -203,6 +205,7 @@ impl FrontendConfiguration {
             )),
         }
     }
+    #[cfg(unix)]
     fn source<'a>(
         &'a self,
         owner: &'a std::sync::Arc<crate::privacy_bootstrap::PrivateConversation>,
@@ -217,12 +220,14 @@ impl FrontendConfiguration {
                 )),
         }
     }
+    #[cfg(unix)]
     fn legacy_for_build(&self) -> Option<crate::config::Config> {
         match self {
             Self::Legacy(cfg) => Some(cfg.clone()),
             Self::Captured => None,
         }
     }
+    #[cfg(unix)]
     fn is_captured(&self) -> bool {
         matches!(self, Self::Captured)
     }
@@ -377,8 +382,14 @@ impl OwnedSecretTerminal {
         cfg: crate::config::Config,
         approval: std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
     ) -> std::result::Result<i32, PrivateTerminalError> {
-        self.run_owned(bootstrap, FrontendConfiguration::Legacy(cfg), approval)
-            .await
+        #[cfg(unix)]
+        let configuration = FrontendConfiguration::Legacy(cfg);
+        #[cfg(not(unix))]
+        let configuration = {
+            let _ = cfg;
+            FrontendConfiguration::Legacy()
+        };
+        self.run_owned(bootstrap, configuration, approval).await
     }
 
     /// Private consuming entry for an actual startup-issued bootstrap. No

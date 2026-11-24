@@ -59,6 +59,7 @@ pub(super) enum UiEvent {
         details: String,
         response: std_mpsc::Sender<ApprovalChoice>,
     },
+    #[cfg(unix)]
     PrivacyApproval {
         request: crate::privacy_entry::PrivacyApprovalRequest,
         response: std_mpsc::Sender<Option<crate::privacy_entry::PrivacyApprovalDecision>>,
@@ -588,6 +589,7 @@ impl Drop for AgentSlot {
 
 pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
     match event {
+        #[cfg(unix)]
         UiEvent::PrivacyApproval { response, .. } => {
             // Only the real private receiver retains the core Ui owner and
             // installs its bound modal. An ordinary receiver cannot approve it.
@@ -600,6 +602,7 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
         } => {
             if cancellation.is_cancelled() {
                 match *event {
+                    #[cfg(unix)]
                     UiEvent::PrivacyApproval { response, .. } => {
                         let _ = response.send(None);
                     }

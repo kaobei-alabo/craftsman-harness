@@ -281,7 +281,7 @@ impl Config {
         Ok(Some(cfg))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn load_owned_startup_fixture(
         path: &std::path::Path,
     ) -> anyhow::Result<Option<Config>> {

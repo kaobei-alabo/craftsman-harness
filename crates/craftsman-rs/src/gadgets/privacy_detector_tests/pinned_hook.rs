@@ -27,8 +27,9 @@ use tokio::io::AsyncReadExt;
 use zeroize::Zeroizing;
 
 const ID: &str = "privacy-detector";
-const HELPER: &str = "gadgets::privacy_detector_tests::pinned_hook::pinned_hook_native_fixture";
-const MARKER: &str = "craftsman-privacy-hook=";
+pub(super) const HELPER: &str =
+    "gadgets::privacy_detector_tests::pinned_hook::pinned_hook_native_fixture";
+pub(super) const MARKER: &str = "craftsman-privacy-hook=";
 const EMAIL: &str = "alice@example.invalid";
 const PHONE: &str = "+886 912 345 678";
 

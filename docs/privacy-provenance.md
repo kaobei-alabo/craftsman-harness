@@ -1113,6 +1113,17 @@ observation whose identity must equal no-follow `fstatat` of the name in that
 directory. Non-Unix effects refuse at this slice. No external-writer CAS,
 rollback, secure deletion or Windows native acceptance is claimed.
 
+What a person meets on a target that is not Unix comes before that refusal.
+The private terminal is not entered there (`SecureStorageUnsupported`), and
+the application's own policy names no file, so a planned write has no rule
+(`NoRule`) before any private read or display. The unsupported refusal of the
+effect request is reached only behind a fixture policy that names the file by
+the identity of its retained directory. Cases compiled for those targets
+assert that refusal with the file untouched; the cases that assert a written
+file are compiled on Unix. Ordinary file tools are the same on every target.
+The case inventory is in [runtime-status.md](runtime-status.md), under
+"Windows native correction of the privacy branch".
+
 An early absent-delegated-channel refusal ends only that dispatch's actual
 still-derived review; foreign, ended and spent operations keep their own state.
 The main gate now applies the same tracked-identity release when its registered

@@ -54,7 +54,9 @@ use craftsman_harness::provenance::{
 };
 use craftsman_harness::{AgentError, HitlAction, Tool, ToolCall, ToolCtx, ToolDef, ToolOutcome};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
+use std::io::Write;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -810,6 +812,8 @@ impl DerivedFileOperation {
                     .retained_file_effect(&effect_request)
                     .filter(|effect| effect.matches(&effect_request))
                     .ok_or(FileRefusal::NoRule)?;
+                #[cfg(not(unix))]
+                let _ = &effect;
                 self.owner.live().map_err(FileRefusal::Stopped)?;
                 // The actual policy-retained parent anchors the effect.
                 // No fresh absolute-path open or source/permission shortcut.
@@ -863,6 +867,8 @@ impl DerivedFileOperation {
                     .retained_file_effect(&effect_request)
                     .filter(|effect| effect.matches(&effect_request))
                     .ok_or(FileRefusal::NoRule)?;
+                #[cfg(not(unix))]
+                let _ = &effect;
                 self.owner.live().map_err(FileRefusal::Stopped)?;
                 // The path still names the file that was opened, and the
                 // file still holds what was read and shown.
@@ -886,6 +892,7 @@ impl DerivedFileOperation {
                 )?;
                 #[cfg(not(unix))]
                 return Err(FileRefusal::Unsupported);
+                #[cfg(unix)]
                 self.owner.live().map_err(FileRefusal::Stopped)?;
                 #[cfg(unix)]
                 {
@@ -895,7 +902,8 @@ impl DerivedFileOperation {
                 }
             }
         }
-        Ok(held.new.len())
+        #[cfg(unix)]
+        return Ok(held.new.len());
     }
 }
 

@@ -164,6 +164,7 @@ impl Session {
     /// compiled, every background child the registry started, and the
     /// language servers. Returns whether every background join returned.
     /// It interrupts no native or blocking work and reports no quiescence.
+    #[cfg(unix)]
     pub(crate) async fn shut_down_owned(&self) -> bool {
         self.agent.request_cancel();
         #[cfg(feature = "gadgets")]

@@ -2,14 +2,23 @@
 //! Only a modal installed by that receiver presents it; only a terminal human
 //! choice consumes that presentation. No digest or ordinary approval result is
 //! converted into a decision, and no policy decision is manufactured here.
+//!
+//! Its receiver is the owned private terminal, which is compiled on unix; every
+//! item here is compiled where that terminal is.
+#[cfg(unix)]
 use super::app::App;
+#[cfg(unix)]
 use super::modals::Modal;
+#[cfg(unix)]
 use super::session_bridge::{UiBridge, UiEvent, cancel_prompt, handle_ui_event, scoped_prompt};
+#[cfg(unix)]
 use crate::privacy_entry::{
     HumanChoice, PrivacyApprovalDecision, PrivacyApprovalPresentation, PrivacyApprovalPrompt,
     PrivacyApprovalRequest, PrivacyApprovalUi, register_privacy_approval_ui,
 };
+#[cfg(unix)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+#[cfg(unix)]
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -17,12 +26,17 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
+#[cfg(unix)]
 use std::cell::Cell;
+#[cfg(unix)]
 use std::sync::{Arc, mpsc};
 
+#[cfg(unix)]
 const REVIEW_BYTES: usize = 1024 * 1024;
+#[cfg(unix)]
 const INPUT_BYTES: usize = crate::privacy_hook::MAX_TEXT_BYTES;
 
+#[cfg(unix)]
 pub(super) fn register(bridge: &UiBridge) -> (Arc<PrivacyApprovalPrompt>, Arc<PrivacyApprovalUi>) {
     let tx = bridge.tx.clone();
     register_privacy_approval_ui(Arc::new(move |request: PrivacyApprovalRequest| {
@@ -50,6 +64,7 @@ pub(super) fn register(bridge: &UiBridge) -> (Arc<PrivacyApprovalPrompt>, Arc<Pr
     }))
 }
 
+#[cfg(unix)]
 pub(super) fn handle(
     app: &mut App,
     event: UiEvent,
@@ -90,6 +105,7 @@ pub(super) fn handle(
     }
 }
 
+#[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InputMode {
     Review,
@@ -97,6 +113,7 @@ enum InputMode {
     Edit,
 }
 
+#[cfg(unix)]
 pub(super) struct PrivacyApprovalModal {
     presentation: Option<PrivacyApprovalPresentation>,
     ui: Arc<PrivacyApprovalUi>,
@@ -112,11 +129,13 @@ pub(super) struct PrivacyApprovalModal {
     input_refused: bool,
     review_drawn: Cell<bool>,
 }
+#[cfg(unix)]
 impl std::fmt::Debug for PrivacyApprovalModal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("PrivateApprovalModal([private])")
     }
 }
+#[cfg(unix)]
 impl PrivacyApprovalModal {
     fn new(
         presentation: PrivacyApprovalPresentation,
@@ -295,6 +314,7 @@ impl PrivacyApprovalModal {
     }
 }
 
+#[cfg(unix)]
 fn escaped(text: &str) -> String {
     let mut displayed = String::new();
     for character in text.chars() {
@@ -309,6 +329,7 @@ fn escaped(text: &str) -> String {
     }
     displayed
 }
+#[cfg(unix)]
 impl Drop for PrivacyApprovalModal {
     fn drop(&mut self) {
         if self.presentation.is_some() {
@@ -317,6 +338,7 @@ impl Drop for PrivacyApprovalModal {
     }
 }
 
+#[cfg(unix)]
 pub(super) fn key(app: &mut App, key: KeyEvent) {
     let Some(Modal::PrivacyApproval(modal)) = app.modal.as_mut() else {
         return;

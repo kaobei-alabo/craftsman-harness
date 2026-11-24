@@ -33,8 +33,9 @@ use wiremock::{Mock, MockServer};
 use zeroize::Zeroizing;
 
 const ID: &str = "privacy-detector";
-const HELPER: &str = "gadgets::privacy_detector_tests::restore_wires::restore_wires_native_fixture";
-const MARKER: &str = "craftsman-privacy-restore-wires=";
+pub(super) const HELPER: &str =
+    "gadgets::privacy_detector_tests::restore_wires::restore_wires_native_fixture";
+pub(super) const MARKER: &str = "craftsman-privacy-restore-wires=";
 const EMAIL: &str = "alice@example.invalid";
 const WIRES: [&str; 4] = ["chat", "responses", "claude", "gemini"];
 
@@ -75,11 +76,32 @@ impl PlainTextFiles {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
+        // On Windows a directory is opened with backup semantics, and a
+        // link in its place is opened itself and not followed. Without
+        // that the system refuses the open of a directory (code 5).
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let directory = options.open(workspace).unwrap();
+        // The handle is the directory itself and not a link in its place,
+        // which the unix flags refuse at the open.
+        #[cfg(windows)]
+        assert!(
+            crate::privacy_session::fixture_directory::directory_identity(&directory).is_some()
+        );
         Self {
             destination: destination.to_owned(),
-            directory: options.open(workspace).unwrap(),
+            directory,
         }
     }
+    /// Whether this rule names `destination`. Where no private file effect
+    /// exists it names no file, as the application's own policy does there
+    /// (`privacy_policy/file_data.rs`), so a planned write has no rule.
     fn names(&self, destination: &Path) -> bool {
         if destination != self.destination {
             return false;
@@ -254,7 +276,10 @@ async fn restore_wires_native_fixture() {
     .await
     .unwrap();
 
-    let (mut written, mut delegated, mut shown_replies) = (0, 0, 0);
+    // Files written by the root agent and by a delegated one, replies shown
+    // to a person, and writes refused for want of a rule. On unix the rule
+    // names the file and nothing is refused; elsewhere it names none.
+    let (mut written, mut delegated, mut shown_replies, mut refused) = (0, 0, 0, 0);
     for wire in WIRES {
         let note = workspace.join(format!("restored-{wire}.txt"));
         let server = MockServer::start().await;
@@ -338,33 +363,48 @@ async fn restore_wires_native_fixture() {
             .await
             .unwrap_or_else(|error| panic!("{wire}: {error}"));
 
-        // The person was shown the real content, and it is in the file.
         let details = shown.lock().unwrap().clone();
-        assert_eq!(details.len(), 1, "{wire}");
-        assert!(
-            details[0].contains(&format!("Contact {EMAIL} today.")) && !details[0].contains("pv1-"),
-            "{wire}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&note).unwrap(),
-            format!("Contact {EMAIL} today."),
-            "{wire}"
-        );
-        written += 1;
-        // The recorded call, result and reply are the canonical ones: the
-        // call and the reply hold the placeholder, and the result is the
-        // tool's own text.
         let messages = session.agent.state.lock().unwrap().messages.clone();
         assert_eq!(messages.len(), 4, "{wire}");
+        if cfg!(unix) {
+            // The person was shown the real content, and it is in the file.
+            assert_eq!(details.len(), 1, "{wire}");
+            assert!(
+                details[0].contains(&format!("Contact {EMAIL} today."))
+                    && !details[0].contains("pv1-"),
+                "{wire}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&note).unwrap(),
+                format!("Contact {EMAIL} today."),
+                "{wire}"
+            );
+            written += 1;
+            // The result is the tool's own text.
+            assert!(
+                matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
+                    if *content == format!("Updated file {}", note.display())),
+                "{wire}"
+            );
+        } else {
+            // Where no private file effect exists this rule names no file:
+            // the write is refused before anyone is asked, the call has its
+            // one result, and no file exists.
+            assert!(details.is_empty(), "{wire}");
+            assert!(!note.exists(), "{wire}");
+            assert!(
+                matches!(&messages[2], Msg::Tool { content, is_error: true, .. }
+                    if *content == crate::privacy_session::FileRefusal::NoRule.to_string()),
+                "{wire}"
+            );
+            refused += 1;
+        }
+        // The recorded call and reply are the canonical ones: both hold the
+        // placeholder.
         assert!(
             matches!(&messages[1], Msg::Assistant { tool_calls, .. }
                 if tool_calls[0].args["content"].as_str().unwrap().contains("pv1-")
                     && !tool_calls[0].args.to_string().contains(EMAIL)),
-            "{wire}"
-        );
-        assert!(
-            matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
-                if *content == format!("Updated file {}", note.display())),
             "{wire}"
         );
         assert!(
@@ -493,21 +533,29 @@ async fn restore_wires_native_fixture() {
         view.turn(&session.agent, &format!("Who handles {EMAIL}?"))
             .await
             .unwrap_or_else(|error| panic!("{wire}: {error}"));
-        // The delegated agent's gate showed the real content once, and the
-        // file holds it.
         let details = shown.lock().unwrap().clone();
-        assert_eq!(details.len(), 1, "{wire}");
-        assert!(
-            details[0].contains(&format!("Contact delegated {EMAIL}."))
-                && !details[0].contains("pv1-"),
-            "{wire}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&note).unwrap(),
-            format!("Contact delegated {EMAIL}."),
-            "{wire}"
-        );
-        delegated += 1;
+        if cfg!(unix) {
+            // The delegated agent's gate showed the real content once, and
+            // the file holds it.
+            assert_eq!(details.len(), 1, "{wire}");
+            assert!(
+                details[0].contains(&format!("Contact delegated {EMAIL}."))
+                    && !details[0].contains("pv1-"),
+                "{wire}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&note).unwrap(),
+                format!("Contact delegated {EMAIL}."),
+                "{wire}"
+            );
+            delegated += 1;
+        } else {
+            // Without a rule the delegated agent's write is refused before
+            // its gate asks anyone, and no file exists.
+            assert!(details.is_empty(), "{wire}");
+            assert!(!note.exists(), "{wire}");
+            refused += 1;
+        }
         // The frontend was given the root agent's committed reply once, as a
         // person may read it, and nothing reached its token sink.
         assert_eq!(
@@ -527,7 +575,7 @@ async fn restore_wires_native_fixture() {
         session.lsp.shutdown().await;
     }
     println!(
-        "PRIVACY-RESTORE-WIRES:COMPLETE wires={} files={written} delegated={delegated} shown={shown_replies}",
+        "PRIVACY-RESTORE-WIRES:COMPLETE wires={} files={written} delegated={delegated} shown={shown_replies} refused={refused}",
         WIRES.len()
     );
 }
@@ -574,6 +622,9 @@ async fn an_unmarked_restore_wires_fixture_returns_before_any_build_or_configura
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }
 
+// Asserts files with the real content, which need the private file effect
+// (`privacy_session/file_data.rs`, `FileEffectRequest::issued`, unix alone).
+#[cfg(unix)]
 #[tokio::test]
 async fn four_wires_restore_a_reply_for_a_person_and_real_content_into_a_file() {
     let home = tempfile::tempdir().unwrap();
@@ -583,5 +634,26 @@ async fn four_wires_restore_a_reply_for_a_person_and_real_content_into_a_file() 
         "restore wires fixture failed: {stdout} {stderr}"
     );
     assert!(stdout.contains("PRIVACY-RESTORE-WIRES:COMPLETE wires=4 files=4 delegated=4 shown=4"));
+    assert!(!stdout.contains("NOT-SELECTED"));
+}
+
+// The same child where no private file effect exists: every reply is
+// restored for a person on the four wires, and the root agent's write and
+// the delegated agent's write are each refused for want of a rule, with no
+// file created.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn four_wires_restore_a_reply_for_a_person_and_refuse_a_file_write_without_a_rule() {
+    let home = tempfile::tempdir().unwrap();
+    let (status, stdout, stderr) = run_helper(Some("suite"), home.path()).await;
+    assert!(
+        status.success(),
+        "restore wires fixture failed: {stdout} {stderr}"
+    );
+    assert!(
+        stdout.contains(
+            "PRIVACY-RESTORE-WIRES:COMPLETE wires=4 files=0 delegated=0 shown=4 refused=8"
+        )
+    );
     assert!(!stdout.contains("NOT-SELECTED"));
 }

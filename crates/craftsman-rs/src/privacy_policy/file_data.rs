@@ -482,7 +482,7 @@ impl CapturedFileRule {
     }
     /// Test-only. A format read from two paths grants nothing: production
     /// asks `supported` and `retained` for an actual request and nothing else.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn format_for(
         &self,
         workspace: &Path,
