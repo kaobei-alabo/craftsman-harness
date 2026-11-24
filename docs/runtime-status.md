@@ -711,7 +711,7 @@ no baseline case carries a new condition.
   `inline_release::a_second_or_foreign_receive_ends_nothing_…`. The detector
   case is `four_wires_restore_a_reply_for_a_person_and_real_content_into_a_file`.
   Every name, body, assertion and bound is unchanged.
-- *New, compiled where the target is not Unix, 6 cases and one scenario.*
+- *New, compiled where the target is not Unix, 9 cases and one scenario.*
   - `a_reviewed_and_approved_write_or_edit_is_refused_unsupported_and_no_file_is_touched`:
     a create, an edit and a file rewritten after the approval. The person
     saw the real content, the file tool ran, its answer is the refusal, the
@@ -725,13 +725,24 @@ no baseline case carries a new condition.
   - `four_wires_restore_a_reply_for_a_person_and_refuse_a_file_write_without_a_rule`:
     the restored reply on each wire, and the root and delegated writes
     refused without a rule.
+  - `a_parked_write_needs_a_shown_review_and_an_approved_one_is_refused_unsupported`:
+    an approval from a reader that showed nothing is refused, and one from
+    a reader that showed the operation counts and ends in the refusal at
+    the file.
+  - `a_delegated_agents_write_is_decided_by_its_own_gate_and_an_allowed_one_is_refused_unsupported`:
+    the delegated agent's own gate with an approval, a refusal by the
+    person, no way to ask, no rule, the automatic policy and an ordinary
+    write.
+  - `registered_main_gate_refusals_leave_the_legacy_prompt_unasked_and_save_the_record`:
+    the three rounds of the registered main gate that write no file.
   - The built-session fixture runs
     `restoration_refused_where_no_file_effect_exists` there.
-- *Not carried over.* The first half of `a_parked_write_runs_…` (a reader who
-  shows nothing gets no approval) and the person's refusal in the delegated
-  lane of `a_delegated_agents_write_…` have no case off Unix. A delegated gate
-  that cannot ask, a missing rule, a denial, a missing registered UI and an
-  absent answer are covered there by the kept cases.
+- *Guards of the Unix cases.* Every guard half of a Unix case has a case
+  elsewhere. The last three of the new cases were added after the
+  exact-source review of the integrated candidate found three guards
+  without one: the check of a person's approval of a parked call, a
+  person's refusal at a delegated agent's own gate, and the legacy prompt
+  that the registered main gate leaves unasked.
 
 On Unix the unit-test binaries list the same cases as before and one more:
 2,115 in the core mode, and 2,463 in the gadget mode against 2,462.
@@ -753,8 +764,7 @@ regions the source review could not read are not changed.
 
 **Measured on macOS.** Formatting and the six type-checks of the three builds
 report no warning. The 25 file cases, the built-session case, the two
-supervisor cases and the four-wire detector case pass. The gadget-mode unit
-binary's unwind section is 16,776,272 bytes, 944 under the limit, at this
-branch's own head; the change of section 4 is measured separately. A full
-local run, the hosted run on four platforms and independent review remain
-before integration.
+supervisor cases and the four-wire detector case pass. With the change of
+section 4 integrated, the gadget-mode unit binary's unwind section is
+16,776,360 bytes, 856 under the limit. A full local run, the hosted run on
+four platforms and independent review remain before integration.
