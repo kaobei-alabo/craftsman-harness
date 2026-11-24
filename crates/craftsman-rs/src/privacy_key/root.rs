@@ -169,72 +169,126 @@ impl ConfigRoot {
 
     /// The enable writer's one effect: replace the user file that `lease`
     /// holds with `candidate`, only while that lease still reads exactly
-    /// `original`. The candidate goes to a new, exclusive, user-only file in
-    /// the same held directory, is flushed, and is renamed over `config.json`.
-    /// A leftover of that staging name is never adopted or overwritten. A
-    /// failure before the rename leaves the user file as it was and removes
-    /// only this operation's own staged file. The staleness check is a
-    /// sample taken just before the rename, not a writer lease, and no
-    /// power-loss durability is claimed.
+    /// `original`.
+    ///
+    /// The candidate goes to a new, exclusive, user-only file in the same
+    /// held directory. That staged entry is this operation's own by the
+    /// identity of the file it created, from creation through every return.
+    /// Before the commit the staging name is reopened without following a
+    /// link and must still be that very file: regular, single-link,
+    /// user-only, with exactly the candidate's bytes. Then the original named
+    /// file, its source and the root's ancestors are checked again, and the
+    /// staged file is renamed over `config.json`.
+    ///
+    /// On any refusal the staging name is removed only while it still names
+    /// the created file. An entry that no longer does is left in place, and
+    /// the refusal says so with `true`. A leftover of that name is never
+    /// adopted or overwritten.
+    ///
+    /// The checks before the rename are samples: another writer can still
+    /// act between the last check and the rename. This is not a
+    /// cross-process compare-and-swap, and no power-loss durability is
+    /// claimed.
     pub(crate) fn replace_user_config(
         &self,
         lease: &FileLease,
         original: &[u8],
         candidate: &[u8],
-    ) -> Result<()> {
+    ) -> std::result::Result<(), (KeyError, bool)> {
         #[cfg(unix)]
         {
             use std::{io::Write, os::fd::AsRawFd};
             const STAGED: &str = "config.json.privacy-enable";
             if candidate.len() > CONFIG_LIMIT {
-                return Err(KeyError::Bounds);
+                return Err((KeyError::Bounds, false));
             }
-            self.recheck()?;
-            let mut file = self
-                .open_raw(STAGED, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)
-                .map_err(|_| KeyError::Io)?;
-            let directory = self.ancestors.last().ok_or(KeyError::Root)?.as_raw_fd();
-            let staged = std::ffi::CString::new(STAGED).map_err(|_| KeyError::Root)?;
-            let written = match secure_file(&file.metadata().map_err(|_| KeyError::Io)?, true) {
-                Err(error) => Err(error),
-                Ok(()) if file.write_all(candidate).is_err() || file.sync_all().is_err() => {
-                    Err(KeyError::Io)
-                }
-                // Staleness: the held user file still is the one that was read.
-                Ok(()) => match lease.verify_configuration_bytes(original) {
-                    Err(error) => Err(error),
-                    Ok(()) => self.recheck(),
+            if let Err(error) = self.recheck() {
+                return Err((error, false));
+            }
+            // The lease is of `config.json` in this root's own directory.
+            let Some(directory) = self.ancestors.last() else {
+                return Err((KeyError::Root, false));
+            };
+            let (Ok(held), Ok(leased)) = (directory.metadata(), lease.parent.metadata()) else {
+                return Err((KeyError::Io, false));
+            };
+            if identity(&held) != identity(&leased) || lease.name.as_bytes() != b"config.json" {
+                return Err((KeyError::Changed, false));
+            }
+            let Ok(mut file) =
+                self.open_raw(STAGED, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)
+            else {
+                return Err((KeyError::Io, false));
+            };
+            let staged = Staged {
+                directory: directory.as_raw_fd(),
+                name: c"config.json.privacy-enable",
+                created: match file.metadata() {
+                    Ok(metadata) => Some((identity(&metadata), metadata)),
+                    Err(_) => None,
                 },
             };
-            let renamed = match written {
-                Err(error) => Err(error),
-                Ok(()) => {
-                    let status = unsafe {
-                        libc::renameat(
-                            directory,
-                            staged.as_ptr(),
-                            directory,
-                            c"config.json".as_ptr(),
-                        )
-                    };
-                    if status == 0 {
-                        Ok(())
-                    } else {
+            let committed = match &staged.created {
+                None => Err(KeyError::Io),
+                Some((created, metadata)) => match secure_file(metadata, true) {
+                    Err(error) => Err(error),
+                    Ok(()) if file.write_all(candidate).is_err() || file.sync_all().is_err() => {
                         Err(KeyError::Io)
                     }
-                }
+                    Ok(()) => self.commit_staged(STAGED, *created, lease, original, candidate),
+                },
             };
-            if renamed.is_err() {
-                // Only the exclusive file this call created, by the held directory.
-                unsafe { libc::unlinkat(directory, staged.as_ptr(), 0) };
-                return renamed;
+            match committed {
+                Ok(()) => match self.recheck() {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err((error, false)),
+                },
+                Err(error) => Err((error, !staged.remove_own())),
             }
-            self.recheck()
         }
         #[cfg(not(unix))]
         {
             let _ = (lease, original, candidate);
-            Err(KeyError::SecureStorageUnsupported)
+            Err((KeyError::SecureStorageUnsupported, false))
+        }
+    }
+
+    /// The staging name still is the created file with the candidate's
+    /// bytes; the original is still what was read; then the rename.
+    #[cfg(unix)]
+    fn commit_staged(
+        &self,
+        name: &str,
+        created: (u64, u64),
+        lease: &FileLease,
+        original: &[u8],
+        candidate: &[u8],
+    ) -> Result<()> {
+        use std::os::fd::AsRawFd;
+        let reopened = self.open_existing(name, true)?;
+        if reopened.identity != created
+            || reopened
+                .read_bounded(CONFIG_LIMIT, Some(candidate.len()))?
+                .as_slice()
+                != candidate
+        {
+            return Err(KeyError::Changed);
+        }
+        lease.verify_configuration_bytes(original)?;
+        self.recheck()?;
+        let directory = self.ancestors.last().ok_or(KeyError::Root)?.as_raw_fd();
+        let status = unsafe {
+            libc::renameat(
+                directory,
+                reopened.name.as_ptr(),
+                directory,
+                c"config.json".as_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(KeyError::Io)
         }
     }
 
@@ -434,6 +488,41 @@ impl ConfigRoot {
         };
         lease.recheck()?;
         Ok(lease)
+    }
+}
+
+/// The staged entry of one replacement: the held directory, the fixed name
+/// and the identity of the file this operation created under it.
+#[cfg(unix)]
+struct Staged {
+    directory: std::os::fd::RawFd,
+    name: &'static std::ffi::CStr,
+    created: Option<((u64, u64), std::fs::Metadata)>,
+}
+#[cfg(unix)]
+impl Staged {
+    /// After a refusal: removes the staging name only while it still names
+    /// the created file. `false`: the name now is another entry, or cannot
+    /// be told apart, and was left in place. The comparison is a sample
+    /// taken just before the removal.
+    fn remove_own(&self) -> bool {
+        let mut found: libc::stat = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            libc::fstatat(
+                self.directory,
+                self.name.as_ptr(),
+                &mut found,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if status != 0 {
+            return std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT);
+        }
+        let own = match &self.created {
+            Some((created, _)) => *created == (found.st_dev as u64, found.st_ino as u64),
+            None => false,
+        };
+        own && unsafe { libc::unlinkat(self.directory, self.name.as_ptr(), 0) } == 0
     }
 }
 

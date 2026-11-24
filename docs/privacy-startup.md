@@ -132,12 +132,16 @@ legacy loader and before any terminal, store, provider or helper effect:
 4. It asks the same held root for the key files. A missing key refuses with a
    pointer to `craftsman privacy init`. Incomplete files refuse. Nothing is
    adopted, deleted or prompted for.
-5. It records that it selected this startup, enters the owned terminal and
+5. It runs the entry's own read-only check of the captured source, which
+   includes the strict `terminal.osc7501` setting, before any terminal
+   effect: a setting that does not parse refuses here, with no alternate
+   screen and no password prompt.
+6. It records that it selected this startup, enters the owned terminal and
    calls `run_captured_private`.
 
 Every refusal before the terminal is fixed text. The route supplies no Config,
 approval state, flag or receipt. It reparses nothing and writes nothing. From
-step 5 on it is the private entry described above: the owned password popup,
+step 6 on it is the private entry described above: the owned password popup,
 the fresh conversation, the same full builder with every requested extra, and
 `/clear` as retirement followed by a fresh unlock and rebuild.
 
@@ -154,17 +158,41 @@ selected this startup after its read-only preflight. It is shared by every
 conversation of the startup, including the ones a fresh clear builds, so
 nothing about one built session is stored there.
 
-Readiness of a build belongs to that actual bound session. The conversation's
-full-session request returns it only after the builder's session carries the
-conversation's own thread, private view and send guard and the sources were
-rechecked. For a selected startup, `PrivateBuiltSession::task_owner` checks
-that same binding again each time it issues a turn, a steering input or a
-decision, and refuses a stale or foreign one. A fresh clear builds a new
-session, which is checked the same way. So **no model turn or effect is
-submitted before this startup's own bound session exists**. Prompts and drafts
-that the build itself needs are not held back, and the password prompt comes
-earlier still. Creating the pinned detector is not source consent; each call's
-own check of the stored approval remains the gate.
+Readiness of a build belongs to that actual bound session, which holds a
+**build witness**. The witness joins three records of the same build, each
+made by the object that did the work:
+
+- **What the builder accepted, where it accepted it.** In the selection's own
+  report the shared builder marks each model lane whose view provider it
+  took (the root agent's, the delegated agents', the summarizer's) with its
+  wire, that every installed part has a source path, and which controller
+  adapters it installed.
+- **What the view providers counted.** Each provider says which wire it
+  speaks when it binds this conversation's guard.
+- **What the root agent's boundary has installed:** the reply display, the
+  file review and the controller adapters.
+
+The conversation accepts a built session only when these agree with each
+other and with what was requested: the root lane was accepted; the accepted
+lanes are as many, and as many native, as the providers that bound this
+conversation; the reply display the frontend asked for, the file review and
+exactly the configured controllers are installed; and no wire is native,
+because the policy requires that everything sent can be inspected. A build
+that fails this is shut down for real and refused with the builder's own
+words. `PrivateBuiltSession::task_owner` checks the same again, with the
+thread, view and send guard, each time it issues a turn, a steering input, a
+decision or a task cancellation. A fresh clear makes a new selection and
+session, which get their own witness.
+
+So **no model turn or effect is submitted before this startup's own bound
+session exists**. Prompts and drafts that the build itself needs are not held
+back, and the password prompt comes earlier still. Creating the pinned
+detector is not source consent; each call's own check of the stored approval
+remains the gate.
+
+**Limit of the witness:** it does not keep the provider objects themselves.
+The framework does not hand an agent's provider back, so their identity
+cannot be compared later; the lanes are counted on both sides instead.
 
 Not implemented, and refused when a startup requests it: voice input, and a
 model wire whose provider items cannot be inspected. Neither is turned off or
@@ -173,25 +201,36 @@ downgraded, and neither is recorded as ready.
 ### The private terminal
 
 For a startup that the router selected, or that the private captured entry
-runs, the terminal now does the following.
+runs, the terminal does the following.
 
-- **Read-only local commands** answer through the ordinary terminal's own text
-  owners: `/help`, `/status`, `/context`, `/doctor`, `/config`, `/version`,
-  `/tokens`, `/queue`, `/copy` and `/editor`. They only read the retained
-  configuration and session; nothing is saved, started or sent, and the line
-  never becomes model input.
+- **Read-only local commands** answer through the ordinary terminal's own
+  text owners: `/help`, `/status`, `/context`, `/doctor`, `/config`,
+  `/version`, `/tokens`, `/queue`, `/copy`, `/editor`, `/mcp`, `/skills`.
+  They only read the retained configuration and session.
+- **Session and registry inspection:** `/tasks` shows the background tasks,
+  `/agents` shows the agent picker, and `/checkpoints`, `/memories`, `/lsp`,
+  `/gadgets` and `/diff` list through the same code as the ordinary terminal.
+  A listing that waits for its owner runs as a task of the frontend and its
+  text arrives as returned work. Nothing is saved, started or sent to a
+  model, and the line never becomes model input.
+- **A running background task is cancelled for real**, with `/tasks cancel
+  <name>` or from the task list. The cancellation goes to this session's own
+  registry through the bound owner's checks, and the line shown is the
+  registry's own answer.
 - **Controls are classified on one trimmed view.** Leading spaces do not turn
-  a control into a prompt; a refused control keeps the raw line as its draft.
+  a control into a prompt. A refused control keeps the raw line in the queue;
+  only a new prompt, not another control, lets the queue be tried again.
 - **Settings changes are refused** before any mutation: permission mode,
   model, effort, harness, agent, voice model and provider setup. The captured
-  source is not rewritten under a live conversation. Actions that are not
-  saves get their own refusal.
-- **Not executed:** every other slash command, shell escapes, extension
-  commands, `/compact`, `/rewind`, `/session`, `/diff`, `/checkpoints`,
-  `/tasks`, `/memories`, `/skills`, `/mcp`, `/gadgets`, `/lsp`, `/agents`.
+  source is not rewritten under a live conversation, and no retirement,
+  recapture and rebuild path exists for them yet. Actions that are not saves
+  get their own refusal.
+- **Not executed:** shell escapes, extension commands, `/compact`, `/rewind`,
+  `/session`, `/model`, `/effort`, `/mode`, `/harness`, `/voice`, `/setup`,
+  `/tasks message`, `/lsp restart`, and `/agents <name>`.
 - **Fixed-text OSC 7501 status** is reported with the ordinary change-only
-  reporter, unless `terminal.osc7501` is false. An invalid setting refuses
-  before any key work. Only fixed states and messages are written.
+  reporter, unless `terminal.osc7501` is false. Only fixed states and
+  messages are written.
 - **The mouse** is captured as the invocation chose, but never during a
   password prompt. The terminal guard keeps its capture marked as possibly on
   until a disable was written and flushed, so restoration still attempts it
@@ -202,16 +241,24 @@ runs, the terminal now does the following.
 - Declared identifiers refuse. A build without the gadgets feature refuses.
   Windows refuses until secure key storage is reviewed.
 
+One thing the terminal keeps that the ordinary one does not: after a fresh
+clear the earlier transcript is still shown, above the new conversation. The
+model sees none of it; the new conversation has its own thread and sources.
+
 ### Status, initialization and enabling
 
 `craftsman privacy status` is read-only and prints up to three fixed
 statements: whether the key files exist, whether the actual user file enables
-a policy, and the result of the read-only preflight. A passed preflight means
-the policy, the voice setting, the key files and the detector's stored source
-approval were found. **It is not an unlocked or supported session:** the vault
-unlock, the detector's own call check, the model connection and the full
-private session are still outstanding until `craftsman` starts. Key-file
-presence is not an unlock.
+a policy, and the result of the read-only preflight. It reserves no
+conversation and creates no thread: the inspection takes the captured source,
+the key files and the detector's stored approval, and only a real start
+allocates a fresh binding. A passed preflight means the policy, the voice
+setting, the key files and the detector's stored source approval were found
+and the captured settings parse. **It is not an unlock, an approval or
+readiness.** The text names what a start still has to check: the vault
+unlock, the detector's own call check, the model connection, native-view
+support for the configured model wire, and support for every requested
+session feature.
 
 `craftsman privacy init` creates the key and its vault. It is create-only: it
 refuses before any prompt when a key file already exists, asks for a new
@@ -233,61 +280,94 @@ user file. Its explicit invocation is the authorization of that one change.
   opening brace. Before anything is written it is checked: every original
   member is still there with its value, the loader's own parser reads the new
   policy as valid and enabled, and it parses as a startup would take it.
-- The write is a new exclusive user-only file in the held root, flushed and
-  renamed over `config.json`, only while the held file still reads exactly
-  the original bytes. The file is then read back. The staleness check is a
-  sample taken just before the rename, not a writer lease, and no power-loss
-  durability is claimed.
+- **The write.** The candidate goes to a new exclusive user-only file in the
+  held root. That staged entry is the command's own by the identity of the
+  file it created. Before the commit the staging name is reopened without
+  following a link and must still be that file: regular, single-link,
+  user-only, with exactly the candidate's bytes. Then the original named
+  file, its source and the root's ancestors are checked again, and the staged
+  file is renamed over `config.json`. The file is then read back.
+- **Refusals.** A leftover with the staging name is never adopted,
+  overwritten or removed. After a refusal the staging name is removed only
+  while it still names the created file; an entry that no longer does is
+  left in place and the command says so. A file that reads differently after
+  the write is reported as changed after the write; nothing is restored over
+  it.
+- **Limits.** The checks before the rename are samples. Another writer can
+  still act between the last check and the rename: this is not a
+  cross-process compare-and-swap, and no power-loss durability is claimed.
 
-The detector's source approval is still given through the existing gadget
-approval prompt of the ordinary terminal, before the policy is enabled.
-Data-file rules and identifiers are the user's own later edits.
+The detector's source approval is given through the existing gadget approval
+prompt of the ordinary terminal, before the policy is enabled. Data-file rules
+and identifiers are the user's own later edits.
 
 ### Evidence and limits
 
-- **Fifteen terminal cases stay in the unit-test binary:** five inherited, five
-  captured and five normal ones that call the production router as `main`
-  does. The safe-entry script, shared by a captured and a normal case, now
-  also runs `/version` and a `/status` with leading spaces; its unchanged
-  record and request counts show that neither reached the model. The normal
-  cases' synthetic user files turn the status reporter off, because the
-  inherited driver's screen reader does not parse those records.
-- **A new integration test, `tests/privacy_cli.rs`, drives the real binary**
+- **Ten terminal cases stay in the unit-test binary:** five inherited and five
+  captured ones, which call the private captured entry directly. The captured
+  safe-entry case also runs `/version` and a `/status` with leading spaces.
+- **The integration test `tests/privacy_cli.rs` drives the real binary**
   through its own `main` on synthetic user files in a private temporary
-  directory: the status text for each local state; which invocations are
-  routed; the router's early refusals on a real terminal and the disabled
-  policy's legacy start; `privacy init` with real key derivation and its
-  second run; every `enable` refusal with unchanged files; and a build that
-  is refused for want of a detector, with its fixed status reports, mouse
-  capture switched on after the password prompt and off again, and restored
-  terminal modes. Two of its five cases need the gadgets feature.
-- **Inventory transition:** `actual_normal_startup_answers_early_and_init_stays_create_only`
-  moved from the unit-test binary to that integration test and now drives the
-  real binary. Its invocation refusals for `-m`, `--session` and other
-  frontends became the loader's rejection, which is what `main` now gives.
-- **`enable`'s success path is not in the committed inventory.** It needs a
-  stored approval that only the terminal's approval prompt or the in-process
-  fixture creates, and the in-process case put the unit-test binary 3,376
-  bytes over the unwind limit. It passed once on the uncommitted tree and
-  once with that case applied out of tree to commit `943c150`: the writer
-  added the policy, a second run refused, and the fresh-clear conversation
-  ran through the router with the written policy.
+  directory, with a synthetic model that the test itself serves on a
+  loopback address.
+  It has eleven cases; eight need the gadgets feature.
+  - *Setup through the real runtime.* The ordinary terminal runs once: the
+    synthetic model calls the detector gadget, and the person approves its
+    first use at the real prompt, which names the gadget and the hash of its
+    installed bytes. The runtime stores that approval itself. The test
+    writes no grant file and supplies no approval state.
+  - *`enable` succeeds.* After a refused run against a leftover staging
+    name, the command adds the policy. The file is the original bytes with
+    one member after the brace; the member pins exactly the installed
+    component and manifest; every other member, including one the program
+    does not know, has its value; no grant was written and the mode is
+    still user-only. A second run refuses. Status then reports the missing
+    key, and after `init` a passed preflight.
+  - *The private terminal runs with that policy:* unlock, a masked turn, a
+    fresh clear with a new unlock and thread, a second masked turn, fixed
+    status reports throughout, and three plaintext thread records.
+  - *The five route conversation cases* run here under their earlier names:
+    question, reviewed file write, refused settings change and command,
+    follow-up, fresh clear, its cancellation by Escape and by Ctrl-C, and
+    type-ahead kept as a draft. The safe-entry case also runs the
+    inspection commands and a task cancellation that finds no such task;
+    its request count shows that none reached the model.
+  - *Refusals:* the status text for each local state; which invocations are
+    routed; the router's early refusals on a real terminal, including an
+    invalid status setting before any terminal effect; every `enable`
+    refusal with unchanged files; and a build refused for want of a
+    detector.
+- **Inventory transition.** The five `actual_normal_…` conversation cases
+  moved from the unit-test binary to the integration test under the same
+  names. There a test child called the router; here the real binary's `main`
+  does. Each keeps its stages, its request count and masking checks, the
+  written file, restored terminal modes, the unchanged user file and key,
+  and the recorded threads and inputs, now read from the store's own tables.
+  The private threads are counted beside the ordinary session's thread,
+  which the real approval adds.
 
-First failures, all retained: the cases' first run with status reports missed
-every stage after the password in the inherited screen reader; an inherited
-case asserts the capture's `Invalid` answer for an unparsable file, so a
-line-and-column answer was withdrawn and an interactive start now reports such
-a file with the capture's fixed text rather than the loader's; the real-binary
-driver's first run could not read the terminal's modes after a session leader
-exited, and matched stages against the raw stream although the renderer writes
-only changed cells.
+First failures, all retained: the real-binary success case's first run typed
+its follow-up while the fresh clear's password prompt was still up, because a
+stage matched the old composer line under the new popup; the entry cases'
+first run found the reporter's fixed wait records, which the check did not
+list; the inspection stages' first run sent Escape directly before a command,
+which the terminal reads as one key; and the refused-build case found no
+first "working" report once under four parallel cases, where it had always
+found one alone. Earlier ones: the cases' first run with status reports
+missed every stage after the password in the inherited screen reader; an
+inherited case asserts the capture's `Invalid` answer for an unparsable file,
+so a line-and-column answer was withdrawn.
 
-The gadget test binary's unwind section is 16,775,032 bytes, 2,184 under the
-unchanged 16,777,216-byte limit, with no linker warning.
+The gadget test binary's unwind section is 16,775,056 bytes, 2,160 under
+the unchanged 16,777,216-byte limit, with no linker warning.
 
-Not covered: non-default permission options and an Always effect through the
-terminal, the terminal entry's own refusals, a mouse event, `/context` and
-`/editor` through a terminal, Linux and Windows, and a captured construction
+Not covered: a build whose witness disagrees, a stale or foreign binding at
+issuance, cancellation of a task that is actually running, the staging
+entry's removal and leftover report after a refusal past its creation, a file
+changed after the write, non-default permission options and an Always effect
+through the terminal, the terminal entry's own refusals, a mouse event,
+`/context`, `/doctor`, `/config`, `/tokens`, `/queue`, `/copy`, `/editor` and
+`/help` through a terminal, Linux and Windows, and a captured construction
 that is cancelled, refused after the builder returned it, or outlives its
 30-second bound.
 

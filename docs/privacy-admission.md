@@ -4,8 +4,9 @@ Status, November 22, 2026: a private core exists that can ask one approved,
 source-pinned detector for spans, check them, commit them in an open vault,
 admit them to the send guard and only then publish an admitted node with a
 model view. Private builder, provider, tool and restoration candidates now use
-these primitives in owned fixtures. No normal configuration, command, frontend
-or key/policy owner selects them, and normal sessions behave exactly as before.
+these primitives in owned fixtures. Only the unmerged interactive route of
+[privacy-startup.md](privacy-startup.md) selects them, for a user file that
+enables a policy; every other session behaves exactly as before.
 The local correction has actual pre-review and registered inline decision
 consumers for main and delegated gates. Its opaque UI transport still needs A's
 real receiver/modal integration; original failed evidence is retained. Privacy
@@ -24,7 +25,7 @@ It is local, unmerged and not installed.
 | Detector request and reply checks, with a host floor (`privacy_hook`) | implemented, private |
 | Source-pinned detector call on the gadget engine | implemented, private |
 | Admission owner for one conversation (`privacy_session`) | implemented, private |
-| Session builder use of the reserved thread id | implemented, private; selected by nothing. With the ordinary configuration every installed part has a source path |
+| Session builder use of the reserved thread id | implemented, private; selected only by the unmerged interactive route. With the ordinary configuration every installed part has a source path |
 | Producers that create raw captures | typed session entries, tool results, the agent's own messages, system and tool text: implemented, private. Files, memory and configuration parts: not implemented |
 | Conversation boundary, model-origin nodes and request composition for all four wires | implemented, private; see provenance |
 | Mixed text from the system prompt, todos, memory, reminders and task workflow notes, as parts | implemented, private; see provenance |
@@ -34,7 +35,7 @@ It is local, unmerged and not installed.
 | Mixed text from verification, context and failure controls | implemented, private, behind adapters around the original controllers, including a check the verification controller schedules, its stop note and compaction. See provenance, "Controller adapters" |
 | Display and file restoration | not implemented |
 | Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is selected only by the unmerged interactive route ([privacy-startup.md](privacy-startup.md)); data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
-| Secret input, frontend selector, activation | not implemented |
+| Secret input, frontend selector, activation | implemented locally on the unmerged branch for the eligible interactive invocation: the owned password popup, the interactive route and the explicit `privacy` commands ([privacy-startup.md](privacy-startup.md)). Not merged, installed or natively validated |
 
 ## Detector contract
 
@@ -121,8 +122,8 @@ The pinned detector owns its own gadget runtime with the engine's default call
 bounds (30 seconds, 256 MiB) and no persistent native-code cache.
 
 The selection object is built by host code. Until the trusted user policy
-exists privately in the captured key/user-root owner; no normal frontend
-selects it, and unsupported data-file grants remain inert.
+exists privately in the captured key/user-root owner; only the unmerged
+interactive route selects it, and unsupported data-file grants remain inert.
 
 ## Captures and nodes
 

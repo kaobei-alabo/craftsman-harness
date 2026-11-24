@@ -74,6 +74,14 @@ pub enum StartupError {
         "The detector gadget is not installed under the user configuration or has no stored source approval. Nothing was changed."
     )]
     DetectorNotApproved,
+    #[error(
+        "The policy was written, but the user configuration then read differently: it was changed after the write. `craftsman privacy status` shows its present state."
+    )]
+    WrittenThenChanged,
+    #[error(
+        "The user configuration was not replaced. The staging name `config.json.privacy-enable` no longer is the file this command created; that entry was left in place."
+    )]
+    StagedLeftover,
 }
 pub type Result<T> = std::result::Result<T, StartupError>;
 

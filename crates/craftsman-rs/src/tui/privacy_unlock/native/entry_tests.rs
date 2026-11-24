@@ -636,25 +636,16 @@ fn actual_private_entry_owns_human_review_question_file_and_checkpoint_without_p
 
 // ---- Captured-source counterparts -----------------------------------------
 // The same ordinary scripts, source setup, responders and assertions as the
-// five cases above, entered through `run_captured_private` in two ways. The
-// captured cases take the child's startup from the production capture of its
-// own retained user source, the actual parsed fixture invocation and its own
-// terminal, and hand it to the private entry themselves. The normal cases
-// call the production router, exactly as `main` does for an interactive
-// invocation. No Config, approval state, flag or receipt is supplied to
-// either.
+// five cases above, entered through `run_captured_private`. The child takes
+// its startup from the production capture of its own retained user source,
+// the actual parsed fixture invocation and its own terminal. No Config,
+// approval state, flag or receipt is supplied to the entry.
 
-async fn enter(
+async fn enter_captured(
     workspace: &Path,
-    normal: bool,
 ) -> std::result::Result<i32, crate::tui::privacy_unlock::PrivateTerminalError> {
     use clap::Parser;
     let cli = crate::Cli::try_parse_from(["craftsman"]).unwrap();
-    if normal {
-        return crate::privacy_startup::normal_route(&cli)
-            .await
-            .map(|code| code.expect("the owned user source proposes privacy"));
-    }
     let crate::privacy_startup::TerminalStartupCapture::Captured(captured) =
         crate::privacy_startup::TerminalStartupCapture::capture_for_parsed_cli(&cli).unwrap()
     else {
@@ -672,41 +663,19 @@ async fn enter(
         .await
 }
 
-/// Runs the child of a captured or normal case. Any other case is not this
-/// file's to run.
-pub(super) async fn run_started_child(case: Case) -> bool {
-    let normal = matches!(
-        case,
-        Case::NormalFullEntry
-            | Case::NormalSafeEntry
-            | Case::NormalClearEntry
-            | Case::NormalClearCancel
-    );
-    match case {
-        Case::CapturedFullEntry | Case::NormalFullEntry => {
-            run_started_entry_child(CONTACT_FILE, normal).await
-        }
-        Case::CapturedSafeEntry | Case::NormalSafeEntry => {
-            run_started_entry_child("delivered note", normal).await
-        }
-        Case::CapturedClearEntry | Case::NormalClearEntry => {
-            run_started_clear_child(false, normal).await
-        }
-        Case::CapturedClearCancel | Case::NormalClearCancel => {
-            run_started_clear_child(true, normal).await
-        }
-        _ => return false,
-    }
-    true
+pub(super) async fn run_captured_child() {
+    run_captured_entry_child(CONTACT_FILE).await;
 }
-
-async fn run_started_clear_child(cancelled: bool, normal: bool) {
+pub(super) async fn run_captured_safe_child() {
+    run_captured_entry_child("delivered note").await;
+}
+pub(super) async fn run_captured_clear_child(cancelled: bool) {
     let root = crate::config::config_dir();
     let workspace = std::env::current_dir().unwrap();
     let before = modes(0);
     let user = std::fs::read(root.join("config.json")).unwrap();
     let key = std::fs::read(root.join("privacy-key.v1")).unwrap();
-    let result = enter(&workspace, normal).await;
+    let result = enter_captured(&workspace).await;
     if cancelled {
         assert!(matches!(
             result,
@@ -753,7 +722,7 @@ async fn run_started_clear_child(cancelled: bool, normal: bool) {
     eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
     eprintln!("{COMPLETE}");
 }
-async fn run_started_entry_child(expected_file: &str, normal: bool) {
+async fn run_captured_entry_child(expected_file: &str) {
     // Called only AFTER the parent's exact registered argv decision. The
     // genuine owned user file is read here only to prove it is unchanged; the
     // entry takes its configuration from the captured source itself.
@@ -762,7 +731,7 @@ async fn run_started_entry_child(expected_file: &str, normal: bool) {
     let before = modes(0);
     let user = std::fs::read(root.join("config.json")).unwrap();
     assert!(user.len() <= 1024 * 1024);
-    let code = enter(&workspace, normal).await.unwrap();
+    let code = enter_captured(&workspace).await.unwrap();
     assert_eq!(code, 0);
     let restored = modes(0);
     assert_modes(&before, &restored);
@@ -815,42 +784,18 @@ async fn run_started_entry_child(expected_file: &str, normal: bool) {
     eprintln!("{COMPLETE}");
 }
 
-/// A normal case's user file turns the terminal's fixed-text status reports
-/// off: this driver's screen reader does not parse those records, and the
-/// first run with them missed every stage after the password. The real
-/// binary's own reports are checked in `tests/privacy_cli.rs`. A captured
-/// case's file is returned as it was authored.
-fn user_file_for(home: &Home, case: Case, authored: Vec<u8>) -> Vec<u8> {
-    if !matches!(
-        case,
-        Case::NormalFullEntry
-            | Case::NormalSafeEntry
-            | Case::NormalClearEntry
-            | Case::NormalClearCancel
-    ) {
-        return authored;
-    }
-    let mut user = b"{\"terminal\":{\"osc7501\":false},".to_vec();
-    user.extend_from_slice(&authored[1..]);
-    std::fs::write(home.config.join("config.json"), &user).unwrap();
-    user
-}
-
-fn clear_reacquire_script(case: Case) {
-    run_owned(Box::pin(async move {
+#[test]
+fn actual_captured_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
+    run_owned(Box::pin(async {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ClearReplies(AtomicUsize::new(0)))
             .mount(&server)
             .await;
         let home = Home::new();
-        let original = user_file_for(
-            &home,
-            case,
-            source_and_user_policy(&home, &server.uri()).await,
-        );
+        let original = source_and_user_policy(&home, &server.uri()).await;
         let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
-        let mut pty = Pty::start(&home, case);
+        let mut pty = Pty::start(&home, Case::CapturedClearEntry);
         pty.expect("Unlock private privacy key").await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
@@ -884,17 +829,8 @@ fn clear_reacquire_script(case: Case) {
 }
 
 #[test]
-fn actual_captured_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
-    clear_reacquire_script(Case::CapturedClearEntry);
-}
-
-#[test]
-fn actual_normal_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
-    clear_reacquire_script(Case::NormalClearEntry);
-}
-
-fn clear_cancel_script(case: Case) {
-    run_owned(Box::pin(async move {
+fn actual_captured_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
+    run_owned(Box::pin(async {
         for cancel in [b"\x1b".as_slice(), b"\x03".as_slice()] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
@@ -902,13 +838,9 @@ fn clear_cancel_script(case: Case) {
                 .mount(&server)
                 .await;
             let home = Home::new();
-            let original = user_file_for(
-                &home,
-                case,
-                source_and_user_policy(&home, &server.uri()).await,
-            );
+            let original = source_and_user_policy(&home, &server.uri()).await;
             let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
-            let mut pty = Pty::start(&home, case);
+            let mut pty = Pty::start(&home, Case::CapturedClearCancel);
             pty.expect("Unlock private privacy key").await;
             pty.send(format!("{SECRET}\r").as_bytes()).await;
             pty.expect("message · Ctrl+J newline").await;
@@ -940,30 +872,17 @@ fn clear_cancel_script(case: Case) {
 }
 
 #[test]
-fn actual_captured_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
-    clear_cancel_script(Case::CapturedClearCancel);
-}
-
-#[test]
-fn actual_normal_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
-    clear_cancel_script(Case::NormalClearCancel);
-}
-
-fn clear_type_ahead_script(case: Case) {
-    run_owned(Box::pin(async move {
+fn actual_captured_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
+    run_owned(Box::pin(async {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ClearReplies(AtomicUsize::new(0)))
             .mount(&server)
             .await;
         let home = Home::new();
-        let original = user_file_for(
-            &home,
-            case,
-            source_and_user_policy(&home, &server.uri()).await,
-        );
+        let original = source_and_user_policy(&home, &server.uri()).await;
         let key = std::fs::read(home.config.join("privacy-key.v1")).unwrap();
-        let mut pty = Pty::start(&home, case);
+        let mut pty = Pty::start(&home, Case::CapturedClearEntry);
         pty.expect("Unlock private privacy key").await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
@@ -1003,29 +922,16 @@ fn clear_type_ahead_script(case: Case) {
 }
 
 #[test]
-fn actual_captured_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
-    clear_type_ahead_script(Case::CapturedClearEntry);
-}
-
-#[test]
-fn actual_normal_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
-    clear_type_ahead_script(Case::NormalClearEntry);
-}
-
-fn safe_entry_script(case: Case) {
-    run_owned(Box::pin(async move {
+fn actual_captured_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
+    run_owned(Box::pin(async {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(SafeReplies(AtomicUsize::new(0)))
             .mount(&server)
             .await;
         let home = Home::new();
-        let original = user_file_for(
-            &home,
-            case,
-            source_and_user_policy(&home, &server.uri()).await,
-        );
-        let mut pty = Pty::start(&home, case);
+        let original = source_and_user_policy(&home, &server.uri()).await;
+        let mut pty = Pty::start(&home, Case::CapturedSafeEntry);
         pty.expect("Unlock private privacy key").await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
@@ -1076,29 +982,17 @@ fn safe_entry_script(case: Case) {
 }
 
 #[test]
-fn actual_captured_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
-    safe_entry_script(Case::CapturedSafeEntry);
-}
-
-#[test]
-fn actual_normal_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
-    safe_entry_script(Case::NormalSafeEntry);
-}
-
-fn full_entry_script(case: Case) {
-    run_owned(Box::pin(async move {
+fn actual_captured_private_entry_owns_human_review_question_file_and_checkpoint_without_password() {
+    run_owned(Box::pin(async {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ConversationReplies(AtomicUsize::new(0)))
             .mount(&server)
             .await;
         let home = Home::new();
-        let original = user_file_for(
-            &home,
-            case,
-            source_and_user_policy_with_data(&home, &server.uri(), Some("contact_lines_v1")).await,
-        );
-        let mut pty = Pty::start(&home, case);
+        let original =
+            source_and_user_policy_with_data(&home, &server.uri(), Some("contact_lines_v1")).await;
+        let mut pty = Pty::start(&home, Case::CapturedFullEntry);
         pty.expect("Unlock private privacy key").await;
         pty.send(format!("{SECRET}\r").as_bytes()).await;
         pty.expect("message · Ctrl+J newline").await;
@@ -1138,14 +1032,4 @@ fn full_entry_script(case: Case) {
         }
         absent_secrets(&home.config);
     }));
-}
-
-#[test]
-fn actual_captured_private_entry_owns_human_review_question_file_and_checkpoint_without_password() {
-    full_entry_script(Case::CapturedFullEntry);
-}
-
-#[test]
-fn actual_normal_private_entry_owns_human_review_question_file_and_checkpoint_without_password() {
-    full_entry_script(Case::NormalFullEntry);
 }

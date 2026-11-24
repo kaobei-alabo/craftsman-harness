@@ -198,13 +198,19 @@ deadline; all ten passed with the verification script's four test threads. That
 first failure is retained; no assertion or deadline was changed, and its cause
 is not established.
 
-Five normal cases run the same five scripts through the production router, as
-`main` calls it for an eligible interactive invocation. Each shares its script
-with the captured case, so assertions and deadlines are the same. The router's
-early answers, the explicit commands and a refused build are checked through
-the real binary in `tests/privacy_cli.rs`. Every private build admits the
-system text through the pinned detector, so a start without an installed and
-approved detector is refused by the build after the unlock. Details and the
+The five normal cases, which ran the same scripts through the production
+router in a test child, now drive the real binary in `tests/privacy_cli.rs`
+under their earlier names, after the detector was approved at the real prompt
+of the ordinary terminal. The router's early answers, the explicit commands,
+`enable`'s success and a refused build are checked there too. Every private
+build admits the system text through the pinned detector, so a start without
+an installed and approved detector is refused by the build after the unlock.
+
+A built session holds a witness of its own build: what the builder accepted
+for each model lane, part and controller, what the view providers counted
+when they bound the conversation, and what the root agent's boundary has
+installed. The conversation accepts the session only when these agree with
+what was requested, and checks again at every issuance. Details and the
 retained first failures are in [privacy-startup.md](privacy-startup.md).
 
 The ordinary macOS clear checks exercise actual owned PTYs, real key/KDF/vault,

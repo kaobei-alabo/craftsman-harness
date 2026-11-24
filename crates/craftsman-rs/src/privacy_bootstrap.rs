@@ -204,6 +204,16 @@ impl OwnedTerminalStartup {
     /// captured entry are its callers.
     /// Workspace capture/reservation reuse the existing actual native owners.
     pub fn into_private_bootstrap(self, workspace: &Path) -> Result<PrivateBootstrap> {
+        self.bootstrap(workspace, true)
+    }
+    /// The same four owners for a read-only inspection of the source, the
+    /// key files and the detector's stored approval. No conversation is
+    /// reserved and no thread exists afterwards; only a real startup
+    /// allocates its fresh binding.
+    pub(crate) fn into_inspection(self, workspace: &Path) -> Result<PrivateBootstrap> {
+        self.bootstrap(workspace, false)
+    }
+    fn bootstrap(self, workspace: &Path, reserve: bool) -> Result<PrivateBootstrap> {
         let (configuration, policy, source, requirements) = self
             .into_configuration_policy()
             .map_err(|error| match error {
@@ -224,13 +234,16 @@ impl OwnedTerminalStartup {
         let key_root = policy.root().duplicate_owned()?;
         policy.root().with_captured_path(|_| Ok(()))?;
         let workspace = Workspace::capture(workspace)?;
-        let binding = workspace.reserve()?;
+        let binding = match reserve {
+            true => Some(workspace.reserve()?),
+            false => None,
+        };
         policy.recheck()?;
         Ok(PrivateBootstrap {
             policy,
             operations: PrivateKeyOperations::from_captured_root(key_root),
             workspace,
-            binding: Some(binding),
+            binding,
         })
     }
 }
@@ -641,6 +654,8 @@ impl PrivateConversation {
             return Err(PrivateBuildError::Source(BootstrapError::Workspace));
         }
         extras.workspace_root = Some(self.workspace.canonical.clone());
+        // What this frontend asks to be shown, before the builder takes it.
+        let reply_display = extras.human_reply_sink.is_some();
         let selection = self.selection().map_err(PrivateBuildError::Refused)?;
         let report = selection.report();
         extras.privacy_view = Some(selection);
@@ -681,9 +696,22 @@ impl PrivateConversation {
                 .refuse_materialized(session, PrivateBuildError::Source(error))
                 .await);
         }
+        // The witness of this build, from its own composed objects. A
+        // requested part that is not there, or a wire the policy cannot
+        // inspect, is refused with the builder's own words; the session is
+        // shut down for real and never becomes a built owner.
+        let witness = match BuildWitness::of(&session, self, report, reply_display) {
+            Ok(witness) => witness,
+            Err(refusal) => {
+                return Err(self
+                    .refuse_materialized(session, PrivateBuildError::Refused(refusal))
+                    .await);
+            }
+        };
         Ok(PrivateBuiltSession {
             session,
             owner: self.clone(),
+            witness,
         })
     }
     /// The shared builder had already materialized `session` when this
@@ -817,6 +845,96 @@ impl std::fmt::Debug for PrivateBuildError {
 pub struct PrivateBuiltSession {
     session: crate::agent::Session,
     owner: Arc<PrivateConversation>,
+    #[cfg(unix)]
+    witness: BuildWitness,
+}
+
+/// What one actual build accepted and composed for what was requested of
+/// it, held by the built owner. It joins three records of the same build,
+/// each made by the object that did the work:
+/// - what the builder accepted where it accepted it, in this selection's own
+///   report: each model lane's view provider with its wire, the parts with a
+///   source path, the controller adapters. The provider objects are not
+///   kept: the framework does not hand an agent's provider back;
+/// - what the view providers themselves counted when they bound this
+///   conversation's guard;
+/// - what the root agent's boundary has installed.
+///
+/// It is not the builder's success, a supported-feature flag, a model or
+/// protocol name, or anything a caller supplies. A fresh clear makes a new
+/// selection and session, which get their own.
+#[cfg(unix)]
+struct BuildWitness {
+    report: Arc<crate::privacy_session::SelectionReport>,
+    boundary: Arc<crate::privacy_session::ConversationBoundary>,
+    /// Whether the frontend asked for its replies to be shown.
+    reply_display: bool,
+}
+#[cfg(unix)]
+impl BuildWitness {
+    fn of(
+        session: &crate::agent::Session,
+        owner: &PrivateConversation,
+        report: Arc<crate::privacy_session::SelectionReport>,
+        reply_display: bool,
+    ) -> std::result::Result<Self, BuildRefusal> {
+        let Some(view) = &session.privacy_view else {
+            return Err(BuildRefusal::RequestedPart);
+        };
+        let witness = Self {
+            report,
+            boundary: view.boundary().clone(),
+            reply_display,
+        };
+        witness.holds(session, owner)?;
+        Ok(witness)
+    }
+    /// The builder accepted the root agent's lane, the parts and the
+    /// controllers; its lanes are as many, and as many native, as the view
+    /// providers that bound this conversation; every requested part is
+    /// installed on this session's own boundary; and every model wire can be
+    /// inspected where the policy requires that.
+    fn holds(
+        &self,
+        session: &crate::agent::Session,
+        owner: &PrivateConversation,
+    ) -> std::result::Result<(), BuildRefusal> {
+        use crate::privacy_session::{
+            ACCEPTED_CONTROLLERS, ACCEPTED_CONTROLS, ACCEPTED_NATIVE_SHIFT, ACCEPTED_PARTS,
+            ACCEPTED_VERIFICATION, CapturedUserPolicy,
+        };
+        let Some(view) = &session.privacy_view else {
+            return Err(BuildRefusal::RequestedPart);
+        };
+        let composed = view.composed();
+        let accepted = self.report.accepted();
+        let lanes = (accepted & 7).count_ones();
+        let native_lanes = ((accepted >> ACCEPTED_NATIVE_SHIFT) & 7).count_ones();
+        let mut expected = 1 | ACCEPTED_PARTS | ACCEPTED_CONTROLLERS;
+        if session.verification.is_some() {
+            expected |= ACCEPTED_VERIFICATION;
+        }
+        if session.controls.is_some() {
+            expected |= ACCEPTED_CONTROLS;
+        }
+        let fixed =
+            1 | ACCEPTED_PARTS | ACCEPTED_CONTROLLERS | ACCEPTED_VERIFICATION | ACCEPTED_CONTROLS;
+        if !Arc::ptr_eq(view.boundary(), &self.boundary)
+            || accepted & fixed != expected
+            || lanes != composed.chat_wires + composed.native_wires
+            || native_lanes != composed.native_wires
+            || (self.reply_display && !composed.reply_display)
+            || !composed.file_review
+            || composed.verification != session.verification.is_some()
+            || composed.controls != session.controls.is_some()
+        {
+            return Err(BuildRefusal::RequestedPart);
+        }
+        if owner.requires_inspectable_provider_items() && composed.native_wires != 0 {
+            return Err(BuildRefusal::OpaqueProviderItems);
+        }
+        Ok(())
+    }
 }
 #[derive(thiserror::Error)]
 pub enum PrivateTurnError {
@@ -877,6 +995,7 @@ impl PrivateBuiltSession {
             if !guard
                 || self.session.thread_id != self.owner.thread_id()
                 || !Arc::ptr_eq(view.session(), &self.owner.session)
+                || self.witness.holds(&self.session, &self.owner).is_err()
             {
                 return Err(PrivateTurnError::Source(BootstrapError::Session(
                     SessionStop::Closed,
@@ -891,6 +1010,17 @@ impl PrivateBuiltSession {
     }
     pub fn thread_id(&self) -> &str {
         &self.session.thread_id
+    }
+    /// Cancels one running background task of this session, through the same
+    /// source, binding and witness checks as a submission. The answer is the
+    /// registry's own: whether such a running task was there to abort.
+    #[cfg(unix)]
+    pub(crate) fn abort_background(
+        &self,
+        name: &str,
+    ) -> std::result::Result<bool, PrivateTurnError> {
+        self.task_owner()?;
+        Ok(self.session.registry.abort(name))
     }
     pub async fn turn(
         &self,

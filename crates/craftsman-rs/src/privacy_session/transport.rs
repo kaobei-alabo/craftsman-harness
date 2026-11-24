@@ -124,6 +124,7 @@ impl ViewChatProvider {
             .with_send_guard(session.send_guard())
             .map_err(SessionStop::Guard)?;
         let defaults = admitted_defaults(&session, &client.chat_request_defaults()).await?;
+        session.bound_wire(false);
         Ok(Self {
             client,
             session,
@@ -245,6 +246,7 @@ impl ViewNativeProvider {
             .request_defaults()
             .map_err(|_| SessionStop::Unbound)?;
         let defaults = admitted_defaults(&session, &defaults).await?;
+        session.bound_wire(true);
         Ok(Self {
             client,
             session,

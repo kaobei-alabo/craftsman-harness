@@ -1606,6 +1606,21 @@ impl ConversationBoundary {
         let _ = self.replies.set(display);
     }
 
+    /// Whether a frontend's display, a file review, a verification adapter
+    /// and a controls adapter are installed here: the objects themselves.
+    #[cfg(unix)]
+    pub(crate) fn shows_replies(&self) -> bool {
+        self.replies.get().is_some()
+    }
+    #[cfg(unix)]
+    pub(crate) fn reviews_files(&self) -> bool {
+        self.files.get().is_some()
+    }
+    #[cfg(unix)]
+    pub(crate) fn installed_controllers(&self) -> (bool, bool) {
+        self.controls.held()
+    }
+
     /// Whether a string value of `args` holds a placeholder this
     /// conversation issued, with a marker or without one. What cannot be
     /// decided counts as holding one.

@@ -84,14 +84,6 @@ enum Case {
     CapturedClearEntry,
     #[cfg(feature = "gadgets")]
     CapturedClearCancel,
-    #[cfg(feature = "gadgets")]
-    NormalFullEntry,
-    #[cfg(feature = "gadgets")]
-    NormalSafeEntry,
-    #[cfg(feature = "gadgets")]
-    NormalClearEntry,
-    #[cfg(feature = "gadgets")]
-    NormalClearCancel,
 }
 impl Case {
     fn name(self) -> &'static str {
@@ -131,14 +123,6 @@ impl Case {
             Self::CapturedClearEntry => "captured-clear-entry",
             #[cfg(feature = "gadgets")]
             Self::CapturedClearCancel => "captured-clear-cancel",
-            #[cfg(feature = "gadgets")]
-            Self::NormalFullEntry => "normal-full-entry",
-            #[cfg(feature = "gadgets")]
-            Self::NormalSafeEntry => "normal-safe-entry",
-            #[cfg(feature = "gadgets")]
-            Self::NormalClearEntry => "normal-clear-entry",
-            #[cfg(feature = "gadgets")]
-            Self::NormalClearCancel => "normal-clear-cancel",
         }
     }
     fn selected(arguments: impl Iterator<Item = std::ffi::OsString>) -> Option<Self> {
@@ -195,14 +179,6 @@ impl Case {
             "captured-clear-entry" => Self::CapturedClearEntry,
             #[cfg(feature = "gadgets")]
             "captured-clear-cancel" => Self::CapturedClearCancel,
-            #[cfg(feature = "gadgets")]
-            "normal-full-entry" => Self::NormalFullEntry,
-            #[cfg(feature = "gadgets")]
-            "normal-safe-entry" => Self::NormalSafeEntry,
-            #[cfg(feature = "gadgets")]
-            "normal-clear-entry" => Self::NormalClearEntry,
-            #[cfg(feature = "gadgets")]
-            "normal-clear-cancel" => Self::NormalClearCancel,
             _ => return None,
         })
     }
@@ -234,7 +210,18 @@ async fn private_key_ui_child(case: Case) {
         return;
     }
     #[cfg(feature = "gadgets")]
-    if entry_tests::run_started_child(case).await {
+    if matches!(case, Case::CapturedFullEntry) {
+        entry_tests::run_captured_child().await;
+        return;
+    }
+    #[cfg(feature = "gadgets")]
+    if matches!(case, Case::CapturedSafeEntry) {
+        entry_tests::run_captured_safe_child().await;
+        return;
+    }
+    #[cfg(feature = "gadgets")]
+    if matches!(case, Case::CapturedClearEntry | Case::CapturedClearCancel) {
+        entry_tests::run_captured_clear_child(matches!(case, Case::CapturedClearCancel)).await;
         return;
     }
     // Every environment, path, configuration and terminal access is AFTER the
@@ -262,11 +249,7 @@ async fn private_key_ui_child(case: Case) {
         Case::CapturedFullEntry
         | Case::CapturedSafeEntry
         | Case::CapturedClearEntry
-        | Case::CapturedClearCancel
-        | Case::NormalFullEntry
-        | Case::NormalSafeEntry
-        | Case::NormalClearEntry
-        | Case::NormalClearCancel => {
+        | Case::CapturedClearCancel => {
             unreachable!("captured entry dispatched before ordinary popup fixture")
         }
         Case::Init | Case::TailInit => {

@@ -2146,6 +2146,7 @@ async fn build_session_with_capture_profile(
             // installed: provider items live in the conversation's receipts.
             let session = privacy_view.clone()?;
             let client = make_unguarded_client()?;
+            let native_wire = client.native.is_some();
             let inspectable = extras
                 .privacy_view
                 .as_ref()
@@ -2192,7 +2193,14 @@ async fn build_session_with_capture_profile(
                 .map_err(|_| unavailable.clone())
             };
             match built {
-                Ok(provider) => provider,
+                Ok(provider) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .accept_lane(crate::privacy_session::ModelLane::Main, native_wire);
+                    }
+                    provider
+                }
                 Err((refusal, line)) => {
                     if let Some(selection) = &extras.privacy_view {
                         selection.report().refuse(refusal);
@@ -2682,15 +2690,24 @@ async fn build_session_with_capture_profile(
             // The delegated agents of a privacy conversation: the same owner
             // and guard, their own usage, and requests composed from the
             // sources of each agent's own lane.
+            let client = make_unguarded_client()?;
+            let native_wire = client.native.is_some();
             let built = crate::privacy_session::delegated_provider(
-                make_unguarded_client()?,
+                client,
                 privacy_view.clone()?,
                 sub_usage,
                 child_sink.clone(),
             )
             .await;
             match built {
-                Ok(provider) => provider,
+                Ok(provider) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .accept_lane(crate::privacy_session::ModelLane::Delegated, native_wire);
+                    }
+                    provider
+                }
                 Err(_) => {
                     if let Some(selection) = &extras.privacy_view {
                         selection
@@ -2849,6 +2866,7 @@ async fn build_session_with_capture_profile(
             // guard, its own usage, and requests composed from sources.
             let session = privacy_view.clone()?;
             let client = make_unguarded_client()?;
+            let native_wire = client.native.is_some();
             let built: Result<Arc<dyn ModelProvider>, _> = if client.native.is_none() {
                 crate::privacy_session::ViewChatProvider::new(
                     client,
@@ -2869,7 +2887,14 @@ async fn build_session_with_capture_profile(
                 .map(|provider| Arc::new(provider.for_summaries()) as Arc<dyn ModelProvider>)
             };
             match built {
-                Ok(provider) => provider,
+                Ok(provider) => {
+                    if let Some(selection) = &extras.privacy_view {
+                        selection
+                            .report()
+                            .accept_lane(crate::privacy_session::ModelLane::Summaries, native_wire);
+                    }
+                    provider
+                }
                 Err(_) => {
                     if let Some(selection) = &extras.privacy_view {
                         selection
@@ -3110,6 +3135,9 @@ async fn build_session_with_capture_profile(
                 }
                 return None;
             }
+            if let Some(selection) = &extras.privacy_view {
+                selection.report().accept_parts();
+            }
             kept
         }
     };
@@ -3155,7 +3183,13 @@ async fn build_session_with_capture_profile(
                 }
                 return None;
             }
-            (completion.flatten(), policy.flatten())
+            let (completion, policy) = (completion.flatten(), policy.flatten());
+            if let Some(selection) = &extras.privacy_view {
+                selection
+                    .report()
+                    .accept_controllers(completion.is_some(), policy.is_some());
+            }
+            (completion, policy)
         }
     };
     match (&selected_verification, &verification) {

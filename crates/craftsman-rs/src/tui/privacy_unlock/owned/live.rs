@@ -85,6 +85,8 @@ enum Returned {
     Turn(Result<craftsman_harness::TurnResult, PrivateTurnError>),
     Steer(String, Result<bool, PrivateTurnError>),
     Decision(Result<Option<craftsman_harness::TurnResult>, PrivateTurnError>),
+    /// A read-only listing's text, or its error line.
+    Listing(Result<String, String>),
 }
 
 pub(super) struct Frontend {
@@ -365,13 +367,14 @@ impl Frontend {
             Some(AppAction::RemoveQueued(index)) => {
                 self.app.queued_messages.remove(index);
             }
-            // Not saves: a picker, a reopen and a background-task control.
-            // None of them has a private adapter; nothing was changed.
+            // A running background task of this session, cancelled for real.
+            Some(AppAction::CancelTask(name)) => self.cancel_task(&name),
+            // Not saves: a picker and a reopen. Neither has a private
+            // adapter; nothing was changed.
             Some(
                 AppAction::ChooseModel(_)
                 | AppAction::EditProvider(_)
-                | AppAction::ResumeSession(_)
-                | AppAction::CancelTask(_),
+                | AppAction::ResumeSession(_),
             ) => self.app.push_error(
                 "This control has no reviewed private entry adapter; it was not executed.",
             ),
@@ -385,6 +388,25 @@ impl Frontend {
         if self.app.voice_request.take().is_some() {
             self.app
                 .push_error("Voice input has no reviewed private adapter in this entry.");
+        }
+    }
+    /// The ordinary terminal's task cancellation, on this session's own
+    /// registry and only through its bound owner. The lines are the ordinary
+    /// ones; a refused owner says why.
+    fn cancel_task(&mut self, name: &str) {
+        let aborted = match self.built.as_ref() {
+            Some(built) => built.abort_background(name),
+            None => Ok(false),
+        };
+        match aborted {
+            Ok(true) => self.app.push_kind(
+                crate::tui::app::TranscriptKind::Task,
+                format!("Cancelled task {name}"),
+            ),
+            Ok(false) => self.app.push_error(format!(
+                "Task {name} is not a cancellable running background task"
+            )),
+            Err(error) => self.app.push_error(error.to_string()),
         }
     }
     fn submission(&mut self) -> Option<(String, bool)> {
@@ -418,6 +440,14 @@ impl Frontend {
             return false;
         }
         if control.starts_with('/') && self.configuration.is_captured() {
+            let mut parts = control.split_whitespace();
+            if parts.next() == Some("/tasks") && parts.next() == Some("cancel") {
+                match parts.next() {
+                    Some(name) => self.cancel_task(name),
+                    None => self.app.push("usage: /tasks cancel <name>"),
+                }
+                return false;
+            }
             // The ordinary terminal's own read-only local commands. They read
             // the retained configuration and session; nothing is saved,
             // started or sent, and the line never becomes model input. The
@@ -436,7 +466,22 @@ impl Frontend {
                     &mut self.app,
                 ) {
                     if control == "/help" {
-                        self.app.push("In this private conversation only /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /clear and /quit run. The other commands are not executed.");
+                        self.app.push("In this private conversation these run: /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /tasks, /tasks cancel <name>, /mcp, /skills, /agents (list), /checkpoints, /memories, /lsp, /gadgets, /diff, /clear and /quit. Settings changes and every other command are not executed.");
+                    }
+                    return false;
+                }
+                // A listing that waits for its owner runs as a task of this
+                // frontend; its text arrives like any other returned work.
+                if let Some(session) = session
+                    && let Some(listing) = crate::tui::commands::Listing::of(control, session)
+                {
+                    match listing {
+                        Ok(listing) => {
+                            let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
+                                Box::pin(async move { Returned::Listing(listing.text().await) });
+                            self.work.spawn(future);
+                        }
+                        Err(unavailable) => self.app.push(unavailable),
                     }
                     return false;
                 }
@@ -514,6 +559,8 @@ impl Frontend {
             Returned::Decision(Ok(Some(result))) => self.finished(Ok(result)),
             Returned::Decision(Err(error)) => self.finished(Err(error)),
             Returned::Turn(result) => self.finished(result),
+            Returned::Listing(Ok(text)) => self.app.push(text),
+            Returned::Listing(Err(error)) => self.app.push_error(error),
         }
     }
     fn finished(&mut self, result: Result<craftsman_harness::TurnResult, PrivateTurnError>) {
@@ -779,7 +826,12 @@ impl Frontend {
             }
             if self.app.modal.is_none() {
                 let submitted = self.submission();
-                if submitted.is_some() {
+                // A new prompt releases a blocked queue. A control does not:
+                // a refused line that is kept there is not tried again, and
+                // refused again, after every local command.
+                if let Some((typed, _)) = &submitted
+                    && !typed.trim_start().starts_with(['/', '!'])
+                {
                     self.queued_blocked = false;
                 }
                 let next = submitted.or_else(|| {

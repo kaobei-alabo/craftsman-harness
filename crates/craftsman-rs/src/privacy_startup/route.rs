@@ -28,7 +28,10 @@ pub(crate) async fn normal_route(
     };
     let startup = captured.into_owned()?;
     let approval = startup.approval_start()?;
-    let bootstrap = preflight(startup)?;
+    let bootstrap = preflight(startup, true)?;
+    // The entry's own read-only eligibility, with the captured source's
+    // strict settings, before any terminal effect.
+    OwnedSecretTerminal::check_captured_bootstrap(&bootstrap)?;
     let Some(requirements) = bootstrap.startup_requirements()? else {
         return Err(PrivateTerminalError::Startup(StartupError::Invocation));
     };
@@ -46,15 +49,20 @@ pub(crate) async fn normal_route(
 /// bootstrap for the current directory, and the key files exist. It unlocks
 /// nothing, reaches no model and runs no guest. The detector's stored source
 /// approval is not sampled here: the pinned call checks it before any guest
-/// work, and `status` reports it.
+/// work, and `status` reports it. Only the real startup reserves its fresh
+/// conversation (`reserve`); the status inspection reserves nothing.
 fn preflight(
     startup: OwnedTerminalStartup,
+    reserve: bool,
 ) -> std::result::Result<PrivateBootstrap, PrivateTerminalError> {
     require_voice_off(startup.configuration()?)?;
     let Ok(workspace) = std::env::current_dir() else {
         return Err(PrivateTerminalError::Source(BootstrapError::Workspace));
     };
-    let bootstrap = startup.into_private_bootstrap(&workspace)?;
+    let bootstrap = match reserve {
+        true => startup.into_private_bootstrap(&workspace)?,
+        false => startup.into_inspection(&workspace)?,
+    };
     match bootstrap.status()? {
         FilePresence::FilesPresent => Ok(bootstrap),
         FilePresence::Missing => Err(StartupError::KeyMissing.into()),
@@ -121,7 +129,7 @@ pub(crate) async fn status() -> String {
     text.push_str("\nPrivacy policy: enabled in the user configuration.");
     match interactive_preflight(source).await {
         Ok(()) => text.push_str(
-            "\nInteractive startup: read-only preflight passed (policy, voice setting, key files, stored detector approval). Still outstanding until `craftsman` starts: the vault unlock, the detector's own call check, the model connection and the full private session.",
+            "\nInteractive startup: read-only preflight passed (policy, voice setting, key files, stored detector approval). Not checked until `craftsman` starts: the vault unlock, the detector's own call check, the model connection, native-view support for the configured model wire, and support for every requested session feature. A passed preflight is not an unlock, an approval or readiness.",
         ),
         Err(refusal) => {
             text.push_str("\nInteractive startup: refused. ");
@@ -143,7 +151,8 @@ async fn interactive_preflight(
         terminal: true,
     }
     .refuse_unsupported(&source)?;
-    let bootstrap = preflight(finish_source(source)?.into_owned()?)?;
+    let bootstrap = preflight(finish_source(source)?.into_owned()?, false)?;
+    OwnedSecretTerminal::check_captured_bootstrap(&bootstrap)?;
     // What the first private input would otherwise find out: the pinned
     // detector is installed with a stored approval of exactly its bytes.
     match bootstrap.detector_source_approved().await {
@@ -186,17 +195,25 @@ pub(crate) async fn enable(
     validate(original, &candidate)?;
     match root.replace_user_config(lease, original, &candidate) {
         Ok(()) => {}
-        Err(crate::privacy_key::KeyError::Changed) => return Err(StartupError::Source.into()),
-        Err(error) => return Err(BootstrapError::Key(error).into()),
+        // The staging name stopped being this command's own file.
+        Err((_, true)) => return Err(StartupError::StagedLeftover.into()),
+        Err((crate::privacy_key::KeyError::Changed, false)) => {
+            return Err(StartupError::Source.into());
+        }
+        Err((error, false)) => return Err(BootstrapError::Key(error).into()),
     }
     drop(source);
     // Read back: the actual user file now is the candidate and proposes it.
-    let written = actual_source()?;
+    // A file that reads differently was changed after this command's write.
+    // Nothing is restored over it, and it is not reported as unchanged.
+    let Ok(written) = actual_source() else {
+        return Err(StartupError::WrittenThenChanged.into());
+    };
     match written.recheck_original() {
         Ok((_, Some((bytes, _)))) if written.is_enabled() && bytes == candidate.as_slice() => {
             Ok(())
         }
-        _ => Err(StartupError::Source.into()),
+        _ => Err(StartupError::WrittenThenChanged.into()),
     }
 }
 

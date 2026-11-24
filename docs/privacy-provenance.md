@@ -61,7 +61,7 @@ not detection of everything a model writes or of opaque provider content.
 | Reopening, transferring or rebinding a privacy conversation | refused |
 | Restoration into what a person reads and into the content of `write_file` and `edit_file` | implemented, private, for the root agent and for delegated agents in their own lanes. The file operation is the source the boundary returns from `before_review` for the agent's plan, its digest is what `reviewed_operation_digest` gives, and the independently registered gate input/policy decision travels as a non-authoritative annotation and is validated against its actual issuer, plan, preview and final invocation at the file tool; the file tool runs its own checkpoint and diagnostics around the derived write; see [privacy-restore.md](privacy-restore.md). Every other tool argument, memory files, delete and rename are not restored |
 | Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is selected only by the unmerged interactive route ([privacy-startup.md](privacy-startup.md)); data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
-| Secret input, frontend selector, activation | not implemented |
+| Secret input, frontend selector, activation | implemented locally on the unmerged branch for the eligible interactive invocation: the owned password popup, the interactive route and the explicit `privacy` commands ([privacy-startup.md](privacy-startup.md)). Not merged, installed or natively validated |
 
 ## Framework boundary
 
@@ -486,8 +486,9 @@ any project file was merged. It answers two questions: whether the policy
 enables privacy for the conversation's workspace, and whether everything a
 provider is sent must be inspectable. A flag, a label or a digest is not a
 policy. The private captured key/user-root owner implements this trait and
-its owned terminal entry uses the selection. No normal frontend, configuration
-key or command makes it, and data-file proposals remain inert.
+its owned terminal entry uses the selection. Only the unmerged interactive
+route makes it; no other frontend, configuration key or command does, and
+data-file proposals remain inert.
 
 Making the selection is refused when the policy does not enable privacy for
 the workspace or the conversation has ended. The builder's own result has no

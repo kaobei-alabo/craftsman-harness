@@ -281,12 +281,35 @@ pub enum BuildRefusal {
     MissingSourcePaths(Vec<String>),
 }
 
-/// Where the session builder records why it refused a selection. The
-/// builder's own result has no room for a reason.
+/// Where the session builder records why it refused a selection, and what
+/// it accepted for one where it accepted it. The builder's own result has
+/// room for neither.
 #[derive(Default)]
 pub struct SelectionReport {
     refusal: std::sync::Mutex<Option<BuildRefusal>>,
+    /// What the builder accepted, as the bits below. Each is set at the
+    /// place where the builder took that part, and never cleared.
+    accepted: std::sync::atomic::AtomicU32,
 }
+
+/// The model lanes of a session: the root agent's, the delegated agents'
+/// and the summarizer's.
+#[derive(Clone, Copy)]
+pub(crate) enum ModelLane {
+    Main,
+    Delegated,
+    Summaries,
+}
+
+/// Bits of [`SelectionReport::accepted`]: a lane's view provider was
+/// accepted (bits 0 to 2) and speaks a native wire (bits 3 to 5); every
+/// installed part has a source path; the controller adapters were decided,
+/// and which of the two were installed.
+pub(crate) const ACCEPTED_NATIVE_SHIFT: u32 = 3;
+pub(crate) const ACCEPTED_PARTS: u32 = 1 << 6;
+pub(crate) const ACCEPTED_CONTROLLERS: u32 = 1 << 7;
+pub(crate) const ACCEPTED_VERIFICATION: u32 = 1 << 8;
+pub(crate) const ACCEPTED_CONTROLS: u32 = 1 << 9;
 
 impl SelectionReport {
     /// The first refusal the builder recorded, if it refused.
@@ -296,6 +319,37 @@ impl SelectionReport {
 
     pub(crate) fn refuse(&self, refusal: BuildRefusal) {
         self.refusal.lock().unwrap().get_or_insert(refusal);
+    }
+
+    /// The builder accepted the view provider it composed for `lane`, which
+    /// speaks a native wire or not.
+    pub(crate) fn accept_lane(&self, lane: ModelLane, native: bool) {
+        let lane = lane as u32;
+        let bits = (1 << lane) | (u32::from(native) << (lane + ACCEPTED_NATIVE_SHIFT));
+        self.accepted.fetch_or(bits, Ordering::AcqRel);
+    }
+
+    /// The builder found that every installed part has a source path.
+    pub(crate) fn accept_parts(&self) {
+        self.accepted.fetch_or(ACCEPTED_PARTS, Ordering::AcqRel);
+    }
+
+    /// The builder installed these controller adapters, and no other.
+    pub(crate) fn accept_controllers(&self, verification: bool, controls: bool) {
+        let mut bits = ACCEPTED_CONTROLLERS;
+        if verification {
+            bits |= ACCEPTED_VERIFICATION;
+        }
+        if controls {
+            bits |= ACCEPTED_CONTROLS;
+        }
+        self.accepted.fetch_or(bits, Ordering::AcqRel);
+    }
+
+    /// What was accepted so far, for the host that made the selection.
+    #[cfg(unix)]
+    pub(crate) fn accepted(&self) -> u32 {
+        self.accepted.load(Ordering::Acquire)
     }
 }
 
@@ -387,6 +441,23 @@ impl CapturedUserPolicy for FixturePolicy {
     }
 }
 
+/// What one build composed for its conversation, read from the composed
+/// objects themselves: the view providers that bound this conversation's
+/// guard, by wire, and what the root agent's boundary has installed. It
+/// states facts about one session's real objects. It is no permission, and
+/// equal values of another session say nothing about this one.
+#[cfg(unix)]
+pub struct ComposedParts {
+    /// Chat wires carry text and calls only: everything sent can be inspected.
+    pub chat_wires: u32,
+    /// Native wires send back provider items that cannot be inspected.
+    pub native_wires: u32,
+    pub reply_display: bool,
+    pub file_review: bool,
+    pub verification: bool,
+    pub controls: bool,
+}
+
 /// The privacy conversation a session was built for, with the boundary its
 /// agent selected.
 pub struct PrivacyView {
@@ -432,6 +503,21 @@ impl PrivacyView {
 
     pub fn boundary(&self) -> &Arc<ConversationBoundary> {
         &self.boundary
+    }
+
+    /// What this view's own conversation and boundary hold now.
+    #[cfg(unix)]
+    pub(crate) fn composed(&self) -> ComposedParts {
+        let wires = &self.session.inner.wires;
+        let (verification, controls) = self.boundary.installed_controllers();
+        ComposedParts {
+            chat_wires: wires[0].load(Ordering::Acquire),
+            native_wires: wires[1].load(Ordering::Acquire),
+            reply_display: self.boundary.shows_replies(),
+            file_review: self.boundary.reviews_files(),
+            verification,
+            controls,
+        }
     }
 }
 
@@ -611,6 +697,9 @@ struct Inner {
     operation: tokio::sync::Mutex<Ledger>,
     slots: tokio::sync::Semaphore,
     stopped: AtomicBool,
+    /// The view providers that bound this conversation's guard, counted by
+    /// their own constructors: Chat wires, then native wires.
+    wires: [std::sync::atomic::AtomicU32; 2],
     // The most recent actual map return survives a late admission stop. It is
     // private retention, never a model node or permission to resolve a value.
     last_map_commit: std::sync::Mutex<Option<Arc<MaskedText>>>,
@@ -701,6 +790,7 @@ impl PrivacySession {
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
+                wires: Default::default(),
                 last_map_commit: std::sync::Mutex::new(None),
                 bound: AtomicBool::new(false),
                 agent_owner: std::sync::Mutex::new(None),
@@ -726,6 +816,12 @@ impl PrivacySession {
     /// The guard every model client of this conversation must be bound to.
     pub fn send_guard(&self) -> Arc<SendGuard> {
         self.inner.guard.clone()
+    }
+
+    /// A view provider says, when it has bound this conversation's guard,
+    /// which wire it speaks. Only the two view providers call this.
+    pub(crate) fn bound_wire(&self, native: bool) {
+        self.inner.wires[usize::from(native)].fetch_add(1, Ordering::AcqRel);
     }
 
     pub fn check(&self) -> Result<(), SessionStop> {
