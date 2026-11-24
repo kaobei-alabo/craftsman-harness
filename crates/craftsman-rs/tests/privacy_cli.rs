@@ -1947,6 +1947,163 @@ fn the_private_terminal_owns_the_voice_controller_through_a_turn_a_clear_and_its
     assert_eq!(std::fs::read_dir(&models).unwrap().count(), 0);
 }
 
+/// Waits until the terminal's screen shows `text` at least `count` times.
+#[cfg(all(feature = "voice", feature = "gadgets"))]
+fn wait_for_count(terminal: &mut Terminal, text: &str, count: usize) {
+    let deadline = Instant::now() + LIMIT;
+    while screen(&terminal.output).matches(text).count() < count {
+        let ended = terminal.child.try_wait().unwrap().is_some();
+        terminal.pump(Duration::from_millis(50));
+        if ended || Instant::now() > deadline {
+            terminal.absent_secret();
+            panic!(
+                "the terminal did not show {text:?} {count} times; its screen was:\n{}",
+                screen(&terminal.output)
+            );
+        }
+    }
+}
+
+/// The owned voice controller's pause and restart, and its model cache, in a
+/// build that has voice input. The synthetic home has no voice model and no
+/// permission to download one; its cache holds one complete-size partial
+/// download, a file of holes. Every session of the real controller ends at
+/// its model check: nothing is captured, downloaded or called, and no event
+/// is supplied by this case.
+/// - three voice keys end in the controller's missing-model line and the
+///   controller pauses;
+/// - the fourth voice key gets the controller's own pause line, which names
+///   `/voice on`;
+/// - `/voice on` shuts that controller down for real and says so when it
+///   has ended; the next voice key reaches a new controller, which fails at
+///   its model check like a first one;
+/// - a private turn runs after it and the terminal ends with exit code 0;
+/// - the cache still holds exactly the partial download, at its size: it
+///   was neither promoted nor removed, and nothing was added.
+///
+/// It is not hardware validation: no microphone, model or transcription is
+/// involved, so dictated text and its draft bound are not exercised here.
+#[cfg(all(feature = "voice", feature = "gadgets"))]
+#[test]
+fn a_paused_private_voice_controller_is_restarted_by_voice_on_and_its_cache_is_left_as_it_was() {
+    let setup = approved(Script::Clear);
+    let mut user: serde_json::Value = serde_json::from_slice(&setup.user).unwrap();
+    user["voice"]["enabled"] = true.into();
+    user["privacy"] = serde_json::json!({"enabled":true,"detector":{
+        "gadget":"privacy-detector","function":"detect",
+        "component_sha256":setup.component,"manifest_sha256":setup.manifest}});
+    let user = setup.home.user(&user.to_string());
+    initialize(&setup.home);
+    let key = setup.key();
+    // The default model's partial download at its full size, never written.
+    const MODEL_BYTES: u64 = 574_041_195;
+    let models = setup.home.config.join("models");
+    std::fs::create_dir(&models).unwrap();
+    let partial = models.join("ggml-large-v3-turbo-q5_0.bin.part");
+    std::fs::File::create(&partial)
+        .unwrap()
+        .set_len(MODEL_BYTES)
+        .unwrap();
+    let missing = "The local voice model is missing";
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    for failed in 1..=3 {
+        terminal.send(b"\x07");
+        wait_for_count(&mut terminal, missing, failed);
+    }
+    terminal.wait_for("voice paused · /voice on to retry");
+    terminal.send(b"\x07");
+    terminal.wait_for("voice paused after three consecutive failures");
+    assert_eq!(screen(&terminal.output).matches(missing).count(), 3);
+    terminal.send(b"/voice on\r");
+    terminal.wait_for("Voice input was shut down and reset.");
+    terminal.send(b"\x07");
+    wait_for_count(&mut terminal, missing, 4);
+    // Every other form keeps the general refusal and stays a kept line.
+    terminal.send(b"/voice off\r");
+    terminal.wait_for("This command has no reviewed private entry adapter");
+    // In such a build a space typed in an empty composer is a voice key
+    // too, so the turn is typed without its outer spaces.
+    terminal.send(format!("{}\r", TYPED.trim()).as_bytes());
+    terminal.wait_for("Clear-ready reply for alice@example.invalid.");
+    terminal.send(b"/quit\r");
+    let (_, code) = terminal.finish();
+    assert_eq!(code, 0);
+
+    setup.assert_unchanged(&user, &key);
+    assert_eq!(setup.private_requests().len(), 1);
+    let cached: Vec<_> = std::fs::read_dir(&models)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(cached, [partial.clone()]);
+    assert_eq!(std::fs::metadata(&partial).unwrap().len(), MODEL_BYTES);
+}
+
+/// The private shell escape, through the real binary.
+/// - It runs in the conversation's workspace: the first command waits for a
+///   file that this case then creates in that workspace under a relative
+///   name, and the second prints the name of its directory. The binary's
+///   own directory is that workspace too, so this shows the escape still
+///   works there, not that it would ignore another directory; the unit case
+///   of the executor shows that.
+/// - A line typed while that first command runs is not dropped: it waits in
+///   the queue as it was typed and, with nothing refused before it, runs
+///   when the first has returned.
+/// - The result is shown as the ordinary escape shows it, with error output
+///   and exit code, and an empty command gets the ordinary answer.
+/// - Neither line, nor any output, becomes a request or a record: the one
+///   private request and the one recorded input are the turn typed after.
+#[cfg(feature = "gadgets")]
+#[test]
+fn the_private_shell_escape_runs_in_the_captured_workspace_and_keeps_a_line_typed_while_busy() {
+    let setup = approved(Script::Clear);
+    let mut user: serde_json::Value = serde_json::from_slice(&setup.user).unwrap();
+    user["privacy"] = serde_json::json!({"enabled":true,"detector":{
+        "gadget":"privacy-detector","function":"detect",
+        "component_sha256":setup.component,"manifest_sha256":setup.manifest}});
+    let user = setup.home.user(&user.to_string());
+    initialize(&setup.home);
+    let key = setup.key();
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    terminal.send(b"!while [ ! -e released ]; do sleep 0.1; done; printf first-%s-done shell\r");
+    terminal.wait_for("working · Ctrl-C stop");
+    terminal.send(b"!printf second-%s-ran \"$(basename \"$(pwd -P)\")\"; echo oops >&2; exit 3\r");
+    terminal.wait_for("A shell escape waits for the running work");
+    terminal.wait_for("queued for next turn (1)");
+    assert!(!screen(&terminal.output).contains("first-shell-done"));
+    std::fs::write(setup.home.workspace.join("released"), b"").unwrap();
+    terminal.wait_for("first-shell-done");
+    // The queued line runs when the first has returned, in a directory of
+    // the workspace's name, and is shown as the ordinary escape shows a
+    // result: its output, its error output and its exit code.
+    terminal.wait_for("second-workspace-ran");
+    terminal.wait_for("[exit code 3]");
+    let shown = screen(&terminal.output);
+    assert!(shown.contains("--- stderr ---") && shown.contains("oops"));
+    terminal.send(b"!\r");
+    terminal.wait_for("Error: empty command");
+    // This conversation's captured settings have voice input off. The voice
+    // restart command turns nothing on: it keeps the general refusal, in a
+    // build with voice input as in one without.
+    terminal.send(b"/voice on\r");
+    terminal.wait_for("This command has no reviewed private entry adapter");
+    terminal.send(format!("{TYPED}\r").as_bytes());
+    terminal.wait_for("Clear-ready reply for alice@example.invalid.");
+    terminal.send(b"/quit\r");
+    let (output, code) = terminal.finish();
+    assert_eq!(code, 0);
+    assert_fixed_reports(&output);
+
+    setup.assert_unchanged(&user, &key);
+    assert_eq!(setup.private_requests().len(), 1);
+    let typed: Vec<Vec<String>> = setup.private_threads().iter().map(typed_inputs).collect();
+    assert_eq!(typed, [vec![TYPED.to_owned()]]);
+}
+
 /// The alias a private request carries for the typed address: the one in
 /// its first user message.
 /// A voice key typed behind a clear command, before the password prompt, in

@@ -171,6 +171,31 @@ pub async fn run_shell_escape(cmd: &str, settings: &ShellSettings) -> String {
     }
 }
 
+/// The executor of the `!cmd` escape for a frontend that holds a captured
+/// workspace: `cmd` runs in `cwd`, never in the process's current
+/// directory, under the cancellation `turn` it is given. The executor, the
+/// limit and the process handling are [`run_shell_escape`]'s. Its caller
+/// refuses an empty command and formats the result as that escape does,
+/// with [`ExecRaw::format`] and [`ExecFailure::text`].
+///
+/// This is the executor's own future, and the turn is an argument and not
+/// the task's entered one. A second formatted escape and a second entered
+/// scope would each be compiled once more into the unit-test binary of the
+/// gadget test mode, which has no unwind room for either: the scope alone
+/// measured 1,524 bytes against 220. Inlined, this forwards and adds no
+/// function of its own there.
+#[cfg(unix)]
+#[inline(always)]
+pub(crate) fn execute_escape_in<'a>(
+    cmd: &'a str,
+    cwd: &'a Path,
+    settings: &'a ShellSettings,
+    turn: &'a craftsman_harness::TurnCancellation,
+) -> impl std::future::Future<Output = Result<ExecRaw, ExecFailure>> + 'a {
+    let limit = Duration::from_secs(settings.timeout_secs);
+    execute_impl_core(cmd, cwd, settings, limit, Some(turn))
+}
+
 /// The `execute` tool bound to a working directory and the `shell` settings:
 /// what the host `execute` tool calls, so the per-call `timeout` argument
 /// and the output format reach the process.
@@ -888,6 +913,52 @@ mod tests {
         assert!(out.contains("hi"));
         assert!(out.contains("err"));
         assert!(out.contains("[exit code 3]"));
+    }
+
+    /// The captured-directory executor runs the real shell in the directory
+    /// it is given, which here is not the process's own, and under the turn
+    /// it is given: a turn that was cancelled before the call spawns nothing
+    /// there. The ordinary escape still runs where the process is.
+    ///
+    /// The unit-test binary of the gadget test mode has no unwind room for
+    /// one more case: 188 bytes with this correction, and this case took
+    /// 344 in its first form. So it is compiled only where voice input is,
+    /// with the other unit case of the private voice and shell correction.
+    #[cfg(all(unix, feature = "voice"))]
+    #[tokio::test]
+    async fn the_captured_directory_executor_runs_in_that_directory_and_not_the_current_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let captured = dir.path().canonicalize().unwrap();
+        let settings = ShellSettings::default();
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_ne!(captured, here);
+        let session = craftsman_harness::SessionCancellation::new();
+        let turn = session.new_turn();
+        let mut raw =
+            execute_escape_in("pwd -P; echo err >&2; exit 3", &captured, &settings, &turn)
+                .await
+                .unwrap();
+        assert_eq!(
+            raw.format(&settings).0,
+            format!(
+                "{}\n\n--- stderr ---\nerr\n\n[exit code 3]",
+                captured.display()
+            )
+        );
+        assert_eq!(
+            run_shell_escape("pwd -P", &settings).await,
+            format!("{}\n", here.display())
+        );
+        turn.cancel();
+        let mut refused = execute_escape_in("touch ran", &captured, &settings, &turn)
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, ExecFailure::Cancelled { partial: None }));
+        assert_eq!(
+            refused.text(&settings),
+            "Error: command cancelled by the user."
+        );
+        assert!(!captured.join("ran").exists());
     }
 
     #[tokio::test]

@@ -82,20 +82,17 @@ fn build_error(error: PrivateBuildError) -> PrivateTerminalError {
 }
 
 /// Local work of this frontend that waits for its owner: a read-only listing
-/// or the person's own shell escape.
+/// or the person's own shell escape, with the captured workspace it runs in.
 enum LocalWork {
     Listing(crate::tui::commands::Listing),
     Shell(
         String,
+        std::path::PathBuf,
         crate::shell::ShellSettings,
         craftsman_harness::TurnCancellation,
     ),
 }
 
-/// Runs local work for the conversation `owner`. The source is checked
-/// where the work runs and again before its result is published; a source
-/// that stopped gives the fixed line below and not the result. The shell
-/// runs inside its own cancellation turn.
 /// The most bytes a voice event can add to the composer draft, for the
 /// events that add any: the committed text beyond what the draft already
 /// holds of this segment (`held` bytes), the final text, a separator before
@@ -132,6 +129,12 @@ macro_rules! or_return {
     };
 }
 
+/// Runs local work for the conversation `owner`. The source is checked
+/// where the work runs and again before its result is published; a source
+/// that stopped gives the fixed line below and not the result. The shell
+/// runs under its own cancellation turn, which the executor is given, in
+/// the captured workspace that this source check just found unchanged and
+/// not where the process stands.
 async fn local_work(work: LocalWork, owner: Arc<PrivateConversation>) -> Returned {
     const STOPPED: &str = "The private source owner stopped; this local result is not shown.";
     let before = owner.check_sources().is_ok();
@@ -146,13 +149,22 @@ async fn local_work(work: LocalWork, owner: Arc<PrivateConversation>) -> Returne
                 Err(_) => Returned::Listing(Err(STOPPED.to_owned())),
             }
         }
-        LocalWork::Shell(command, settings, turn) => {
+        LocalWork::Shell(command, workspace, settings, turn) => {
             if !before {
                 return Returned::Operation(STOPPED.to_owned());
             }
-            let output = turn
-                .scope(crate::tools::run_shell_escape(&command, &settings))
-                .await;
+            // The ordinary escape's own answers, on the captured directory.
+            let output = match command.is_empty() {
+                true => "Error: empty command".to_owned(),
+                false => {
+                    match crate::tools::execute_escape_in(&command, &workspace, &settings, &turn)
+                        .await
+                    {
+                        Ok(mut raw) => raw.format(&settings).0,
+                        Err(mut failure) => failure.text(&settings),
+                    }
+                }
+            };
             match owner.check_sources() {
                 Ok(()) => Returned::Operation(output),
                 Err(_) => Returned::Operation(STOPPED.to_owned()),
@@ -199,6 +211,11 @@ pub(super) struct Frontend {
     /// prompt and inside the retirement's 30-second bound.
     #[cfg(feature = "voice")]
     voice: Option<(crate::voice::VoiceController, tokio::task::JoinHandle<()>)>,
+    /// Shared with the shutdown work of a controller that a restart
+    /// retired, for as long as that work has not returned. While it is
+    /// shared, no new controller is started.
+    #[cfg(feature = "voice")]
+    voice_retiring: Arc<()>,
 }
 impl Frontend {
     pub(super) fn from_popup(
@@ -273,6 +290,8 @@ impl Frontend {
             listings: 0,
             #[cfg(feature = "voice")]
             voice: None,
+            #[cfg(feature = "voice")]
+            voice_retiring: Arc::new(()),
         })
     }
 
@@ -402,6 +421,13 @@ impl Frontend {
                     Err(_) => break,
                 },
             };
+            // A voice event that arrives while this frontend owns no
+            // controller was sent by one it has retired: it changes nothing
+            // of the voice state that was reset after it.
+            #[cfg(feature = "voice")]
+            if matches!(&event, UiEvent::Voice(_)) && self.voice.is_none() {
+                continue;
+            }
             // Dictated text enters the same draft as typed text and keeps
             // its bound. A segment that would take the draft past it is
             // refused whole and the dictation is cancelled; the earlier
@@ -420,6 +446,20 @@ impl Frontend {
                 crate::tui::input::request_voice_cancel(&mut self.app);
                 self.app.push_error("This whole private input exceeds its byte bound; the earlier draft is retained.");
                 continue;
+            }
+            // The end of a dictation can add one separator and can submit
+            // the draft with no key behind it. A dictation that was already
+            // ended here, by the person or by the bound above, adds and
+            // submits nothing; a live one adds no separator to a draft that
+            // is at its bound. What it submits is within that bound.
+            #[cfg(feature = "voice")]
+            if let UiEvent::Voice(crate::voice::VoiceEvent::SessionFinished { .. }) = &event {
+                if !self.app.voice.active() {
+                    continue;
+                }
+                if self.app.input.len() >= crate::privacy_hook::MAX_TEXT_BYTES {
+                    self.app.voice.marker = None;
+                }
             }
             let session = self
                 .built
@@ -544,7 +584,16 @@ impl Frontend {
     /// frontend's own UI channel and from there to the ordinary handler, so
     /// dictated text enters the same composer draft as typed text and is
     /// submitted as the same private input. The settings are the captured
-    /// source's own; nothing is changed, downloaded or enabled beyond them.
+    /// source's own.
+    ///
+    /// The controller's model cache is the `models` directory of this
+    /// conversation's captured configuration root, taken from the built
+    /// session after a source check, and not the ambient configuration
+    /// directory. That root is a path that was just checked, not a held
+    /// descriptor. Without the captured download opt-in the controller
+    /// creates that directory when it is missing and changes nothing else:
+    /// no entry is promoted or removed and nothing is downloaded. A start
+    /// before the session is built has no such root and is refused.
     #[cfg(feature = "voice")]
     fn voice_request(&mut self) {
         use crate::tui::input::VoiceRequest;
@@ -553,12 +602,31 @@ impl Frontend {
         };
         if matches!(request, VoiceRequest::Start) && self.voice.is_none() {
             let owner = self.owner.clone();
-            let config = match self.configuration.source(&owner) {
-                Ok(cfg) => crate::voice::VoiceConfig::from_config(cfg),
-                Err(error) => {
+            let captured = match (self.configuration.source(&owner), self.built.as_ref()) {
+                (Err(error), _) => Err(error.to_string()),
+                // The shutdown of a restarted controller has not returned.
+                (Ok(_), _) if Arc::strong_count(&self.voice_retiring) > 1 => Err(
+                    "The earlier voice controller is still stopping; voice input was not started."
+                        .to_owned(),
+                ),
+                (Ok(cfg), Some(built)) => match built.extension_roots() {
+                    Some((root, _)) => Ok((crate::voice::VoiceConfig::from_config(cfg), root)),
+                    None => Err(
+                        "The captured configuration root of this conversation is unavailable; voice input was not started."
+                            .to_owned(),
+                    ),
+                },
+                (Ok(_), None) => Err(
+                    "Voice input starts once this private session is built; the voice key was not acted on."
+                        .to_owned(),
+                ),
+            };
+            let (config, root) = match captured {
+                Ok(captured) => captured,
+                Err(line) => {
                     crate::tui::input::request_voice_cancel(&mut self.app);
                     self.app.voice_request = None;
-                    self.app.push_error(error.to_string());
+                    self.app.push_error(line);
                     return;
                 }
             };
@@ -572,7 +640,7 @@ impl Frontend {
                 }
             });
             self.voice = Some((
-                crate::voice::VoiceController::spawn(config, events),
+                crate::voice::VoiceController::spawn_with_model_root(config, events, root),
                 forward,
             ));
         }
@@ -581,11 +649,23 @@ impl Frontend {
             // real and the voice state starts over. The next Start spawns a
             // new one from the captured settings. The shutdown is this
             // frontend's own local work, joined by the retirement.
+            //
+            // Its event task is ended first, before that work exists and
+            // before the state is reset: the retired controller sends this
+            // frontend nothing more, and what it had already sent is
+            // dropped on arrival, because no controller is owned. It is told
+            // to cancel at once, which stops its session and releases
+            // capture. The work holds `voice_retiring` until the controller
+            // and the event task have really ended; no new controller is
+            // started before that.
             if let Some((controller, forward)) = self.voice.take() {
+                forward.abort();
+                controller.cancel();
+                let retiring = self.voice_retiring.clone();
                 let future: Pin<Box<dyn Future<Output = Returned> + Send>> = Box::pin(async move {
                     controller.shutdown().await;
-                    forward.abort();
                     let _ = forward.await;
+                    drop(retiring);
                     Returned::Listing(Ok("Voice input was shut down and reset.".into()))
                 });
                 self.work.spawn(future);
@@ -605,6 +685,43 @@ impl Frontend {
             VoiceRequest::CancelSegment => controller.cancel_segment(),
             VoiceRequest::Cancel | VoiceRequest::Recreate => controller.cancel(),
         }
+    }
+    /// `/voice on`: the ordinary terminal's own command for the restart
+    /// above, which a paused controller's line names. After three failed
+    /// sessions a controller answers every start with that line until it is
+    /// replaced, and no key asks for a restart. `true`: the line was this
+    /// frontend's to answer.
+    ///
+    /// It is answered only while the captured source still holds and itself
+    /// has voice input on, in a terminal that has it. It turns nothing on
+    /// and changes no setting: a conversation without voice input keeps the
+    /// general refusal, as does every other `/voice` form. It is read as
+    /// the built-in command before any extension command is looked up.
+    #[cfg(feature = "voice")]
+    fn voice_control(&mut self, control: &str) -> bool {
+        let mut parts = control.split_whitespace();
+        if (parts.next(), parts.next(), parts.next()) != (Some("/voice"), Some("on"), None) {
+            return false;
+        }
+        let owner = self.owner.clone();
+        let captured = match self.configuration.source(&owner) {
+            Ok(cfg) => crate::voice::VoiceConfig::from_config(cfg).enabled,
+            Err(_) => false,
+        };
+        if !captured || !self.app.voice.available || !self.app.voice.enabled {
+            return false;
+        }
+        if self.voice.is_none() {
+            // No controller to shut down, so no returned work says it.
+            self.app
+                .push(match Arc::strong_count(&self.voice_retiring) > 1 {
+                    true => "The earlier voice controller is still stopping.",
+                    false => "Voice input has no controller to restart; the voice key starts one.",
+                });
+        }
+        self.app.voice_request = Some(crate::tui::input::VoiceRequest::Recreate);
+        self.voice_request();
+        true
     }
     /// Cancels and shuts the owned voice controller down for real, then
     /// ends its event task. Called first in every retirement, so before any
@@ -650,14 +767,14 @@ impl Frontend {
         }
     }
     /// The ordinary terminal's shell escape: the person's own command, run
-    /// locally by the ordinary runner with the captured configuration's
+    /// locally by the ordinary executor with the captured configuration's
     /// shell settings and its native limits, inside a turn of this
     /// frontend's own cancellation. Its output is shown here. Neither the
     /// command nor the output becomes model input or a record of the
-    /// conversation. The ordinary runner takes no directory and runs where
-    /// the process stands, so the command runs only while that is still the
-    /// workspace this conversation was captured for. `false`: nothing was
-    /// started, and the caller keeps the line.
+    /// conversation. It runs in the workspace this conversation was
+    /// captured for, which the work is given, and not in whatever directory
+    /// the process stands in; where the two differ, the captured one is
+    /// used. `false`: nothing was started, and the caller keeps the line.
     fn shell_escape(&mut self, command: String) -> bool {
         if self.app.running {
             self.app
@@ -672,23 +789,22 @@ impl Frontend {
                 return false;
             }
         };
-        let here = match std::env::current_dir() {
-            Ok(here) => std::fs::canonicalize(here.as_path()),
-            Err(error) => Err(error),
+        let workspace = match &self.built {
+            Some(built) => built.workspace().to_owned(),
+            None => {
+                self.app.push_error(
+                    "This conversation has no built session and so no captured workspace; the shell escape was not executed.",
+                );
+                return false;
+            }
         };
-        let same = match (&here, &self.built) {
-            (Ok(here), Some(built)) => here.as_path() == built.workspace(),
-            _ => false,
-        };
-        if !same {
-            self.app.push_error("The current directory is not the workspace this conversation was captured for; the shell escape was not executed.");
-            return false;
-        }
         let turn = self.cancellation.new_turn();
         self.app.running = true;
         self.app.operation_cancellation = Some(turn.clone());
-        let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
-            Box::pin(local_work(LocalWork::Shell(command, settings, turn), owner));
+        let future: Pin<Box<dyn Future<Output = Returned> + Send>> = Box::pin(local_work(
+            LocalWork::Shell(command, workspace, settings, turn),
+            owner,
+        ));
         self.work.spawn(future);
         true
     }
@@ -740,6 +856,11 @@ impl Frontend {
                     Some(name) => self.cancel_task(name),
                     None => self.app.push("usage: /tasks cancel <name>"),
                 }
+                return false;
+            }
+            // The restart that a paused voice controller's own line names.
+            #[cfg(feature = "voice")]
+            if self.voice_control(control) {
                 return false;
             }
             // The ordinary terminal's own read-only local commands. They read
