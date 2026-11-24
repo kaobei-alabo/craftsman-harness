@@ -84,12 +84,21 @@ trait SettingsAuthority: Send {
     /// conversation was retired and what became of the change. Any other
     /// error is returned as it is.
     fn ended(&mut self, error: PrivateTerminalError) -> PrivateTerminalError;
-    /// After the successor's session was built: adopts the retired record
-    /// into it. Returns the line to show, or why nothing was adopted.
-    fn adopt<'a>(
-        &'a mut self,
-        built: Option<&'a crate::privacy_bootstrap::PrivateBuiltSession>,
-    ) -> SettingsWork<'a>;
+    /// After the successor's session was built: the adoption of the retired
+    /// record into it, as owned work that the frontend keeps and polls with
+    /// its own drawing, input and shutdown. Starting it consumes nothing of
+    /// the pending handoff, and neither does dropping it.
+    fn adoption(
+        &mut self,
+        built: Option<&crate::privacy_bootstrap::PrivateBuiltSession>,
+    ) -> std::result::Result<crate::privacy_bootstrap::OwnedAdoption, String>;
+    /// That work returned `adopted`. A success ends the pending handoff,
+    /// here and nowhere else, and gives the line to show. A failure keeps
+    /// it and says why nothing was adopted and what became of the change.
+    fn adopted(
+        &mut self,
+        adopted: std::result::Result<(), String>,
+    ) -> std::result::Result<String, String>;
 }
 
 /// Work of the settings authority that the frontend awaits where it stands.

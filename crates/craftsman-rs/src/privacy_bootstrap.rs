@@ -914,6 +914,12 @@ pub(crate) struct CarriedConversation {
     usage: (u64, u64),
 }
 
+/// The adoption of a retired conversation as owned work. See
+/// [`PrivateBuiltSession::adoption`].
+#[cfg(unix)]
+pub(crate) type OwnedAdoption =
+    std::pin::Pin<Box<dyn std::future::Future<Output = std::result::Result<(), String>> + Send>>;
+
 /// What one actual build accepted and composed for the request that was made
 /// of it, held by the built owner. Every entry is an object of this build:
 /// - **the original request**, as the frontend made it before the builder
@@ -1206,30 +1212,47 @@ impl PrivateBuiltSession {
             usage,
         })
     }
-    /// Adopts a retired conversation into this newly built session, which
-    /// was built for its successor. The agent issues one adopted commit per
-    /// recorded message and this conversation admits every original anew;
-    /// then the session's usage totals follow. An error adopts nothing.
+    /// The adoption of a retired conversation into this newly built
+    /// session, which was built for its successor, as one owned operation.
+    /// This session's own binding is checked here, as for a turn; the
+    /// returned work holds the same agent, view and owners and is run by
+    /// whoever keeps it. The agent issues one adopted commit per recorded
+    /// message and this conversation admits every original anew; then the
+    /// session's usage totals follow. An error adopts nothing.
+    ///
+    /// Work that is dropped before it returned adopted nothing: the agent's
+    /// one commit is a single step with nothing awaited after it. What the
+    /// new scope's vault had already stored for it stays stored, and a
+    /// vault or detector call that was running finishes or refuses under
+    /// its own bounds.
     #[cfg(unix)]
-    pub(crate) async fn adopt(
+    pub(crate) fn adoption(
         &self,
-        carried: &CarriedConversation,
-    ) -> std::result::Result<(), String> {
-        let view = self.bound_view()?;
-        let adopter = view.session().adopter(view.boundary(), &carried.retired);
-        if let Err(error) = self
-            .session
-            .agent
-            .adopt_conversation_with_view(&carried.transfer, &adopter)
-            .await
-        {
-            return Err(error.to_string());
-        }
-        *self.session.usage.lock().unwrap() = carried.usage;
-        match self.owner.check_sources() {
-            Ok(()) => Ok(()),
-            Err(error) => Err(error.to_string()),
-        }
+        carried: Arc<CarriedConversation>,
+    ) -> std::result::Result<OwnedAdoption, String> {
+        let owner = match self.task_owner() {
+            Ok(owner) => owner,
+            Err(error) => return Err(error.to_string()),
+        };
+        let usage = self.session.usage.clone();
+        Ok(Box::pin(async move {
+            let adopter = owner
+                .view
+                .session()
+                .adopter(owner.view.boundary(), &carried.retired);
+            if let Err(error) = owner
+                .agent
+                .adopt_conversation_with_view(&carried.transfer, &adopter)
+                .await
+            {
+                return Err(error.to_string());
+            }
+            *usage.lock().unwrap() = carried.usage;
+            match owner.owner.check_sources() {
+                Ok(()) => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        }))
     }
     pub async fn turn(
         &self,

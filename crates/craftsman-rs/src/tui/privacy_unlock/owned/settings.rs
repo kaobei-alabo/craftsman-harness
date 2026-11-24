@@ -31,7 +31,9 @@
 //!    asked again, up to the three attempts one key owner allows. Every
 //!    error after the retirement ends the terminal with what became of
 //!    the change and where the record is.
-//! 5. **Adopted.** The new session adopts the record. A failure here ends
+//! 5. **Adopted.** The new session adopts the record, as work the frontend
+//!    keeps and polls. The retired conversation, the change and what became
+//!    of it stay here until that work returned success. A failure here ends
 //!    the terminal with a fixed error; the thread store holds the last save
 //!    that succeeded, within its retention, and nothing later.
 //!
@@ -77,7 +79,7 @@ pub(super) struct RouterSettings {
     /// until the adoption the retired conversation itself. Both stay here
     /// through a refused password.
     prepared: Option<Prepared>,
-    carried: Option<CarriedConversation>,
+    carried: Option<std::sync::Arc<CarriedConversation>>,
     /// What became of the change at the writer. It is handed over once,
     /// however often the startup is captured again.
     write: Write,
@@ -492,7 +494,7 @@ impl SettingsAuthority for RouterSettings {
             };
             match retired {
                 Ok(carried) => {
-                    self.carried = Some(carried);
+                    self.carried = Some(std::sync::Arc::new(carried));
                     (self.write, self.refused) = (Write::NotAsked, 0);
                     Returned::Listing(Ok(String::new()))
                 }
@@ -594,23 +596,38 @@ impl SettingsAuthority for RouterSettings {
         PrivateTerminalError::CarryOver(format!("{error} {}", self.write.told()))
     }
 
-    fn adopt<'a>(&'a mut self, built: Option<&'a PrivateBuiltSession>) -> SettingsWork<'a> {
-        Box::pin(async move {
-            let (Some(built), Some(carried)) = (built, self.carried.take()) else {
-                return Returned::Listing(Err("No retired conversation is waiting.".into()));
-            };
-            let prepared = self.prepared.take();
-            let write = std::mem::take(&mut self.write);
-            self.refused = 0;
-            if let Err(reason) = built.adopt(&carried).await {
-                // The last word says what became of the change as well.
-                return Returned::Listing(Err(format!("{reason} {}", write.told())));
-            }
-            Returned::Listing(Ok(match (write, prepared) {
-                (Write::Refused(line) | Write::Unverified(line), _) => line,
-                (_, Some(prepared)) => prepared.line,
-                (_, None) => String::new(),
-            }))
+    fn adoption(
+        &mut self,
+        built: Option<&PrivateBuiltSession>,
+    ) -> Result<crate::privacy_bootstrap::OwnedAdoption, String> {
+        // The retired conversation stays here, with the change and what
+        // became of it, while the work holds it as well.
+        let started = match (built, &self.carried) {
+            (Some(built), Some(carried)) => built.adoption(carried.clone()),
+            _ => Err("No retired conversation is waiting.".to_owned()),
+        };
+        match started {
+            Ok(work) => Ok(work),
+            Err(reason) => Err(format!("{reason} {}", self.write.told())),
+        }
+    }
+
+    fn adopted(&mut self, adopted: Result<(), String>) -> Result<String, String> {
+        if let Err(reason) = adopted {
+            // Nothing was adopted and nothing of the handoff is given up.
+            // The last word says what became of the change as well.
+            return Err(format!("{reason} {}", self.write.told()));
+        }
+        // The successor holds the record: the handoff ends here, and the
+        // retired conversation's values go with the last holder of it.
+        self.carried = None;
+        let prepared = self.prepared.take();
+        let write = std::mem::take(&mut self.write);
+        self.refused = 0;
+        Ok(match (write, prepared) {
+            (Write::Refused(line) | Write::Unverified(line), _) => line,
+            (_, Some(prepared)) => prepared.line,
+            (_, None) => String::new(),
         })
     }
 }

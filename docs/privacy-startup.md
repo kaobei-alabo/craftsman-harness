@@ -615,9 +615,24 @@ corrected:
   that differs from the retired scope's, can still refuse. The read counts
   the retired scope's mappings; a value the detector reports in the new
   scope and did not report in the old one is not counted.
-- **The adoption is awaited where it stands.** While every retired value
-  and raw capture is admitted again, the terminal draws nothing and
-  observes no input, cancellation or shutdown.
+- **The adoption is polled; ending it while it runs has no case.** The
+  adoption is the frontend's own kept work, polled as its build is: the
+  terminal is drawn, a shutdown is observed and input is read. What is
+  typed stays an editable draft or a queued line, as typed. Nothing is
+  submitted, no control runs and no waiter is answered until the adoption
+  has returned. The pending handoff (the retired conversation, the change
+  and what became of it) stays with the settings authority until the
+  adoption has returned success, and ends only there. Ctrl-C, an exit or a
+  shutdown ends the kept work by dropping it: nothing was adopted unless it
+  had already returned, what the new scope's vault had stored stays stored,
+  and a vault or detector call that was running finishes or refuses under
+  its own bounds. The terminal then ends with the one error that says that
+  the conversation was retired and what became of the change. A case
+  enters a line as soon as the composer shows and finds it sent once, after
+  the adoption, behind the carried record; whether the build, the adoption
+  or the ordinary loop read it is not determined. No case ends an adoption
+  while it runs: the adoption would have to be slowed for that, and it is
+  not. That path is read from source only.
 - **The retired scope is closed but not released.** The one adoption now
   takes the recorded state out of the transfer, so no second copy of the
   whole record stays behind. Each adopted commit still keeps the transfer

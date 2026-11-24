@@ -2609,3 +2609,109 @@ fn actual_normal_refused_password_after_a_settings_retirement_keeps_the_conversa
         );
     }
 }
+
+/// A settings change, the right password, and then a whole line entered as
+/// soon as the composer shows, without waiting for the line that says the
+/// conversation was carried over. At that moment the terminal is building
+/// the successor, adopting the record or already done; the case does not
+/// determine which and claims nothing about it. In each of them the line is
+/// kept as it was typed and goes to the newly selected model once, after
+/// the adoption, behind the carried record.
+#[cfg(feature = "gadgets")]
+#[test]
+fn actual_normal_line_entered_during_a_settings_handoff_is_sent_after_the_adoption() {
+    let setup = approved(Script::Carry);
+    let file = |selected: &str| {
+        format!(
+            r#"{{"model":"fixture/{selected}","providers":{{"fixture":{{"protocol":"openai_chat_completions","base_url":"{}","api_key":"fixture-key","models":{{"first-model":{{"label":"First"}},"second-model":{{"label":"Second"}}}}}}}},"harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"privacy":{{"enabled":true,"detector":{{"gadget":"privacy-detector","function":"detect","component_sha256":"{}","manifest_sha256":"{}"}}}}}}"#,
+            setup.server.uri(),
+            setup.component,
+            setup.manifest
+        )
+    };
+    let authored = setup.home.user(&file("first-model"));
+    initialize(&setup.home);
+    let key = setup.key();
+    let changed = file("second-model");
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    terminal.send(format!("{TYPED}\r").as_bytes());
+    terminal.wait_for("Planned for alice@example.invalid.");
+    assert_eq!(setup.home.user_bytes(), authored);
+
+    terminal.send(b"/model fixture/second-model\r");
+    // The password, and when the composer shows, the line with its Enter.
+    terminal.unlock();
+    terminal.send(format!("{FOLLOW}\r").as_bytes());
+    terminal.wait_for("Carried reply for alice@example.invalid.");
+    // The conversation was carried over, and the earlier transcript stayed.
+    let shown = screen(&terminal.output);
+    assert!(shown.contains("Model: fixture/second-model"), "{shown}");
+    assert!(
+        shown.contains("Planned for alice@example.invalid."),
+        "{shown}"
+    );
+    // Three replies of three and two tokens each: the totals came along.
+    terminal.send(b"/status\r");
+    terminal.wait_for("tokens: input 9, output 6");
+    terminal.send(b"/quit\r");
+    let (output, code) = terminal.finish();
+    assert_eq!(code, 0, "{}", plain(&output));
+    setup.assert_unchanged(changed.as_bytes(), &key);
+
+    // Two requests in the first scope and exactly one in the second, to the
+    // newly selected model: the line was sent once.
+    let requests = setup.private_requests();
+    let bodies: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    let models: Vec<&str> = bodies
+        .iter()
+        .map(|body| body["model"].as_str().unwrap())
+        .collect();
+    assert_eq!(models, ["first-model", "first-model", "second-model"]);
+    let aliases: Vec<String> = bodies.iter().map(request_alias).collect();
+    assert_eq!(aliases[0], aliases[1]);
+    assert_ne!(aliases[1], aliases[2]);
+    assert!(
+        !std::str::from_utf8(&requests[2].body)
+            .unwrap()
+            .contains(aliases[0].as_str()),
+        "a retired alias was sent"
+    );
+    // That one request has the carried record before the line: the earlier
+    // roles, call and result in order, under the new scope's alias. A line
+    // sent before the adoption would have had none of it.
+    let carried: Vec<&serde_json::Value> = bodies[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| {
+            message["role"] != "system"
+                && !message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.starts_with("<gadget_catalog_update sha256=\""))
+        })
+        .collect();
+    let roles: Vec<&str> = carried
+        .iter()
+        .map(|message| message["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "tool", "assistant", "user"]);
+    assert_eq!(carried[1]["tool_calls"][0]["id"], "plan-reply");
+    assert_eq!(carried[2]["tool_call_id"], "plan-reply");
+    assert_eq!(
+        carried[3]["content"],
+        format!("Planned for {}.", aliases[2]).as_str()
+    );
+    assert_eq!(
+        carried[4]["content"],
+        format!("  Follow up for {}.  ", aliases[2]).as_str()
+    );
+    // One private thread, and its stored record has both inputs as typed.
+    let threads = setup.private_threads();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(typed_inputs(&threads[0]), [TYPED, FOLLOW]);
+}

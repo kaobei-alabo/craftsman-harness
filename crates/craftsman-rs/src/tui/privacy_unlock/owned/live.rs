@@ -187,6 +187,9 @@ pub(super) struct Frontend {
     /// The construction while it has not returned. The captured route keeps
     /// it here through a failed build, for its retirement to await.
     construction: Option<Construction>,
+    /// The adoption of a retired conversation, from its start until it
+    /// returns or the person or a shutdown ends it.
+    adoption: Option<crate::privacy_bootstrap::OwnedAdoption>,
     work: JoinSet<Returned>,
     queued_blocked: bool,
     /// Listings that were started and have not returned. They are local
@@ -268,6 +271,7 @@ impl Frontend {
             input: Some(input),
             built: None,
             construction: None,
+            adoption: None,
             work: JoinSet::new(),
             queued_blocked: false,
             listings: 0,
@@ -1200,12 +1204,61 @@ impl Frontend {
             let Some(authority) = &mut self.popup.inner.settings else {
                 return Err(PrivateTerminalError::InputHandoff);
             };
-            match authority.adopt(self.built.as_ref()).await {
-                Returned::Listing(Ok(line)) => self.app.push(line),
-                Returned::Listing(Err(reason)) => {
-                    return Err(PrivateTerminalError::CarryOver(reason));
+            // The adoption is this frontend's own kept work, polled like
+            // its build: the terminal is drawn, a shutdown is observed and
+            // typed input is read. What is typed stays an editable draft
+            // or a queued line as typed. Nothing is submitted, no control
+            // runs and no waiter is answered until the adoption returned.
+            // The pending handoff stays with the authority throughout.
+            self.adoption = match authority.adoption(self.built.as_ref()) {
+                Ok(work) => Some(work),
+                Err(reason) => return Err(PrivateTerminalError::CarryOver(reason)),
+            };
+            let mut tick = tokio::time::interval(Duration::from_millis(16));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            self.app.running = true;
+            let adopted = loop {
+                tokio::select! {
+                    biased;
+                    adopted = self::retained(&mut self.adoption) => break adopted,
+                    _ = self.popup.inner.shutdown.cancellation.cancelled() => {
+                        // The work is dropped: nothing was adopted.
+                        self.adoption = None;
+                        return Err(PrivateTerminalError::Cancelled);
+                    }
+                    event = next_normal(&mut self.input) => {
+                        let cancelled = match event {
+                            Some(Ok(event)) => self.input_event(event) || self.app.cancel_requested,
+                            _ => {
+                                self.adoption = None;
+                                return Err(PrivateTerminalError::Terminal);
+                            }
+                        };
+                        if cancelled {
+                            // Ctrl-C or an exit: the owned work is ended
+                            // with the session's own cancellation, and the
+                            // error tells what became of the change.
+                            self.cancellation.cancel();
+                            self.adoption = None;
+                            return Err(PrivateTerminalError::Cancelled);
+                        }
+                    }
+                    _ = tick.tick() => {
+                        if let Err(error) = self.draw(true) {
+                            self.adoption = None;
+                            return Err(error);
+                        }
+                    }
                 }
-                _ => return Err(PrivateTerminalError::InputHandoff),
+            };
+            self.app.running = false;
+            self.app.dirty = true;
+            let Some(authority) = &mut self.popup.inner.settings else {
+                return Err(PrivateTerminalError::InputHandoff);
+            };
+            match authority.adopted(adopted) {
+                Ok(line) => self.app.push(line),
+                Err(reason) => return Err(PrivateTerminalError::CarryOver(reason)),
             }
         }
         Ok(())
