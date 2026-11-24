@@ -1251,6 +1251,18 @@ impl PrivateBuiltSession {
             {
                 return Err(error.to_string());
             }
+            // The record is this agent's now. The controllers that were
+            // installed on it take it over, in this same step: nothing is
+            // awaited between the agent's commit and here.
+            if let Err(error) = owner
+                .view
+                .boundary()
+                .settle_adopted(&owner.agent, &carried.transfer)
+            {
+                return Err(format!(
+                    "The record was adopted, and a controller of the new conversation did not take it over: {error}"
+                ));
+            }
             *usage.lock().unwrap() = carried.usage;
             match owner.owner.check_sources() {
                 Ok(()) => Ok(()),

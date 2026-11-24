@@ -202,6 +202,19 @@ impl SelectedControls {
     }
 }
 
+impl SelectedControls {
+    /// The record of this adapter's agent was adopted from the retired
+    /// conversation of its thread; the boundary checked that before it
+    /// calls this. The original controller takes the record over by its
+    /// own reset, as for an inherited conversation: on its own bookkeeping
+    /// keys alone, with no message shown to it. Only those keys are
+    /// written back.
+    pub(super) fn adopted(&self, state: &mut AgentState) -> Result<(), AgentError> {
+        let keys = self.original.own_keys();
+        on_own_keys(state, None, &keys, |own| self.original.reset(own))
+    }
+}
+
 impl AgentBoundaryPolicy for SelectedControls {
     fn view_support(&self) -> ViewSupport {
         ViewSupport::Tracked
@@ -348,6 +361,17 @@ impl SelectedVerification {
             directed: Mutex::new(None),
         });
         boundary.install_verification(&adapter).then_some(adapter)
+    }
+
+    /// The record of this adapter's agent was adopted from the retired
+    /// conversation of its thread; the boundary checked that before it
+    /// calls this. The original controller takes it as a restored record:
+    /// nothing earlier counts as checked, and fresh checks are required.
+    pub(super) fn adopted(&self) {
+        self.original.mark_restored();
+        if let Ok(mut directed) = self.directed.lock() {
+            *directed = None;
+        }
     }
 
     /// Whether `source` is the one this adapter was made with.

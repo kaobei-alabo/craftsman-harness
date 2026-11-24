@@ -2872,3 +2872,119 @@ fn actual_normal_line_entered_during_a_settings_handoff_is_sent_after_the_adopti
     assert_eq!(threads.len(), 1);
     assert_eq!(typed_inputs(&threads[0]), [TYPED, FOLLOW]);
 }
+
+/// A settings change in a conversation that runs with the context
+/// controller. Such a conversation was refused before anything was retired.
+/// It is carried over now: the controller that is newly installed on the
+/// adopting agent takes the adopted record over on its own bookkeeping key,
+/// the next input is accepted through it, and the request to the newly
+/// selected model has the carried record before that input.
+#[cfg(feature = "gadgets")]
+#[test]
+fn actual_normal_settings_change_carries_a_conversation_that_runs_with_the_context_controller() {
+    const OWN_KEY: &str = "_craftsman_context_v1";
+    let setup = approved(Script::Carry);
+    let file = |selected: &str| {
+        format!(
+            r#"{{"model":"fixture/{selected}","providers":{{"fixture":{{"protocol":"openai_chat_completions","base_url":"{}","api_key":"fixture-key","models":{{"first-model":{{"label":"First"}},"second-model":{{"label":"Second"}}}}}}}},"harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"privacy":{{"enabled":true,"detector":{{"gadget":"privacy-detector","function":"detect","component_sha256":"{}","manifest_sha256":"{}"}}}}}}"#,
+            setup.server.uri(),
+            setup.component,
+            setup.manifest
+        )
+    };
+    // The same user file with the context controller turned on.
+    let with_controller =
+        |selected: &str| file(selected).replacen('{', r#"{"context":{"enabled":true},"#, 1);
+    let authored = setup.home.user(&with_controller("first-model"));
+    initialize(&setup.home);
+    let key = setup.key();
+    let changed = with_controller("second-model");
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    terminal.send(format!("{TYPED}\r").as_bytes());
+    terminal.wait_for("Planned for alice@example.invalid.");
+    assert_eq!(setup.home.user_bytes(), authored);
+    // The controller is installed and recorded that input under its key.
+    let before = setup.private_threads();
+    assert_eq!(before.len(), 1);
+    assert!(
+        before[0]["custom"].get(OWN_KEY).is_some(),
+        "{}",
+        before[0]["custom"]
+    );
+
+    terminal.send(b"/model fixture/second-model\r");
+    terminal.unlock();
+    terminal.wait_for("Model: fixture/second-model");
+    let shown = screen(&terminal.output);
+    assert!(
+        shown.contains("Planned for alice@example.invalid."),
+        "{shown}"
+    );
+    assert!(!shown.contains("cannot be carried"), "{shown}");
+    assert_eq!(String::from_utf8(setup.home.user_bytes()).unwrap(), changed);
+    assert_eq!(setup.private_requests().len(), 2);
+
+    terminal.send(format!("{FOLLOW}\r").as_bytes());
+    terminal.wait_for("Carried reply for alice@example.invalid.");
+    terminal.send(b"/status\r");
+    terminal.wait_for("tokens: input 9, output 6");
+    terminal.send(b"/quit\r");
+    let (output, code) = terminal.finish();
+    assert_eq!(code, 0, "{}", plain(&output));
+    setup.assert_unchanged(changed.as_bytes(), &key);
+
+    let requests = setup.private_requests();
+    let bodies: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    let models: Vec<&str> = bodies
+        .iter()
+        .map(|body| body["model"].as_str().unwrap())
+        .collect();
+    assert_eq!(models, ["first-model", "first-model", "second-model"]);
+    let aliases: Vec<String> = bodies.iter().map(request_alias).collect();
+    assert_ne!(aliases[1], aliases[2]);
+    assert!(
+        !std::str::from_utf8(&requests[2].body)
+            .unwrap()
+            .contains(aliases[0].as_str()),
+        "a retired alias was sent"
+    );
+    // The carried record as the new model is given it, then the new input.
+    let carried: Vec<&serde_json::Value> = bodies[2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| {
+            message["role"] != "system"
+                && !message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.starts_with("<gadget_catalog_update sha256=\""))
+        })
+        .collect();
+    let roles: Vec<&str> = carried
+        .iter()
+        .map(|message| message["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["user", "assistant", "tool", "assistant", "user"]);
+    assert_eq!(
+        carried[3]["content"],
+        format!("Planned for {}.", aliases[2]).as_str()
+    );
+    assert_eq!(
+        carried[4]["content"],
+        format!("  Follow up for {}.  ", aliases[2]).as_str()
+    );
+    // One private thread with both inputs as typed, and the controller's
+    // key in the stored state of the conversation that adopted the record.
+    let threads = setup.private_threads();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(typed_inputs(&threads[0]), [TYPED, FOLLOW]);
+    assert!(threads[0]["custom"].get(OWN_KEY).is_some());
+    // The newly installed controller recorded the new input under it: the
+    // value is not the one the retired conversation's controller left.
+    assert_ne!(threads[0]["custom"][OWN_KEY], before[0]["custom"][OWN_KEY]);
+}

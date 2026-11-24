@@ -591,10 +591,44 @@ retired originals are sent to no model. The adoption does run the detector:
 admitting raw text anew in the new scope is the pinned detector's own call,
 as for any other input. The earlier transcript stays on the screen.
 
+**A conversation that runs with controllers** (context, failure or
+verification controls) is carried too.
+
+- The message that carries a call the completion controller scheduled is
+  carried as what it is: the agent's fixed text, admitted anew as host
+  text, and that one call as it was recorded. It has no text in it and was
+  no reply's. In the successor it is an adopted message. It is not said to
+  be a call that a controller of the successor scheduled.
+- The successor is built from the same file, so its builder installs new
+  controllers behind new adapters. After the agent's own adoption, in the
+  same step, those controllers take the record over through the adapters
+  the successor's boundary holds. The boundary first reads from the agent
+  that every recorded message has that agent's own adopted commit of this
+  very transfer; a caller's statement, a state or JSON shows nothing
+  there. Then the verification controller takes the record as a restored
+  one: nothing earlier counts as checked and fresh checks are required.
+  The context and failure controller resets itself on its own bookkeeping
+  keys of the recorded state and is shown no message; only those keys are
+  written back. Both are what the same controllers do for an inherited
+  conversation in the ordinary terminal.
+- No controller of the retired conversation is asked for anything, no
+  callback or check is replayed, and no model, tool or checkpoint runs.
+  The framework's validation of the installed controllers at every typed
+  entry is unchanged and runs at the adoption as at any entry.
+
+Limits of that: a controller that refuses the record ends the terminal
+after the agent's adoption, with an error that says the record was adopted
+and a controller did not take it over. The successor's context controller
+has no retained source for the retired conversation's last input; it gets
+one for the next input it accepts. What it would do with a section that
+quotes the earlier input before then is not exercised. A case carries
+a conversation with the context controller on and finds the next input
+recorded by the new controller under its key. No case carries a
+conversation with the verification or the failure controller, and none
+carries a scheduled call's message; those are read from source.
+
 What is refused, with the conversation kept:
 
-- a conversation that runs with context, failure or verification controls,
-  whose records are not carried yet;
 - a conversation with a reply that was received with provider items, a
   message of a delegated agent's lane, or a todo list that names a reply
   which is no longer recorded;

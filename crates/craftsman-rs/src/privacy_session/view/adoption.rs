@@ -31,8 +31,15 @@
 //! What is refused, before anything is adopted: a source that is not the
 //! retired conversation's own or does not fit its recorded message; a reply
 //! that was received with provider items, which cannot be carried to another
-//! scope; a message of a delegated agent or of an installed controller; a
-//! conversation that is not the successor the retirement itself named.
+//! scope; a message of a delegated agent; a conversation that is not the
+//! successor the retirement itself named.
+//!
+//! A conversation with installed controllers is carried. The message that
+//! carries a call its completion controller scheduled goes over as host
+//! text and that call. After the agent's adoption the controllers newly
+//! installed on the adopting agent take the record over through that
+//! agent's boundary ([`ConversationBoundary::settle_adopted`]); nothing of
+//! the retired conversation's controllers is asked or replayed.
 //!
 //! No model, tool or hook runs here. The old originals are sent nowhere.
 
@@ -246,6 +253,23 @@ fn carries(
                 && calls_carry(tool_calls, names)
                 && renamed(content, names).is_some()
         }
+        // The message that carries a call the installed completion
+        // controller scheduled: the agent's own fixed text and that one
+        // call, which no reply asked for and which has no text in it.
+        (
+            ViewSource::Hosted { node, scheduled },
+            Msg::Assistant {
+                content,
+                tool_calls,
+            },
+        ) => {
+            scheduled.commit().same_commit(first)
+                && scheduled.owner().same_agent(first.owner())
+                && Arc::ptr_eq(&node.inner.owner, owner)
+                && node.captured_text_is(content)
+                && tool_calls.as_slice() == std::slice::from_ref(scheduled.call())
+                && calls_carry(tool_calls, names)
+        }
         (
             ViewSource::Adopted {
                 owner: adopter,
@@ -281,7 +305,6 @@ fn carries(
 
 /// Why a conversation cannot be carried over as it stands. Decided before
 /// anything is retired; the conversation is kept.
-pub(crate) const NOT_CARRIED_CONTROLLERS: &str = "This conversation runs with context, failure or verification controls, whose records cannot be carried into a new private scope yet. The setting was not changed.";
 pub(crate) const NOT_CARRIED_RECORD: &str = "A recorded message of this conversation cannot be carried into a new private scope. The setting was not changed.";
 /// Not a statement that the conversation cannot be carried: the agent gives
 /// such a message its source when it next enters, and would at a retirement.
@@ -305,10 +328,6 @@ impl PrivacySession {
             || !boundary.is_root()
         {
             return Err(NOT_CARRIED_RECORD);
-        }
-        if boundary.controls.policy.get().is_some() || boundary.controls.completion.get().is_some()
-        {
-            return Err(NOT_CARRIED_CONTROLLERS);
         }
         // This scope's placeholders with their categories, read from the
         // conversation's own record. An admission that is running refuses
@@ -413,6 +432,60 @@ impl PrivacySession {
             boundary,
             retired,
         }
+    }
+}
+
+impl ConversationBoundary {
+    /// After this boundary's agent adopted `transfer`: the controllers that
+    /// were newly installed on that agent take the adopted record over,
+    /// each through the adapter this boundary holds for it.
+    ///
+    /// That the record is the adopted one is read from the agent: every
+    /// recorded message has this agent's own adopted commit of this very
+    /// transfer. A caller's statement, a state or JSON shows nothing here.
+    /// The verification controller then takes the record as a restored
+    /// one, which needs fresh checks. The context and failure controller
+    /// resets itself on its own bookkeeping keys of the recorded state and
+    /// sees no message. That is what each does for an inherited
+    /// conversation in the ordinary terminal. No controller of the retired
+    /// conversation is asked, no callback or check is replayed, and no
+    /// model, tool or checkpoint runs.
+    pub(crate) fn settle_adopted(
+        &self,
+        agent: &craftsman_harness::Agent,
+        transfer: &craftsman_harness::provenance::ActualConversationTransfer,
+    ) -> Result<(), AgentError> {
+        self.session.check().map_err(fault)?;
+        let recorded = agent.actual_sourced_messages()?;
+        if !transfer.is_adopted() || recorded.len() != transfer.messages().len() {
+            return Err(fault(SessionStop::Unbound));
+        }
+        for message in &recorded {
+            let commit = message.commit();
+            self.require_agent(commit.owner())?;
+            let adopted = match commit.adopted() {
+                Some(adopted) => adopted.transfer().same_transfer(transfer),
+                None => false,
+            };
+            if !adopted || commit.event() != RetainedEvent::Adopted {
+                return Err(fault(SessionStop::Unbound));
+            }
+        }
+        if let Some(adapter) = self.controls.completion() {
+            adapter.adopted();
+        }
+        let policy = match self.controls.policy.get() {
+            Some(adapter) => adapter.upgrade(),
+            None => None,
+        };
+        if let Some(adapter) = policy {
+            let mut state = match agent.state.lock() {
+                Ok(state) => state,
+                Err(_) => return Err(fault(SessionStop::Unbound)),
+            };
+            adapter.adopted(&mut state)?;
+        }
+        Ok(())
     }
 }
 
@@ -772,6 +845,35 @@ impl ConversationAdopter for Adoption<'_> {
                             });
                         }
                         vec![model(self.written(content, &names)?)]
+                    }
+                    // The carrier of a call that the retired conversation's
+                    // completion controller scheduled. Its fixed text is
+                    // host text, admitted anew; the call goes with it as
+                    // it was recorded. It is not said to be a call that a
+                    // controller of this conversation scheduled.
+                    (
+                        ViewSource::Hosted { node, scheduled },
+                        Msg::Assistant {
+                            content,
+                            tool_calls,
+                        },
+                    ) if scheduled.commit().same_commit(first)
+                        && scheduled.owner().same_agent(&retired.agent)
+                        && node.captured_text_is(content)
+                        && tool_calls.as_slice() == std::slice::from_ref(scheduled.call()) =>
+                    {
+                        for call in tool_calls {
+                            let Some(args) = renamed_value(&call.args, &names) else {
+                                return Err(self.unbound());
+                            };
+                            self.written(&args.to_string(), &[])?;
+                            calls.push(ToolCall {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                args,
+                            });
+                        }
+                        vec![host(self.admitted(node, &mut seen).await?)]
                     }
                     // A message the retired conversation had adopted itself:
                     // its raw pieces are admitted anew from their captures,
