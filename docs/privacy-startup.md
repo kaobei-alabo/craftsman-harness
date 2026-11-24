@@ -466,7 +466,9 @@ runs, the terminal does the following.
   stdin or stdout are not routed; with an enabled policy they get the
   loader's refusal.
 - Declared identifiers refuse. A build without the gadgets feature refuses.
-  Windows refuses until secure key storage is reviewed.
+  Windows refuses until secure key storage is reviewed, so the interactive
+  privacy start is Unix-only in this version; an ordinary start and the
+  ordinary file tools are unchanged there.
 
 One thing the terminal keeps that the ordinary one does not: after a fresh
 clear the earlier transcript is still shown, above the new conversation. The
