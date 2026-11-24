@@ -1196,8 +1196,18 @@ fn approved(script: Script) -> Approved {
     });
     let home = Home::new();
     let (component, manifest) = install_detector(&home);
+    // The child inherits this process's PATH, and `/lsp` runs the built-in
+    // rust server's command to ask its version. This user file names that
+    // command as a path in this home that holds nothing, so the listing says
+    // it is unavailable and runs nothing of the machine's own toolchain.
+    let rust_server = serde_json::Value::from(
+        home.root
+            .join("not-installed/rust-analyzer")
+            .to_str()
+            .unwrap(),
+    );
     let user = home.user(&format!(
-        r#"{{"base_url":"{}","api_key":"fixture-key","model":"fixture-model","harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"unknown":{{"kept":[1,2,3],"model":"nested, not \"this\" one"}}}}"#,
+        r#"{{"base_url":"{}","api_key":"fixture-key","model":"fixture-model","harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{"rust":{{"command":{rust_server},"extensions":["rs"],"language_id":"rust"}}}},"unknown":{{"kept":[1,2,3],"model":"nested, not \"this\" one"}}}}"#,
         server.uri()
     ));
     let grants = home.config.join("gadgets/.grants.json");

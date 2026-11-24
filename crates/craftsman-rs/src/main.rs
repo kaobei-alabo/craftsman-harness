@@ -191,38 +191,46 @@ enum Cmd {
     },
 }
 
+/// The future of one invocation's route, in an allocation of its own.
+type Route =
+    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<std::process::ExitCode>>>>;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<std::process::ExitCode> {
-    let cli = Cli::parse();
-    // The explicit local key commands never load a model configuration.
-    if let Some(Cmd::Privacy { command }) = &cli.command {
-        privacy_cli::run(command).await?;
-        return Ok(std::process::ExitCode::SUCCESS);
-    }
-    // Only the eligible owned interactive invocation takes the privacy
-    // capture: no subcommand, no one-shot message, no resumed session, and a
-    // terminal on both ends. Its actual user source is captured before the
-    // loader and every terminal, store, provider or helper effect. Every other
-    // invocation keeps the loader below and its rejection of an enabled policy.
+    route(Cli::parse())?.await
+}
+
+/// Chooses this invocation's route and returns before any of it runs.
+///
+/// `main` is polled on the process's main thread, whose stack the platform
+/// sizes. The one-shot route is deep there: its turn runs on this thread, and
+/// a delegated agent's whole turn runs inside one of its tool calls. A route
+/// that `main` awaits in its own body is part of `main`'s future, and of the
+/// frame that polls it, under whichever route runs. So the one-shot's future
+/// is moved here into an allocation of its own, and the future of every other
+/// route into another. This function has returned by the time either is
+/// polled, and `main` holds one pointer.
+fn route(mut cli: Cli) -> anyhow::Result<Route> {
     if cli.command.is_none()
-        && cli.message.is_none()
-        && cli.session.is_none()
-        && std::io::IsTerminal::is_terminal(&std::io::stdin())
-        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && let Some(message) = cli.message.take()
     {
-        match privacy_startup::normal_route(&cli).await {
-            Ok(None) => {}
-            Ok(Some(code)) => return Ok(std::process::ExitCode::from(code as u8)),
-            // After the unlock, the build is where a missing detector approval
-            // or model connection first shows; the status command names it.
-            Err(refusal @ tui::privacy_unlock::PrivateTerminalError::Build(_)) => {
-                anyhow::bail!(
-                    "{refusal} `craftsman privacy status` reports what a private start still needs."
-                );
-            }
-            Err(refusal) => return Err(refusal.into()),
-        }
+        let cfg = configured(&cli)?;
+        return Ok(Box::into_pin(Box::new(run_once(
+            cfg,
+            message,
+            cli.auto_approve,
+            #[cfg(feature = "gadgets")]
+            cli.allow_gadget.into_iter().collect(),
+            #[cfg(feature = "gadgets")]
+            cli.trust_workspace,
+        ))));
     }
+    Ok(Box::into_pin(Box::new(rest(cli))))
+}
+
+/// The user configuration as the loader gives it, with this invocation's
+/// permission mode. Every route but the privacy ones starts with it.
+fn configured(cli: &Cli) -> anyhow::Result<Config> {
     let mut cfg = Config::load()?.unwrap_or_default();
     if let Some(mode) = cli
         .permission_mode
@@ -242,6 +250,43 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
     if !cli.allow_gadget.is_empty() || cli.trust_workspace {
         anyhow::bail!("this build has no gadget runtime; rebuild with the gadgets cargo feature");
     }
+    Ok(cfg)
+}
+
+/// Every route but the one-shot: the explicit privacy commands and the owned
+/// private terminal before the loader, then the subcommands and the terminal.
+async fn rest(cli: Cli) -> anyhow::Result<std::process::ExitCode> {
+    // The explicit local key commands never load a model configuration.
+    if let Some(Cmd::Privacy { command }) = &cli.command {
+        privacy_cli::run(command).await?;
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    // Only the eligible owned interactive invocation takes the privacy
+    // capture: no subcommand, no one-shot message, no resumed session, and a
+    // terminal on both ends. Its actual user source is captured before the
+    // loader and every terminal, store, provider or helper effect. Every other
+    // invocation keeps the loader, `configured`, and its rejection of an
+    // enabled policy.
+    if cli.command.is_none()
+        && cli.message.is_none()
+        && cli.session.is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        match privacy_startup::normal_route(&cli).await {
+            Ok(None) => {}
+            Ok(Some(code)) => return Ok(std::process::ExitCode::from(code as u8)),
+            // After the unlock, the build is where a missing detector approval
+            // or model connection first shows; the status command names it.
+            Err(refusal @ tui::privacy_unlock::PrivateTerminalError::Build(_)) => {
+                anyhow::bail!(
+                    "{refusal} `craftsman privacy status` reports what a private start still needs."
+                );
+            }
+            Err(refusal) => return Err(refusal.into()),
+        }
+    }
+    let mut cfg = configured(&cli)?;
     match cli.command {
         #[cfg(feature = "gadgets")]
         Some(Cmd::Gadgets { command }) => gadgets::cli::run(cfg, command).await,
@@ -270,31 +315,18 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             harness,
         }) => acp_bridge::run(&host, port, acp_bridge::Harness::from_argv(harness)).await,
         Some(Cmd::ServiceAgent { request }) => service_agent::run(cfg, request.as_deref()).await,
-        None => match cli.message {
-            Some(msg) => {
-                run_once(
-                    cfg,
-                    &msg,
-                    cli.auto_approve,
-                    #[cfg(feature = "gadgets")]
-                    cli.allow_gadget.into_iter().collect(),
-                    #[cfg(feature = "gadgets")]
-                    cli.trust_workspace,
-                )
-                .await
-            }
-            None => {
-                return tui::run(
-                    cfg,
-                    cli.auto_approve,
-                    cli.mouse || !cli.no_mouse,
-                    false,
-                    cli.session,
-                )
-                .await
-                .map(|code| std::process::ExitCode::from(code as u8));
-            }
-        },
+        // `route` has taken the one-shot; what has no subcommand is the terminal.
+        None => {
+            return tui::run(
+                cfg,
+                cli.auto_approve,
+                cli.mouse || !cli.no_mouse,
+                false,
+                cli.session,
+            )
+            .await
+            .map(|code| std::process::ExitCode::from(code as u8));
+        }
     }?;
     Ok(std::process::ExitCode::SUCCESS)
 }
@@ -332,11 +364,11 @@ fn install_one_shot_signal_hook() {
 /// Headless one-shot (`craftsman -m`): stream to stdout, exit.
 async fn run_once(
     cfg: Config,
-    message: &str,
+    message: String,
     auto_approve: bool,
     #[cfg(feature = "gadgets")] allowed_gadgets: std::collections::BTreeSet<String>,
     #[cfg(feature = "gadgets")] trust_workspace: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::process::ExitCode> {
     use std::sync::{Arc, Mutex};
     let capabilities = execution_profile::ExecutionProfile::Local.capabilities();
     debug_assert!(capabilities.real_filesystem);
@@ -400,7 +432,7 @@ async fn run_once(
     let result = tokio::select! {
         biased;
         _ = output.failed() => None,
-        result = session.agent.run_turn(message) => Some(result),
+        result = session.agent.run_turn(&message) => Some(result),
     };
     // Drain once at the end: foreground task results are already inline, but a
     // one-shot turn that spawned a background subagent may have a completion
@@ -430,7 +462,9 @@ async fn run_once(
     match result {
         // A one-shot main-agent turn gates inline and shouldn't suspend; treat a
         // stray suspension as a clean finish rather than crashing.
-        Ok(TurnResult::Done(_)) | Ok(TurnResult::Suspended(_)) => Ok(()),
+        Ok(TurnResult::Done(_)) | Ok(TurnResult::Suspended(_)) => {
+            Ok(std::process::ExitCode::SUCCESS)
+        }
         Err(craftsman_harness::AgentError::MaxRounds(_)) => {
             agent::rollback_dangling_user(&session.agent);
             std::process::exit(2);
@@ -444,9 +478,9 @@ async fn run_once(
 
 /// Broken stdout pipes are ordinary consumer shutdown, not a panic or a model
 /// failure. Other IO failures receive a fixed diagnostic, never writer text.
-fn one_shot_output_failure(kind: std::io::ErrorKind) -> anyhow::Result<()> {
+fn one_shot_output_failure(kind: std::io::ErrorKind) -> anyhow::Result<std::process::ExitCode> {
     if kind == std::io::ErrorKind::BrokenPipe {
-        Ok(())
+        Ok(std::process::ExitCode::SUCCESS)
     } else {
         anyhow::bail!("could not write one-shot output to stdout")
     }

@@ -117,7 +117,9 @@ proof, and a cancelled or refused construction is not among them.
 ## The normal interactive route
 
 `main` decides the invocation's eligibility before anything of the private
-source is read. For an eligible invocation `normal_route` then runs before the
+source is read. It does so in `rest`, the route of every invocation but the
+one-shot; [CLI routes](cli-routes.md) describes how `main` chooses and owns
+its route. For an eligible invocation `normal_route` then runs before the
 legacy loader and before any terminal, store, provider or helper effect:
 
 1. It captures the actual user source with the real parsed invocation.
@@ -832,13 +834,16 @@ and identifiers are the user's own later edits.
   through its own `main` on synthetic user files in a private temporary
   directory, with a synthetic model that the test itself serves on a
   loopback address.
-  It has fifteen cases. Ten need the gadgets feature, and two more need
-  voice input too, so the full test modes run thirteen and three of them.
+  It has nineteen cases. Thirteen need the gadgets feature, and three more
+  need voice input too, so the full test modes run sixteen and three of them.
   - *Setup through the real runtime.* The ordinary terminal runs once: the
     synthetic model calls the detector gadget, and the person approves its
     first use at the real prompt, which names the gadget and the hash of its
     installed bytes. The runtime stores that approval itself. The test
-    writes no grant file and supplies no approval state.
+    writes no grant file and supplies no approval state. Its user file names
+    the built-in rust language server's command as a path in the test's own
+    home that holds nothing, so `/lsp` lists that server as unavailable and
+    runs no command of the machine's toolchain.
   - *`enable` succeeds.* After a refused run against a leftover staging
     name, the command adds the policy. The file is the original bytes with
     one member after the brace; the member pins exactly the installed
@@ -941,6 +946,22 @@ so the non-asking modes are refused instead. Earlier ones: the cases' first run 
 missed every stage after the password in the inherited screen reader; an
 inherited case asserts the capture's `Invalid` answer for an unparsable file,
 so a line-and-column answer was withdrawn.
+
+**A hosted macOS run never reached the `/lsp` stage.** Run 45464728443,
+attempt 1, at `9b63392` is retained as failed. In the gadget mode on macOS,
+`actual_normal_private_terminal_question_review_and_save_refusal_without_restoration_grant`
+stopped at `tests/privacy_cli.rs:397` waiting for `gopls`; the other fifteen
+cases passed. The cause is in the test's setup. `/lsp` asks the built-in rust
+server for its version by running its command, and puts what that command
+wrote to stderr into the listing. The child had this machine's PATH, where
+the command was the toolchain manager's proxy: it fell back to itself until
+its recursion limit and wrote 34 lines. The listing is in the order go,
+python, rust, typescript, so those lines moved the `gopls` line off the
+40-row screen that the stage reads. The user file of the setup now names that
+server's command as a path in its own home that holds nothing. The stage, its
+`gopls` wait and every other check are as they were, and the language-server
+code and its defaults are untouched. On macOS the case passes with the
+changed file; the hosted image has to show it again.
 
 **A fresh-clear case of the unit-test binary failed twice,** once in the
 full run on the carried-conversation commit (the inherited
