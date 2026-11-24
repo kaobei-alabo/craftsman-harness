@@ -156,6 +156,12 @@ async fn ground(vault: &Vault, server: &MockServer) -> Ground {
         options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let actual_directory = options.open(dir.path()).unwrap();
+    // The handle is the directory itself and not a link in its place,
+    // which the unix flags refuse at the open.
+    #[cfg(windows)]
+    assert!(
+        crate::privacy_session::fixture_directory::directory_identity(&actual_directory).is_some()
+    );
     let policy: Arc<dyn CapturedUserPolicy> = Arc::new(Rule(
         Some(FileDataFormat::PlainText),
         Arc::default(),
@@ -544,6 +550,9 @@ async fn a_decision_that_is_not_an_allow_ends_the_operation_and_nothing_keeps_it
     }
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn an_allowed_operation_is_kept_until_the_file_tool_has_written() {
     use crate::config::PermissionMode::{AcceptEdits, Manual};
@@ -692,6 +701,9 @@ impl AgentMiddleware for Asks {
     }
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_second_or_foreign_receive_ends_nothing_and_a_denied_input_is_not_kept() {
     use crate::config::PermissionMode::{AcceptEdits, Plan};
@@ -743,6 +755,180 @@ async fn a_second_or_foreign_receive_ends_nothing_and_a_denied_input_is_not_kept
             assert_eq!(refusals.len(), 1);
             assert!(refusals[0].0.contains(&not_approved) && refusals[0].1);
             assert_eq!(on_disk, BEFORE);
+            let denied = asks.denied.lock().unwrap().clone().unwrap();
+            assert!(denied.upgrade().is_none());
+            assert!(stage.around.steps.lock().unwrap().is_empty());
+        }
+        assert!(stage.session.check().is_ok() && elsewhere.session.check().is_ok());
+        nothing_original_sent(&server).await;
+    }
+}
+
+// Where no private file effect exists (`file_data.rs`, `FileEffectRequest::
+// issued`, unix alone). The two cases below stand where the two cases above
+// that need a written file do not run: an allowed operation is kept until
+// the file tool has answered, and that answer is the unsupported refusal
+// with the file as it was. A person's own text is the file tool's ordinary
+// write on every target.
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn an_allowed_operation_is_kept_until_the_file_tool_has_refused_it_unsupported() {
+    use crate::config::PermissionMode::{AcceptEdits, Manual};
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let edited = json!({"file_path": "note.txt", "old_string": BEFORE,
+        "new_string": "written by a person"})
+    .to_string();
+    let cases = [
+        ("the policy allows", None),
+        ("a person approves", Some(HumanChoice::Approve)),
+        ("a person edits", Some(HumanChoice::Edit(edited.clone()))),
+    ];
+    for (case, choice) in cases {
+        let server = MockServer::start().await;
+        let ground = ground(&vault, &server).await;
+        let approval = state(if choice.is_some() {
+            Manual
+        } else {
+            AcceptEdits
+        });
+        let person_edits = matches!(choice, Some(HumanChoice::Edit(_)));
+        let asked = choice.map(|choice| desk(Person::Answers(choice)));
+        let watch = Arc::new(Watch::default());
+        let chain = vec![
+            watch.clone() as Arc<dyn AgentMiddleware>,
+            gate(
+                &ground,
+                &approval,
+                asked.as_ref().map(|(_, prompt)| prompt.clone()),
+            ),
+        ];
+        let (stage, turn) = edits_the_note(ground, &server, chain, None).await;
+        turn.unwrap();
+
+        // The file tool ran once. A person's own text is its ordinary write.
+        // What was derived from the model's call is refused where the file
+        // effect would begin, and the file is as it was.
+        assert_eq!(
+            std::fs::read_to_string(stage.dir.path().join("note.txt")).unwrap(),
+            match person_edits {
+                true => "written by a person",
+                false => BEFORE,
+            },
+            "{case}"
+        );
+        assert_eq!(
+            *stage.around.steps.lock().unwrap(),
+            ["began note.txt", "finished note.txt"],
+            "{case}"
+        );
+        let (content, is_error) = result_at(&stage.agent, 2);
+        assert_eq!(is_error, !person_edits, "{case}: {content}");
+        if !person_edits {
+            assert_eq!(content, FileRefusal::Unsupported.to_string(), "{case}");
+        }
+        // The gate did not end the operation. The file tool did: with its
+        // refusal, or because a person's arguments replaced what was derived.
+        // Either way the operation did not write and holds nothing any more.
+        let seen = watch.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{case}");
+        assert!(!seen[0].done, "{case}");
+        assert_eq!(seen[0].held, Err(FileRefusal::Spent), "{case}");
+
+        // The decision is still the one the registered gate made, with the
+        // person's answer as it was typed.
+        let outcomes = stage.agent.actual_terminal_outcomes().unwrap();
+        assert_eq!(outcomes.len(), 1, "{case}");
+        let invocation = outcomes[0].invocation();
+        let input = invocation
+            .decision_source()
+            .unwrap()
+            .downcast::<InlineDecisionInput>()
+            .unwrap();
+        assert!(input.registered_session().is_some(), "{case}");
+        assert_eq!(invocation.human_edited(), person_edits, "{case}");
+        assert_eq!(
+            input.raw_edit(),
+            person_edits.then_some(edited.as_str()),
+            "{case}"
+        );
+        if let Some((desk, _)) = &asked {
+            the_kept_request_shows_nothing(desk, true);
+        }
+        // The record and its save are the agent's own.
+        assert_eq!(
+            stage.store.saves.lock().unwrap().last().unwrap().2.messages,
+            recorded(&stage.agent),
+            "{case}"
+        );
+        assert!(stage.session.check().is_ok(), "{case}");
+        nothing_original_sent(&server).await;
+    }
+}
+
+// The guard half of `a_second_or_foreign_receive_ends_nothing_and_a_denied_
+// input_is_not_kept`, whose allowed mode ends in a written file as a
+// control: here the allowed operation ends in the refusal at the file.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn a_second_or_foreign_receive_ends_nothing_before_the_allowed_write_is_refused() {
+    use crate::config::PermissionMode::{AcceptEdits, Plan};
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    for mode in [AcceptEdits, Plan] {
+        let (server, other) = (MockServer::start().await, MockServer::start().await);
+        let ground = ground(&vault, &server).await;
+        let elsewhere = self::ground(&vault, &other).await;
+        let register = |conversation: &Ground| {
+            InlineDecisionProducer::register(
+                &conversation.boundary,
+                state(mode),
+                conversation.dir.path().to_path_buf(),
+                None,
+                None,
+            )
+        };
+        let asks = Arc::new(Asks {
+            own: register(&ground),
+            foreign: register(&elsewhere),
+            refusals: Mutex::default(),
+            denied: Mutex::default(),
+        });
+        let chain = vec![asks.clone() as Arc<dyn AgentMiddleware>];
+        let (stage, turn) = edits_the_note(ground, &server, chain, None).await;
+        turn.unwrap();
+        let refusals = asks.refusals.lock().unwrap();
+        let not_approved = FileRefusal::NotApproved.to_string();
+        // In neither mode does the file change.
+        assert_eq!(
+            std::fs::read_to_string(stage.dir.path().join("note.txt")).unwrap(),
+            BEFORE
+        );
+        if mode == AcceptEdits {
+            // The other conversation's gate was refused twice and a second
+            // receive of the same plan once, as spent. None of them ended
+            // the operation the first receive had allowed: it still held its
+            // content when the file tool was reached, and that tool's write
+            // was the refusal.
+            assert_eq!(refusals.len(), 3);
+            assert!(refusals[0].0.contains(&not_approved));
+            assert!(refusals[1].0.contains(&FileRefusal::Spent.to_string()));
+            assert!(refusals[2].0.contains(&not_approved));
+            assert!(refusals.iter().all(|(_, held)| *held));
+            assert_eq!(
+                *stage.around.steps.lock().unwrap(),
+                ["began note.txt", "finished note.txt"]
+            );
+            assert_eq!(
+                result_at(&stage.agent, 2),
+                (FileRefusal::Unsupported.to_string(), true)
+            );
+        } else {
+            // A denial by the policy: the gate knew the input while the
+            // dispatch held it, and keeps nothing of it afterwards.
+            assert_eq!(refusals.len(), 1);
+            assert!(refusals[0].0.contains(&not_approved) && refusals[0].1);
             let denied = asks.denied.lock().unwrap().clone().unwrap();
             assert!(denied.upgrade().is_none());
             assert!(stage.around.steps.lock().unwrap().is_empty());

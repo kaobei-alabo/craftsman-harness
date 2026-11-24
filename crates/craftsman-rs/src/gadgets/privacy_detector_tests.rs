@@ -3113,7 +3113,10 @@ mod compiler_environment {
             // of its own in one of its modes, and nothing of another
             // registered supervisor: neither its helper nor its marker.
             let mut selected = false;
-            for (helper, prefix, modes) in SUPERVISORS {
+            let mut index = 0;
+            while index < SUPERVISORS.len() {
+                let (helper, prefix, modes) = SUPERVISORS[index];
+                index += 1;
                 let count = arguments.iter().filter(|value| *value == helper).count();
                 let values = registered_marker_values(&arguments, prefix);
                 match (count, values.as_slice()) {
@@ -5272,47 +5275,62 @@ mod compiler_environment {
         #[test]
         fn the_three_building_fixtures_request_machine_state_transport_in_their_one_mode() {
             use super::super::{pinned_hook, restore_wires, view_wires};
-            for (helper, prefix) in [
+            let fixtures = [
                 (pinned_hook::HELPER, pinned_hook::MARKER),
                 (restore_wires::HELPER, restore_wires::MARKER),
                 (view_wires::HELPER, view_wires::MARKER),
-            ] {
-                // Selected in the mode in which its child builds, and in that
-                // mode alone: not as its own cases start it unselected, not
-                // in an inexact form, not beside another registered helper
-                // or marker, and not when a state is already transported.
-                for (markers, selected) in [
-                    (vec![format!("{prefix}suite")], true),
-                    (vec![], false),
-                    (vec![format!("{prefix}collect")], false),
-                    (vec![format!("{prefix}unknown")], false),
-                    (
-                        vec![format!("{prefix}suite"), format!("{prefix}suite")],
-                        false,
-                    ),
-                    (
-                        vec![format!("{prefix}suite"), format!("{MARKER}suite")],
-                        false,
-                    ),
-                    (
-                        vec![format!("{prefix}suite"), format!("{NATIVE_MARKER}guest")],
-                        false,
-                    ),
-                    (vec![format!("{prefix}suite"), HELPER.to_owned()], false),
-                    (vec![format!("{prefix}suite"), helper.to_owned()], false),
-                    (
-                        vec![format!("{prefix}suite"), format!("{STATE_MARKER}2f")],
-                        false,
-                    ),
-                ] {
+            ];
+            // Each form: the value of the fixture's own marker (none when
+            // empty), then one more argument made of a prefix and a value,
+            // and whether that command is selected. The prefix `own` stands
+            // for the fixture's own marker and `again` for its own helper.
+            //
+            // Selected in the mode in which its child builds, and in that
+            // mode alone: not as its own cases start it unselected, not in
+            // an inexact form, not beside another registered helper or
+            // marker, and not when a state is already transported.
+            let forms: [(&str, &str, &str, bool); 10] = [
+                ("suite", "", "", true),
+                ("", "", "", false),
+                ("collect", "", "", false),
+                ("unknown", "", "", false),
+                ("suite", "own", "suite", false),
+                ("suite", MARKER, "suite", false),
+                ("suite", NATIVE_MARKER, "guest", false),
+                ("suite", HELPER, "", false),
+                ("suite", "again", "", false),
+                ("suite", STATE_MARKER, "2f", false),
+            ];
+            let mut fixture = 0;
+            while fixture < fixtures.len() {
+                let (helper, prefix) = fixtures[fixture];
+                fixture += 1;
+                let mut form = 0;
+                while form < forms.len() {
+                    let (own, more, value, selected) = forms[form];
+                    form += 1;
                     let mut command = Command::new("owned-unused-supervisor-program");
-                    command
-                        .args(["--ignored", "--exact", helper, "--nocapture"])
-                        .args(&markers);
+                    command.arg("--ignored").arg("--exact").arg(helper);
+                    command.arg("--nocapture");
+                    if !own.is_empty() {
+                        command.arg(format!("{prefix}{own}"));
+                    }
+                    match more {
+                        "" => {}
+                        "own" => {
+                            command.arg(format!("{prefix}{value}"));
+                        }
+                        "again" => {
+                            command.arg(helper);
+                        }
+                        _ => {
+                            command.arg(format!("{more}{value}"));
+                        }
+                    }
                     assert_eq!(
                         needs_setup_state_comparison(&command),
                         selected,
-                        "{helper} {markers:?}"
+                        "{helper} {own} {more} {value}"
                     );
                 }
             }

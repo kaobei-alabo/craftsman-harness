@@ -31,8 +31,13 @@ impl CapturedUserPolicy for Rule {
                 return None;
             }
         }
+        // Elsewhere the same question is asked of two handles, the held
+        // directory and the named parent. A target without an identity
+        // for a directory has no parent that is the held one.
         #[cfg(not(unix))]
-        let _ = parent;
+        if !crate::privacy_session::fixture_directory::names_held_directory(&self.2, parent) {
+            return None;
+        }
         let application = match self.0? {
             FileDataFormat::PlainText => SupportedDataApplication::ContactLinesV1,
             FileDataFormat::JsonDocument => SupportedDataApplication::ContactJsonV1,
@@ -396,6 +401,12 @@ async fn set_up_with_main_gate(
         options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let actual_directory = options.open(dir.path()).unwrap();
+    // The handle is the directory itself and not a link in its place,
+    // which the unix flags refuse at the open.
+    #[cfg(windows)]
+    assert!(
+        crate::privacy_session::fixture_directory::directory_identity(&actual_directory).is_some()
+    );
     let policy: Arc<dyn CapturedUserPolicy> = Arc::new(Rule(rule, asked.clone(), actual_directory));
     // The boundary of the conversation derives planned writes from now on,
     // for this agent and every agent it delegates to.
@@ -546,6 +557,7 @@ fn last_invocation(agent: &Agent) -> craftsman_harness::provenance::ActualToolIn
 /// person what the application's own reader shows: the call the agent
 /// carried, with the operation's preview taken under the digest the agent
 /// handed over. `seen` is what the person was shown.
+#[cfg(unix)]
 fn person_reads(
     session: &Arc<PrivacySession>,
     agent: &Agent,
@@ -699,6 +711,9 @@ async fn a_streamed_reply_is_held_until_it_is_committed_and_then_shown_once() {
     nothing_original_sent(&server).await;
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_created_file_holds_the_real_value_and_the_call_keeps_the_placeholder() {
     let root = tempfile::tempdir().unwrap();
@@ -769,6 +784,9 @@ async fn a_created_file_holds_the_real_value_and_the_call_keeps_the_placeholder(
     assert!(f.session.check().is_ok());
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn an_edit_is_shown_with_the_real_old_and_new_file_and_a_json_file_stays_json() {
     let root = tempfile::tempdir().unwrap();
@@ -906,6 +924,9 @@ async fn what_cannot_be_derived_or_was_not_approved_is_refused_before_the_file_i
     }
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_file_that_changed_after_it_was_shown_is_not_written() {
     let root = tempfile::tempdir().unwrap();
@@ -973,6 +994,9 @@ async fn a_file_that_changed_after_it_was_shown_is_not_written() {
     assert!(f.session.check().is_ok());
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_parked_write_runs_after_the_person_saw_the_real_content_and_only_as_shown() {
     let root = tempfile::tempdir().unwrap();
@@ -1088,6 +1112,9 @@ async fn a_parked_write_runs_after_the_person_saw_the_real_content_and_only_as_s
     nothing_original_sent(&server).await;
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_derived_write_runs_inside_the_file_tool_and_its_diagnostics_reach_the_model_as_a_view() {
     let root = tempfile::tempdir().unwrap();
@@ -1237,12 +1264,14 @@ use craftsman_harness::SubAgentSpec;
 use craftsman_harness::builtin::SubAgentMiddleware;
 
 /// What a delegated agent's gate was shown, and what it answers.
+#[cfg(unix)]
 #[derive(Default)]
 struct GateSeat {
     shown: Mutex<Vec<String>>,
     deny: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(unix)]
 struct DelegatedFiles {
     f: Files,
     seat: Arc<GateSeat>,
@@ -1253,6 +1282,7 @@ struct DelegatedFiles {
 /// One conversation whose root agent delegates to `helper`, which has the
 /// two file tools behind its own gate. `channel` says whether that gate can
 /// ask a person.
+#[cfg(unix)]
 async fn delegated_files(
     vault: &Vault,
     root: &MockServer,
@@ -1319,6 +1349,7 @@ async fn delegates_a_note(root: &MockServer, side: &MockServer, content: &str) {
 }
 
 /// What the delegated agent's model was told about its write.
+#[cfg(unix)]
 async fn told_the_helper(side: &MockServer) -> String {
     bodies(side).await[1]["messages"][3]["content"]
         .as_str()
@@ -1374,6 +1405,9 @@ fn bound_test_choice_ui(
     prompt
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_delegated_agents_write_is_derived_in_its_own_lane_and_decided_by_its_own_gate() {
     let dir = tempfile::tempdir().unwrap();
@@ -1554,6 +1588,9 @@ async fn a_delegated_agents_write_is_derived_in_its_own_lane_and_decided_by_its_
     assert_eq!(d.seat.shown.lock().unwrap().len(), 1);
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn the_decision_of_another_operation_approves_nothing_whatever_the_calls_id() {
     let root = tempfile::tempdir().unwrap();
@@ -1636,6 +1673,9 @@ async fn the_decision_of_another_operation_approves_nothing_whatever_the_calls_i
     nothing_original_sent(&server).await;
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn a_gates_automatic_policy_decides_on_what_will_be_written_and_is_checked_at_the_file() {
     use crate::config::PermissionMode;
@@ -1814,6 +1854,9 @@ async fn an_absent_or_unparsable_answer_writes_nothing_and_keeps_the_call_as_it_
     }
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn registered_main_gate_keeps_actual_choice_policy_effect_result_and_save() {
     use craftsman_harness::testing::MemCheckpointer;
@@ -2151,6 +2194,9 @@ async fn supported_data_guard_rejects_json_keys_duplicates_and_protected_roles_b
     }
 }
 
+// Needs the private file effect, which is issued on unix alone
+// (`file_data.rs`, `FileEffectRequest::issued`).
+#[cfg(unix)]
 #[tokio::test]
 async fn supported_json_replace_all_keeps_every_actual_value_and_unchanged_document_byte() {
     let root = tempfile::tempdir().unwrap();
@@ -2361,6 +2407,318 @@ async fn declared_unsupported_before_images_refuse_before_private_selector_obser
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert!(f.reviewer.shown.lock().unwrap().is_empty());
         assert!(f.around.steps.lock().unwrap().is_empty());
+        nothing_original_sent(&server).await;
+    }
+}
+
+// Where no private file effect exists. The effect request of a derived
+// operation is issued on unix alone (`file_data.rs`, `FileEffectRequest::
+// issued`). Every other target answers a reviewed and approved operation
+// with the unsupported refusal before a file is created, opened for the
+// write or compared. The cases below run where the cases above that assert
+// a written file do not, behind the same fixture policy, gate and file
+// tools. The fixture policy names the file by the identity of its retained
+// directory; the application's own policy names no file there at all.
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn a_reviewed_and_approved_write_or_edit_is_refused_unsupported_and_no_file_is_touched() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+
+    // A create. The reviewer saw the real content of a file that does not
+    // exist yet and approved it.
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+    let p = &f.placeholder;
+    let arguments = json!({"file_path": "note.txt", "content": format!("Contact {p} today.\n")});
+    scripted(
+        &server,
+        vec![
+            file_call("c1", "write_file", arguments.clone()),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    let shown = f.reviewer.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].create && shown[0].old.is_none());
+    assert_eq!(shown[0].new, format!("Contact {EMAIL} today.\n"));
+    assert_eq!(shown[0].arguments["file_path"], "note.txt");
+    assert!(f.reviewer.refusals.lock().unwrap().is_empty());
+    // The file tool ran, and its write was the refusal: nothing exists.
+    assert_eq!(
+        *f.around.steps.lock().unwrap(),
+        ["began note.txt", "finished note.txt"]
+    );
+    assert_eq!(
+        result_at(&f.agent, 2),
+        (FileRefusal::Unsupported.to_string(), true)
+    );
+    assert_eq!(std::fs::read_dir(f.dir.path()).unwrap().count(), 0);
+    // The recorded call and the next request still hold the placeholder,
+    // the call has its one result and the conversation goes on.
+    assert!(
+        matches!(&recorded(&f.agent)[1], Msg::Assistant { tool_calls, .. }
+        if tool_calls[0].args == arguments)
+    );
+    assert_eq!(recorded(&f.agent).len(), 4);
+    let second = &bodies(&server).await[1];
+    assert!(
+        second["messages"][2]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap()
+            .contains(p.as_str())
+    );
+    nothing_original_sent(&server).await;
+    // The policy was asked about the file the operation is bound to, as the
+    // host resolved it, and about nothing else.
+    let bound = f.dir.path().canonicalize().unwrap().join("note.txt");
+    assert_eq!(shown[0].path, bound);
+    let asked = f.asked.lock().unwrap().clone();
+    assert!(!asked.is_empty() && asked.iter().all(|path| *path == bound));
+    // The terminal carried this operation and its decision. The operation
+    // is over, did not write and holds nothing any more.
+    let invocation = last_invocation(&f.agent);
+    assert!(invocation.shown().is_some() && invocation.decision_source().is_some());
+    let reviewed = invocation
+        .review_source()
+        .and_then(|source| source.downcast::<ReviewedFile>())
+        .expect("the terminal carries the reviewed operation");
+    assert!(!reviewed.is_done());
+    assert_eq!(reviewed.shown_arguments().err(), Some(FileRefusal::Spent));
+    assert!(f.session.check().is_ok());
+
+    // An edit. The reviewer saw the real file before and after, and the
+    // file keeps every byte it had.
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::JsonDocument)).await;
+    let p = &f.placeholder;
+    let path = f.dir.path().join("contacts.json");
+    let before = format!("{{\"owner\": \"{EMAIL}\", \"note\": \"none\"}}\n");
+    std::fs::write(&path, &before).unwrap();
+    scripted(
+        &server,
+        vec![
+            file_call(
+                "c1",
+                "edit_file",
+                json!({
+                    "file_path": "contacts.json",
+                    "old_string": format!("\"owner\": \"{p}\", \"note\": \"none\""),
+                    "new_string": format!("\"owner\": \"{p}\", \"note\": \"ask {p}\"")
+                }),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    let after = format!("{{\"owner\": \"{EMAIL}\", \"note\": \"ask {EMAIL}\"}}\n");
+    let shown = f.reviewer.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    assert!(!shown[0].create);
+    assert_eq!(shown[0].old.as_deref(), Some(before.as_str()));
+    assert_eq!(shown[0].new, after);
+    assert_eq!(
+        result_at(&f.agent, 2),
+        (FileRefusal::Unsupported.to_string(), true)
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    assert_eq!(std::fs::read_dir(f.dir.path()).unwrap().count(), 1);
+    assert!(f.session.check().is_ok());
+    nothing_original_sent(&server).await;
+
+    // A file someone rewrote after the approval keeps what that someone
+    // wrote. The write is refused, and nothing of the operation reaches the
+    // file.
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+    let path = f.dir.path().join("note.txt");
+    std::fs::write(&path, "owner: nobody\n").unwrap();
+    *f.reviewer.decide.lock().unwrap() = Decide::ApproveThenDisturb;
+    scripted(
+        &server,
+        vec![
+            file_call(
+                "c1",
+                "edit_file",
+                json!({"file_path": "note.txt", "old_string": "nobody", "new_string": f.placeholder}),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    let (text, is_error) = result_at(&f.agent, 2);
+    assert!(is_error, "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "changed by someone else"
+    );
+    assert!(f.session.check().is_ok());
+    nothing_original_sent(&server).await;
+}
+
+// The guard half of `the_decision_of_another_operation_approves_nothing_
+// whatever_the_calls_id`, whose first write is a control that needs the file
+// effect: here the first operation is approved and refused at the file, and
+// its decision still approves nothing for the next plan.
+#[cfg(not(unix))]
+#[tokio::test]
+async fn the_decision_of_a_refused_operation_approves_nothing_whatever_the_calls_id() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+    let p = f.placeholder.clone();
+    let writes = |path: &str| {
+        file_call(
+            "c1",
+            "write_file",
+            json!({"file_path": path, "content": format!("to {p}")}),
+        )
+    };
+    scripted(
+        &server,
+        vec![
+            writes("first.txt"),
+            answer("chat", &["done"]),
+            // The second call carries the id of the first.
+            writes("second.txt"),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    assert!(!f.dir.path().join("first.txt").exists());
+    // The decision the first operation issued, which its terminal carried
+    // and the file tool accepted before its write was refused.
+    let first = last_invocation(&f.agent);
+    let used = first.decision_source().cloned().unwrap();
+
+    // In the next turn nothing is decided on the new operation. The agent is
+    // handed the first operation's decision instead and carries it to the
+    // terminal of the second call.
+    *f.reviewer.another.lock().unwrap() = Some(used.clone());
+    *f.reviewer.decide.lock().unwrap() = Decide::CarryAnother;
+    let again = f.session.admit_raw(&draft("and once more?")).await.unwrap();
+    f.agent
+        .run_turn_with_view("and once more?", f.session.source(&again).unwrap())
+        .await
+        .unwrap();
+    let second = last_invocation(&f.agent);
+    assert!(
+        second
+            .decision_source()
+            .is_some_and(|carried| carried.is(&used))
+    );
+    // It is a different plan of the same agent for a call with the same id,
+    // with its own operation and its own digest.
+    assert_eq!(second.call().id, first.call().id);
+    assert!(!second.was_planned_as(first.planned()));
+    assert_ne!(second.shown(), first.shown());
+    // The first write was refused where the file effect would begin. The
+    // second was refused before that: the decision is not one of the
+    // operation that was derived for this plan. Nothing was written.
+    let results: Vec<(String, bool)> = recorded(&f.agent)
+        .iter()
+        .filter_map(|message| match message {
+            Msg::Tool {
+                content, is_error, ..
+            } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            (FileRefusal::Unsupported.to_string(), true),
+            (FileRefusal::NotApproved.to_string(), true)
+        ]
+    );
+    assert_eq!(std::fs::read_dir(f.dir.path()).unwrap().count(), 0);
+    assert!(f.session.check().is_ok());
+    nothing_original_sent(&server).await;
+}
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn a_gates_automatic_policy_decides_on_what_would_be_written_and_an_allowed_write_is_refused()
+{
+    use crate::config::PermissionMode;
+    use crate::hitl::ApprovalState;
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let auto = ApprovalState {
+        auto_approve: true,
+        ..Default::default()
+    };
+    let plan = ApprovalState {
+        mode: PermissionMode::Plan,
+        auto_approve: true,
+        ..Default::default()
+    };
+    for (state, allowed) in [
+        (auto, true),
+        (plan, false),
+        (ApprovalState::default(), false),
+    ] {
+        let server = MockServer::start().await;
+        let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+        *f.reviewer.approval.lock().unwrap() = state;
+        *f.reviewer.decide.lock().unwrap() = Decide::Policy;
+        scripted(
+            &server,
+            vec![
+                file_call(
+                    "c1",
+                    "write_file",
+                    json!({"file_path": "note.txt", "content": format!("to {}", f.placeholder)}),
+                ),
+                answer("chat", &["done"]),
+            ],
+        )
+        .await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        let (text, is_error) = result_at(&f.agent, 2);
+        match allowed {
+            // The policy allowed what would really be written. Its decision
+            // was recorded where it was taken and carried to the terminal,
+            // the file tool ran, and its write was the refusal.
+            true => {
+                assert_eq!(
+                    (text, is_error),
+                    (FileRefusal::Unsupported.to_string(), true)
+                );
+                assert!(last_invocation(&f.agent).decision_source().is_some());
+            }
+            // The policy denied, or asks a person and nobody was asked: the
+            // gate's own answer, no decision, and the file tool never ran.
+            false => {
+                assert!(is_error, "{text}");
+                assert!(f.agent.actual_terminal_outcomes().unwrap().is_empty());
+            }
+        }
+        assert_eq!(std::fs::read_dir(f.dir.path()).unwrap().count(), 0);
+        assert!(f.around.steps.lock().unwrap().is_empty() != allowed);
+        assert!(f.session.check().is_ok());
         nothing_original_sent(&server).await;
     }
 }
