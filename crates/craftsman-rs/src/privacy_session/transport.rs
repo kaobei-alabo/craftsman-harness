@@ -148,6 +148,7 @@ impl ViewChatProvider {
                 #[cfg(unix)]
                 native: false,
                 accepted: Default::default(),
+                at: Default::default(),
                 sinks: [
                     std::sync::atomic::AtomicUsize::new(&*sink as *const _ as *const () as usize),
                     Default::default(),
@@ -168,6 +169,18 @@ impl ViewChatProvider {
 
     /// The frontend's notifications, as the ordinary provider has them: one
     /// before each request, and the transport's retry and warning lines.
+    /// Puts this provider behind its one shared reference and says in its
+    /// own receipt where it now is. The object a builder installs for a
+    /// lane is compared with that place.
+    pub fn shared(self) -> Arc<Self> {
+        let shared = Arc::new(self);
+        shared.receipt.at.store(
+            Arc::as_ptr(&shared) as usize,
+            std::sync::atomic::Ordering::Release,
+        );
+        shared
+    }
+
     pub fn with_sinks(
         mut self,
         round_sink: Option<RoundSink>,
@@ -291,6 +304,7 @@ impl ViewNativeProvider {
                 #[cfg(unix)]
                 native: true,
                 accepted: Default::default(),
+                at: Default::default(),
                 sinks: [
                     std::sync::atomic::AtomicUsize::new(&*sink as *const _ as *const () as usize),
                     Default::default(),
@@ -321,6 +335,18 @@ impl ViewNativeProvider {
 
     /// The frontend's notification before each request, as the ordinary
     /// provider has it.
+    /// Puts this provider behind its one shared reference and says in its
+    /// own receipt where it now is. The object a builder installs for a
+    /// lane is compared with that place.
+    pub fn shared(self) -> Arc<Self> {
+        let shared = Arc::new(self);
+        shared.receipt.at.store(
+            Arc::as_ptr(&shared) as usize,
+            std::sync::atomic::Ordering::Release,
+        );
+        shared
+    }
+
     pub fn with_round_sink(mut self, round_sink: Option<RoundSink>) -> Self {
         // The receipt states what this provider is given here.
         self.receipt.sinks[1].store(

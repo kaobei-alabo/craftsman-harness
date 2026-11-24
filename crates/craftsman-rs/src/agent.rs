@@ -1241,12 +1241,13 @@ macro_rules! produced {
 /// The builder says, at the statement that installs the accepted provider
 /// of a lane of a privacy selection, that it did.
 macro_rules! bound {
-    ($extras:expr, $lane:ident) => {
+    ($extras:expr, $lane:ident, $provider:expr) => {
         if let Some(selection) = &$extras.privacy_view {
             selection
                 .report()
                 .accept(crate::privacy_session::Accept::Bound(
                     crate::privacy_session::ModelLane::$lane,
+                    Arc::as_ptr($provider) as *const () as usize,
                 ));
         }
     };
@@ -2351,10 +2352,9 @@ async fn build_session_with_capture_profile(
                 {
                     Ok(provider) => {
                         let receipt = provider.receipt.clone();
-                        let provider: Arc<dyn ModelProvider> = Arc::new(
-                            provider
-                                .with_sinks(main_round_sink.clone(), extras.activity_sink.clone()),
-                        );
+                        let provider: Arc<dyn ModelProvider> = provider
+                            .with_sinks(main_round_sink.clone(), extras.activity_sink.clone())
+                            .shared();
                         Ok((provider, receipt))
                     }
                     Err(_) => Err(unavailable),
@@ -2376,7 +2376,7 @@ async fn build_session_with_capture_profile(
                     Ok(provider) => {
                         let receipt = provider.receipt.clone();
                         let provider: Arc<dyn ModelProvider> =
-                            Arc::new(provider.with_round_sink(main_round_sink.clone()));
+                            provider.with_round_sink(main_round_sink.clone()).shared();
                         Ok((provider, receipt))
                     }
                     Err(_) => Err(unavailable),
@@ -2915,7 +2915,7 @@ async fn build_session_with_capture_profile(
                     {
                         Ok(provider) => {
                             let receipt = provider.receipt.clone();
-                            let provider: Arc<dyn ModelProvider> = Arc::new(provider);
+                            let provider: Arc<dyn ModelProvider> = provider.shared();
                             Ok((provider, receipt))
                         }
                         Err(stop) => Err(stop),
@@ -2931,7 +2931,7 @@ async fn build_session_with_capture_profile(
                     {
                         Ok(provider) => {
                             let receipt = provider.receipt.clone();
-                            let provider: Arc<dyn ModelProvider> = Arc::new(provider);
+                            let provider: Arc<dyn ModelProvider> = provider.shared();
                             Ok((provider, receipt))
                         }
                         Err(stop) => Err(stop),
@@ -3029,7 +3029,7 @@ async fn build_session_with_capture_profile(
     let mut delegated_agents: Vec<SubAgentSpec> = Vec::new();
     if let Some(general_purpose) = general_purpose {
         // Its specification holds the delegated lane's provider.
-        bound!(extras, Delegated);
+        bound!(extras, Delegated, &sub_provider);
         delegated_agents.push(general_purpose);
     }
     // Gadget manifests and the deprecated JSON loader may contribute
@@ -3085,7 +3085,7 @@ async fn build_session_with_capture_profile(
             interrupt_on: vec![],
             max_depth: 1,
         });
-        bound!(extras, Delegated);
+        bound!(extras, Delegated, &sub_provider);
     }
 
     // A THIRD StreamingLlmProvider drives CompactionMiddleware's summarization
@@ -3126,7 +3126,7 @@ async fn build_session_with_capture_profile(
                     {
                         Ok(provider) => {
                             let receipt = provider.receipt.clone();
-                            let provider: Arc<dyn ModelProvider> = Arc::new(provider);
+                            let provider: Arc<dyn ModelProvider> = provider.shared();
                             Ok((provider, receipt))
                         }
                         Err(stop) => Err(stop),
@@ -3143,7 +3143,7 @@ async fn build_session_with_capture_profile(
                         Ok(provider) => {
                             let receipt = provider.receipt.clone();
                             let provider: Arc<dyn ModelProvider> =
-                                Arc::new(provider.for_summaries());
+                                provider.for_summaries().shared();
                             Ok((provider, receipt))
                         }
                         Err(stop) => Err(stop),
@@ -3206,12 +3206,13 @@ async fn build_session_with_capture_profile(
             keep_tail_msgs: COMPACT_KEEP_TAIL_MSGS,
         },
     };
+    // The next statement installs the summary lane's provider.
+    bound!(extras, Summaries, &compaction_provider);
     // Kept as a typed Arc on the Session too, so `/compact` can force a pass.
     let compaction = Arc::new(CompactionMiddleware::new(
         compaction_provider,
         compaction_trigger,
     ));
-    bound!(extras, Summaries);
 
     let scoped_framework = construction
         .framework_scope()
@@ -3433,7 +3434,7 @@ async fn build_session_with_capture_profile(
         }
     };
     // The next statement installs the root agent's provider.
-    bound!(extras, Main);
+    bound!(extras, Main, &provider);
     let mut builder = Agent::builder(provider)
         .name("main")
         .durable_turn_checkpoints(

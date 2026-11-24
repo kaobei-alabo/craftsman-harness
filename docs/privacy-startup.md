@@ -171,10 +171,11 @@ count, a name or a supported-feature flag.
   every later wrapping. The receipt holds that conversation and that guard
   and says which of the two providers issued it. Where the builder takes the
   provider for a lane, before the framework gets it, it records the receipt
-  and the receipt is marked with this selection and lane. At the statement
-  that installs a lane's provider (the root agent's builder, a delegated
-  agent's specification, the summarizer) it says that the lane is
-  installed.
+  and the receipt is marked with this selection and lane. A provider says
+  in its receipt where it is once it is behind its one shared reference.
+  At the statement that installs a lane's provider (the root agent's
+  builder, a delegated agent's specification, the summarizer) the builder
+  says which object it installs there.
 - **What each provider was given.** The same receipt states the sinks its
   provider was given, by object: the token sink in the constructor, the
   round sink and the status sink where the provider takes them. It also
@@ -221,6 +222,10 @@ The conversation accepts a built session only when all of this holds:
   its guard and carries this selection and that lane; none is the native
   provider, because the policy requires that everything sent can be
   inspected;
+- what the builder installed for a lane (the root agent's provider, a
+  delegated agent's, the summarizer's) is the very provider that issued the
+  lane's receipt, at the place that provider itself says it is: no other
+  object stands in front of it;
 - each live receipt states the sinks the builder gives that lane and no
   other: the root agent's provider the display's own token sink and the
   round sink the display made, or the request's two where there is no
@@ -277,10 +282,12 @@ remains the gate.
   middleware, and for the display by the boundary's own reference. For the
   question tool it is shown by the registry comparison of the tools.
 - The cancellation owner is compared with the agent's installed one by
-  owner (`Agent::cancellation_session_is`). The owner handed to each
-  checked provider is not compared.
-- The output-closed wrapper is not recorded; a request that has an output
-  owner is refused instead.
+  owner (`Agent::cancellation_session_is`).
+- No provider of a privacy conversation is handed an output owner. That is
+  shown twice: a request that has one is refused, and the object installed
+  for each lane is the very provider that issued the lane's receipt. A
+  provider that was handed an output owner or an output guard is wrapped in
+  another object, and that object is not the receipt's provider.
 - The registry comparison is by name: a tool that a later one of the same
   name replaced is not the registry's entry, and that refuses the build.
   It covers the root agent's registry. A delegated agent's own tools are

@@ -360,7 +360,7 @@ struct Accepted {
     /// Whether the builder installed each lane's provider, said at the
     /// statement that installs it. An accepted provider that was never
     /// installed anywhere may be gone; an installed one may not.
-    bound: [bool; 3],
+    installed: [usize; 3],
     /// The address or number of each composed part, in the order of
     /// [`ComposedPart`], and which of them the builder stated, as bits in
     /// that order. A part stated as zero is not a part never stated.
@@ -445,8 +445,8 @@ pub(crate) enum Accept<'a> {
     Request([usize; crate::agent::REQUEST_FACTS]),
     /// For this lane, the view provider that issued this receipt.
     Lane(ModelLane, &'a Arc<WireReceipt>),
-    /// This lane's accepted provider is installed, here.
-    Bound(ModelLane),
+    /// For this lane the provider at this address is installed, here.
+    Bound(ModelLane, usize),
     /// This constructed consumer, in this place of [`consumer`].
     Consumer(usize, Arc<dyn Consumer>),
     /// Every tool the builder installed was compared with the agent's own
@@ -483,6 +483,10 @@ pub struct WireReceipt {
     /// The address of the selection's report that accepted this provider,
     /// with the lane in its low bits; zero until then.
     pub(super) accepted: std::sync::atomic::AtomicUsize,
+    /// Where the provider that issued this receipt is, behind its one
+    /// shared reference; zero until it was put there. The provider says
+    /// it itself (`shared`).
+    pub(super) at: std::sync::atomic::AtomicUsize,
     /// The sinks this provider was given, by address and zero for none: the
     /// token sink in its constructor, the round sink and the status sink
     /// where it takes them. The last place says which of the three it was
@@ -523,7 +527,10 @@ impl SelectionReport {
                     record.lanes[lane as usize] = Some(Arc::downgrade(receipt));
                 }
             },
-            Accept::Bound(lane) => record.bound[lane as usize] = true,
+            Accept::Bound(lane, address) => match record.installed[lane as usize] {
+                0 => record.installed[lane as usize] = address,
+                held => again = held != address,
+            },
             Accept::Consumer(place, consumer) => match &record.consumers[place] {
                 Some(_) => again = true,
                 None => record.consumers[place] = Some(Arc::downgrade(&consumer)),
@@ -659,6 +666,16 @@ impl SelectionReport {
                     if inspectable && receipt.native {
                         return Err(BuildRefusal::OpaqueProviderItems);
                     }
+                    // What is installed for this lane is the very provider
+                    // that issued the receipt. A wrapper in front of it,
+                    // which a request with an output owner would get, is
+                    // another object. The root agent's is always installed.
+                    let installed = record.installed[lane];
+                    if (installed == 0 && lane == ModelLane::Main as usize)
+                        || (installed != 0 && installed != receipt.at.load(Ordering::Acquire))
+                    {
+                        return Err(BuildRefusal::RequestedPart);
+                    }
                     // The sinks this provider says it was given, and which
                     // of them it was given at all.
                     let given = [
@@ -692,7 +709,7 @@ impl SelectionReport {
                     }
                 }
                 // Installed and gone. The root agent's is always installed.
-                None if record.bound[lane] || lane == ModelLane::Main as usize => {
+                None if record.installed[lane] != 0 || lane == ModelLane::Main as usize => {
                     return Err(BuildRefusal::RequestedPart);
                 }
                 // Accepted, installed nowhere, and gone with the builder.
