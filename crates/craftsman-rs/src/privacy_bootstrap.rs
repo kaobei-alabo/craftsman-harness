@@ -594,9 +594,13 @@ impl PrivateConversation {
         self.close();
     }
     /// Revoke the actual session and key even when a policy/tool keeps an Arc.
-    /// Existing vault references retain their derived material until release.
+    /// The conversation gives up its detector and its own references to
+    /// masked texts, and the vault its connection, database and keys. What
+    /// is still referenced (a session, a node of a recorded message, a
+    /// masked text) keeps its identity and can open nothing. A vault worker
+    /// that had started keeps its own reference until it returns.
     pub fn close(&self) {
-        self.session.stop();
+        self.session.release();
         self.unlocked.close();
     }
     /// The private terminal refuses its own config/model/effort saves BEFORE

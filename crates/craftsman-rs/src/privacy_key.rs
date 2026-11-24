@@ -1,6 +1,18 @@
 //! Private key ownership; no CLI/frontend/hook selects it. Started work is owned
 //! through actual return, not interrupted, and has no absolute OS time guarantee.
 mod envelope;
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 pub(crate) mod root;
 use crate::privacy_vault::{HostKey, HostKeySource, Limits, Vault};
 pub use envelope::{ENVELOPE_BYTES, ITERATIONS, Passphrase};
@@ -93,7 +105,7 @@ impl UnlockedKey {
             self.close();
             return Err(KeyError::Changed);
         }
-        let key = self.bytes.lock().map_err(|_| KeyError::Closed)?;
+        let key = or_return!(self.bytes.lock(), KeyError::Closed);
         if key.is_none() {
             return Err(KeyError::Closed);
         }
@@ -111,10 +123,7 @@ impl HostKeySource for UnlockedKey {
             self.close();
             return Err(crate::privacy_vault::PrivacyError::Key);
         }
-        let key = self
-            .bytes
-            .lock()
-            .map_err(|_| crate::privacy_vault::PrivacyError::Key)?;
+        let key = or_return!(self.bytes.lock(), crate::privacy_vault::PrivacyError::Key);
         let bytes = key
             .as_ref()
             .ok_or(crate::privacy_vault::PrivacyError::Key)?;
@@ -234,10 +243,10 @@ impl KeyManager {
     }
 
     async fn perform(&self, passphrase: Passphrase, operation: Operation) -> Result<UnlockedVault> {
-        let runtime = Handle::try_current().map_err(|_| KeyError::Worker)?;
+        let runtime = or_return!(Handle::try_current(), KeyError::Worker);
         let (sender, receiver) = oneshot::channel();
         {
-            let mut state = self.state.lock().map_err(|_| KeyError::Closed)?;
+            let mut state = or_return!(self.state.lock(), KeyError::Closed);
             if state.closed {
                 return Err(KeyError::Closed);
             }
@@ -269,7 +278,7 @@ impl KeyManager {
             state: self.state.clone(),
             accepted: false,
         };
-        let result = receiver.await.map_err(|_| KeyError::Worker)?;
+        let result = or_return!(receiver.await, KeyError::Worker);
         self.wait_started().await?;
         if check_open(&self.state).is_err() {
             drop(result);
@@ -360,9 +369,7 @@ fn execute(
         let body: Pin<&mut dyn Future<Output = ()>> = body;
         runtime.block_on(body);
     }
-    let opened = returned
-        .ok_or(KeyError::Worker)?
-        .map_err(|_| KeyError::Vault)?;
+    let opened = or_return!(returned.ok_or(KeyError::Worker)?, KeyError::Vault);
     let result = UnlockedVault { key, vault: opened };
     root.recheck()?;
     check_open(state)?;

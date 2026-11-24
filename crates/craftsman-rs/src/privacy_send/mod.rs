@@ -276,6 +276,21 @@ impl SendGuard {
         }
     }
 
+    /// Closes this guard as [`close`](Self::close) does, and lets go of the
+    /// originals it was given. For a conversation whose owner closes for
+    /// good: no later
+    /// decision reads them, and a guard that is still referenced keeps
+    /// none. A close alone keeps the admitted set as it was.
+    pub(crate) fn release(&self) {
+        let mut state = match self.state.write() {
+            Ok(state) => state,
+            // A poisoned lock already refuses every decision.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.closed = true;
+        state.originals = scan::Originals::empty();
+    }
+
     /// Session construction refuses a selection that is no longer live.
     pub(crate) fn check(&self) -> Result<(), SendRefusal> {
         let state = or_return!(self.state.read(), SendRefusal::Closed);

@@ -633,18 +633,36 @@ corrected:
   or the ordinary loop read it is not determined. No case ends an adoption
   while it runs: the adoption would have to be slowed for that, and it is
   not. That path is read from source only.
-- **The retired scope is closed but not released.** The one adoption now
-  takes the recorded state out of the transfer, so no second copy of the
-  whole record stays behind. Each adopted commit still keeps the transfer
-  for the retired agent's own commit and source of its message, which is
-  the message's provenance and is meant to stay. Through those sources the
-  retired conversation's owner stays referenced as well, for the life of
-  the successor, and with it what that owner holds: its closed vault
-  session and the vault and key material behind it, its detector, and its
-  record of masked texts with their originals in memory. Repeated changes
-  chain them. Releasing those needs the vault to give up its key material
-  and connection at a close while its session objects are still
-  referenced; that is not implemented.
+- **What a closed conversation gives up, and what stays.** The one
+  adoption takes the recorded state out of the transfer, so no second copy
+  of the whole record stays behind. Each adopted commit keeps the transfer
+  for the retired agent's own commit and source of its message. That is
+  the message's provenance and it stays, with the raw capture and the view
+  of each recorded message, and through it the retired conversation's
+  owner stays referenced for the life of the successor. What that owner
+  held beyond the record is given up when the conversation closes, by
+  whatever still references it:
+  - the vault gives up its connection, the database behind it and the
+    derived keys; the keys are zeroized where they are dropped. A session,
+    a masked text or a record of that vault that is still referenced keeps
+    the vault's identity and bounds and refuses everything;
+  - the conversation gives up its detector, the last map return it kept
+    and its own references to the masked texts of its mappings, and its
+    send guard lets go of the originals it was given.
+
+  Stored mappings, their bounds and the file are not touched: a vault
+  opened anew resolves the same placeholder to the same original. Limits:
+  a vault worker that had started keeps its own reference to the
+  connection and keys until it returns, under its existing bounds, so this
+  is no statement that every copy in the process is gone at the instant of
+  the close, and nothing is claimed about memory the operating system or
+  the allocator still holds. An admission that is running at the close
+  holds the conversation's record of mappings until it returns, and that
+  record is then not cleared. A guard that is only closed, not released
+  with its conversation, keeps its admitted set as before. The nodes of
+  recorded messages keep their masked texts, and those hold the mapping
+  originals in memory, as the raw captures beside them do; repeated
+  changes chain the retired owners with them.
 
 The router applies the same rule to a start: when the invocation's own
 option or the captured file selects a mode that decides file writes, or an

@@ -23,6 +23,18 @@ pub(crate) use route::{
     set, status,
 };
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StartupError {
     #[error("The private terminal startup invocation is unsupported.")]
@@ -416,7 +428,7 @@ impl TerminalStartupCapture {
     /// Actual argv is parsed without a new selector or command. Normal main
     /// passes its own parsed invocation to the router instead of calling this.
     pub fn capture_actual() -> Result<Self> {
-        let cli = crate::Cli::try_parse().map_err(|_| StartupError::Invocation)?;
+        let cli = or_return!(crate::Cli::try_parse(), StartupError::Invocation);
         Self::capture_for_parsed_cli(&cli)
     }
     pub(crate) fn capture_for_parsed_cli(cli: &crate::Cli) -> Result<Self> {

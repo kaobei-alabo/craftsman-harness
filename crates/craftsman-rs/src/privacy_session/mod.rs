@@ -45,6 +45,18 @@ mod transport;
 mod view;
 #[cfg(test)]
 mod view_tests;
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 #[cfg(test)]
 pub(crate) mod wire_fixtures;
 
@@ -185,7 +197,7 @@ impl FreshConversationBinding {
         if !workspace.is_absolute() {
             return Err(SessionStop::Scope);
         }
-        let workspace = std::fs::canonicalize(workspace).map_err(|_| SessionStop::Scope)?;
+        let workspace = or_return!(std::fs::canonicalize(workspace), SessionStop::Scope);
         let mut digest = Sha256::new();
         digest.update(b"craftsman/privacy-session/workspace/v1\0");
         digest.update(workspace.as_os_str().as_encoded_bytes());
@@ -1092,11 +1104,10 @@ impl AdmittedNode {
     ) -> Result<T, SessionStop> {
         let owner = &self.inner.owner;
         owner.live()?;
-        let records = self
-            .inner
-            .masked
-            .resolution_records_for_host_fields()
-            .map_err(|_| SessionStop::Closed)?;
+        let records = or_return!(
+            self.inner.masked.resolution_records_for_host_fields(),
+            SessionStop::Closed
+        );
         let result = read(&owner.session, records);
         owner.live()?;
         Ok(result)
@@ -1145,7 +1156,9 @@ struct Inner {
     binding: FreshConversationBinding,
     session: Arc<MappingSession>,
     guard: Arc<SendGuard>,
-    detector: Detector,
+    /// The host's selected detector, until the conversation is released. An
+    /// admission takes its own reference for its one call.
+    detector: std::sync::Mutex<Option<Arc<Detector>>>,
     /// One admission at a time. Held only around detector and vault work of
     /// that admission, never across a model request, a tool or a child task.
     operation: tokio::sync::Mutex<Ledger>,
@@ -1237,7 +1250,7 @@ impl PrivacySession {
                 binding,
                 session,
                 guard,
-                detector,
+                detector: std::sync::Mutex::new(Some(Arc::new(detector))),
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
@@ -1297,6 +1310,32 @@ impl PrivacySession {
         self.inner.stop();
     }
 
+    /// Stops the conversation and gives up what it holds beyond its record:
+    /// the detector, the last map return it kept, and its own references to
+    /// the masked texts of its mappings. For a conversation whose owner
+    /// closes for good; the send guard lets its originals go here as well.
+    ///
+    /// Objects that are still referenced stay what they are: the nodes of
+    /// recorded messages keep their captures and views, which are the
+    /// record's provenance, and this conversation keeps its identity for
+    /// them. Stored mappings are not touched. An admission that is running
+    /// at this moment holds the record of mappings until it returns, and
+    /// that record is then not cleared.
+    pub fn release(&self) {
+        let inner = &self.inner;
+        inner.stop();
+        inner.guard.release();
+        if let Ok(mut detector) = inner.detector.lock() {
+            *detector = None;
+        }
+        if let Ok(mut kept) = inner.last_map_commit.lock() {
+            *kept = None;
+        }
+        if let Ok(mut ledger) = inner.operation.try_lock() {
+            ledger.known = Vec::new();
+        }
+    }
+
     /// Admits one raw capture.
     ///
     /// On success the vault has committed the capture's mask, including a
@@ -1349,13 +1388,21 @@ impl PrivacySession {
                 &whole
             }
             None => {
-                detected =
-                    match tokio::time::timeout_at(deadline, inner.detector.detect(text)).await {
-                        Err(_) => return Err(inner.stopped(SessionStop::Deadline)),
-                        Ok(Err(HookError::Input)) => return Err(refuse(AdmitRefusal::TooLarge)),
-                        Ok(Err(error)) => return Err(inner.stopped(SessionStop::Detector(error))),
-                        Ok(Ok(spans)) => spans,
-                    };
+                // This admission's own reference to the detector. A released
+                // conversation has none.
+                let detector = match inner.detector.lock() {
+                    Ok(detector) => detector.clone(),
+                    Err(_) => None,
+                };
+                let Some(detector) = detector else {
+                    return Err(inner.stopped(SessionStop::Closed));
+                };
+                detected = match tokio::time::timeout_at(deadline, detector.detect(text)).await {
+                    Err(_) => return Err(inner.stopped(SessionStop::Deadline)),
+                    Ok(Err(HookError::Input)) => return Err(refuse(AdmitRefusal::TooLarge)),
+                    Ok(Err(error)) => return Err(inner.stopped(SessionStop::Detector(error))),
+                    Ok(Ok(spans)) => spans,
+                };
                 &detected
             }
         };

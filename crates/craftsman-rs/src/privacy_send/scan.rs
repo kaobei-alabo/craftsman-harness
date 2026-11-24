@@ -48,6 +48,18 @@ use std::cell::Cell;
 use std::fmt;
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 /// Sorted distinct originals and a one-bit-per-two-byte-prefix filter.
 pub(super) struct Originals {
     items: Vec<Zeroizing<Vec<u8>>>,
@@ -190,7 +202,7 @@ impl<'a> Scan<'a> {
             self.literal(text.as_bytes())?;
         }
         self.charge(encoded.len())?;
-        let body = std::str::from_utf8(encoded).map_err(|_| SendRefusal::Unsupported)?;
+        let body = or_return!(std::str::from_utf8(encoded), SendRefusal::Unsupported);
         if self.document(body, 0) {
             return Ok(());
         }

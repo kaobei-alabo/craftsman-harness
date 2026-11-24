@@ -1825,3 +1825,67 @@ async fn room_for_a_successor_scope_is_read_with_the_insertion_bounds_and_writes
         );
     }
 }
+
+#[tokio::test]
+async fn a_closed_vault_gives_up_its_connection_while_its_session_and_records_stay_referenced() {
+    let (_temp, root, vault) = fresh(Limits::default()).await;
+    let scoped = session(&vault);
+    let email = "closed.owner@synthetic.example";
+    let text = format!("mail {email}");
+    let masked = mask_values(&scoped, &text, &[(email, Category::Email)])
+        .await
+        .unwrap();
+    let alias = fields(&masked)[0].0.clone();
+    let stored = fs::read(root.join(VAULT_FILENAME)).unwrap().len();
+    let sidecar = |suffix: &str| root.join(format!("{VAULT_FILENAME}{suffix}"));
+    // The open vault's own connection keeps the database's write-ahead
+    // sidecars.
+    assert!(sidecar("-wal").exists() && sidecar("-shm").exists());
+
+    // Closed, with the session and the masked text still referenced here.
+    vault.close();
+    // The connection is gone with the close, not with the last reference:
+    // SQLite removes both sidecars when the last connection of a database
+    // closes.
+    assert!(!sidecar("-wal").exists(), "the connection is still open");
+    assert!(!sidecar("-shm").exists(), "the connection is still open");
+    // What is still referenced keeps its identity and opens nothing.
+    assert_eq!(
+        scoped.capture_text("safe").unwrap_err(),
+        PrivacyError::Closed
+    );
+    assert_eq!(
+        scoped.resolve_exact_aliases(&[&alias]).await.unwrap_err(),
+        PrivacyError::Closed
+    );
+    assert_eq!(
+        masked.text_for_later_model_request().unwrap_err(),
+        PrivacyError::Closed
+    );
+    assert_eq!(
+        vault
+            .session(namespace("synthetic-project-11", "synthetic-thread-22"))
+            .unwrap_err(),
+        PrivacyError::Closed
+    );
+    // A second close changes nothing.
+    vault.close();
+
+    // Nothing stored was touched: the file is at least as large as it was,
+    // and a vault opened anew on it, while the closed one is still
+    // referenced, resolves the same placeholder to the same original.
+    assert!(fs::read(root.join(VAULT_FILENAME)).unwrap().len() >= stored);
+    let reopened = open(&root, 7, Limits::default()).await.unwrap();
+    let again = session(&reopened);
+    let records = again.resolve_exact_aliases(&[&alias]).await.unwrap();
+    assert_eq!(
+        records
+            .with_host_field(0, |field| field
+                .original_for_validated_host_field()
+                .to_owned())
+            .unwrap(),
+        email
+    );
+    assert_eq!(Probe::open(&root).await.count().await, 1);
+    drop((scoped, masked, vault));
+}

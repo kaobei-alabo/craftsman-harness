@@ -5,6 +5,18 @@ use ring::{aead, hkdf, hmac};
 use std::fmt;
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 pub struct HostKey {
     bytes: Zeroizing<[u8; 32]>,
 }
@@ -36,10 +48,12 @@ impl Keys {
         let prk = salt.extract(host.bytes.as_ref());
         let derive = |label: &'static [u8]| -> Result<Zeroizing<[u8; 32]>> {
             let mut output = Zeroizing::new([0; 32]);
-            prk.expand(&[label], hkdf::HKDF_SHA256)
-                .map_err(|_| PrivacyError::Key)?
-                .fill(output.as_mut())
-                .map_err(|_| PrivacyError::Key)?;
+            or_return!(
+                prk.expand(&[label], hkdf::HKDF_SHA256)
+                    .map_err(|_| PrivacyError::Key)?
+                    .fill(output.as_mut()),
+                PrivacyError::Key
+            );
             Ok(output)
         };
         Ok(Self {
@@ -110,14 +124,15 @@ impl Keys {
 
     pub(super) fn seal(&self, aad: &[u8], mut plain: Zeroizing<Vec<u8>>) -> Result<Sealed> {
         let mut nonce = [0; 12];
-        getrandom::fill(&mut nonce).map_err(|_| PrivacyError::Key)?;
-        self.aead()?
-            .seal_in_place_append_tag(
+        or_return!(getrandom::fill(&mut nonce), PrivacyError::Key);
+        or_return!(
+            self.aead()?.seal_in_place_append_tag(
                 aead::Nonce::assume_unique_for_key(nonce),
                 aead::Aad::from(aad),
                 &mut *plain,
-            )
-            .map_err(|_| PrivacyError::Integrity)?;
+            ),
+            PrivacyError::Integrity
+        );
         // Only ciphertext is copied out of the zeroized staging buffer.
         Ok(Sealed {
             nonce,
@@ -207,11 +222,18 @@ pub(super) fn decode(category: Category, bytes: &[u8]) -> Result<Mapping> {
     {
         return Err(PrivacyError::Integrity);
     }
-    let original =
-        std::str::from_utf8(&bytes[16..16 + original_len]).map_err(|_| PrivacyError::Integrity)?;
-    let alias =
-        std::str::from_utf8(&bytes[16 + original_len..]).map_err(|_| PrivacyError::Integrity)?;
-    super::format::validate_original(category, original).map_err(|_| PrivacyError::Integrity)?;
+    let original = or_return!(
+        std::str::from_utf8(&bytes[16..16 + original_len]),
+        PrivacyError::Integrity
+    );
+    let alias = or_return!(
+        std::str::from_utf8(&bytes[16 + original_len..]),
+        PrivacyError::Integrity
+    );
+    or_return!(
+        super::format::validate_original(category, original),
+        PrivacyError::Integrity
+    );
     Ok(Mapping {
         category,
         original: Zeroizing::new(original.to_owned()),

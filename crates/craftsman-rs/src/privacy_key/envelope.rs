@@ -8,6 +8,18 @@ use zeroize::Zeroizing;
 
 // Process-wide private KDF admission: no second owner can start another KDF,
 // and no blocking queue is introduced. This is not OS scheduling/billing data.
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 static KDF_ADMISSION: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 static TEST_SERIAL: Mutex<()> = Mutex::new(());
@@ -42,7 +54,7 @@ impl Passphrase {
         if !(12..=1024).contains(&raw.len()) {
             return Err(KeyError::Passphrase);
         }
-        let text = std::str::from_utf8(&raw).map_err(|_| KeyError::Passphrase)?;
+        let text = or_return!(std::str::from_utf8(&raw), KeyError::Passphrase);
         // NFC can expand an input. Reserve its entire admitted byte ceiling
         // before storing any secret, so growth cannot free an uncleared buffer.
         let mut normalized = Zeroizing::new(Vec::with_capacity(1024));
@@ -95,8 +107,10 @@ fn wrapping_key(passphrase: &Passphrase, salt: &[u8]) -> Result<aead::LessSafeKe
         &passphrase.normalized,
         key.as_mut(),
     );
-    let key = aead::UnboundKey::new(&aead::CHACHA20_POLY1305, key.as_ref())
-        .map_err(|_| KeyError::Invalid)?;
+    let key = or_return!(
+        aead::UnboundKey::new(&aead::CHACHA20_POLY1305, key.as_ref()),
+        KeyError::Invalid
+    );
     Ok(aead::LessSafeKey::new(key))
 }
 
@@ -115,20 +129,21 @@ impl Envelope {
         bytes[8..12].copy_from_slice(&1u32.to_be_bytes());
         bytes[12..16].copy_from_slice(&1u32.to_be_bytes());
         bytes[16..20].copy_from_slice(&ITERATIONS.to_be_bytes());
-        getrandom::fill(&mut bytes[20..64]).map_err(|_| KeyError::Random)?;
+        or_return!(getrandom::fill(&mut bytes[20..64]), KeyError::Random);
         let mut vault_key = Zeroizing::new([0; 32]);
-        getrandom::fill(vault_key.as_mut()).map_err(|_| KeyError::Random)?;
-        let nonce: [u8; 12] = bytes[52..64].try_into().map_err(|_| KeyError::Invalid)?;
+        or_return!(getrandom::fill(vault_key.as_mut()), KeyError::Random);
+        let nonce: [u8; 12] = or_return!(bytes[52..64].try_into(), KeyError::Invalid);
         let key = wrapping_key(passphrase, &bytes[20..52])?;
         let additional = aad(&bytes[..HEADER_BYTES]);
         bytes[64..96].copy_from_slice(vault_key.as_ref());
-        let tag = key
-            .seal_in_place_separate_tag(
+        let tag = or_return!(
+            key.seal_in_place_separate_tag(
                 aead::Nonce::assume_unique_for_key(nonce),
                 aead::Aad::from(additional),
                 &mut bytes[64..96],
-            )
-            .map_err(|_| KeyError::Invalid)?;
+            ),
+            KeyError::Invalid
+        );
         bytes[96..].copy_from_slice(tag.as_ref());
         Ok((Self(bytes), vault_key))
     }
@@ -149,16 +164,17 @@ impl Envelope {
 
     pub(super) fn unlock(self, passphrase: &Passphrase) -> Result<Zeroizing<[u8; 32]>> {
         let key = wrapping_key(passphrase, &self.0[20..52])?;
-        let nonce: [u8; 12] = self.0[52..64].try_into().map_err(|_| KeyError::Invalid)?;
+        let nonce: [u8; 12] = or_return!(self.0[52..64].try_into(), KeyError::Invalid);
         let additional = aad(&self.0[..HEADER_BYTES]);
         let mut ciphertext = Zeroizing::new(self.0[64..].to_vec());
-        let opened = key
-            .open_in_place(
+        let opened = or_return!(
+            key.open_in_place(
                 aead::Nonce::assume_unique_for_key(nonce),
                 aead::Aad::from(additional),
                 &mut ciphertext,
-            )
-            .map_err(|_| KeyError::Unlock)?;
+            ),
+            KeyError::Unlock
+        );
         if opened.len() != 32 {
             return Err(KeyError::Invalid);
         }

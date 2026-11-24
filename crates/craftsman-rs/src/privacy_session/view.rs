@@ -51,6 +51,18 @@ use std::ops::Range;
 mod adoption;
 pub use adoption::RetiredConversation;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 /// What this conversation keeps beside a recorded item.
 enum ViewSource {
     Admitted(AdmittedNode),
@@ -437,10 +449,10 @@ impl SourceField {
         read: impl FnOnce(&MappingSession, &ResolutionRecords, usize) -> T,
     ) -> Result<T, SessionStop> {
         self.owner.live()?;
-        let records = self
-            .masked
-            .resolution_records_for_host_fields()
-            .map_err(|_| SessionStop::Closed)?;
+        let records = or_return!(
+            self.masked.resolution_records_for_host_fields(),
+            SessionStop::Closed
+        );
         let result = read(&self.owner.session, records, self.index);
         self.owner.live()?;
         Ok(result)

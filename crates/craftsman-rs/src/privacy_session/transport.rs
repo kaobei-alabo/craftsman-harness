@@ -37,6 +37,18 @@ use craftsman_harness::provenance::{ModelDelivery, SourceRef, TrackedModelReques
 use craftsman_harness::{AgentError, ModelProvider, ModelRequest, ModelResponse, Usage};
 use std::sync::{Arc, Mutex};
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 /// The most replies with provider items one native conversation keeps, as
 /// the native history does.
 const NATIVE_REPLIES: usize = 256;
@@ -268,9 +280,7 @@ impl ViewNativeProvider {
             .with_send_guard(session.send_guard())
             .map_err(SessionStop::Guard)?;
         let native = client.native.as_ref().ok_or(SessionStop::Unbound)?;
-        let defaults = native
-            .request_defaults()
-            .map_err(|_| SessionStop::Unbound)?;
+        let defaults = or_return!(native.request_defaults(), SessionStop::Unbound);
         let defaults = admitted_defaults(&session, &defaults).await?;
         Ok(Self {
             receipt: Arc::new(super::WireReceipt {

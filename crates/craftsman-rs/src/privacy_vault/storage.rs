@@ -159,7 +159,7 @@ impl Vault {
 
     pub fn session(&self, namespace: HostNamespace) -> Result<MappingSession> {
         self.inner.check()?;
-        let scope = self.inner.keys.scope(&self.inner.id, &namespace);
+        let scope = self.inner.held()?.keys.scope(&self.inner.id, &namespace);
         Ok(MappingSession {
             live: Arc::new(SessionLife {
                 open: AtomicBool::new(true),
@@ -171,8 +171,22 @@ impl Vault {
 
     /// Denies new work; does not interrupt/await started native IO or assert
     /// rollback/quiescence. Each started worker retains its DB/key through return.
+    ///
+    /// The vault's own reference to its connection, database and keys is
+    /// given up here, also where sessions, masked texts or records of this
+    /// vault are still referenced: they keep the vault's identity and
+    /// bounds and can open nothing. This is not a statement that every
+    /// copy in the process is gone at this instant: a worker that had
+    /// started keeps its reference until it returns. Stored mappings and
+    /// the file are not touched.
     pub fn close(&self) {
         self.inner.healthy.store(false, Ordering::Release);
+        // A poisoned lock still gives the reference up.
+        let mut held = match self.inner.held.lock() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *held = None;
     }
 
     #[cfg(test)]
@@ -215,12 +229,24 @@ impl Drop for OpenGuard {
     }
 }
 
-pub(super) struct Inner {
+/// What an open vault holds besides its identity and bounds: its one
+/// connection, the database behind it and the derived keys. A started
+/// worker takes its own reference first and keeps it through its return.
+/// Closing the vault gives up the vault's reference, and all of this goes
+/// with the last reference: at once when no worker is running, else when
+/// that worker has returned. The keys are zeroized where they are dropped.
+/// Nothing stored is touched by that.
+struct Held {
     // Connections precede their database in field drop order. No connection is
     // cloned per operation, and the Database outlives its one local connection.
     conn: Mutex<Connection>,
     _database: libsql::Database,
     keys: Keys,
+}
+
+pub(super) struct Inner {
+    /// See [`Held`]. `None` once the vault was closed.
+    held: Mutex<Option<Arc<Held>>>,
     id: [u8; 16],
     native: NativeLocation,
     pub(super) limits: Limits,
@@ -233,6 +259,18 @@ pub(super) struct Inner {
 }
 
 impl Inner {
+    /// A reference of the caller's own to what the vault holds, kept for
+    /// one operation. A closed vault has none to give.
+    fn held(&self) -> Result<Arc<Held>> {
+        match self.held.lock() {
+            Ok(held) => match &*held {
+                Some(held) => Ok(held.clone()),
+                None => Err(PrivacyError::Closed),
+            },
+            Err(_) => Err(PrivacyError::Integrity),
+        }
+    }
+
     pub(super) fn check(&self) -> Result<()> {
         if !self.healthy.load(Ordering::Acquire) {
             return Err(PrivacyError::Closed);
@@ -579,7 +617,7 @@ async fn open_worker(
     let row = next(&mut mode, &mut budget)
         .await?
         .ok_or(PrivacyError::Integrity)?;
-    if row.get::<String>(0).map_err(|_| PrivacyError::Integrity)? != "wal" {
+    if text_at(&row, 0)? != "wal" {
         return Err(PrivacyError::Integrity);
     }
     drop(row);
@@ -703,9 +741,11 @@ async fn open_worker(
     #[cfg(test)]
     budget.opening_returned();
     Ok(Inner {
-        conn: Mutex::new(conn),
-        _database: database,
-        keys,
+        held: Mutex::new(Some(Arc::new(Held {
+            conn: Mutex::new(conn),
+            _database: database,
+            keys,
+        }))),
         id: read_id,
         native,
         limits,
@@ -739,9 +779,7 @@ async fn validate_layout(conn: &Connection, budget: &mut Budget) -> Result<()> {
         let row = next(&mut rows, budget)
             .await?
             .ok_or(PrivacyError::Integrity)?;
-        if row.get::<String>(0).map_err(|_| PrivacyError::Integrity)? != name
-            || row.get::<String>(1).map_err(|_| PrivacyError::Integrity)? != sql
-        {
+        if text_at(&row, 0)? != name || text_at(&row, 1)? != sql {
             return Err(PrivacyError::Integrity);
         }
     }
@@ -756,27 +794,18 @@ async fn read_header(conn: &Connection, keys: &Keys, budget: &mut Budget) -> Res
     let row = next(&mut rows, budget)
         .await?
         .ok_or(PrivacyError::Integrity)?;
-    if row.get::<i64>(0).map_err(|_| PrivacyError::Integrity)? != 1
-        || row.get::<i64>(1).map_err(|_| PrivacyError::Integrity)? != FORMAT_VERSION as i64
-        || row.get::<i64>(2).map_err(|_| PrivacyError::Integrity)? != 16
-        || row.get::<i64>(3).map_err(|_| PrivacyError::Integrity)? != 12
-        || !(16..=512).contains(&row.get::<i64>(4).map_err(|_| PrivacyError::Integrity)?)
+    if integer_at(&row, 0)? != 1
+        || integer_at(&row, 1)? != FORMAT_VERSION as i64
+        || integer_at(&row, 2)? != 16
+        || integer_at(&row, 3)? != 12
+        || !(16..=512).contains(&integer_at(&row, 4)?)
     {
         return Err(PrivacyError::Integrity);
     }
-    let id: [u8; 16] = or_return!(
-        row.get::<Vec<u8>>(5)
-            .map_err(|_| PrivacyError::Integrity)?
-            .try_into(),
-        PrivacyError::Integrity
-    );
+    let id: [u8; 16] = bytes_at(&row, 5)?;
     let sealed = Sealed {
-        nonce: row
-            .get::<Vec<u8>>(6)
-            .map_err(|_| PrivacyError::Integrity)?
-            .try_into()
-            .map_err(|_| PrivacyError::Integrity)?,
-        bytes: row.get(7).map_err(|_| PrivacyError::Integrity)?,
+        nonce: bytes_at(&row, 6)?,
+        bytes: blob_at(&row, 7)?,
     };
     if next(&mut rows, budget).await?.is_some() {
         return Err(PrivacyError::Integrity);
@@ -1165,7 +1194,8 @@ pub(super) async fn admits_successor(live: Arc<SessionLife>) -> Result<bool> {
 async fn successor_worker(live: &Arc<SessionLife>, budget: &mut Budget) -> Result<bool> {
     let inner = &live.vault;
     inner.native.recheck(budget)?;
-    let conn = match inner.conn.lock() {
+    let held = inner.held()?;
+    let conn = match held.conn.lock() {
         Ok(conn) => conn,
         Err(_) => return Err(PrivacyError::Integrity),
     };
@@ -1203,6 +1233,39 @@ async fn successor_worker(live: &Arc<SessionLife>, budget: &mut Budget) -> Resul
     read
 }
 
+/// Column `index` of a stored row as an integer. A row that does not have
+/// it as one refuses as an integrity failure; so do the three readers below.
+fn integer_at(row: &libsql::Row, index: i32) -> Result<i64> {
+    match row.get::<i64>(index) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(PrivacyError::Integrity),
+    }
+}
+
+/// Column `index` of a stored row as text.
+fn text_at(row: &libsql::Row, index: i32) -> Result<String> {
+    match row.get::<String>(index) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(PrivacyError::Integrity),
+    }
+}
+
+/// Column `index` of a stored row as bytes.
+fn blob_at(row: &libsql::Row, index: i32) -> Result<Vec<u8>> {
+    match row.get::<Vec<u8>>(index) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(PrivacyError::Integrity),
+    }
+}
+
+/// Column `index` of a stored row as exactly `N` bytes.
+fn bytes_at<const N: usize>(row: &libsql::Row, index: i32) -> Result<[u8; N]> {
+    match blob_at(row, index)?.try_into() {
+        Ok(value) => Ok(value),
+        Err(_) => Err(PrivacyError::Integrity),
+    }
+}
+
 struct Stats {
     count: usize,
     bytes: usize,
@@ -1215,15 +1278,15 @@ async fn stats(conn: &Connection, budget: &mut Budget) -> Result<Stats> {
         .await?
         .ok_or(PrivacyError::Integrity)?;
     let count = or_return!(
-        usize::try_from(row.get::<i64>(0).map_err(|_| PrivacyError::Integrity)?),
+        usize::try_from(integer_at(&row, 0)?),
         PrivacyError::Integrity
     );
     let bytes = or_return!(
-        usize::try_from(row.get::<i64>(1).map_err(|_| PrivacyError::Integrity)?),
+        usize::try_from(integer_at(&row, 1)?),
         PrivacyError::Integrity
     );
     let scopes = or_return!(
-        usize::try_from(row.get::<i64>(2).map_err(|_| PrivacyError::Integrity)?),
+        usize::try_from(integer_at(&row, 2)?),
         PrivacyError::Integrity
     );
     if count > budget.limits.vault_mappings
@@ -1244,12 +1307,13 @@ async fn stats(conn: &Connection, budget: &mut Budget) -> Result<Stats> {
 
 async fn read_scope(
     inner: &Inner,
+    keys: &Keys,
     conn: &Connection,
     scope: &[u8; 32],
     budget: &mut Budget,
 ) -> Result<Vec<Mapping>> {
     validate_layout(conn, budget).await?;
-    if read_header(conn, &inner.keys, budget).await? != inner.id {
+    if read_header(conn, &keys, budget).await? != inner.id {
         return Err(PrivacyError::Integrity);
     }
     stats(conn, budget).await?;
@@ -1267,39 +1331,20 @@ async fn read_scope(
         if lengths[..4] != [32, 32, 32, 12] || !(16..=1024).contains(&lengths[4]) {
             return Err(PrivacyError::Integrity);
         }
-        let category = Category::from_code(row.get(5).map_err(|_| PrivacyError::Integrity)?)?;
-        let version: i64 = or_return!(row.get(6), PrivacyError::Integrity);
+        let category = Category::from_code(integer_at(&row, 5)?)?;
+        let version = integer_at(&row, 6)?;
         if version != FORMAT_VERSION as i64 {
             return Err(PrivacyError::Integrity);
         }
-        let stored_scope: [u8; 32] = or_return!(
-            row.get::<Vec<u8>>(7)
-                .map_err(|_| PrivacyError::Integrity)?
-                .try_into(),
-            PrivacyError::Integrity
-        );
-        let identity: [u8; 32] = or_return!(
-            row.get::<Vec<u8>>(8)
-                .map_err(|_| PrivacyError::Integrity)?
-                .try_into(),
-            PrivacyError::Integrity
-        );
-        let alias_tag: [u8; 32] = or_return!(
-            row.get::<Vec<u8>>(9)
-                .map_err(|_| PrivacyError::Integrity)?
-                .try_into(),
-            PrivacyError::Integrity
-        );
+        let stored_scope: [u8; 32] = bytes_at(&row, 7)?;
+        let identity: [u8; 32] = bytes_at(&row, 8)?;
+        let alias_tag: [u8; 32] = bytes_at(&row, 9)?;
         if stored_scope != *scope {
             return Err(PrivacyError::Integrity);
         }
         let sealed = Sealed {
-            nonce: row
-                .get::<Vec<u8>>(10)
-                .map_err(|_| PrivacyError::Integrity)?
-                .try_into()
-                .map_err(|_| PrivacyError::Integrity)?,
-            bytes: row.get(11).map_err(|_| PrivacyError::Integrity)?,
+            nonce: bytes_at(&row, 10)?,
+            bytes: blob_at(&row, 11)?,
         };
         budget.work(sealed.bytes.len())?;
         let aad = crypto::mapping_aad(
@@ -1310,18 +1355,13 @@ async fn read_scope(
             &identity,
             &alias_tag,
         );
-        let plain = inner.keys.open(&aad, &sealed)?;
+        let plain = keys.open(&aad, &sealed)?;
         let mapping = crypto::decode(category, &plain)?;
         budget.work(mapping.original.len() + mapping.alias.len())?;
-        if inner.keys.identity(scope, category, &mapping.original) != identity
-            || inner.keys.alias_tag(&mapping.alias) != alias_tag
-            || format::generate(
-                &inner.keys,
-                scope,
-                category,
-                &mapping.original,
-                mapping.counter,
-            ) != *mapping.alias
+        if keys.identity(scope, category, &mapping.original) != identity
+            || keys.alias_tag(&mapping.alias) != alias_tag
+            || format::generate(&keys, scope, category, &mapping.original, mapping.counter)
+                != *mapping.alias
             || mapping.original.as_str() == mapping.alias.as_str()
         {
             return Err(PrivacyError::Integrity);
@@ -1363,7 +1403,7 @@ fn copy_mapping(mapping: &Mapping) -> Mapping {
 }
 
 async fn choose_aliases(
-    inner: &Inner,
+    keys: &Keys,
     conn: &Connection,
     scope: &[u8; 32],
     text: &str,
@@ -1395,7 +1435,7 @@ async fn choose_aliases(
         for counter in 0..format::ALIAS_ATTEMPTS {
             budget.check()?;
             let alias = Zeroizing::new(format::generate(
-                &inner.keys,
+                &keys,
                 scope,
                 item.category,
                 &item.value,
@@ -1415,7 +1455,7 @@ async fn choose_aliases(
                     break;
                 }
             }
-            if collision || alias_exists(conn, &inner.keys.alias_tag(&alias), budget).await? {
+            if collision || alias_exists(conn, &keys.alias_tag(&alias), budget).await? {
                 continue;
             }
             chosen = Some(Mapping {
@@ -1494,13 +1534,16 @@ async fn mask_worker(
     let selected = format::validate_spans(&input.text, &input.digest, report, &declared, budget)?;
     let inner = &live.vault;
     inner.native.recheck(budget)?;
-    let conn = or_return!(inner.conn.lock(), PrivacyError::Integrity);
+    // This worker's own reference, kept until it returns.
+    let held = inner.held()?;
+    let keys = &held.keys;
+    let conn = or_return!(held.conn.lock(), PrivacyError::Integrity);
     begin(&conn, "BEGIN IMMEDIATE", budget).await?;
     let prepared = async {
-        let mut mappings = read_scope(inner, &conn, &live.scope, budget).await?;
+        let mut mappings = read_scope(inner, keys, &conn, &live.scope, budget).await?;
         let old_count = mappings.len();
         let indices = choose_aliases(
-            inner,
+            keys,
             &conn,
             &live.scope,
             &input.text,
@@ -1514,10 +1557,8 @@ async fn mask_worker(
         let mut inserts = Vec::new();
         let mut added_bytes = 0;
         for mapping in &mappings[old_count..] {
-            let identity = inner
-                .keys
-                .identity(&live.scope, mapping.category, &mapping.original);
-            let alias_tag = inner.keys.alias_tag(&mapping.alias);
+            let identity = keys.identity(&live.scope, mapping.category, &mapping.original);
+            let alias_tag = keys.alias_tag(&mapping.alias);
             let aad = crypto::mapping_aad(
                 &inner.id,
                 &live.scope,
@@ -1526,7 +1567,7 @@ async fn mask_worker(
                 &identity,
                 &alias_tag,
             );
-            let sealed = inner.keys.seal(&aad, crypto::encode(mapping))?;
+            let sealed = keys.seal(&aad, crypto::encode(mapping))?;
             budget.work(sealed.bytes.len())?;
             added_bytes += sealed.bytes.len();
             inserts.push(vec![
@@ -1617,10 +1658,13 @@ async fn resolve_worker(
 ) -> Result<ResolutionRecords> {
     let inner = &live.vault;
     inner.native.recheck(budget)?;
-    let conn = or_return!(inner.conn.lock(), PrivacyError::Integrity);
+    // This worker's own reference, kept until it returns.
+    let held = inner.held()?;
+    let keys = &held.keys;
+    let conn = or_return!(held.conn.lock(), PrivacyError::Integrity);
     begin(&conn, "BEGIN DEFERRED", budget).await?;
     let prepared = async {
-        let mappings = read_scope(inner, &conn, &live.scope, budget).await?;
+        let mappings = read_scope(inner, keys, &conn, &live.scope, budget).await?;
         let mut records = Vec::with_capacity(aliases.len());
         for alias in aliases {
             budget.work(alias.len())?;
