@@ -81,9 +81,9 @@ passed both, and the main baseline run 44985966590 passed both on Windows.
 
 - Type checks of the gadget mode, the core mode and the default build pass
   without a warning; formatting is unchanged.
-- The gadget-mode unit-test binary's `__eh_frame` on macOS is 16,776,644
-  bytes with this change and the two fixture corrections made with it, 216
-  more than before them and 572 under the 16,777,216 limit. This is one
+- The gadget-mode unit-test binary's `__eh_frame` on macOS is 16,776,624
+  bytes with this change and the two fixture corrections made with it, 196
+  more than before them and 592 under the 16,777,216 limit. This is one
   binary of these changes alone. The integrated source has to be measured
   again.
 - On macOS, in the gadget mode, the eleven test files that drive the real
