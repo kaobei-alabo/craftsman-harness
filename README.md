@@ -7,169 +7,137 @@
 
 <p align="center"><strong>A coding agent that builds its own tools.</strong></p>
 
-Craftsman is a Rust terminal coding agent that reads your code, makes edits,
-runs commands and carries work across sessions. Bring your own configured model
-connection.
+Craftsman is a Rust terminal coding agent. It reads your code, edits files,
+runs commands and carries work across sessions, on the model connection you
+configure.
 
-Its superpower: turn a useful routine into a **reusable WebAssembly gadget**,
-then use it as a tool in the next model round.
+Its signature move: turn a useful routine into a **reusable WebAssembly
+gadget**, then call it as a tool in the next model round.
 
 ![Craftsman terminal with a block-drawn 匠 mark, small hammer and gray/turquoise model connection status](docs/assets/craftsman-splash.png)
 
-## Harness flow
+## What you get
 
-This is the current interactive path. Local commands handle setup, pickers and
-inspection; commands that expand into prompts enter the same agent loop.
+- **Gadgets that last.** Ask for a tool. Craftsman scaffolds it with the
+  embedded SDK, compiles it to a WASM component and discovers its typed
+  functions without a restart. Text statistics, slug generation, checked CSV
+  totals and JSON inspection were built and used this way in
+  [live model sessions](docs/live-gadget-evaluation.md).
+- **A contained place for gadget code.** Gadgets run in Wasmtime with no
+  inherited filesystem, sockets or environment. Declared capabilities and
+  your approval govern what a gadget may reach.
+- **Your models.** Configure your own endpoint, key and model. Named
+  connections, a grouped model catalog and per-model reasoning effort are
+  described in [models and configuration](docs/provider-models.md).
+- **A terminal that keeps you in control.** Streaming replies, file edits,
+  shell tools, planning, permission modes with approvals, per-turn file
+  checkpoints, and sessions stored locally with no remote replica.
+- **Open ends.** Configured MCP servers, standard ACP for editors, and the
+  lightweight `craftsman-harness` Rust framework with the gadget SDK for
+  your own integrations.
 
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
-flowchart TD
-    Q["Your input"] --> R{"Local action?"}
-    R -->|Yes| C["Local command handler"]
-    C --> O["Terminal response / status"]
-    R -->|Agent prompt| P["Prepare instructions, history and tools<br/>Context / compaction / stop checks"]
-    P --> M["Configured model API"]
-    M -->|Final answer| S["Save completed work"]
-    S --> O
-    M -->|Tool calls| G["Mode, permission and approval gate"]
-    G -->|Native tool allowed| N["Host tools<br/>Files, shell, web, configured MCP"]
-    G -->|Gadget allowed| W["WASM gadget when enabled<br/>Wasmtime + approved capabilities"]
-    N --> H["Record actual result<br/>Local libSQL history + checkpoint hooks"]
-    W --> H
-    G -->|Refused| H
-    H --> P
-    P -->|Cancel, error or limit| S
-    M -->|Request fails| S
-    classDef wasm fill:#dcefee,stroke:#408b8b,color:#263238;
-    class W wasm;
+## Get started
+
+Install Rust through rustup, and CMake. Linux also needs ALSA development
+headers; see the [build guide](docs/production-readiness.md).
+
+```sh
+git clone https://github.com/kaobei-alabo/craftsman-harness.git
+cd craftsman-harness
+rustup toolchain install --no-self-update
+./install.sh
+craftsman setup
+craftsman
 ```
 
-The model can repeat the tool loop before answering. Replies stream through the
-terminal UI; configured verification and failure controls can request more work
-or stop the turn. WASM contains **gadget code**; host tools keep their own
-execution and permission boundaries. Models and MCP use configured connections;
-web requests come from web-tool calls. Session data uses the local libSQL/Turso
-core with no remote Turso replica.
+`craftsman setup` configures your endpoint, key and model; you can also start
+from the [example configuration](examples/config/multi-provider.json). Set
+`gadgets.enabled` to use gadget authoring and the gadget catalog. In a
+session, `/model` opens the model catalog and `/effort` changes the reasoning
+effort.
 
-Code entry points: [submission routing](crates/craftsman-rs/src/tui/commands.rs),
-[session construction](crates/craftsman-rs/src/agent.rs),
-[agent loop](crates/craftsman-harness/src/agent.rs).
+Start Craftsman in the folder you want to work in; Git is optional. For
+editors, `craftsman acp-serve` speaks ACP over stdio and `craftsman
+acp-bridge` adds a WebSocket bridge. `./install.sh --upgrade` updates an
+older installation.
 
-## From a task to a new tool
+## How a request runs
 
-> “Build a gadget that totals CSV numbers, then use it on `10, -4, 7`.”
-
-Craftsman can write the Rust code, compile it into a WASM component and discover
-its typed functions without a restart. The tool stays available for future tasks
-instead of being rewritten each time.
-
-1. **Create** — the embedded SDK and authoring skill scaffold the gadget.
-2. **Build** — compile and validate its component interface.
-3. **Use** — approve its capabilities, then call it from the agent.
-
-Gadgets run in Wasmtime with no inherited filesystem, sockets or environment.
-Declared capabilities and user approval govern host access. Native builds and
-shell commands retain their separate permission checks.
-
-Text statistics, slug generation, checked CSV totals and JSON inspection have
-already been built and used in [live model sessions](docs/live-gadget-evaluation.md).
-
-## Privacy flow — prototype, off unless your own configuration enables it
-
-The unmerged privacy work adds a required hook around model requests. It keeps
-the original local records and gives the model a separate masked view. On this
-branch the interactive `craftsman` startup takes this path only when your own
-user configuration enables a privacy policy; every other session is unchanged.
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
-flowchart TD
-    U["Private session start<br/>User unlocks mapping vault"] --> V[("Encrypted vault originals + keyed indexes<br/>Local libSQL storage")]
-    U --> I
-    I["Original messages + actual tool results"] --> H["Required hook<br/>Detect supported data and mask model view"]
-    V -. lookup / store .-> H
-    H --> M["Configured model API<br/>Recognized values masked"]
-    M -->|Reply| D["Restore committed display reply"]
-    D --> O["Terminal display"]
-    M -->|Supported data-file edit| B["Validate destination, whole before image<br/>and editable data fields"]
-    B --> F["Restore allowed data fields<br/>Validate final images + review + permission"]
-    F --> W["Actual file change + checkpoint"]
-    W --> I
-    M -->|Other tool call| N["Normal tool gate<br/>Aliases are not restored into arguments"]
-    N --> I
-    V -. restore .-> D
-    V -. restore .-> F
-    H -->|Required check fails| X["Stop required model work<br/>Preserve actual input and completed effects"]
-    B -->|Unsupported / stale| E["Refuse file call<br/>Record actual outcome"]
-    F -->|Refused| E
-    E --> I
-```
-
-**The password belongs to this prototype's mapping vault.** It unwraps the
-vault key at private-session startup; private `/clear` retires the old session
-and asks again. Model access uses your configured API keys. The vault encrypts
-stored originals and uses keyed lookup indexes; original messages, tool results,
-history and checkpoints keep their existing plaintext form. Workspace files
-keep their current contents. Only recognized supported values are masked;
-unrecognized content is sent as written. `craftsman privacy status` reports the
-local state, `craftsman privacy init` creates the key, `craftsman privacy
-enable --detector <id>` adds the policy to a user file that has none, and
-`craftsman privacy set <setting> <value>` changes one setting of a file that
-enables privacy; nothing is enabled without that explicit command or your own
-edit. Inside a private conversation `/model`, `/effort` and `/mode` change
-that setting: the conversation is retired, the password is asked again (a
-wrong one keeps the conversation and is asked again, three times at most), and
-its whole record is carried into a new vault scope of the same thread. A
-permission mode that writes files without asking is refused, at the start
-and as a change, and so is a model whose connection returns items that
-cannot be inspected. The
-private terminal is narrower than the ordinary one: read-only commands such
-as `/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs
-locally in the workspace the conversation was captured for, a background
-task can be cancelled, `/compact` summarizes and your extension commands
-send their prompt to the model; but there is no session resume, and
-provider setup, harness and agent selection are refused. Voice input is
-owned only in a build that has it. Its model cache is the `models`
-directory of the configuration root the conversation captured, which a
-voice start creates when it is missing and otherwise leaves alone unless
-you opted into the download; `/voice on` restarts a paused controller;
-and ending a dictation retires the controller, so the next start loads
-the model again. Its ownership and lifecycle were run in such a build
-without audio, and capture and transcription have never been run. See
-[private voice input and shell escape](docs/privacy-voice.md). This
-prototype has local test evidence
-only; it is not merged, installed or validated on hosted runners.
-Supported file restoration is limited to validated
-Contact data; shell commands, paths, source code and arbitrary MCP arguments
-are not restoration destinations. See [privacy development](docs/privacy-hooks.md)
-and [startup, status, init and enable](docs/privacy-startup.md).
-
-## Planned WASM enhancement
-
-Rust gadgets already run in Wasmtime. Work has resumed on a common sandbox for
-compatible **Python, JavaScript and TypeScript** skill/plugin scripts, followed
-by a file-change review layer. The session and model loop stay shared; the
-[script runner](docs/wasm-script-runner.md) is not yet shipped.
+Local commands and controls are answered in the terminal. A prompt enters the
+agent loop, which can repeat tool rounds before it answers.
 
 <details>
-<summary>Planned script sandbox — what changes</summary>
+<summary>Current flow, from your input to the response</summary>
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
+flowchart TD
+    Q["Your input"] --> R{"Local command<br/>or control?"}
+    R -->|Yes| C["Handled locally<br/>setup · pickers · status · shell escape"]
+    C --> O["Terminal"]
+    R -->|Prompt| P["Prepare the round<br/>instructions · history · tools<br/>context, compaction and stop checks"]
+    P --> H{"Privacy policy<br/>enabled?"}
+    H -->|No| M["Your configured model"]
+    H -->|"Yes, before every send"| K["Required privacy hook<br/>mask supported values · guard the request"]
+    K -->|Passes| M
+    K -->|Guard fails| X["Model work stops<br/>input and completed effects are kept"]
+    M -->|Tool calls| G{"Mode, permission<br/>and approval"}
+    G -->|"Native or MCP"| N["Host tools and configured MCP<br/>files · shell · web<br/>their own boundaries"]
+    G -->|Gadget| W["WASM gadget<br/>Wasmtime · approved capabilities"]
+    G -->|Refused| T["Record the actual result"]
+    N --> T
+    W --> T
+    T -->|Next round| P
+    M -->|Final answer| D["Show the reply<br/>originals restored for display<br/>when privacy is on"]
+    D --> S["Checkpoint attempt<br/>saved, or the failure is reported"]
+    X --> S
+    P -->|"Cancel, error or limit"| S
+    M -->|Request fails| S
+    S --> O
+    classDef wasm fill:#dcefee,stroke:#408b8b,color:#263238;
+    classDef optional stroke-dasharray: 5 5;
+    class W wasm;
+    class K optional;
+```
+
+- **Boundaries.** WASM contains gadget code. Native shell commands and MCP
+  servers keep their own execution and permission boundaries.
+- **Privacy.** With a policy enabled, the hook is required before every model
+  send. If its guard fails, the request is not sent.
+- **Saving.** A checkpoint is attempted as work completes. A save that fails
+  is reported as a failure, not shown as saved.
+
+Code: [submission routing](crates/craftsman-rs/src/tui/commands.rs) ·
+[session construction](crates/craftsman-rs/src/agent.rs) ·
+[agent loop](crates/craftsman-harness/src/agent.rs)
+
+</details>
+
+## Script sandbox: current and planned
+
+Rust gadgets already run in Wasmtime. A common sandbox for compatible
+**Python, JavaScript and TypeScript** scripts, with a review layer for their
+file changes, is planned. It is not shipped.
+
+<details>
+<summary>What differs between today and the plan</summary>
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"nodeSpacing":24,"rankSpacing":28,"wrappingWidth":230,"subGraphTitleMargin":{"top":14,"bottom":14}}}}%%
 flowchart TB
-    H["Same agent harness<br/>Query · model · context · history"]
+    H["Same agent harness<br/>query · model · context · history"]
 
     subgraph BEFORE["Current"]
-        B1["Inputs<br/>Host file tools or workspace gadget grants"]
-        B2["Execution<br/>Rust WASM gadgets or permitted host scripts"]
-        B3["Changes<br/>Existing tool permission checks"]
+        B1["Inputs<br/>host file tools, or files a gadget was granted"]
+        B2["Execution<br/>Rust gadgets in Wasmtime"]
+        B3["Changes<br/>the permission checks of each tool"]
         B1 --> B2 --> B3
     end
 
-    subgraph AFTER["Planned"]
-        A1["Inputs<br/>Automatic task-scoped snapshots"]
-        A2["Execution<br/>Reusable WASM interpreter + virtual /work"]
-        A3["Changes<br/>CRUD plan + batch review or scoped auto"]
+    subgraph AFTER["Planned, not shipped"]
+        A1["Inputs<br/>task-scoped snapshots"]
+        A2["Execution<br/>Python · JavaScript · TypeScript<br/>WASM interpreter + virtual /work"]
+        A3["Changes<br/>create, update and delete plan<br/>reviewed as a batch"]
         A1 --> A2 --> A3
     end
 
@@ -181,83 +149,63 @@ flowchart TB
     class A1,A2,A3 planned;
 ```
 
-- **Inputs:** Craftsman finds relevant files automatically and supplies scoped
-  snapshots, without a mandatory file picker.
-- **Changes:** scripts create, update and delete in a virtual `/work` overlay;
-  the host computes the change plan against retained original files.
-- **Approval:** review the whole batch once, or use a user-authorized scoped auto
-  policy. The host checks permissions and stale files before applying changes.
+- **Planned, not included today:** script interpreters in WASM, a virtual
+  `/work` for the files a script touches, and a create, update and delete
+  plan that is reviewed as a batch.
+- **Not part of the plan:** arbitrary native runtimes, package installers or
+  containers running inside the sandbox.
+- **Unchanged either way:** native shell commands and MCP connections keep
+  their own execution boundaries.
 
-Script/source approval remains separate. Native build/shell commands and MCP
-connections retain their own execution boundaries; the proposed script sandbox
-does not contain those host operations. See [current runtime details](docs/runtime-status.md).
+Scope and progress: [script runner](docs/wasm-script-runner.md).
 
 </details>
 
-## Built for your workflow
+## Privacy mode: experimental and opt-in
 
-- **Work in the terminal** — streaming replies, file edits, shell tools, planning
-  and persistent sessions.
-- **Choose your model** — provider-owned catalogs and per-model reasoning controls.
-- **Extend the agent** — reusable WASM gadgets and MCP server connections.
-- **Connect an editor** — standard ACP over stdio or a WebSocket bridge.
-- **Keep control** — permission modes, explicit gadget grants and local storage.
+Privacy mode is off unless your own user configuration enables a policy, and
+then it applies to the interactive `craftsman` start only. It keeps your
+original records locally and gives the model a separate masked view.
 
-The repository also includes the lightweight **`craftsman-harness`** Rust
-framework and the gadget SDK/macros for building your own integrations.
+- **Vault password.** Asked at startup, after `/clear`, and when you change
+  the model, effort or mode. The vault encrypts the original values and its
+  keyed lookup indexes. Local messages, history and checkpoints keep their
+  existing plaintext form.
+- **What is masked.** Supported email addresses and phone numbers. Anything
+  else is sent as written. A policy that declares further values to mask is
+  refused at start for now.
+- **What is restored.** The reply you read, and validated Contact data fields
+  in a supported file write. Shell commands, paths, source code and other
+  tool arguments are not restored.
+- **Restrictions.** It runs in the `manual` or `plan` permission mode, with a
+  model connection whose items can be inspected; others are refused.
+- **Voice.** In a build with voice input, cancelling a dictation retires the
+  voice controller, so the next start loads the model again. Finishing a
+  dictation normally keeps it.
 
-## Get started
+This is a prototype. It has been validated locally from source; hosted CI,
+merge and install are pending. It does not make all data private and is not
+supported on every model connection. Activation, commands and limits:
+[startup and commands](docs/privacy-startup.md) ·
+[hook design](docs/privacy-hooks.md) ·
+[send guard](docs/privacy-send.md) ·
+[voice and shell](docs/privacy-voice.md).
 
-Install Rust through rustup and CMake. Linux also needs ALSA development headers;
-see the [build guide](docs/production-readiness.md).
+## Documentation
 
-```sh
-git clone https://github.com/kaobei-alabo/craftsman-harness.git
-cd craftsman-harness
-rustup toolchain install --no-self-update
-./install.sh
-craftsman setup
-craftsman
-```
-
-The CLI command is `craftsman`. Run `./install.sh --upgrade` to update an older
-installation and remove its retired compatibility launcher.
-
-Configure your endpoint, API key and model using setup or the
-[example config](examples/config/multi-provider.json). Enable `gadgets.enabled`
-to use the gadget authoring tools and catalog. `/model` opens the grouped model
-catalog, then its effort picker; `/effort` adjusts the current model directly.
-
-For editor integrations, run `craftsman acp-serve`. Use `craftsman acp-bridge`
-when the client needs WebSocket transport.
-Compatible terminals can monitor work and approval waits through OSC 7501.
-
-Start Craftsman in the folder where you want to work. Git is optional;
-documents and folders containing several projects are supported too.
-
-## Explore
-
-[Gadget authoring](docs/gadgets.md) ·
-[Models and configuration](docs/provider-models.md) ·
-[Local state and connections](docs/connections.md) ·
-[File checkpoints and rewind](docs/workspace-checkpoints.md) ·
-[Long tasks and turn limits](docs/terminal-turn-limits.md) ·
-[Legacy one-shot output](docs/runtime-status.md#4-legacy-one-shot-versus-accepted-headless-v1) ·
-[Terminal lifecycle and recovery](docs/terminal-recovery.md) ·
-[Durable manual compaction](docs/terminal-compaction.md) ·
-[ACP integration](docs/acp.md) ·
-[Terminal status reporting](docs/terminal-status.md) ·
-[Architecture and current limits](docs/runtime-status.md) ·
-[Harness improvement progress](docs/harness-improvements.md) ·
-[Coding evaluations](docs/coding-evaluation.md) ·
-[Fresh evaluation preparation](docs/coding-evaluation-preparation.md) ·
-[Owned-terminal synthetic evaluation v2](docs/owned-terminal-evaluation.md) ·
-[Task workflow](docs/task-workflow.md) ·
-[Declared verification](docs/verification.md) ·
-[Task context](docs/context.md) ·
-[Failure controls](docs/failure-controls.md) ·
-[Privacy hook development](docs/privacy-hooks.md) ·
-[Private send guard](docs/privacy-send.md) ·
-[Development and native validation](docs/production-readiness.md)
+- **Use:** [gadgets](docs/gadgets.md) ·
+  [models and configuration](docs/provider-models.md) ·
+  [connections and local state](docs/connections.md) ·
+  [ACP](docs/acp.md) · [terminal status](docs/terminal-status.md)
+- **Long tasks:** [turn limits](docs/terminal-turn-limits.md) ·
+  [recovery](docs/terminal-recovery.md) ·
+  [compaction](docs/terminal-compaction.md) ·
+  [checkpoints and rewind](docs/workspace-checkpoints.md)
+- **Task quality:** [task workflow](docs/task-workflow.md) ·
+  [verification](docs/verification.md) · [context](docs/context.md) ·
+  [failure controls](docs/failure-controls.md)
+- **Project:** [architecture and current limits](docs/runtime-status.md) ·
+  [evaluations](docs/coding-evaluation.md) ·
+  [build and native validation](docs/production-readiness.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
