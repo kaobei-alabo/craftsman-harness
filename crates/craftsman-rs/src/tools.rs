@@ -171,6 +171,28 @@ pub async fn run_shell_escape(cmd: &str, settings: &ShellSettings) -> String {
     }
 }
 
+/// The executor of the `!cmd` escape for a frontend that holds a captured
+/// workspace: `cmd` runs in `cwd`, never in the process's current
+/// directory, under the cancellation `turn` it is given. The executor, the
+/// limit and the process handling are [`run_shell_escape`]'s. Its caller
+/// refuses an empty command and formats the result as that escape does,
+/// with [`ExecRaw::format`] and [`ExecFailure::text`].
+///
+/// This is the executor's own future, and the turn is an argument and not
+/// the task's entered one. The executor reads only the turn it is given, so
+/// that turn reaches the same refusal, process group, kill and drain as a
+/// turn entered around [`execute_impl`] would.
+#[cfg(unix)]
+pub(crate) fn execute_escape_in<'a>(
+    cmd: &'a str,
+    cwd: &'a Path,
+    settings: &'a ShellSettings,
+    turn: &'a craftsman_harness::TurnCancellation,
+) -> impl std::future::Future<Output = Result<ExecRaw, ExecFailure>> + 'a {
+    let limit = Duration::from_secs(settings.timeout_secs);
+    execute_impl_core(cmd, cwd, settings, limit, Some(turn))
+}
+
 /// The `execute` tool bound to a working directory and the `shell` settings:
 /// what the host `execute` tool calls, so the per-call `timeout` argument
 /// and the output format reach the process.
@@ -888,6 +910,56 @@ mod tests {
         assert!(out.contains("hi"));
         assert!(out.contains("err"));
         assert!(out.contains("[exit code 3]"));
+    }
+
+    /// The captured-directory executor runs the real shell in the directory
+    /// it is given, which here is not the process's own, and under the turn
+    /// it is given: a turn that was cancelled before the call spawns nothing
+    /// there. The ordinary escape still runs where the process is.
+    ///
+    /// It runs in every test mode. The two directories are compared as the
+    /// text the commands print, and each result is taken apart by the match
+    /// the private frontend uses, which names both outcomes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_captured_directory_executor_runs_in_that_directory_and_not_the_current_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let captured = dir.path().canonicalize().unwrap();
+        let settings = ShellSettings::default();
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let (there, here) = (
+            format!("{}\n", captured.display()),
+            format!("{}\n", here.display()),
+        );
+        assert_ne!(there, here);
+        let session = craftsman_harness::SessionCancellation::new();
+        let turn = session.new_turn();
+        let shown =
+            match execute_escape_in("pwd -P; echo err >&2; exit 3", &captured, &settings, &turn)
+                .await
+            {
+                Ok(mut raw) => raw.format(&settings).0,
+                Err(mut failure) => panic!("the executor did not run: {}", failure.text(&settings)),
+            };
+        assert_eq!(
+            shown,
+            format!("{there}\n--- stderr ---\nerr\n\n[exit code 3]")
+        );
+        assert_eq!(run_shell_escape("pwd -P", &settings).await, here);
+        turn.cancel();
+        let mut refused = match execute_escape_in("touch ran", &captured, &settings, &turn).await {
+            Err(refused) => refused,
+            Ok(mut raw) => panic!(
+                "the executor ran under a cancelled turn: {}",
+                raw.format(&settings).0
+            ),
+        };
+        assert!(matches!(refused, ExecFailure::Cancelled { partial: None }));
+        assert_eq!(
+            refused.text(&settings),
+            "Error: command cancelled by the user."
+        );
+        assert!(!captured.join("ran").exists());
     }
 
     #[tokio::test]

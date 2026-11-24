@@ -94,6 +94,14 @@ impl VoiceController {
     pub fn spawn(_config: VoiceConfig, _events: mpsc::UnboundedSender<VoiceEvent>) -> Self {
         Self
     }
+    /// The stub has no model cache; this keeps the voice module's shape.
+    pub(crate) fn spawn_with_model_root(
+        config: VoiceConfig,
+        events: mpsc::UnboundedSender<VoiceEvent>,
+        _root: PathBuf,
+    ) -> Self {
+        Self::spawn(config, events)
+    }
     pub fn start(&self) {}
     pub fn stop_and_finalize(&self) {}
     pub fn cancel_segment(&self) {}

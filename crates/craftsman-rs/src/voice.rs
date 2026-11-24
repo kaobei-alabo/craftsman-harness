@@ -38,6 +38,8 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_SESSION: Duration = Duration::from_secs(10 * 60);
 const MODEL_REVISION: &str = "5359861c739e955e79d9a303bcbc70fb988958b1";
 const MODEL_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve";
+/// The controller's answer to a missing model that it may not download.
+const MODEL_MISSING: &str = "The local voice model is missing. Set voice.allow_model_download to true in config.json to download it.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceConfig {
@@ -53,6 +55,11 @@ pub struct VoiceConfig {
     pub vad_silence_ms: u64,
     pub idle_timeout_ms: u64,
     pub max_session_minutes: u64,
+    /// The directory whose `models` entry is this controller's model cache,
+    /// when its owner gave one ([`VoiceController::spawn_with_model_root`]).
+    /// `None`, as every configuration is read: the ambient configuration
+    /// directory.
+    model_root: Option<PathBuf>,
 }
 
 impl VoiceConfig {
@@ -118,6 +125,7 @@ impl VoiceConfig {
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(DEFAULT_MAX_SESSION.as_secs() / 60)
                 .clamp(1, 60),
+            model_root: None,
         }
     }
 }
@@ -417,6 +425,20 @@ impl VoiceController {
         Self { tx, join }
     }
 
+    /// [`Self::spawn`] for an owner that holds its own configuration root:
+    /// the model cache is `<root>/models` and never the ambient configuration
+    /// directory, and without the download opt-in nothing that exists there
+    /// is renamed or removed ([`ensure_model_under`]). Every other part of
+    /// the controller is the one `spawn` starts.
+    pub(crate) fn spawn_with_model_root(
+        mut config: VoiceConfig,
+        events: mpsc::UnboundedSender<VoiceEvent>,
+        root: PathBuf,
+    ) -> Self {
+        config.model_root = Some(root);
+        Self::spawn(config, events)
+    }
+
     pub fn start(&self) {
         let _ = self.tx.send(ControllerCommand::Start);
     }
@@ -554,6 +576,35 @@ async fn ensure_model(
     ensure_model_in(&dir, spec, events, allow_model_download).await
 }
 
+/// The model of a controller whose owner gave it `root`, in `<root>/models`.
+///
+/// With the download opt-in this is [`ensure_model_in`] on that directory:
+/// the person asked for the cache to be filled and kept. Without it, a model
+/// file of the expected size is used and anything else is the controller's
+/// own missing-model answer: no partial download is hashed, promoted or
+/// removed, and no connection is made. The one effect is that the cache
+/// directory is created when it is missing, as the controller always did.
+async fn ensure_model_under(
+    root: &Path,
+    spec: ModelSpec,
+    events: &mpsc::UnboundedSender<VoiceEvent>,
+    allow_model_download: bool,
+) -> anyhow::Result<PathBuf> {
+    let dir = root.join("models");
+    if allow_model_download {
+        return ensure_model_in(&dir, spec, events, true).await;
+    }
+    tokio::fs::create_dir_all(&dir).await?;
+    let final_path = dir.join(spec.filename);
+    anyhow::ensure!(
+        tokio::fs::metadata(&final_path)
+            .await
+            .is_ok_and(|metadata| metadata.len() == spec.bytes),
+        MODEL_MISSING
+    );
+    Ok(final_path)
+}
+
 async fn ensure_model_in(
     dir: &Path,
     spec: ModelSpec,
@@ -587,10 +638,7 @@ async fn ensure_model_in(
         }
         let _ = tokio::fs::remove_file(&partial_path).await;
     }
-    anyhow::ensure!(
-        allow_model_download,
-        "The local voice model is missing. Set voice.allow_model_download to true in config.json to download it."
-    );
+    anyhow::ensure!(allow_model_download, MODEL_MISSING);
     let mut offset = tokio::fs::metadata(&partial_path)
         .await
         .map(|metadata| metadata.len().min(spec.bytes))
@@ -696,7 +744,10 @@ async fn get_engine(
     }
     let spec = model_spec(&config.model)
         .ok_or_else(|| anyhow::anyhow!("unknown voice model {}", config.model))?;
-    let path = ensure_model(spec, events, config.allow_model_download).await?;
+    let path = match &config.model_root {
+        Some(root) => ensure_model_under(root, spec, events, config.allow_model_download).await?,
+        None => ensure_model(spec, events, config.allow_model_download).await?,
+    };
     let _ = events.send(VoiceEvent::State(VoiceState::Initializing));
     let engine = Arc::new(WhisperEngine::load(path, config.partial_transcripts).await?);
     *guard = Some(engine.clone());
@@ -1486,6 +1537,84 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), controller.shutdown())
             .await
             .expect("voice controller should shut down promptly");
+    }
+
+    /// An owner's root. Without the download opt-in a complete-size partial
+    /// download there is neither promoted nor removed, where the ordinary
+    /// cache removes it before its opt-in check; a cached model is used as it
+    /// is. The real controller, started on an empty root, ends at its own
+    /// missing-model answer with nothing but the empty cache directory made,
+    /// and its shutdown returns only after every event sender is gone.
+    #[tokio::test]
+    async fn an_owner_root_keeps_its_cache_entries_without_the_download_opt_in() {
+        let root = tempfile::tempdir().unwrap();
+        let spec = ModelSpec {
+            name: "fixture",
+            filename: "fixture.bin",
+            bytes: 4,
+            sha256: "not-the-hash-of-these-bytes",
+        };
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let models = root.path().join("models");
+        std::fs::create_dir(&models).unwrap();
+        let partial = models.join("fixture.bin.part");
+        std::fs::write(&partial, b"part").unwrap();
+        let missing = ensure_model_under(root.path(), spec, &events, false)
+            .await
+            .unwrap_err();
+        assert_eq!(missing.to_string(), MODEL_MISSING);
+        assert_eq!(std::fs::read(&partial).unwrap(), b"part");
+        assert_eq!(std::fs::read_dir(&models).unwrap().count(), 1);
+        let ordinary = ensure_model_in(&models, spec, &events, false)
+            .await
+            .unwrap_err();
+        assert_eq!(ordinary.to_string(), MODEL_MISSING);
+        assert!(!partial.exists(), "the ordinary cache kept a wrong partial");
+        assert!(receiver.try_recv().is_err());
+        let cached = models.join(spec.filename);
+        std::fs::write(&cached, b"data").unwrap();
+        assert_eq!(
+            ensure_model_under(root.path(), spec, &events, false)
+                .await
+                .unwrap(),
+            cached
+        );
+        assert_eq!(std::fs::read(&cached).unwrap(), b"data");
+
+        let empty = tempfile::tempdir().unwrap();
+        let controller = VoiceController::spawn_with_model_root(
+            VoiceConfig::from_config(&Config::default()),
+            events,
+            empty.path().to_owned(),
+        );
+        controller.start();
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            let event = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                .await
+                .expect("the controller's own events should arrive")
+                .expect("the controller dropped its events early");
+            seen.push(match event {
+                VoiceEvent::State(state) => format!("{state:?}"),
+                VoiceEvent::Error(VoiceError::EngineFailed(detail)) => detail,
+                other => format!("{other:?}"),
+            });
+        }
+        assert_eq!(seen, ["Initializing", MODEL_MISSING, "Idle"]);
+        tokio::time::timeout(Duration::from_secs(10), controller.shutdown())
+            .await
+            .expect("voice controller should shut down promptly");
+        assert!(
+            receiver.try_recv().is_err() && receiver.is_closed(),
+            "an event sender outlived the controller's shutdown"
+        );
+        assert_eq!(
+            std::fs::read_dir(empty.path().join("models"))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 1);
     }
 
     #[test]
