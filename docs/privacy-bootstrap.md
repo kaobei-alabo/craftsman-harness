@@ -206,12 +206,13 @@ of the ordinary terminal. The router's early answers, the explicit commands,
 build admits the system text through the pinned detector, so a start without
 an installed and approved detector is refused by the build after the unlock.
 
-A built session holds a witness of its own build: what the builder accepted
-for each model lane, part and controller, what the view providers counted
-when they bound the conversation, and what the root agent's boundary has
-installed. The conversation accepts the session only when these agree with
-what was requested, and checks again at every issuance. Details and the
-retained first failures are in [privacy-startup.md](privacy-startup.md).
+A built session holds a witness of its own build: the original request by
+the identity of every owner it handed over, each model lane's provider by
+the receipt that provider issued when it bound the conversation's guard, and
+each composed part and installed prompt or sink by the object the builder
+made or installed. The conversation accepts the session only when these hold
+for the request that was made, and checks again at every issuance. Details,
+limits and the retained first failures are in [privacy-startup.md](privacy-startup.md).
 
 The ordinary macOS clear checks exercise actual owned PTYs, real key/KDF/vault,
 captured policy, approved source-built WASM and the shared Chat builder. Fresh

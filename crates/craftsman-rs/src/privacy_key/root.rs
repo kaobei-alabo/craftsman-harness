@@ -180,10 +180,12 @@ impl ConfigRoot {
     /// file, its source and the root's ancestors are checked again, and the
     /// staged file is renamed over `config.json`.
     ///
-    /// On any refusal the staging name is removed only while it still names
-    /// the created file. An entry that no longer does is left in place, and
-    /// the refusal says so with `true`. A leftover of that name is never
-    /// adopted or overwritten.
+    /// On any refusal before the rename the staging name is removed only
+    /// while it still names the created file. An entry that cannot be
+    /// confirmed as that file is left in place, and the refusal carries
+    /// [`STAGE_LEFT`]. A leftover of that name is never adopted or
+    /// overwritten. A failure after the rename carries [`WRITTEN`]: the file
+    /// was replaced, and what followed could not be verified.
     ///
     /// The checks before the rename are samples: another writer can still
     /// act between the last check and the rename. This is not a
@@ -194,31 +196,31 @@ impl ConfigRoot {
         lease: &FileLease,
         original: &[u8],
         candidate: &[u8],
-    ) -> std::result::Result<(), (KeyError, bool)> {
+    ) -> std::result::Result<(), (KeyError, u8)> {
         #[cfg(unix)]
         {
             use std::{io::Write, os::fd::AsRawFd};
             const STAGED: &str = "config.json.privacy-enable";
             if candidate.len() > CONFIG_LIMIT {
-                return Err((KeyError::Bounds, false));
+                return Err((KeyError::Bounds, UNCHANGED));
             }
             if let Err(error) = self.recheck() {
-                return Err((error, false));
+                return Err((error, UNCHANGED));
             }
             // The lease is of `config.json` in this root's own directory.
             let Some(directory) = self.ancestors.last() else {
-                return Err((KeyError::Root, false));
+                return Err((KeyError::Root, UNCHANGED));
             };
             let (Ok(held), Ok(leased)) = (directory.metadata(), lease.parent.metadata()) else {
-                return Err((KeyError::Io, false));
+                return Err((KeyError::Io, UNCHANGED));
             };
             if identity(&held) != identity(&leased) || lease.name.as_bytes() != b"config.json" {
-                return Err((KeyError::Changed, false));
+                return Err((KeyError::Changed, UNCHANGED));
             }
             let Ok(mut file) =
                 self.open_raw(STAGED, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)
             else {
-                return Err((KeyError::Io, false));
+                return Err((KeyError::Io, UNCHANGED));
             };
             let staged = Staged {
                 directory: directory.as_raw_fd(),
@@ -239,17 +241,20 @@ impl ConfigRoot {
                 },
             };
             match committed {
+                // The rename happened. Whatever fails from here on, the file
+                // was replaced: it is never reported as unchanged.
                 Ok(()) => match self.recheck() {
                     Ok(()) => Ok(()),
-                    Err(error) => Err((error, false)),
+                    Err(error) => Err((error, WRITTEN)),
                 },
-                Err(error) => Err((error, !staged.remove_own())),
+                Err(error) if staged.remove_own() => Err((error, UNCHANGED)),
+                Err(error) => Err((error, STAGE_LEFT)),
             }
         }
         #[cfg(not(unix))]
         {
             let _ = (lease, original, candidate);
-            Err((KeyError::SecureStorageUnsupported, false))
+            Err((KeyError::SecureStorageUnsupported, UNCHANGED))
         }
     }
 
@@ -490,6 +495,15 @@ impl ConfigRoot {
         Ok(lease)
     }
 }
+
+/// How far a refused replacement of the user file got. `UNCHANGED`: nothing
+/// was changed and nothing of this operation is left. `STAGE_LEFT`: nothing
+/// was changed, and the staging name could not be confirmed as the file this
+/// operation created, so that entry was left in place. `WRITTEN`: the file
+/// was replaced, and what followed could not be verified.
+pub(crate) const UNCHANGED: u8 = 0;
+pub(crate) const STAGE_LEFT: u8 = 1;
+pub(crate) const WRITTEN: u8 = 2;
 
 /// The staged entry of one replacement: the held directory, the fixed name
 /// and the identity of the file this operation created under it.

@@ -1606,19 +1606,28 @@ impl ConversationBoundary {
         let _ = self.replies.set(display);
     }
 
-    /// Whether a frontend's display, a file review, a verification adapter
-    /// and a controls adapter are installed here: the objects themselves.
+    /// The objects installed on this boundary, by address and zero where
+    /// there is none: the frontend's display of replies, the file review,
+    /// the live verification adapter and the live controls adapter.
     #[cfg(unix)]
-    pub(crate) fn shows_replies(&self) -> bool {
-        self.replies.get().is_some()
-    }
-    #[cfg(unix)]
-    pub(crate) fn reviews_files(&self) -> bool {
-        self.files.get().is_some()
-    }
-    #[cfg(unix)]
-    pub(crate) fn installed_controllers(&self) -> (bool, bool) {
-        self.controls.held()
+    pub(crate) fn installed(&self) -> [usize; 4] {
+        let replies = match self.replies.get() {
+            Some(display) => Arc::as_ptr(display) as usize,
+            None => 0,
+        };
+        let files = match self.files.get() {
+            Some(review) => Arc::as_ptr(review) as usize,
+            None => 0,
+        };
+        let verification = match self.controls.completion.get() {
+            Some(adapter) if adapter.strong_count() != 0 => adapter.as_ptr() as usize,
+            _ => 0,
+        };
+        let controls = match self.controls.policy.get() {
+            Some(adapter) if adapter.strong_count() != 0 => adapter.as_ptr() as usize,
+            _ => 0,
+        };
+        [replies, files, verification, controls]
     }
 
     /// Whether a string value of `args` holds a placeholder this

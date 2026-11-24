@@ -81,12 +81,58 @@ fn build_error(error: PrivateBuildError) -> PrivateTerminalError {
     }
 }
 
+/// Local work of this frontend that waits for its owner: a read-only listing
+/// or the person's own shell escape.
+enum LocalWork {
+    Listing(crate::tui::commands::Listing),
+    Shell(
+        String,
+        crate::shell::ShellSettings,
+        craftsman_harness::TurnCancellation,
+    ),
+}
+
+/// Runs local work for the conversation `owner`. The source is checked
+/// where the work runs and again before its result is published; a source
+/// that stopped gives the fixed line below and not the result. The shell
+/// runs inside its own cancellation turn.
+async fn local_work(work: LocalWork, owner: Arc<PrivateConversation>) -> Returned {
+    const STOPPED: &str = "The private source owner stopped; this local result is not shown.";
+    let before = owner.check_sources().is_ok();
+    match work {
+        LocalWork::Listing(listing) => {
+            if !before {
+                return Returned::Listing(Err(STOPPED.to_owned()));
+            }
+            let text = listing.text().await;
+            match owner.check_sources() {
+                Ok(()) => Returned::Listing(text),
+                Err(_) => Returned::Listing(Err(STOPPED.to_owned())),
+            }
+        }
+        LocalWork::Shell(command, settings, turn) => {
+            if !before {
+                return Returned::Operation(STOPPED.to_owned());
+            }
+            let output = turn
+                .scope(crate::tools::run_shell_escape(&command, &settings))
+                .await;
+            match owner.check_sources() {
+                Ok(()) => Returned::Operation(output),
+                Err(_) => Returned::Operation(STOPPED.to_owned()),
+            }
+        }
+    }
+}
+
 enum Returned {
     Turn(Result<craftsman_harness::TurnResult, PrivateTurnError>),
     Steer(String, Result<bool, PrivateTurnError>),
     Decision(Result<Option<craftsman_harness::TurnResult>, PrivateTurnError>),
     /// A read-only listing's text, or its error line.
     Listing(Result<String, String>),
+    /// The output of the person's own shell escape.
+    Operation(String),
 }
 
 pub(super) struct Frontend {
@@ -107,6 +153,16 @@ pub(super) struct Frontend {
     construction: Option<Construction>,
     work: JoinSet<Returned>,
     queued_blocked: bool,
+    /// Listings that were started and have not returned. They are local
+    /// work, not a model turn: the status reports them, and only their
+    /// actual return or the retirement ends them.
+    listings: usize,
+    /// The ordinary terminal's local voice owner while this frontend has
+    /// one: the controller, and the task that hands its events to this
+    /// frontend's own UI channel. Both are retired before any password
+    /// prompt and inside the retirement's 30-second bound.
+    #[cfg(feature = "voice")]
+    voice: Option<(crate::voice::VoiceController, tokio::task::JoinHandle<()>)>,
 }
 impl Frontend {
     pub(super) fn from_popup(
@@ -123,10 +179,14 @@ impl Frontend {
             if !popup.secret_reader {
                 return Err(PrivateTerminalError::Terminal);
             }
-            // Voice has no reviewed private acquisition adapter. Refuse the
-            // configured feature; never turn it off to get a smaller session.
+            // A captured startup in a build with voice input keeps the
+            // setting it asked for: this frontend owns the ordinary voice
+            // controller. Every other entry refuses a source that does not
+            // turn voice off; it is never turned off for the user.
             let cfg = configuration.source(&owner)?;
-            check_voice_configuration(cfg)?;
+            if !(cfg!(feature = "voice") && configuration.is_captured()) {
+                check_voice_configuration(cfg)?;
+            }
             popup
                 .input
                 .finish_input()
@@ -178,6 +238,9 @@ impl Frontend {
             construction: None,
             work: JoinSet::new(),
             queued_blocked: false,
+            listings: 0,
+            #[cfg(feature = "voice")]
+            voice: None,
         })
     }
 
@@ -273,7 +336,12 @@ impl Frontend {
             .popup
             .inner
             .guard
-            .report_program_status(self.app.current_program_status(pending), registry, pending)
+            .report_program_status(
+                self.app
+                    .current_program_status(pending || self.listings != 0),
+                registry,
+                pending,
+            )
             .is_err()
         {
             return Err(PrivateTerminalError::Terminal);
@@ -308,7 +376,11 @@ impl Frontend {
         }
     }
     fn input_event(&mut self, event: Event) -> bool {
-        if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press
+        // Without an owned voice controller the voice key is refused here.
+        // A captured startup in a build with voice input leaves the key to
+        // the ordinary input owner, which asks this frontend for the voice.
+        if !(cfg!(feature = "voice") && self.configuration.is_captured())
+            && matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press
             && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('g' | 'G')))
         {
@@ -385,17 +457,90 @@ impl Frontend {
             None if saving => self.refuse_save(),
             None => {}
         }
+        #[cfg(feature = "voice")]
+        if self.configuration.is_captured() {
+            self.voice_request();
+        }
         if self.app.voice_request.take().is_some() {
             self.app
                 .push_error("Voice input has no reviewed private adapter in this entry.");
         }
     }
+    /// What the ordinary input owner asks of the voice, done by the ordinary
+    /// local controller that this frontend owns. Its events go to this
+    /// frontend's own UI channel and from there to the ordinary handler, so
+    /// dictated text enters the same composer draft as typed text and is
+    /// submitted as the same private input. The settings are the captured
+    /// source's own; nothing is changed, downloaded or enabled beyond them.
+    #[cfg(feature = "voice")]
+    fn voice_request(&mut self) {
+        use crate::tui::input::VoiceRequest;
+        let Some(request) = self.app.voice_request.take() else {
+            return;
+        };
+        if matches!(request, VoiceRequest::Start) && self.voice.is_none() {
+            let owner = self.owner.clone();
+            let config = match self.configuration.source(&owner) {
+                Ok(cfg) => crate::voice::VoiceConfig::from_config(cfg),
+                Err(error) => {
+                    crate::tui::input::request_voice_cancel(&mut self.app);
+                    self.app.voice_request = None;
+                    self.app.push_error(error.to_string());
+                    return;
+                }
+            };
+            let (events, mut received) = mpsc::unbounded_channel();
+            let ui = self.bridge.tx.clone();
+            let forward = tokio::spawn(async move {
+                while let Some(event) = received.recv().await {
+                    if ui.send(UiEvent::Voice(event)).is_err() {
+                        break;
+                    }
+                }
+            });
+            self.voice = Some((
+                crate::voice::VoiceController::spawn(config, events),
+                forward,
+            ));
+        }
+        let Some((controller, _)) = &self.voice else {
+            return;
+        };
+        match request {
+            VoiceRequest::Start => controller.start(),
+            VoiceRequest::StopAndFinalize => controller.stop_and_finalize(),
+            VoiceRequest::CancelSegment => controller.cancel_segment(),
+            // The captured settings cannot change under this conversation,
+            // so there is nothing to recreate the controller for.
+            VoiceRequest::Cancel | VoiceRequest::Recreate => controller.cancel(),
+        }
+    }
+    /// Cancels and shuts the owned voice controller down for real and waits
+    /// for its event task. Called first in every retirement, so before any
+    /// password prompt of a fresh clear and inside the 30-second bound. The
+    /// controller's own shutdown stops capture and transcription.
+    #[cfg(feature = "voice")]
+    async fn retire_voice(&mut self) {
+        if let Some((controller, forward)) = self.voice.take() {
+            controller.cancel();
+            controller.shutdown().await;
+            let _ = forward.await;
+        }
+        crate::tui::input::request_voice_cancel(&mut self.app);
+        self.app.voice_request = None;
+    }
     /// The ordinary terminal's task cancellation, on this session's own
     /// registry and only through its bound owner. The lines are the ordinary
     /// ones; a refused owner says why.
     fn cancel_task(&mut self, name: &str) {
+        // The bound owner's own checks, then this session's registry. `true`
+        // is the registry accepting the abort of a running task; the task's
+        // own cleanup is awaited by the retirement, not here.
         let aborted = match self.built.as_ref() {
-            Some(built) => built.abort_background(name),
+            Some(built) => match built.task_owner() {
+                Ok(_) => Ok(built.session_for_terminal().registry.abort(name)),
+                Err(error) => Err(error),
+            },
             None => Ok(false),
         };
         match aborted {
@@ -408,6 +553,33 @@ impl Frontend {
             )),
             Err(error) => self.app.push_error(error.to_string()),
         }
+    }
+    /// The ordinary terminal's shell escape: the person's own command, run
+    /// locally by the ordinary runner with the captured configuration's
+    /// shell settings and its native limits, inside a turn of this
+    /// frontend's own cancellation. Its output is shown here. Neither the
+    /// command nor the output becomes model input or a record of the
+    /// conversation.
+    fn shell_escape(&mut self, command: String) {
+        if self.app.running {
+            self.app
+                .push_error("A shell escape waits for the running work; it was not executed.");
+            return;
+        }
+        let owner = self.owner.clone();
+        let settings = match self.configuration.source(&owner) {
+            Ok(cfg) => crate::shell::ShellSettings::from_config(cfg),
+            Err(error) => {
+                self.app.push_error(error.to_string());
+                return;
+            }
+        };
+        let turn = self.cancellation.new_turn();
+        self.app.running = true;
+        self.app.operation_cancellation = Some(turn.clone());
+        let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
+            Box::pin(local_work(LocalWork::Shell(command, settings, turn), owner));
+        self.work.spawn(future);
     }
     fn submission(&mut self) -> Option<(String, bool)> {
         if !std::mem::take(&mut self.app.submit_requested) {
@@ -472,23 +644,36 @@ impl Frontend {
                 }
                 // A listing that waits for its owner runs as a task of this
                 // frontend; its text arrives like any other returned work.
-                if let Some(session) = session
-                    && let Some(listing) = crate::tui::commands::Listing::of(control, session)
+                if let Some(built) = self.built.as_ref()
+                    && let Some(listing) = crate::tui::commands::Listing::of(
+                        control,
+                        built.session_for_terminal(),
+                        built.workspace(),
+                    )
                 {
-                    match listing {
-                        Ok(listing) => {
+                    // Only for this conversation's own bound session.
+                    match (built.task_owner(), listing) {
+                        (Err(error), _) => self.app.push_error(error.to_string()),
+                        (Ok(_), Err(unavailable)) => self.app.push(unavailable),
+                        (Ok(_), Ok(listing)) => {
                             let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
-                                Box::pin(async move { Returned::Listing(listing.text().await) });
+                                Box::pin(local_work(LocalWork::Listing(listing), owner.clone()));
                             self.work.spawn(future);
+                            self.listings += 1;
                         }
-                        Err(unavailable) => self.app.push(unavailable),
                     }
                     return false;
                 }
             }
         }
+        if let Some(command) = control.strip_prefix('!')
+            && self.configuration.is_captured()
+        {
+            self.shell_escape(command.trim().to_owned());
+            return false;
+        }
         if control.starts_with('/') || control.starts_with('!') {
-            // No normal settings/save/reopen/transfer/shell/extension adapter is
+            // No normal settings/save/reopen/transfer/extension adapter is
             // silently routed around the selected entry's actual source paths.
             self.app.push_error(
                 "This command has no reviewed private entry adapter; it was not executed.",
@@ -497,7 +682,7 @@ impl Frontend {
             self.queued_blocked = true;
             return false;
         }
-        if queue && self.app.running {
+        if (queue && self.app.running) || self.app.operation_cancellation.is_some() {
             self.app.queue_follow_up(typed);
             return false;
         }
@@ -559,8 +744,14 @@ impl Frontend {
             Returned::Decision(Ok(Some(result))) => self.finished(Ok(result)),
             Returned::Decision(Err(error)) => self.finished(Err(error)),
             Returned::Turn(result) => self.finished(result),
-            Returned::Listing(Ok(text)) => self.app.push(text),
-            Returned::Listing(Err(error)) => self.app.push_error(error),
+            Returned::Listing(text) => {
+                self.listings = self.listings.saturating_sub(1);
+                match text {
+                    Ok(text) => self.app.push(text),
+                    Err(error) => self.app.push_error(error),
+                }
+            }
+            Returned::Operation(output) => self.events(UiEvent::OperationFinished(output)),
         }
     }
     fn finished(&mut self, result: Result<craftsman_harness::TurnResult, PrivateTurnError>) {
@@ -659,6 +850,8 @@ impl Frontend {
         }
         tokio::time::timeout(Duration::from_secs(30), async {
             let mut failed = false;
+            #[cfg(feature = "voice")]
+            self.retire_voice().await;
             // A captured route's construction that had not returned when its
             // build ended. Its actual return is awaited here; nothing of it
             // is installed. A session that still materialized is shut down
@@ -870,6 +1063,14 @@ impl Drop for Frontend {
         self.app.closing = true;
         self.receiver.close();
         self.app.cancel_pending_prompts();
+        // An owned voice controller is told to cancel and its event task is
+        // aborted; nothing can be awaited here, and nothing is claimed about
+        // native capture that was still stopping.
+        #[cfg(feature = "voice")]
+        if let Some((controller, forward)) = self.voice.take() {
+            controller.cancel();
+            forward.abort();
+        }
         // JoinSet aborts only owned async waiters. It does not claim interrupted
         // native/blocking work or completed cleanup when this future is dropped.
         // A construction still in its slot is dropped here without any claim.

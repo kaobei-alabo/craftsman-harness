@@ -1612,6 +1612,10 @@ fn entry_conversation(script: Script, application: Option<&str>, review: &str, f
         terminal.wait_for("gopls");
         terminal.send(b"/diff\r");
         terminal.wait_for("workspace diff");
+        // The person's own shell escape runs locally through the ordinary
+        // runner; its output is shown and nothing of it reaches the model.
+        terminal.send(b"!printf local-%s-ok shell\r");
+        terminal.wait_for("local-shell-ok");
         // The agent picker is shown; choosing in it would be a settings
         // change. Escape closes it.
         terminal.send(b"/agents\r");

@@ -85,6 +85,7 @@ fn defaults_hold(
 /// `client` speaks. It is bound to the conversation's own guard like the
 /// root agent's provider. Each request it serves was composed for the lane
 /// of the agent that sent it, and a reply's receipt names that lane.
+#[cfg(test)]
 pub async fn delegated_provider(
     client: LlmClient,
     session: Arc<PrivacySession>,
@@ -105,6 +106,8 @@ pub struct ViewChatProvider {
     round_sink: Option<RoundSink>,
     status_sink: Option<ActivitySink>,
     defaults: AdmittedNode,
+    /// The receipt of this provider's binding of the conversation's guard.
+    pub(crate) receipt: Arc<super::WireReceipt>,
 }
 
 impl ViewChatProvider {
@@ -124,8 +127,13 @@ impl ViewChatProvider {
             .with_send_guard(session.send_guard())
             .map_err(SessionStop::Guard)?;
         let defaults = admitted_defaults(&session, &client.chat_request_defaults()).await?;
-        session.bound_wire(false);
         Ok(Self {
+            receipt: Arc::new(super::WireReceipt {
+                session: session.clone(),
+                guard: session.send_guard(),
+                native: false,
+                accepted: Default::default(),
+            }),
             client,
             session,
             usage,
@@ -223,6 +231,8 @@ pub struct ViewNativeProvider {
     defaults: AdmittedNode,
     /// Whether this provider serves the summarizer of the conversation.
     summaries: bool,
+    /// The receipt of this provider's binding of the conversation's guard.
+    pub(crate) receipt: Arc<super::WireReceipt>,
 }
 
 impl ViewNativeProvider {
@@ -246,8 +256,13 @@ impl ViewNativeProvider {
             .request_defaults()
             .map_err(|_| SessionStop::Unbound)?;
         let defaults = admitted_defaults(&session, &defaults).await?;
-        session.bound_wire(true);
         Ok(Self {
+            receipt: Arc::new(super::WireReceipt {
+                session: session.clone(),
+                guard: session.send_guard(),
+                native: true,
+                accepted: Default::default(),
+            }),
             client,
             session,
             usage,

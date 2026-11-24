@@ -663,66 +663,70 @@ async fn enter_captured(
         .await
 }
 
-pub(super) async fn run_captured_child() {
-    run_captured_entry_child(CONTACT_FILE).await;
-}
-pub(super) async fn run_captured_safe_child() {
-    run_captured_entry_child("delivered note").await;
-}
-pub(super) async fn run_captured_clear_child(cancelled: bool) {
-    let root = crate::config::config_dir();
-    let workspace = std::env::current_dir().unwrap();
-    let before = modes(0);
-    let user = std::fs::read(root.join("config.json")).unwrap();
-    let key = std::fs::read(root.join("privacy-key.v1")).unwrap();
-    let result = enter_captured(&workspace).await;
-    if cancelled {
-        assert!(matches!(
-            result,
-            Err(crate::tui::privacy_unlock::PrivateTerminalError::Source(
-                BootstrapError::Key(KeyError::Cancelled)
-            ))
-        ));
-    } else {
-        assert_eq!(result.unwrap(), 0);
-    }
-    let restored = modes(0);
-    assert_modes(&before, &restored);
-    assert_eq!(std::fs::read(root.join("config.json")).unwrap(), user);
-    assert_eq!(std::fs::read(root.join("privacy-key.v1")).unwrap(), key);
-    assert!(!workspace.join("answer.txt").exists());
-    assert!(root.join("threads.db").is_file());
-    let checkpoint = crate::checkpoints::LibsqlCheckpointer::open_for_workspace(&workspace)
-        .await
-        .unwrap();
-    let threads = checkpoint.list_threads().await.unwrap();
-    assert_eq!(threads.len(), if cancelled { 1 } else { 2 });
-    if !cancelled {
-        assert_ne!(threads[0].id, threads[1].id);
-    }
-    let mut actual_inputs = Vec::new();
-    for thread in &threads {
-        let (_, state, _) = checkpoint.load_latest(&thread.id).await.unwrap().unwrap();
-        assert_absent(&serde_json::to_vec(&state).unwrap());
-        let mut inputs = Vec::new();
-        for message in &state.messages {
-            if let Msg::User { content } = message {
-                if content.as_str() == TYPED || content.as_str() == FOLLOW {
-                    inputs.push(content.clone());
+/// The child of every captured case, as one future. The first block is the
+/// fresh-clear child and the rest is the entry child, each token for token
+/// as it stood in its own function. One future type for the three keeps
+/// the unit-test binary's unwind section smaller.
+pub(super) async fn run_captured(case: Case) {
+    if matches!(case, Case::CapturedClearEntry | Case::CapturedClearCancel) {
+        let cancelled = matches!(case, Case::CapturedClearCancel);
+        let root = crate::config::config_dir();
+        let workspace = std::env::current_dir().unwrap();
+        let before = modes(0);
+        let user = std::fs::read(root.join("config.json")).unwrap();
+        let key = std::fs::read(root.join("privacy-key.v1")).unwrap();
+        let result = enter_captured(&workspace).await;
+        if cancelled {
+            assert!(matches!(
+                result,
+                Err(crate::tui::privacy_unlock::PrivateTerminalError::Source(
+                    BootstrapError::Key(KeyError::Cancelled)
+                ))
+            ));
+        } else {
+            assert_eq!(result.unwrap(), 0);
+        }
+        let restored = modes(0);
+        assert_modes(&before, &restored);
+        assert_eq!(std::fs::read(root.join("config.json")).unwrap(), user);
+        assert_eq!(std::fs::read(root.join("privacy-key.v1")).unwrap(), key);
+        assert!(!workspace.join("answer.txt").exists());
+        assert!(root.join("threads.db").is_file());
+        let checkpoint = crate::checkpoints::LibsqlCheckpointer::open_for_workspace(&workspace)
+            .await
+            .unwrap();
+        let threads = checkpoint.list_threads().await.unwrap();
+        assert_eq!(threads.len(), if cancelled { 1 } else { 2 });
+        if !cancelled {
+            assert_ne!(threads[0].id, threads[1].id);
+        }
+        let mut actual_inputs = Vec::new();
+        for thread in &threads {
+            let (_, state, _) = checkpoint.load_latest(&thread.id).await.unwrap().unwrap();
+            assert_absent(&serde_json::to_vec(&state).unwrap());
+            let mut inputs = Vec::new();
+            for message in &state.messages {
+                if let Msg::User { content } = message {
+                    if content.as_str() == TYPED || content.as_str() == FOLLOW {
+                        inputs.push(content.clone());
+                    }
                 }
             }
+            actual_inputs.push(inputs);
         }
-        actual_inputs.push(inputs);
+        assert!(actual_inputs.contains(&vec![TYPED.to_owned()]));
+        if !cancelled {
+            assert!(actual_inputs.contains(&vec![FOLLOW.to_owned()]));
+        }
+        absent_secrets(&root);
+        eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
+        eprintln!("{COMPLETE}");
+        return;
     }
-    assert!(actual_inputs.contains(&vec![TYPED.to_owned()]));
-    if !cancelled {
-        assert!(actual_inputs.contains(&vec![FOLLOW.to_owned()]));
-    }
-    absent_secrets(&root);
-    eprintln!("PRIVATE-KEY-UI-RESTORED:{}", mode_data(&restored));
-    eprintln!("{COMPLETE}");
-}
-async fn run_captured_entry_child(expected_file: &str) {
+    let expected_file = match case {
+        Case::CapturedSafeEntry => "delivered note",
+        _ => CONTACT_FILE,
+    };
     // Called only AFTER the parent's exact registered argv decision. The
     // genuine owned user file is read here only to prove it is unchanged; the
     // entry takes its configuration from the captured source itself.
@@ -784,9 +788,22 @@ async fn run_captured_entry_child(expected_file: &str) {
     eprintln!("{COMPLETE}");
 }
 
-#[test]
-fn actual_captured_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
-    run_owned(Box::pin(async {
+/// Which captured case a run of [`captured_script`] is.
+#[derive(Clone, Copy)]
+enum Captured {
+    ClearReacquire,
+    ClearCancel,
+    ClearTypeAhead,
+    SafeEntry,
+    FullEntry,
+}
+
+/// The five captured cases as one future. Each block is that case's own
+/// script, line for line as it stood in its test; only one of them runs.
+/// One future type for all five keeps the unit-test binary's unwind section
+/// smaller than five separate ones did.
+async fn captured_script(script: Captured) {
+    if matches!(script, Captured::ClearReacquire) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ClearReplies(AtomicUsize::new(0)))
@@ -825,12 +842,9 @@ fn actual_captured_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thr
             let body = std::str::from_utf8(&request.body).unwrap();
             assert!(!body.contains("alice@example.invalid"));
         }
-    }));
-}
-
-#[test]
-fn actual_captured_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
-    run_owned(Box::pin(async {
+        return;
+    }
+    if matches!(script, Captured::ClearCancel) {
         for cancel in [b"\x1b".as_slice(), b"\x03".as_slice()] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
@@ -868,12 +882,9 @@ fn actual_captured_fresh_clear_cancellation_ends_the_old_owner_without_a_new_req
                     .contains("alice@example.invalid")
             );
         }
-    }));
-}
-
-#[test]
-fn actual_captured_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
-    run_owned(Box::pin(async {
+        return;
+    }
+    if matches!(script, Captured::ClearTypeAhead) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ClearReplies(AtomicUsize::new(0)))
@@ -918,12 +929,9 @@ fn actual_captured_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft(
                     .contains("alice@example.invalid")
             );
         }
-    }));
-}
-
-#[test]
-fn actual_captured_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
-    run_owned(Box::pin(async {
+        return;
+    }
+    if matches!(script, Captured::SafeEntry) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(SafeReplies(AtomicUsize::new(0)))
@@ -978,12 +986,9 @@ fn actual_captured_private_terminal_question_review_and_save_refusal_without_res
             assert!(!body.contains("+886 912 345 678"));
         }
         absent_secrets(&home.config);
-    }));
-}
-
-#[test]
-fn actual_captured_private_entry_owns_human_review_question_file_and_checkpoint_without_password() {
-    run_owned(Box::pin(async {
+        return;
+    }
+    if matches!(script, Captured::FullEntry) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ConversationReplies(AtomicUsize::new(0)))
@@ -1031,5 +1036,31 @@ fn actual_captured_private_entry_owns_human_review_question_file_and_checkpoint_
             assert!(!body.contains("+886 912 345 678"));
         }
         absent_secrets(&home.config);
-    }));
+        return;
+    }
+}
+
+#[test]
+fn actual_captured_fresh_clear_reacquires_owned_secret_and_rebuilds_with_new_thread() {
+    run_owned(Box::pin(captured_script(Captured::ClearReacquire)));
+}
+
+#[test]
+fn actual_captured_fresh_clear_cancellation_ends_the_old_owner_without_a_new_request() {
+    run_owned(Box::pin(captured_script(Captured::ClearCancel)));
+}
+
+#[test]
+fn actual_captured_fresh_clear_preserves_decoded_ordinary_type_ahead_as_a_draft() {
+    run_owned(Box::pin(captured_script(Captured::ClearTypeAhead)));
+}
+
+#[test]
+fn actual_captured_private_terminal_question_review_and_save_refusal_without_restoration_grant() {
+    run_owned(Box::pin(captured_script(Captured::SafeEntry)));
+}
+
+#[test]
+fn actual_captured_private_entry_owns_human_review_question_file_and_checkpoint_without_password() {
+    run_owned(Box::pin(captured_script(Captured::FullEntry)));
 }

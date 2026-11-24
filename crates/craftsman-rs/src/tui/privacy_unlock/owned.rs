@@ -70,7 +70,12 @@ impl FrontendConfiguration {
         match (self, captured) {
             (Self::Legacy(_), None) => Ok(()),
             (Self::Captured, Some(cfg)) => {
-                check_voice_configuration(cfg)?;
+                // A build with voice input owns the ordinary controller for
+                // a captured startup. A build without it refuses a source
+                // that asks for voice; the setting is never turned off.
+                if !cfg!(feature = "voice") {
+                    check_voice_configuration(cfg)?;
+                }
                 // The ordinary terminal refuses an invalid status setting
                 // before any effect; so does this one, before any key work.
                 match crate::tui::program_status::enabled(cfg) {

@@ -211,17 +211,17 @@ async fn private_key_ui_child(case: Case) {
     }
     #[cfg(feature = "gadgets")]
     if matches!(case, Case::CapturedFullEntry) {
-        entry_tests::run_captured_child().await;
+        entry_tests::run_captured(case).await;
         return;
     }
     #[cfg(feature = "gadgets")]
     if matches!(case, Case::CapturedSafeEntry) {
-        entry_tests::run_captured_safe_child().await;
+        entry_tests::run_captured(case).await;
         return;
     }
     #[cfg(feature = "gadgets")]
     if matches!(case, Case::CapturedClearEntry | Case::CapturedClearCancel) {
-        entry_tests::run_captured_clear_child(matches!(case, Case::CapturedClearCancel)).await;
+        entry_tests::run_captured(case).await;
         return;
     }
     // Every environment, path, configuration and terminal access is AFTER the

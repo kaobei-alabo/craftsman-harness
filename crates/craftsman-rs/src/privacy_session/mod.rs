@@ -58,7 +58,9 @@ pub use file_view::{
 pub use human::{
     HeldStream, HumanRefusal, HumanReply, HumanReplySink, HumanText, ReplyDisplay, Streamed,
 };
-pub use transport::{ViewChatProvider, ViewNativeProvider, delegated_provider};
+#[cfg(test)]
+pub use transport::delegated_provider;
+pub use transport::{ViewChatProvider, ViewNativeProvider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
     NativeReplay, PlannedOperation, ReceivedModel, SourceField,
@@ -282,14 +284,35 @@ pub enum BuildRefusal {
 }
 
 /// Where the session builder records why it refused a selection, and what
-/// it accepted for one where it accepted it. The builder's own result has
-/// room for neither.
+/// it accepted for one, at the place where it accepted each part. The
+/// builder's own result has room for neither.
+///
+/// What it accepted is recorded as the objects themselves: the receipt that
+/// each lane's view provider issued, the composed parts by the address of
+/// the object the builder made or installed, and the middleware it kept.
+/// Nothing here is a count, a name or a supported-feature flag.
 #[derive(Default)]
 pub struct SelectionReport {
     refusal: std::sync::Mutex<Option<BuildRefusal>>,
-    /// What the builder accepted, as the bits below. Each is set at the
-    /// place where the builder took that part, and never cleared.
-    accepted: std::sync::atomic::AtomicU32,
+    accepted: std::sync::Mutex<Accepted>,
+}
+
+#[derive(Default)]
+struct Accepted {
+    /// The original request as the builder held it before it consumed
+    /// anything of it. See `SessionExtras::original`.
+    request: Option<[usize; crate::agent::REQUEST_FACTS]>,
+    /// The receipt of each lane's view provider, kept weakly: the provider
+    /// that issued it holds it, and it is gone when that provider is.
+    lanes: [Option<std::sync::Weak<WireReceipt>>; 3],
+    /// The address of each composed part and installed owner, zero while
+    /// absent, in the order of [`ComposedPart`].
+    parts: [usize; COMPOSED_PARTS],
+    /// The builder decided about the controller adapters.
+    controllers: bool,
+    /// Every middleware the builder kept, after it found that each has a
+    /// source path.
+    middleware: Option<Vec<std::sync::Weak<dyn craftsman_harness::AgentMiddleware>>>,
 }
 
 /// The model lanes of a session: the root agent's, the delegated agents'
@@ -301,15 +324,72 @@ pub(crate) enum ModelLane {
     Summaries,
 }
 
-/// Bits of [`SelectionReport::accepted`]: a lane's view provider was
-/// accepted (bits 0 to 2) and speaks a native wire (bits 3 to 5); every
-/// installed part has a source path; the controller adapters were decided,
-/// and which of the two were installed.
-pub(crate) const ACCEPTED_NATIVE_SHIFT: u32 = 3;
-pub(crate) const ACCEPTED_PARTS: u32 = 1 << 6;
-pub(crate) const ACCEPTED_CONTROLLERS: u32 = 1 << 7;
-pub(crate) const ACCEPTED_VERIFICATION: u32 = 1 << 8;
-pub(crate) const ACCEPTED_CONTROLS: u32 = 1 << 9;
+/// What the builder composes or installs for a selection besides its
+/// providers. The first six are objects it makes; the others are the owners
+/// of the original request, recorded where the builder installs each.
+#[derive(Clone, Copy)]
+pub(crate) enum ComposedPart {
+    /// The frontend's display of committed replies.
+    ReplyDisplay,
+    /// The review of file writes and edits.
+    FileReview,
+    /// The adapter around the configured verification controller.
+    Verification,
+    /// The adapter around the configured context and failure controls.
+    Controls,
+    /// The verification controller that adapter was made for.
+    VerificationOriginal,
+    /// The context and failure controls that adapter was made for.
+    ControlsOriginal,
+    /// The prompt for private decisions.
+    PrivacyPrompt,
+    /// The prompt for ordinary approvals.
+    ApprovalPrompt,
+    /// The prompt for approvals of a single call.
+    CallPrompt,
+    /// Where activity lines go.
+    ActivitySink,
+    /// Where tool activity goes.
+    ToolActivitySink,
+    /// Where the display hands committed replies.
+    ReplySink,
+    /// The prompt for questions to the person.
+    AskPrompt,
+}
+pub(crate) const COMPOSED_PARTS: usize = 13;
+
+/// One thing the builder accepted, said at the place where it took it.
+pub(crate) enum Accept<'a> {
+    /// The original request, before anything of it was consumed.
+    Request([usize; crate::agent::REQUEST_FACTS]),
+    /// For this lane, the view provider that issued this receipt.
+    Lane(ModelLane, &'a Arc<WireReceipt>),
+    /// As this part, the object at this address, which the builder made or
+    /// installed.
+    Part(ComposedPart, usize),
+    /// The decision about the controller adapters; the installed ones are
+    /// said as parts.
+    Controllers,
+    /// Exactly these middleware, each with a source path.
+    Middleware(&'a [Arc<dyn craftsman_harness::AgentMiddleware>]),
+}
+
+/// Issued by a view provider when it has bound a conversation's guard: the
+/// receipt of that one binding. Only the two view providers make one, each
+/// in its constructor, and each keeps its own for as long as it lives,
+/// through every later wrapping. It holds the conversation and the very
+/// guard that provider's client was bound to, and says which of the two
+/// providers issued it: the native one sends back provider items that
+/// cannot be inspected. When the builder accepts the provider for a lane,
+/// the receipt is marked with that selection and lane.
+pub struct WireReceipt {
+    pub(super) session: Arc<PrivacySession>,
+    pub(super) guard: Arc<SendGuard>,
+    pub(super) native: bool,
+    /// The address of the selection's report that accepted this provider,
+    /// with the lane in its low bits; zero until then.
+    pub(super) accepted: std::sync::atomic::AtomicUsize,
+}
 
 impl SelectionReport {
     /// The first refusal the builder recorded, if it refused.
@@ -321,35 +401,138 @@ impl SelectionReport {
         self.refusal.lock().unwrap().get_or_insert(refusal);
     }
 
-    /// The builder accepted the view provider it composed for `lane`, which
-    /// speaks a native wire or not.
-    pub(crate) fn accept_lane(&self, lane: ModelLane, native: bool) {
-        let lane = lane as u32;
-        let bits = (1 << lane) | (u32::from(native) << (lane + ACCEPTED_NATIVE_SHIFT));
-        self.accepted.fetch_or(bits, Ordering::AcqRel);
-    }
-
-    /// The builder found that every installed part has a source path.
-    pub(crate) fn accept_parts(&self) {
-        self.accepted.fetch_or(ACCEPTED_PARTS, Ordering::AcqRel);
-    }
-
-    /// The builder installed these controller adapters, and no other.
-    pub(crate) fn accept_controllers(&self, verification: bool, controls: bool) {
-        let mut bits = ACCEPTED_CONTROLLERS;
-        if verification {
-            bits |= ACCEPTED_VERIFICATION;
+    /// The builder says what it accepted.
+    pub(crate) fn accept(&self, accepted: Accept<'_>) {
+        let mut record = self.accepted.lock().unwrap();
+        match accepted {
+            Accept::Request(request) => record.request = Some(request),
+            Accept::Lane(lane, receipt) => {
+                // The receipt itself now names this selection and lane.
+                receipt.accepted.store(
+                    self as *const Self as usize | lane as usize,
+                    Ordering::Release,
+                );
+                record.lanes[lane as usize] = Some(Arc::downgrade(receipt));
+            }
+            Accept::Part(part, address) => record.parts[part as usize] = address,
+            Accept::Controllers => record.controllers = true,
+            Accept::Middleware(kept) => {
+                let mut held = Vec::with_capacity(kept.len());
+                for entry in kept {
+                    held.push(Arc::downgrade(entry));
+                }
+                record.middleware = Some(held);
+            }
         }
-        if controls {
-            bits |= ACCEPTED_CONTROLS;
-        }
-        self.accepted.fetch_or(bits, Ordering::AcqRel);
     }
 
-    /// What was accepted so far, for the host that made the selection.
+    /// For the host that made the selection: what the builder accepted is
+    /// what `built` was built from, for the request that was made.
+    /// - **The request.** The builder built from the very request the host
+    ///   made (`request`), and installed that request's own prompts and
+    ///   sinks where it installs them.
+    /// - **The lanes.** The root agent's provider is alive. Its receipt, and
+    ///   that of every other lane still alive, holds this conversation and
+    ///   its guard and was accepted by this selection for that lane. None
+    ///   is native where the policy requires inspectable items. A lane whose
+    ///   provider is gone can send nothing.
+    /// - **The parts.** The display, the file review and the controller
+    ///   adapters are the objects the boundary holds; an adapter exists
+    ///   exactly for each controller the builder made, and those controllers
+    ///   are the built session's own.
+    /// - **The middleware.** Every kept middleware is still there and still
+    ///   states a source path itself.
     #[cfg(unix)]
-    pub(crate) fn accepted(&self) -> u32 {
-        self.accepted.load(Ordering::Acquire)
+    pub(crate) fn holds(
+        &self,
+        built: &crate::agent::Session,
+        session: &Arc<PrivacySession>,
+        inspectable: bool,
+        request: &[usize; crate::agent::REQUEST_FACTS],
+    ) -> Result<(), BuildRefusal> {
+        use craftsman_harness::provenance::ViewSupport;
+        let Some(view) = &built.privacy_view else {
+            return Err(BuildRefusal::RequestedPart);
+        };
+        let record = self.accepted.lock().unwrap();
+        let guard = session.send_guard();
+        let mut lane = 0;
+        while lane < record.lanes.len() {
+            let receipt = match &record.lanes[lane] {
+                Some(receipt) => receipt.upgrade(),
+                None => None,
+            };
+            match receipt {
+                Some(receipt) => {
+                    if !Arc::ptr_eq(&receipt.session, session)
+                        || !Arc::ptr_eq(&receipt.guard, &guard)
+                        || receipt.accepted.load(Ordering::Acquire)
+                            != (self as *const Self as usize | lane)
+                    {
+                        return Err(BuildRefusal::RequestedPart);
+                    }
+                    if inspectable && receipt.native {
+                        return Err(BuildRefusal::OpaqueProviderItems);
+                    }
+                }
+                None if lane == ModelLane::Main as usize => {
+                    return Err(BuildRefusal::RequestedPart);
+                }
+                None => {}
+            }
+            lane += 1;
+        }
+        let Some(kept) = &record.middleware else {
+            return Err(BuildRefusal::RequestedPart);
+        };
+        let mut index = 0;
+        while index < kept.len() {
+            let stated = match kept[index].upgrade() {
+                Some(entry) => matches!(
+                    entry.view_support(),
+                    ViewSupport::Preserving | ViewSupport::Tracked
+                ),
+                None => false,
+            };
+            if !stated {
+                return Err(BuildRefusal::RequestedPart);
+            }
+            index += 1;
+        }
+        let part = &record.parts;
+        let [replies, files, verification, controls] = view.boundary().installed();
+        let verifier = match &built.verification {
+            Some(controller) => Arc::as_ptr(controller) as usize,
+            None => 0,
+        };
+        let controller = match &built.controls {
+            Some(controller) => Arc::as_ptr(controller) as usize,
+            None => 0,
+        };
+        use crate::agent::request_fact as fact;
+        if record.request.as_ref() != Some(request)
+            || !record.controllers
+            || part[ComposedPart::ReplyDisplay as usize] != replies
+            || (replies != 0) != (request[fact::REPLY_SINK] != 0)
+            || part[ComposedPart::ReplySink as usize] != request[fact::REPLY_SINK]
+            || files == 0
+            || part[ComposedPart::FileReview as usize] != files
+            || part[ComposedPart::Verification as usize] != verification
+            || part[ComposedPart::Controls as usize] != controls
+            || part[ComposedPart::VerificationOriginal as usize] != verifier
+            || part[ComposedPart::ControlsOriginal as usize] != controller
+            || (verification != 0) != (verifier != 0)
+            || (controls != 0) != (controller != 0)
+            || part[ComposedPart::PrivacyPrompt as usize] != request[fact::PRIVACY_PROMPT]
+            || part[ComposedPart::ApprovalPrompt as usize] != request[fact::APPROVAL_PROMPT]
+            || part[ComposedPart::CallPrompt as usize] != request[fact::CALL_PROMPT]
+            || part[ComposedPart::ActivitySink as usize] != request[fact::ACTIVITY_SINK]
+            || part[ComposedPart::ToolActivitySink as usize] != request[fact::TOOL_ACTIVITY_SINK]
+            || part[ComposedPart::AskPrompt as usize] != request[fact::ASK_PROMPT]
+        {
+            return Err(BuildRefusal::RequestedPart);
+        }
+        Ok(())
     }
 }
 
@@ -441,23 +624,6 @@ impl CapturedUserPolicy for FixturePolicy {
     }
 }
 
-/// What one build composed for its conversation, read from the composed
-/// objects themselves: the view providers that bound this conversation's
-/// guard, by wire, and what the root agent's boundary has installed. It
-/// states facts about one session's real objects. It is no permission, and
-/// equal values of another session say nothing about this one.
-#[cfg(unix)]
-pub struct ComposedParts {
-    /// Chat wires carry text and calls only: everything sent can be inspected.
-    pub chat_wires: u32,
-    /// Native wires send back provider items that cannot be inspected.
-    pub native_wires: u32,
-    pub reply_display: bool,
-    pub file_review: bool,
-    pub verification: bool,
-    pub controls: bool,
-}
-
 /// The privacy conversation a session was built for, with the boundary its
 /// agent selected.
 pub struct PrivacyView {
@@ -503,21 +669,6 @@ impl PrivacyView {
 
     pub fn boundary(&self) -> &Arc<ConversationBoundary> {
         &self.boundary
-    }
-
-    /// What this view's own conversation and boundary hold now.
-    #[cfg(unix)]
-    pub(crate) fn composed(&self) -> ComposedParts {
-        let wires = &self.session.inner.wires;
-        let (verification, controls) = self.boundary.installed_controllers();
-        ComposedParts {
-            chat_wires: wires[0].load(Ordering::Acquire),
-            native_wires: wires[1].load(Ordering::Acquire),
-            reply_display: self.boundary.shows_replies(),
-            file_review: self.boundary.reviews_files(),
-            verification,
-            controls,
-        }
     }
 }
 
@@ -697,9 +848,6 @@ struct Inner {
     operation: tokio::sync::Mutex<Ledger>,
     slots: tokio::sync::Semaphore,
     stopped: AtomicBool,
-    /// The view providers that bound this conversation's guard, counted by
-    /// their own constructors: Chat wires, then native wires.
-    wires: [std::sync::atomic::AtomicU32; 2],
     // The most recent actual map return survives a late admission stop. It is
     // private retention, never a model node or permission to resolve a value.
     last_map_commit: std::sync::Mutex<Option<Arc<MaskedText>>>,
@@ -790,7 +938,6 @@ impl PrivacySession {
                 operation: tokio::sync::Mutex::new(Ledger { known: Vec::new() }),
                 slots: tokio::sync::Semaphore::new(ADMISSION_SLOTS),
                 stopped: AtomicBool::new(false),
-                wires: Default::default(),
                 last_map_commit: std::sync::Mutex::new(None),
                 bound: AtomicBool::new(false),
                 agent_owner: std::sync::Mutex::new(None),
@@ -816,12 +963,6 @@ impl PrivacySession {
     /// The guard every model client of this conversation must be bound to.
     pub fn send_guard(&self) -> Arc<SendGuard> {
         self.inner.guard.clone()
-    }
-
-    /// A view provider says, when it has bound this conversation's guard,
-    /// which wire it speaks. Only the two view providers call this.
-    pub(crate) fn bound_wire(&self, native: bool) {
-        self.inner.wires[usize::from(native)].fetch_add(1, Ordering::AcqRel);
     }
 
     pub fn check(&self) -> Result<(), SessionStop> {

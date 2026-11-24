@@ -258,14 +258,21 @@ pub(super) enum Listing {
     Lsp(Arc<crate::lsp::LspManager>),
     #[cfg(feature = "gadgets")]
     Gadgets(Arc<crate::gadgets::GadgetRuntime>),
-    Diff,
+    /// The diff of this workspace; of the current directory when none is
+    /// given, as the ordinary terminal asks.
+    Diff(Option<std::path::PathBuf>),
 }
 impl Listing {
     /// The listing that `line` names, with its owner taken from this live
-    /// session. `None`: the line is not one. An `Err` is what the ordinary
-    /// terminal says when that owner is not there.
+    /// session and, for the diff, the caller's own captured workspace.
+    /// `None`: the line is not one. An `Err` is what the ordinary terminal
+    /// says when that owner is not there.
     #[cfg(unix)]
-    pub(super) fn of(line: &str, session: &Session) -> Option<Result<Self, &'static str>> {
+    pub(super) fn of(
+        line: &str,
+        session: &Session,
+        workspace: &std::path::Path,
+    ) -> Option<Result<Self, &'static str>> {
         Some(match line {
             "/checkpoints" => match &session.workspace_checkpoints {
                 Some(workspace) => Ok(Self::Checkpoints(workspace.clone())),
@@ -281,7 +288,7 @@ impl Listing {
                 Some(runtime) => Ok(Self::Gadgets(runtime.clone())),
                 None => Err("(no gadget runtime in this session)"),
             },
-            "/diff" => Ok(Self::Diff),
+            "/diff" => Ok(Self::Diff(Some(workspace.to_path_buf()))),
             _ => return None,
         })
     }
@@ -370,9 +377,12 @@ impl Listing {
                     .join("\n")),
                 Err(error) => Ok(format!("could not list gadgets: {error}")),
             },
-            Self::Diff => crate::util::spawn_blocking(crate::workspace_diff::workspace_diff)
-                .await
-                .map_err(|error| format!("Unable to show workspace diff: {error}")),
+            Self::Diff(workspace) => crate::util::spawn_blocking(move || match workspace {
+                Some(workspace) => crate::workspace_diff::workspace_diff_at(&workspace),
+                None => crate::workspace_diff::workspace_diff(),
+            })
+            .await
+            .map_err(|error| format!("Unable to show workspace diff: {error}")),
         }
     }
 }
@@ -580,7 +590,7 @@ pub(super) async fn handle_slash(
             app.push_kind(TranscriptKind::Activity, "Generating workspace diff…");
             let tx = slot.bridge.tx.clone();
             crate::util::spawn_unit(async move {
-                let (Ok(text) | Err(text)) = Listing::Diff.text().await;
+                let (Ok(text) | Err(text)) = Listing::Diff(None).text().await;
                 let _ = tx.send(UiEvent::Activity(text));
             });
         }

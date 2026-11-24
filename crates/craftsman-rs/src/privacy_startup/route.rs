@@ -81,11 +81,16 @@ impl From<BootstrapError> for PrivateTerminalError {
     }
 }
 
+/// A build without voice input refuses a source that does not turn voice
+/// off: the setting it asks for could not be honoured, and it is never
+/// turned off for the user. A build with voice input keeps the setting; the
+/// private terminal owns the ordinary voice controller.
 fn require_voice_off(configuration: &crate::config::Config) -> Result<()> {
-    if configuration
-        .voice_setting("enabled")
-        .and_then(serde_json::Value::as_bool)
-        == Some(false)
+    if cfg!(feature = "voice")
+        || configuration
+            .voice_setting("enabled")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
     {
         Ok(())
     } else {
@@ -195,12 +200,18 @@ pub(crate) async fn enable(
     validate(original, &candidate)?;
     match root.replace_user_config(lease, original, &candidate) {
         Ok(()) => {}
-        // The staging name stopped being this command's own file.
-        Err((_, true)) => return Err(StartupError::StagedLeftover.into()),
-        Err((crate::privacy_key::KeyError::Changed, false)) => {
+        // The file was replaced; what followed could not be verified.
+        Err((_, crate::privacy_key::root::WRITTEN)) => {
+            return Err(StartupError::WrittenThenChanged.into());
+        }
+        // Nothing was replaced, and the staging entry was left in place.
+        Err((_, crate::privacy_key::root::STAGE_LEFT)) => {
+            return Err(StartupError::StagedLeftover.into());
+        }
+        Err((crate::privacy_key::KeyError::Changed, _)) => {
             return Err(StartupError::Source.into());
         }
-        Err((error, false)) => return Err(BootstrapError::Key(error).into()),
+        Err((error, _)) => return Err(BootstrapError::Key(error).into()),
     }
     drop(source);
     // Read back: the actual user file now is the candidate and proposes it.

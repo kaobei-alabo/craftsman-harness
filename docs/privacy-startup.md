@@ -159,30 +159,43 @@ conversation of the startup, including the ones a fresh clear builds, so
 nothing about one built session is stored there.
 
 Readiness of a build belongs to that actual bound session, which holds a
-**build witness**. The witness joins three records of the same build, each
-made by the object that did the work:
+**build witness**. Every entry of it is an object of this build. None is a
+count, a name or a supported-feature flag.
 
-- **What the builder accepted, where it accepted it.** In the selection's own
-  report the shared builder marks each model lane whose view provider it
-  took (the root agent's, the delegated agents', the summarizer's) with its
-  wire, that every installed part has a source path, and which controller
-  adapters it installed.
-- **What the view providers counted.** Each provider says which wire it
-  speaks when it binds this conversation's guard.
-- **What the root agent's boundary has installed:** the reply display, the
-  file review and the controller adapters.
+- **The original request.** Before the frontend hands its request to the
+  builder, the conversation takes it down: every prompt, sink and owner by
+  the address of that very object, and every choice as it is. The builder
+  takes the same down before it consumes anything. The two must be equal.
+- **Each model lane's provider.** A view provider issues a receipt inside its
+  constructor, when it binds the conversation's guard, and keeps it through
+  every later wrapping. The receipt holds that conversation and that guard
+  and says which of the two providers issued it. Where the builder takes the
+  provider for a lane, before the framework gets it, it records the receipt
+  and the receipt is marked with this selection and lane.
+- **Each composed part and installed owner.** The builder records the
+  address of the reply display, the file review, the controllers it made and
+  their adapters, and of the prompts and sinks at the place where it installs
+  them.
+- **Every middleware it kept**, after it found that each has a source path.
 
-The conversation accepts a built session only when these agree with each
-other and with what was requested: the root lane was accepted; the accepted
-lanes are as many, and as many native, as the providers that bound this
-conversation; the reply display the frontend asked for, the file review and
-exactly the configured controllers are installed; and no wire is native,
-because the policy requires that everything sent can be inspected. A build
-that fails this is shut down for real and refused with the builder's own
+The conversation accepts a built session only when all of this holds:
+
+- the root agent's provider is alive, and its receipt and that of every other
+  lane still alive holds this conversation and its guard and carries this
+  selection and that lane; none is the native provider, because the policy
+  requires that everything sent can be inspected;
+- the display, the file review and the adapters are the very objects the
+  root agent's boundary holds; an adapter exists exactly for each controller
+  the builder made, and those controllers are the built session's own;
+- the installed decision prompt, approval prompts, question prompt, activity
+  sinks and reply sink are the request's own objects;
+- every kept middleware is still there and still states a source path.
+
+A build that fails is shut down for real and refused with the builder's own
 words. `PrivateBuiltSession::task_owner` checks the same again, with the
 thread, view and send guard, each time it issues a turn, a steering input, a
-decision or a task cancellation. A fresh clear makes a new selection and
-session, which get their own witness.
+decision, a listing or a task cancellation. A fresh clear makes a new
+selection and session, which get their own witness.
 
 So **no model turn or effect is submitted before this startup's own bound
 session exists**. Prompts and drafts that the build itself needs are not held
@@ -190,13 +203,46 @@ back, and the password prompt comes earlier still. Creating the pinned
 detector is not source consent; each call's own check of the stored approval
 remains the gate.
 
-**Limit of the witness:** it does not keep the provider objects themselves.
-The framework does not hand an agent's provider back, so their identity
-cannot be compared later; the lanes are counted on both sides instead.
+**Limits of the witness.**
 
-Not implemented, and refused when a startup requests it: voice input, and a
-model wire whose provider items cannot be inspected. Neither is turned off or
-downgraded, and neither is recorded as ready.
+- The request's choices (round limits, workflow, memory, verification,
+  context, failure controls, gadget and workspace options) are compared
+  between host and builder, but no choice is traced to the single part it
+  produces. The kept middleware are witnessed as objects, not by choice.
+- The token and round sinks and the extra tools are compared in the
+  request; where they are installed is not recorded. In a privacy
+  conversation the main stream goes to the reply display instead.
+- The controller adapters are compared by object with what the boundary
+  holds. The framework's own binding check of them runs when the agent is
+  bound; it is not run again at issuance.
+- A lane whose provider is gone is not a refusal: it can send nothing.
+
+Not implemented, and refused when a startup requests it: a model wire whose
+provider items cannot be inspected. It is never downgraded or recorded as
+ready.
+
+### Voice input
+
+A build with voice input keeps the voice setting a captured startup asks for.
+The private terminal then owns the ordinary local voice controller.
+
+- It is started on the person's request, from the captured configuration.
+- Its events go to this frontend's own UI channel and from there to the
+  ordinary handler: dictated text enters the same composer draft as typed
+  text and is submitted as the same private input.
+- It is cancelled and shut down for real first in every retirement, so
+  before the password prompt of a fresh clear and inside the 30-second bound.
+  Its event task is awaited there.
+- A dropped frontend tells it to cancel and aborts its event task; nothing
+  can be awaited there, and nothing is claimed about capture that was still
+  stopping.
+
+A build without voice input refuses a source that does not set
+`voice.enabled:false`: the setting could not be honoured, and it is never
+turned off for the user. `enable` and the status follow the same rule.
+
+**Not validated:** no test mode compiles the voice controller, so the
+adapter is type-checked only. It has never run with a microphone or a model.
 
 ### The private terminal
 
@@ -213,20 +259,41 @@ runs, the terminal does the following.
   A listing that waits for its owner runs as a task of the frontend and its
   text arrives as returned work. Nothing is saved, started or sent to a
   model, and the line never becomes model input.
-- **A running background task is cancelled for real**, with `/tasks cancel
-  <name>` or from the task list. The cancellation goes to this session's own
-  registry through the bound owner's checks, and the line shown is the
-  registry's own answer.
+- **A running background task is cancelled**, with `/tasks cancel <name>` or
+  from the task list. The cancellation goes to this session's own registry
+  after the bound owner's checks. The line shown means the registry accepted
+  the abort of a running task; the task's own cleanup is awaited by the
+  retirement.
+- **A shell escape runs.** `!command` is the person's own command, run
+  locally by the ordinary runner with the captured configuration's shell
+  settings and native limits, inside a cancellation turn of this frontend.
+  Its output is shown. Neither command nor output becomes model input or a
+  record of the conversation.
+- **Local work is owned.** A listing and a shell escape run as one kind of
+  task of the frontend. Each checks the conversation's source where it runs
+  and again before its result is shown; a source that stopped gives a fixed
+  line instead. The diff is of the conversation's captured workspace.
+  Pending listings are reported in the status as work until they actually
+  return.
 - **Controls are classified on one trimmed view.** Leading spaces do not turn
   a control into a prompt. A refused control keeps the raw line in the queue;
   only a new prompt, not another control, lets the queue be tried again.
 - **Settings changes are refused** before any mutation: permission mode,
-  model, effort, harness, agent, voice model and provider setup. The captured
-  source is not rewritten under a live conversation, and no retirement,
-  recapture and rebuild path exists for them yet. Actions that are not saves
-  get their own refusal.
-- **Not executed:** shell escapes, extension commands, `/compact`, `/rewind`,
-  `/session`, `/model`, `/effort`, `/mode`, `/harness`, `/voice`, `/setup`,
+  model, effort, harness, agent, voice model and provider setup. Actions
+  that are not saves get their own refusal. A settings change would need
+  three things that do not exist yet:
+  - a validated writer that replaces one existing member of the user file
+    and keeps every other byte (`enable` can only add a member);
+  - an adoption of the retired conversation's committed record by the
+    freshly unlocked one: every message is bound to its own source in the
+    old conversation's vault scope, and a conversation is never rebound;
+  - a carry-over of files, todos, custom state and usage with it, without
+    replaying any model, tool or hook work.
+  Until then the captured source is not rewritten under a live
+  conversation, and a fresh clear remains the only rebuild: it starts a new
+  conversation and keeps no history.
+- **Not executed:** extension commands, `/compact`, `/rewind`, `/session`,
+  `/model`, `/effort`, `/mode`, `/harness`, `/voice`, `/setup`,
   `/tasks message`, `/lsp restart`, and `/agents <name>`.
 - **Fixed-text OSC 7501 status** is reported with the ordinary change-only
   reporter, unless `terminal.osc7501` is false. Only fixed states and
@@ -288,11 +355,11 @@ user file. Its explicit invocation is the authorization of that one change.
   file, its source and the root's ancestors are checked again, and the staged
   file is renamed over `config.json`. The file is then read back.
 - **Refusals.** A leftover with the staging name is never adopted,
-  overwritten or removed. After a refusal the staging name is removed only
-  while it still names the created file; an entry that no longer does is
-  left in place and the command says so. A file that reads differently after
-  the write is reported as changed after the write; nothing is restored over
-  it.
+  overwritten or removed. After a refusal before the rename the staging name
+  is removed only while it still names the created file; an entry that
+  cannot be confirmed as that file is left in place and the command says so.
+  Every failure after the rename is reported as written and then changed or
+  unverifiable, never as unchanged; nothing is restored over the file.
 - **Limits.** The checks before the rename are samples. Another writer can
   still act between the last check and the rename: this is not a
   cross-process compare-and-swap, and no power-loss durability is claimed.
@@ -358,13 +425,17 @@ missed every stage after the password in the inherited screen reader; an
 inherited case asserts the capture's `Invalid` answer for an unparsable file,
 so a line-and-column answer was withdrawn.
 
-The gadget test binary's unwind section is 16,775,056 bytes, 2,160 under
-the unchanged 16,777,216-byte limit, with no linker warning.
+The gadget test binary's unwind section is 16,776,464 bytes, 752 under
+the unchanged 16,777,216-byte limit, with no linker warning. The five
+captured cases' scripts and their three child functions are each folded into
+one future, token for token, which is where the room for the witness came
+from.
 
 Not covered: a build whose witness disagrees, a stale or foreign binding at
-issuance, cancellation of a task that is actually running, the staging
-entry's removal and leftover report after a refusal past its creation, a file
-changed after the write, non-default permission options and an Always effect
+issuance, cancellation of a task that is actually running, the voice adapter
+in any run, a cancelled shell escape, the staging entry's removal and
+leftover report after a refusal past its creation, a failure after the
+rename, non-default permission options and an Always effect
 through the terminal, the terminal entry's own refusals, a mouse event,
 `/context`, `/doctor`, `/config`, `/tokens`, `/queue`, `/copy`, `/editor` and
 `/help` through a terminal, Linux and Windows, and a captured construction

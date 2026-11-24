@@ -1177,6 +1177,101 @@ pub struct SessionExtras {
     pub workspace_root: Option<PathBuf>,
 }
 
+/// How many facts [`SessionExtras::original`] states.
+pub(crate) const REQUEST_FACTS: usize = 14;
+/// Where each fact of [`SessionExtras::original`] is.
+pub(crate) mod request_fact {
+    pub(crate) const PRIVACY_PROMPT: usize = 0;
+    pub(crate) const REPLY_SINK: usize = 1;
+    pub(crate) const TOKEN_SINK: usize = 2;
+    pub(crate) const ROUND_SINK: usize = 3;
+    pub(crate) const ACTIVITY_SINK: usize = 4;
+    pub(crate) const TOOL_ACTIVITY_SINK: usize = 5;
+    pub(crate) const APPROVAL_PROMPT: usize = 6;
+    pub(crate) const CALL_PROMPT: usize = 7;
+    pub(crate) const ASK_PROMPT: usize = 8;
+    pub(crate) const OUTPUT_CLOSED: usize = 9;
+    pub(crate) const CHOICES: usize = 10;
+    pub(crate) const EXTRA_TOOLS: usize = 11;
+    pub(crate) const EXTRA_TOOL_IDENTITIES: usize = 12;
+    #[cfg(feature = "gadgets")]
+    pub(crate) const ALLOWED_GADGETS: usize = 13;
+}
+
+/// The address of the object an optional owner hands over, zero for none.
+macro_rules! owner_address {
+    ($owner:expr) => {
+        match $owner {
+            Some(owner) => &**owner as *const _ as *const () as usize,
+            None => 0,
+        }
+    };
+}
+
+impl SessionExtras {
+    /// This request as it was made: every owner it hands over by the address
+    /// of that very object, zero where it hands none, and every choice as it
+    /// is. The host of a privacy conversation takes it before it calls the
+    /// builder, and the builder before it consumes anything; the selection
+    /// itself is not part of it. It grants nothing: it only lets the two be
+    /// compared, and each owner be compared with what was installed.
+    pub(crate) fn original(&self) -> [usize; REQUEST_FACTS] {
+        use request_fact as fact;
+        let mut facts = [0; REQUEST_FACTS];
+        facts[fact::PRIVACY_PROMPT] = owner_address!(&self.privacy_approval_prompt);
+        facts[fact::REPLY_SINK] = owner_address!(&self.human_reply_sink);
+        facts[fact::TOKEN_SINK] = owner_address!(&self.token_sink);
+        facts[fact::ROUND_SINK] = owner_address!(&self.round_sink);
+        facts[fact::ACTIVITY_SINK] = owner_address!(&self.activity_sink);
+        facts[fact::TOOL_ACTIVITY_SINK] = owner_address!(&self.tool_activity_sink);
+        facts[fact::APPROVAL_PROMPT] = owner_address!(&self.approval_prompt);
+        facts[fact::CALL_PROMPT] = owner_address!(&self.call_approval_prompt);
+        facts[fact::ASK_PROMPT] = owner_address!(&self.ask_user_prompt);
+        facts[fact::OUTPUT_CLOSED] = owner_address!(&self.output_closed);
+        #[cfg(feature = "gadgets")]
+        let gadgets = [
+            self.local_gadgets,
+            self.trust_workspace,
+            self.script_capture.is_some(),
+        ];
+        #[cfg(not(feature = "gadgets"))]
+        let gadgets = [false; 3];
+        let choices = [
+            self.interrupt_model_on_cancel,
+            self.terminal_round_limits,
+            self.task_focused_memory,
+            self.task_workflow,
+            self.verification,
+            self.context_compilation,
+            self.failure_controls,
+            self.cancellation_session.is_some(),
+            self.output_guard.is_some(),
+            self.send_guard.is_some(),
+            self.workspace_root.is_some(),
+            gadgets[0],
+            gadgets[1],
+            gadgets[2],
+        ];
+        let mut bit = 0;
+        while bit < choices.len() {
+            facts[fact::CHOICES] |= usize::from(choices[bit]) << bit;
+            bit += 1;
+        }
+        facts[fact::EXTRA_TOOLS] = self.extra_tools.len();
+        let mut tool = 0;
+        while tool < self.extra_tools.len() {
+            facts[fact::EXTRA_TOOL_IDENTITIES] = facts[fact::EXTRA_TOOL_IDENTITIES]
+                .wrapping_add(&*self.extra_tools[tool] as *const _ as *const () as usize);
+            tool += 1;
+        }
+        #[cfg(feature = "gadgets")]
+        {
+            facts[fact::ALLOWED_GADGETS] = self.allowed_gadgets.len();
+        }
+        facts
+    }
+}
+
 #[cfg(feature = "gadgets")]
 pub(crate) enum FrontendCaptureOwner {
     Tui(crate::tui::CaptureBuildOwner),
@@ -1797,6 +1892,9 @@ async fn build_session_with_capture_profile(
                 }
                 return None;
             }
+            selection
+                .report()
+                .accept(crate::privacy_session::Accept::Request(extras.original()));
             Some(selection.session().clone())
         }
     };
@@ -2055,6 +2153,18 @@ async fn build_session_with_capture_profile(
         )),
         _ => None,
     };
+    if let (Some(selection), Some(display)) = (&extras.privacy_view, &reply_display) {
+        use crate::privacy_session::{Accept, ComposedPart};
+        let report = selection.report();
+        report.accept(Accept::Part(
+            ComposedPart::ReplyDisplay,
+            Arc::as_ptr(display) as usize,
+        ));
+        report.accept(Accept::Part(
+            ComposedPart::ReplySink,
+            owner_address!(&extras.human_reply_sink),
+        ));
+    }
     let main_sink = match &reply_display {
         Some(display) => display.token_sink(),
         None => extras.token_sink.unwrap_or_else(stdout_sink),
@@ -2146,7 +2256,6 @@ async fn build_session_with_capture_profile(
             // installed: provider items live in the conversation's receipts.
             let session = privacy_view.clone()?;
             let client = make_unguarded_client()?;
-            let native_wire = client.native.is_some();
             let inspectable = extras
                 .privacy_view
                 .as_ref()
@@ -2156,48 +2265,63 @@ async fn build_session_with_capture_profile(
                 BuildRefusal::Provider,
                 "The model connection of this session has no private view.",
             );
-            let built: Result<Arc<dyn ModelProvider>, (BuildRefusal, &str)> = if client
-                .native
-                .is_none()
-            {
-                crate::privacy_session::ViewChatProvider::new(
+            // Each provider's own receipt is taken before the provider is
+            // handed on as the framework's trait object.
+            type Bound = (
+                Arc<dyn ModelProvider>,
+                Arc<crate::privacy_session::WireReceipt>,
+            );
+            let built: Result<Bound, (BuildRefusal, &str)> = if client.native.is_none() {
+                match crate::privacy_session::ViewChatProvider::new(
                     client,
                     session,
                     usage.clone(),
                     main_sink,
                 )
                 .await
-                .map(|provider| {
-                    Arc::new(
-                        provider.with_sinks(main_round_sink.clone(), extras.activity_sink.clone()),
-                    ) as Arc<dyn ModelProvider>
-                })
-                .map_err(|_| unavailable.clone())
+                {
+                    Ok(provider) => {
+                        let receipt = provider.receipt.clone();
+                        let provider: Arc<dyn ModelProvider> = Arc::new(
+                            provider
+                                .with_sinks(main_round_sink.clone(), extras.activity_sink.clone()),
+                        );
+                        Ok((provider, receipt))
+                    }
+                    Err(_) => Err(unavailable),
+                }
             } else if inspectable {
                 Err((
                     BuildRefusal::OpaqueProviderItems,
                     "This private conversation must be able to inspect what a provider is sent. A native wire sends back items that cannot be inspected.",
                 ))
             } else {
-                crate::privacy_session::ViewNativeProvider::new(
+                match crate::privacy_session::ViewNativeProvider::new(
                     client,
                     session,
                     usage.clone(),
                     main_sink,
                 )
                 .await
-                .map(|provider| {
-                    Arc::new(provider.with_round_sink(main_round_sink.clone()))
-                        as Arc<dyn ModelProvider>
-                })
-                .map_err(|_| unavailable.clone())
+                {
+                    Ok(provider) => {
+                        let receipt = provider.receipt.clone();
+                        let provider: Arc<dyn ModelProvider> =
+                            Arc::new(provider.with_round_sink(main_round_sink.clone()));
+                        Ok((provider, receipt))
+                    }
+                    Err(_) => Err(unavailable),
+                }
             };
             match built {
-                Ok(provider) => {
+                Ok((provider, receipt)) => {
                     if let Some(selection) = &extras.privacy_view {
                         selection
                             .report()
-                            .accept_lane(crate::privacy_session::ModelLane::Main, native_wire);
+                            .accept(crate::privacy_session::Accept::Lane(
+                                crate::privacy_session::ModelLane::Main,
+                                &receipt,
+                            ));
                     }
                     provider
                 }
@@ -2393,6 +2517,14 @@ async fn build_session_with_capture_profile(
     let file_review = match (&privacy_boundary, &user_policy) {
         (Some(boundary), Some(policy)) => {
             let review = crate::privacy_session::FileReview::new(policy, cwd.clone());
+            if let Some(selection) = &extras.privacy_view {
+                selection
+                    .report()
+                    .accept(crate::privacy_session::Accept::Part(
+                        crate::privacy_session::ComposedPart::FileReview,
+                        Arc::as_ptr(&review) as usize,
+                    ));
+            }
             boundary.review_files(review.clone());
             Some(review)
         }
@@ -2691,20 +2823,54 @@ async fn build_session_with_capture_profile(
             // and guard, their own usage, and requests composed from the
             // sources of each agent's own lane.
             let client = make_unguarded_client()?;
-            let native_wire = client.native.is_some();
-            let built = crate::privacy_session::delegated_provider(
-                client,
-                privacy_view.clone()?,
-                sub_usage,
-                child_sink.clone(),
-            )
-            .await;
+            let session = privacy_view.clone()?;
+            type Bound = (
+                Arc<dyn ModelProvider>,
+                Arc<crate::privacy_session::WireReceipt>,
+            );
+            let built: Result<Bound, crate::privacy_session::SessionStop> =
+                if client.native.is_none() {
+                    match crate::privacy_session::ViewChatProvider::new(
+                        client,
+                        session,
+                        sub_usage,
+                        child_sink.clone(),
+                    )
+                    .await
+                    {
+                        Ok(provider) => {
+                            let receipt = provider.receipt.clone();
+                            let provider: Arc<dyn ModelProvider> = Arc::new(provider);
+                            Ok((provider, receipt))
+                        }
+                        Err(stop) => Err(stop),
+                    }
+                } else {
+                    match crate::privacy_session::ViewNativeProvider::new(
+                        client,
+                        session,
+                        sub_usage,
+                        child_sink.clone(),
+                    )
+                    .await
+                    {
+                        Ok(provider) => {
+                            let receipt = provider.receipt.clone();
+                            let provider: Arc<dyn ModelProvider> = Arc::new(provider);
+                            Ok((provider, receipt))
+                        }
+                        Err(stop) => Err(stop),
+                    }
+                };
             match built {
-                Ok(provider) => {
+                Ok((provider, receipt)) => {
                     if let Some(selection) = &extras.privacy_view {
                         selection
                             .report()
-                            .accept_lane(crate::privacy_session::ModelLane::Delegated, native_wire);
+                            .accept(crate::privacy_session::Accept::Lane(
+                                crate::privacy_session::ModelLane::Delegated,
+                                &receipt,
+                            ));
                     }
                     provider
                 }
@@ -2866,32 +3032,54 @@ async fn build_session_with_capture_profile(
             // guard, its own usage, and requests composed from sources.
             let session = privacy_view.clone()?;
             let client = make_unguarded_client()?;
-            let native_wire = client.native.is_some();
-            let built: Result<Arc<dyn ModelProvider>, _> = if client.native.is_none() {
-                crate::privacy_session::ViewChatProvider::new(
-                    client,
-                    session,
-                    compact_usage,
-                    child_sink,
-                )
-                .await
-                .map(|provider| Arc::new(provider) as Arc<dyn ModelProvider>)
-            } else {
-                crate::privacy_session::ViewNativeProvider::new(
-                    client,
-                    session,
-                    compact_usage,
-                    child_sink,
-                )
-                .await
-                .map(|provider| Arc::new(provider.for_summaries()) as Arc<dyn ModelProvider>)
-            };
+            type Bound = (
+                Arc<dyn ModelProvider>,
+                Arc<crate::privacy_session::WireReceipt>,
+            );
+            let built: Result<Bound, crate::privacy_session::SessionStop> =
+                if client.native.is_none() {
+                    match crate::privacy_session::ViewChatProvider::new(
+                        client,
+                        session,
+                        compact_usage,
+                        child_sink,
+                    )
+                    .await
+                    {
+                        Ok(provider) => {
+                            let receipt = provider.receipt.clone();
+                            let provider: Arc<dyn ModelProvider> = Arc::new(provider);
+                            Ok((provider, receipt))
+                        }
+                        Err(stop) => Err(stop),
+                    }
+                } else {
+                    match crate::privacy_session::ViewNativeProvider::new(
+                        client,
+                        session,
+                        compact_usage,
+                        child_sink,
+                    )
+                    .await
+                    {
+                        Ok(provider) => {
+                            let receipt = provider.receipt.clone();
+                            let provider: Arc<dyn ModelProvider> =
+                                Arc::new(provider.for_summaries());
+                            Ok((provider, receipt))
+                        }
+                        Err(stop) => Err(stop),
+                    }
+                };
             match built {
-                Ok(provider) => {
+                Ok((provider, receipt)) => {
                     if let Some(selection) = &extras.privacy_view {
                         selection
                             .report()
-                            .accept_lane(crate::privacy_session::ModelLane::Summaries, native_wire);
+                            .accept(crate::privacy_session::Accept::Lane(
+                                crate::privacy_session::ModelLane::Summaries,
+                                &receipt,
+                            ));
                     }
                     provider
                 }
@@ -3057,6 +3245,31 @@ async fn build_session_with_capture_profile(
             .map(|mw| gate.wrap_middleware(mw))
             .collect();
     } else {
+        if let Some(selection) = &extras.privacy_view {
+            // The owners the next statement installs, as they are held here.
+            use crate::privacy_session::{Accept, ComposedPart};
+            let report = selection.report();
+            report.accept(Accept::Part(
+                ComposedPart::ActivitySink,
+                owner_address!(&extras.activity_sink),
+            ));
+            report.accept(Accept::Part(
+                ComposedPart::ToolActivitySink,
+                owner_address!(&extras.tool_activity_sink),
+            ));
+            report.accept(Accept::Part(
+                ComposedPart::ApprovalPrompt,
+                owner_address!(&extras.approval_prompt),
+            ));
+            report.accept(Accept::Part(
+                ComposedPart::CallPrompt,
+                owner_address!(&extras.call_approval_prompt),
+            ));
+            report.accept(Accept::Part(
+                ComposedPart::PrivacyPrompt,
+                owner_address!(&extras.privacy_approval_prompt),
+            ));
+        }
         middleware.push(Arc::new(
             ApprovalMiddleware::new_at(
                 approval,
@@ -3136,7 +3349,9 @@ async fn build_session_with_capture_profile(
                 return None;
             }
             if let Some(selection) = &extras.privacy_view {
-                selection.report().accept_parts();
+                selection
+                    .report()
+                    .accept(crate::privacy_session::Accept::Middleware(&kept));
             }
             kept
         }
@@ -3185,9 +3400,33 @@ async fn build_session_with_capture_profile(
             }
             let (completion, policy) = (completion.flatten(), policy.flatten());
             if let Some(selection) = &extras.privacy_view {
-                selection
-                    .report()
-                    .accept_controllers(completion.is_some(), policy.is_some());
+                use crate::privacy_session::{Accept, ComposedPart};
+                let report = selection.report();
+                if let Some(adapter) = &completion {
+                    report.accept(Accept::Part(
+                        ComposedPart::Verification,
+                        Arc::as_ptr(adapter) as usize,
+                    ));
+                }
+                if let Some(adapter) = &policy {
+                    report.accept(Accept::Part(
+                        ComposedPart::Controls,
+                        Arc::as_ptr(adapter) as usize,
+                    ));
+                }
+                if let Some(controller) = &verification {
+                    report.accept(Accept::Part(
+                        ComposedPart::VerificationOriginal,
+                        Arc::as_ptr(controller) as usize,
+                    ));
+                }
+                if let Some(controller) = &controls {
+                    report.accept(Accept::Part(
+                        ComposedPart::ControlsOriginal,
+                        Arc::as_ptr(controller) as usize,
+                    ));
+                }
+                report.accept(Accept::Controllers);
             }
             (completion, policy)
         }
@@ -3251,6 +3490,14 @@ async fn build_session_with_capture_profile(
     // ask_user: mid-task clarification. Interactive only in the REPL (activity
     // goes to stdout there); in one-shot mode (activity_to_stderr) there's no
     // human, so the tool declines cleanly instead of blocking on stdin.
+    if let Some(selection) = &extras.privacy_view {
+        selection
+            .report()
+            .accept(crate::privacy_session::Accept::Part(
+                crate::privacy_session::ComposedPart::AskPrompt,
+                owner_address!(&extras.ask_user_prompt),
+            ));
+    }
     let ask_user: Arc<dyn Tool> = Arc::new(crate::ask_user::AskUserTool::new(
         construction.prepared().is_none() && !activity_to_stderr,
         extras.ask_user_prompt.clone(),

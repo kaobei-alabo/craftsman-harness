@@ -60,25 +60,11 @@ fn own_source(of: &'static str) -> SourceRef {
 /// boundary's agent is built.
 #[derive(Default)]
 pub(super) struct Installed {
-    policy: OnceLock<Weak<SelectedControls>>,
-    completion: OnceLock<Weak<SelectedVerification>>,
+    pub(super) policy: OnceLock<Weak<SelectedControls>>,
+    pub(super) completion: OnceLock<Weak<SelectedVerification>>,
 }
 
 impl Installed {
-    /// Whether a live verification adapter and a live controls adapter are
-    /// held here, in that order.
-    #[cfg(unix)]
-    pub(super) fn held(&self) -> (bool, bool) {
-        let completion = match self.completion.get() {
-            Some(adapter) => adapter.strong_count() != 0,
-            None => false,
-        };
-        let policy = match self.policy.get() {
-            Some(adapter) => adapter.strong_count() != 0,
-            None => false,
-        };
-        (completion, policy)
-    }
     /// Whether the controllers the agent's builder installed are exactly the
     /// adapters held here, each with the source it was made with, and no
     /// other. An agent without controllers fits a boundary without adapters.

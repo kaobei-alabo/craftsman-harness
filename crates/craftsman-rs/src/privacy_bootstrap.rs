@@ -654,8 +654,8 @@ impl PrivateConversation {
             return Err(PrivateBuildError::Source(BootstrapError::Workspace));
         }
         extras.workspace_root = Some(self.workspace.canonical.clone());
-        // What this frontend asks to be shown, before the builder takes it.
-        let reply_display = extras.human_reply_sink.is_some();
+        // The request as this frontend made it, before the builder takes it.
+        let request = extras.original();
         let selection = self.selection().map_err(PrivateBuildError::Refused)?;
         let report = selection.report();
         extras.privacy_view = Some(selection);
@@ -700,14 +700,31 @@ impl PrivateConversation {
         // requested part that is not there, or a wire the policy cannot
         // inspect, is refused with the builder's own words; the session is
         // shut down for real and never becomes a built owner.
-        let witness = match BuildWitness::of(&session, self, report, reply_display) {
-            Ok(witness) => witness,
-            Err(refusal) => {
+        let witness = match &session.privacy_view {
+            Some(view) => BuildWitness {
+                report,
+                boundary: view.boundary().clone(),
+                request,
+            },
+            None => {
                 return Err(self
-                    .refuse_materialized(session, PrivateBuildError::Refused(refusal))
+                    .refuse_materialized(
+                        session,
+                        PrivateBuildError::Refused(BuildRefusal::RequestedPart),
+                    )
                     .await);
             }
         };
+        if let Err(refusal) = witness.report.holds(
+            &session,
+            &self.session,
+            self.requires_inspectable_provider_items(),
+            &witness.request,
+        ) {
+            return Err(self
+                .refuse_materialized(session, PrivateBuildError::Refused(refusal))
+                .await);
+        }
         Ok(PrivateBuiltSession {
             session,
             owner: self.clone(),
@@ -849,92 +866,29 @@ pub struct PrivateBuiltSession {
     witness: BuildWitness,
 }
 
-/// What one actual build accepted and composed for what was requested of
-/// it, held by the built owner. It joins three records of the same build,
-/// each made by the object that did the work:
-/// - what the builder accepted where it accepted it, in this selection's own
-///   report: each model lane's view provider with its wire, the parts with a
-///   source path, the controller adapters. The provider objects are not
-///   kept: the framework does not hand an agent's provider back;
-/// - what the view providers themselves counted when they bound this
-///   conversation's guard;
-/// - what the root agent's boundary has installed.
+/// What one actual build accepted and composed for the request that was made
+/// of it, held by the built owner. Every entry is an object of this build:
+/// - **the original request**, as the frontend made it before the builder
+///   took it: each prompt, sink and owner by the address of that object, and
+///   each choice as it was;
+/// - **each model lane's provider**, by the receipt that provider issued in
+///   its constructor and keeps through every wrapping, which holds the
+///   conversation and guard it bound and is marked with this selection and
+///   lane where the builder took the provider, before the framework got it;
+/// - **each composed part and installed owner**, by the address of the object
+///   the builder made or installed, compared with the object the root
+///   agent's boundary holds and with the request's own;
+/// - **every middleware the builder kept**, each still there and still
+///   stating a source path itself.
 ///
-/// It is not the builder's success, a supported-feature flag, a model or
-/// protocol name, or anything a caller supplies. A fresh clear makes a new
-/// selection and session, which get their own.
+/// It is not the builder's success, a count, a name, a supported-feature
+/// flag or anything a caller supplies. A fresh clear makes a new selection
+/// and session, which get their own.
 #[cfg(unix)]
 struct BuildWitness {
     report: Arc<crate::privacy_session::SelectionReport>,
     boundary: Arc<crate::privacy_session::ConversationBoundary>,
-    /// Whether the frontend asked for its replies to be shown.
-    reply_display: bool,
-}
-#[cfg(unix)]
-impl BuildWitness {
-    fn of(
-        session: &crate::agent::Session,
-        owner: &PrivateConversation,
-        report: Arc<crate::privacy_session::SelectionReport>,
-        reply_display: bool,
-    ) -> std::result::Result<Self, BuildRefusal> {
-        let Some(view) = &session.privacy_view else {
-            return Err(BuildRefusal::RequestedPart);
-        };
-        let witness = Self {
-            report,
-            boundary: view.boundary().clone(),
-            reply_display,
-        };
-        witness.holds(session, owner)?;
-        Ok(witness)
-    }
-    /// The builder accepted the root agent's lane, the parts and the
-    /// controllers; its lanes are as many, and as many native, as the view
-    /// providers that bound this conversation; every requested part is
-    /// installed on this session's own boundary; and every model wire can be
-    /// inspected where the policy requires that.
-    fn holds(
-        &self,
-        session: &crate::agent::Session,
-        owner: &PrivateConversation,
-    ) -> std::result::Result<(), BuildRefusal> {
-        use crate::privacy_session::{
-            ACCEPTED_CONTROLLERS, ACCEPTED_CONTROLS, ACCEPTED_NATIVE_SHIFT, ACCEPTED_PARTS,
-            ACCEPTED_VERIFICATION, CapturedUserPolicy,
-        };
-        let Some(view) = &session.privacy_view else {
-            return Err(BuildRefusal::RequestedPart);
-        };
-        let composed = view.composed();
-        let accepted = self.report.accepted();
-        let lanes = (accepted & 7).count_ones();
-        let native_lanes = ((accepted >> ACCEPTED_NATIVE_SHIFT) & 7).count_ones();
-        let mut expected = 1 | ACCEPTED_PARTS | ACCEPTED_CONTROLLERS;
-        if session.verification.is_some() {
-            expected |= ACCEPTED_VERIFICATION;
-        }
-        if session.controls.is_some() {
-            expected |= ACCEPTED_CONTROLS;
-        }
-        let fixed =
-            1 | ACCEPTED_PARTS | ACCEPTED_CONTROLLERS | ACCEPTED_VERIFICATION | ACCEPTED_CONTROLS;
-        if !Arc::ptr_eq(view.boundary(), &self.boundary)
-            || accepted & fixed != expected
-            || lanes != composed.chat_wires + composed.native_wires
-            || native_lanes != composed.native_wires
-            || (self.reply_display && !composed.reply_display)
-            || !composed.file_review
-            || composed.verification != session.verification.is_some()
-            || composed.controls != session.controls.is_some()
-        {
-            return Err(BuildRefusal::RequestedPart);
-        }
-        if owner.requires_inspectable_provider_items() && composed.native_wires != 0 {
-            return Err(BuildRefusal::OpaqueProviderItems);
-        }
-        Ok(())
-    }
+    request: [usize; crate::agent::REQUEST_FACTS],
 }
 #[derive(thiserror::Error)]
 pub enum PrivateTurnError {
@@ -995,7 +949,20 @@ impl PrivateBuiltSession {
             if !guard
                 || self.session.thread_id != self.owner.thread_id()
                 || !Arc::ptr_eq(view.session(), &self.owner.session)
-                || self.witness.holds(&self.session, &self.owner).is_err()
+                || !Arc::ptr_eq(view.boundary(), &self.witness.boundary)
+                || self
+                    .witness
+                    .report
+                    .holds(
+                        &self.session,
+                        &self.owner.session,
+                        {
+                            use crate::privacy_session::CapturedUserPolicy;
+                            self.owner.requires_inspectable_provider_items()
+                        },
+                        &self.witness.request,
+                    )
+                    .is_err()
             {
                 return Err(PrivateTurnError::Source(BootstrapError::Session(
                     SessionStop::Closed,
@@ -1011,16 +978,10 @@ impl PrivateBuiltSession {
     pub fn thread_id(&self) -> &str {
         &self.session.thread_id
     }
-    /// Cancels one running background task of this session, through the same
-    /// source, binding and witness checks as a submission. The answer is the
-    /// registry's own: whether such a running task was there to abort.
+    /// The canonical workspace this conversation was captured for.
     #[cfg(unix)]
-    pub(crate) fn abort_background(
-        &self,
-        name: &str,
-    ) -> std::result::Result<bool, PrivateTurnError> {
-        self.task_owner()?;
-        Ok(self.session.registry.abort(name))
+    pub(crate) fn workspace(&self) -> &Path {
+        &self.owner.workspace.canonical
     }
     pub async fn turn(
         &self,
