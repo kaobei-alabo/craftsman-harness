@@ -31,6 +31,8 @@ impl CapturedUserPolicy for Rule {
                 return None;
             }
         }
+        #[cfg(not(unix))]
+        let _ = parent;
         let application = match self.0? {
             FileDataFormat::PlainText => SupportedDataApplication::ContactLinesV1,
             FileDataFormat::JsonDocument => SupportedDataApplication::ContactJsonV1,
@@ -381,6 +383,17 @@ async fn set_up_with_main_gate(
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    // On Windows a directory is opened with backup semantics, and a
+    // link in its place is opened itself and not followed. Without
+    // that the system refuses the open of a directory (code 5).
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let actual_directory = options.open(dir.path()).unwrap();
     let policy: Arc<dyn CapturedUserPolicy> = Arc::new(Rule(rule, asked.clone(), actual_directory));

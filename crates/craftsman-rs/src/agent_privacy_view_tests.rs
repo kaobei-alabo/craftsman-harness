@@ -1191,6 +1191,17 @@ impl PlainTextFiles {
             use std::os::unix::fs::OpenOptionsExt;
             options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
         }
+        // On Windows a directory is opened with backup semantics, and a
+        // link in its place is opened itself and not followed. Without
+        // that the system refuses the open of a directory (code 5).
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
         Self(options.open(directory).unwrap())
     }
 }
@@ -1210,6 +1221,8 @@ impl crate::privacy_session::CapturedUserPolicy for PlainTextFiles {
                 return None;
             }
         }
+        #[cfg(not(unix))]
+        let _ = parent;
         request
             .check_application(crate::privacy_session::SupportedDataApplication::ContactLinesV1)
             .ok()
