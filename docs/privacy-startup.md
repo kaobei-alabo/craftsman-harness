@@ -90,6 +90,10 @@ rebuild unchanged. The caller must take `approval_start` before
 `into_private_bootstrap` consumes the startup. The raw-Arc `run_private` stays
 as the separate, unselected caller-Config route.
 
+This is private entry glue only. Normal startup-to-terminal routing does not
+call it, the captured feature requirements stay pending and are not satisfied
+by it, and privacy activation remains unwired.
+
 Five ordinary captured terminal cases enter through this path in a marked child:
 the production capture of the child's own retained user file, the real parsed
 fixture invocation and the child's own terminal, then the approval start and the
