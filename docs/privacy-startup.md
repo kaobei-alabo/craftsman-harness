@@ -306,24 +306,29 @@ runs, the terminal does the following.
 - **Controls are classified on one trimmed view.** Leading spaces do not turn
   a control into a prompt. A refused control keeps the raw line in the queue;
   only a new prompt, not another control, lets the queue be tried again.
-- **Settings changes are refused** before any mutation: permission mode,
-  model, effort, harness, agent, voice model and provider setup. Actions
-  that are not saves get their own refusal. Outside a conversation the
-  explicit `craftsman privacy set` command writes a setting (see below).
-  Inside one, a settings change would also need:
-  - an adoption of the retired conversation's committed record by the
-    freshly unlocked one. Every recorded message has a source that the
-    framework issued from the event of the turn that produced it, and the
-    source-view boundary has no witness for a restored or adopted message.
-    Adding one changes the framework's boundary, which this work may not;
-  - a carry-over of files, todos, custom state and usage with that record,
-    without replaying any model, tool or hook work.
-  Until then the captured source is not rewritten under a live
-  conversation, and a fresh clear remains the only rebuild: it starts a new
-  conversation and keeps no history.
-- **Not executed:** extension commands, `/compact`, `/rewind`, `/session`,
-  `/model`, `/effort`, `/mode`, `/harness`, `/voice`, `/setup`,
-  `/tasks message`, `/lsp restart`, and `/agents <name>`.
+- **Settings changes** are the person's own `/model`, `/effort` and `/mode`,
+  typed or chosen in their pickers. A terminal that the router selected
+  carries the conversation over for them; see
+  [Settings changes inside a conversation](#settings-changes-inside-a-conversation).
+  The private captured entry, which no normal route selects, has no such
+  authority and refuses every settings change before any mutation, as before.
+- **A manual compaction runs.** `/compact` is the ordinary idle compaction on
+  this conversation's own agent, through the agent's tracked path, so the
+  summary and the kept messages keep their sources. The bound owner is
+  checked before it starts and the sources before its line is shown. It runs
+  as owned local work inside a cancellation turn of the frontend.
+- **An extension command sends its expansion to the model.** The commands are
+  those of the captured user root and the captured workspace, read when the
+  line is submitted, as in the ordinary terminal. The person sees the line
+  they typed; the expansion is the turn's input and is admitted and masked
+  like any other typed input. It is never read again as a control or a shell
+  escape, and nothing is restored into it. While work is running or an
+  approval is parked, the command waits as it was typed.
+- **Still refused,** each with its own line and nothing changed: a model
+  catalog refresh over the network (`/model --refresh`), a numeric effort,
+  the mode cycle key, provider setup, harness, agent and voice-model
+  selection, reopening a session, `/rewind`, `/session`, `/tasks message`
+  and `/lsp restart`.
 - **Fixed-text OSC 7501 status** is reported with the ordinary change-only
   reporter, unless `terminal.osc7501` is false. Only fixed states and
   messages are written.
@@ -340,6 +345,91 @@ runs, the terminal does the following.
 One thing the terminal keeps that the ordinary one does not: after a fresh
 clear the earlier transcript is still shown, above the new conversation. The
 model sees none of it; the new conversation has its own thread and sources.
+
+### Settings changes inside a conversation
+
+A private conversation is bound to the bytes of the user file it captured, so
+the file is never rewritten under it. A settings change therefore retires the
+conversation, writes the file, and carries the whole record into a new
+conversation of the same thread. Only a terminal that the router selected can
+do this: the router lends it the authority, and every other entry holds none.
+
+The steps, in order:
+
+1. **Asked.** The ordinary selection decides what the change means. A named
+   `provider/model` keeps its id; an effort is written where that model's own
+   options live (`providers.<provider>.models.<id>.settings.reasoning`, or
+   `model_settings.<model>.reasoning_effort` without named providers). The
+   candidate bytes of the whole file are built and validated here, before
+   anything is touched: they differ from the file in exactly those places,
+   the policy member is untouched and still the valid enabled one, the
+   candidate parses as a startup would take it, and what it then means is
+   what the ordinary selection would have saved. A refusal is a line; the
+   conversation goes on.
+2. **Retired.** The conversation must be idle: no running turn, no local
+   work, no running background task and no parked approval. Its own record
+   of every private value is read while it is live. Then the agent retires:
+   it issues its whole record and closes the source view, and with it the
+   send guard, the vault scope and the key. A refusal up to here keeps the
+   conversation as it was.
+3. **Written and recaptured.** After the frontend retired its owners, the
+   candidate is committed through the same staged, identity-bound writer as
+   `enable`, and the startup of this same invocation is captured anew. A
+   write that changed nothing does not end the conversation: it is carried
+   over under the settings it had, and the refusal is shown.
+4. **Unlocked and built.** The vault password is asked again. The new
+   conversation keeps the thread and gets a vault scope of its own: its
+   namespace names how many scopes the thread had before, so it is never the
+   retired one, and its placeholders differ.
+5. **Adopted.** The new agent adopts the record; see below. The session's
+   usage totals and what the person granted during the conversation (shell
+   allow-list entries, "always") come along. A failure here ends the
+   terminal with a fixed error; the record up to the retirement is in the
+   thread store.
+
+What the adoption does with each recorded message:
+
+- **The record is not changed.** Roles, calls, call ids, results, files,
+  todos and custom state are the retired conversation's, and the thread's
+  save sequence continues.
+- **Every retired value is admitted first,** on its own and under the
+  category the retired scope recorded for it. From then on the ordinary
+  admission refuses any text in which such a value is not reported, so a
+  value that was masked before is masked again or the adoption fails.
+- **Raw text** (typed input, tool results, host text) is admitted anew from
+  the retired capture itself, with the detector. It is never taken from a
+  view.
+- **Model-origin text** (replies, call arguments, summaries) keeps its words.
+  Each placeholder of the retired scope in it is replaced by the new scope's
+  placeholder for the same value, and the new send guard checks the result.
+  Nothing is restored into it.
+- A stored todo keeps naming the reply that wrote it, now by that reply's
+  new source.
+
+No model, tool or hook is replayed, and the retired originals are sent
+nowhere. The earlier transcript stays on the screen.
+
+What is refused, with the conversation kept:
+
+- a conversation that runs with context, failure or verification controls,
+  whose records are not carried yet;
+- a conversation with a reply that was received with provider items, a
+  message of a delegated agent's lane, or a todo list that names a reply
+  which is no longer recorded;
+- **a permission mode that decides file writes without asking**
+  (`accept-edits`, `bypass-permissions`, `auto`). The gate of a private
+  conversation lets such a mode's automatic decision stand for a reviewed
+  write, so a write that restores private values would not be shown first.
+  `plan` and `manual` are taken. A start whose own option fixes the mode
+  refuses a mode change too, because the file would not decide it;
+- a model selection that the ordinary catalog refuses.
+
+Limits: the conversation is ended before the file is written, so a failure
+after the retirement (a wrong password, a file that no longer proposes
+privacy, a refused adoption) ends the terminal and the conversation is not
+resumed; its record is in the thread store. Sub-agents' own records are not
+carried. A start in a non-asking mode that the user's own file or option
+selects is not changed by this and keeps the gate's existing behaviour.
 
 ### Status, initialization and enabling
 
@@ -394,9 +484,11 @@ user file. Its explicit invocation is the authorization of that one change.
   cross-process compare-and-swap, and no power-loss durability is claimed.
 
 `craftsman privacy set <setting> <value>` changes one setting of a user file
-that enables privacy, where the ordinary terminal cannot be used to change
-it. It knows `permission_mode`, `model` and `agent`, each with its own check
-of the value.
+that enables privacy, without a conversation. It knows `permission_mode`,
+`model` and `agent`, each with its own check of the value. It takes only the
+permission modes that still ask before a file write, `plan` and `manual`,
+for the reason given under
+[Settings changes inside a conversation](#settings-changes-inside-a-conversation).
 
 - An existing member's value is replaced where it stands; a missing member
   is inserted after the opening brace. Every other byte is kept. A member of
@@ -408,8 +500,11 @@ of the value.
   applies; nothing is turned off.
 - The same staged, identity-bound replacement as `enable` commits it, with
   the same refusals and limits.
-- It starts no conversation. A running private conversation keeps the
-  configuration it captured; the change applies to the next start.
+- It starts no conversation. The change applies to the next start. A private
+  conversation that is running elsewhere ends when its captured file
+  changes; from inside it, `/model`, `/effort` and `/mode` carry it over.
+- The candidate builder and the committer are the ones the in-conversation
+  changes use.
 
 The detector's source approval is given through the existing gadget approval
 prompt of the ordinary terminal, before the policy is enabled. Data-file rules
@@ -424,8 +519,8 @@ and identifiers are the user's own later edits.
   through its own `main` on synthetic user files in a private temporary
   directory, with a synthetic model that the test itself serves on a
   loopback address.
-  It has twelve cases. Eight need the gadgets feature, and one more needs
-  voice input too, so the full test modes run eleven and three of them.
+  It has thirteen cases. Nine need the gadgets feature, and one more needs
+  voice input too, so the full test modes run twelve and three of them.
   - *Setup through the real runtime.* The ordinary terminal runs once: the
     synthetic model calls the detector gadget, and the person approves its
     first use at the real prompt, which names the gadget and the hash of its
@@ -438,8 +533,8 @@ and identifiers are the user's own later edits.
     does not know, has its value; no grant was written and the mode is
     still user-only. A second run refuses. `set` then replaces one member
     where it stands, inserts a missing one and replaces that, each time
-    with every other byte kept, and refuses an unknown setting and an
-    invalid value. Status then reports the missing key, and after `init` a
+    with every other byte kept, and refuses an unknown setting, an invalid
+    value and each permission mode that decides file writes without asking. Status then reports the missing key, and after `init` a
     passed preflight.
   - *The private terminal runs with that policy:* unlock, a masked turn, a
     fresh clear with a new unlock and thread, a second masked turn, fixed
@@ -450,6 +545,21 @@ and identifiers are the user's own later edits.
     type-ahead kept as a draft. The safe-entry case also runs the
     inspection commands and a task cancellation that finds no such task;
     its request count shows that none reached the model.
+  - *Settings changes inside a conversation.* One conversation with a named
+    provider and two models. A selection the catalog refuses and a
+    non-asking permission mode each give a line, no password prompt and an
+    unchanged file. `/model` with an effort, then `/mode plan`, each retire
+    the conversation, write the file, ask for the password and carry the
+    record over. The file keeps every byte but the named model id, that
+    model's reasoning setting and one inserted member. The next request
+    goes to the newly selected model with the earlier roles, call, id,
+    result and reply in order, every text under the new scope's alias and
+    none under a retired one; the stored todo is still offered. Usage
+    totals come along. An extension command's expansion is the next turn's
+    input; `/compact` then summarizes the carried record with one
+    summarizer request. The store has one private thread with one unbroken
+    save sequence, and its record before the compaction holds every input
+    in order.
   - *Refusals:* the status text for each local state; which invocations are
     routed; the router's early refusals on a real terminal, including an
     invalid status setting before any terminal effect; every `enable`
@@ -471,20 +581,34 @@ first run found the reporter's fixed wait records, which the check did not
 list; the inspection stages' first run sent Escape directly before a command,
 which the terminal reads as one key; and the refused-build case found no
 first "working" report once under four parallel cases, where it had always
-found one alone. Earlier ones: the cases' first run with status reports
+found one alone. In this slice: the carry case's first run expected no
+catalog note among the carried messages, and it is carried like every other;
+its first compaction expected a conversation too short to summarize, and the
+agent summarized it; and the report check expected a reply as the last work,
+where it was the compaction. A rule that asked a person about every reviewed
+write under an automatic permission mode was tried and withdrawn: five
+inherited cases state that the gate's automatic policy decides such a write,
+so the non-asking modes are refused instead. Earlier ones: the cases' first run with status reports
 missed every stage after the password in the inherited screen reader; an
 inherited case asserts the capture's `Invalid` answer for an unparsable file,
 so a line-and-column answer was withdrawn.
 
-The gadget test binary's unwind section is 16,776,872 bytes, 344 under
-the unchanged 16,777,216-byte limit, with no linker warning. The five
-captured cases' scripts and their three child functions are each folded into
-one future, token for token, which is where the room for the witness came
-from.
+The gadget test binary's unwind section is 16,776,844 bytes, 372 under
+the unchanged 16,777,216-byte limit, with no linker warning. The first
+wiring of the settings flow was 1,932 bytes over. What that binary reaches
+of it now adds no generic instantiation there: the adoption fact behind a
+commit is held erased, an adopted message is made of the parts the request
+view already knows, the authority's awaited work has the type of the
+frontend's other local work, and the new branches are plain matches. The
+flow itself is reachable only from the router, which the unit-test binary
+does not link; the real-binary case covers it.
 
 Not covered: a build whose witness disagrees, a stale or foreign binding at
-issuance, cancellation of a task that is actually running, the voice adapter
-in any run, a cancelled shell escape, the staging entry's removal and
+issuance, cancellation of a task that is actually running, voice capture and
+transcription, a cancelled shell escape, a settings change whose write or
+adoption fails after the retirement, a carried conversation with host notes
+of a background agent or with a summary, the model and effort pickers
+through a terminal, a cancelled compaction, the staging entry's removal and
 leftover report after a refusal past its creation, a failure after the
 rename, non-default permission options and an Always effect
 through the terminal, the terminal entry's own refusals, a mouse event,
@@ -516,6 +640,8 @@ same actual owner through their policy and task owners. Fresh retirement shares
 that immutable four-owner object and held workspace observations, preserving
 requirements and delaying its new reservation until unlock; it does not renew
 authority from new bytes, transfer old messages or use a constant namespace.
+A settings change is the one path that carries a record, through the
+retirement and adoption described above, into a startup captured anew.
 The two new forwarding methods keep the existing shared construction future
 in one owned allocation and await its real result. This erases its concrete
 runtime/drop type; it starts no task, changes no checks or body, refreshes no

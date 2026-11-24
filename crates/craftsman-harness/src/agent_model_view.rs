@@ -14,12 +14,22 @@
 //! path: a middleware whose author made no statement for this boundary, a
 //! boundary policy, a completion check, system text outside the boundary,
 //! untracked system additions, an inbox, the untyped turn, steering and
-//! resume entries, reopening and transfer. Tracked Chat compaction has its
-//! own actual stage/retention witnesses; unsupported native inputs refuse.
+//! resume entries, reopening and the ordinary transfer. Tracked Chat
+//! compaction has its own actual stage/retention witnesses; unsupported
+//! native inputs refuse.
+//!
+//! A selected conversation is carried into a newly built agent only by its
+//! own pair of operations at the end of this file: the idle agent retires and
+//! issues the transfer, and a fresh selected agent adopts it through a host
+//! adopter that gives every original a source of the new conversation.
 
 use super::*;
 use crate::ModelResponse;
 use crate::middleware::BoxedViewFuture;
+use crate::provenance::{
+    ActualAdoptedMessage, ActualBoundaryController, ActualConversationTransfer,
+    ActualHostScheduledCall, ConversationAdopter,
+};
 use crate::provenance::{
     ActualAgentOwner, ActualFacts, ActualModelInput, ActualParkedCall, ActualProviderReturn,
     ActualReceivedReply, ActualRequestInput, ActualRetainedCommit, ActualSourcedMessage,
@@ -28,7 +38,6 @@ use crate::provenance::{
     ReachedTool, ReplyEdit, RetainedEvent, ReturnRecorder, SourcePart, SourceRef, TrackedDispatch,
     TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
 };
-use crate::provenance::{ActualBoundaryController, ActualHostScheduledCall};
 use std::sync::atomic::AtomicBool;
 
 /// Everything the agent records or carries between rounds. A middleware of a
@@ -2096,5 +2105,240 @@ impl Agent {
         }
         self.settle_sources(view).await?;
         Ok(counts)
+    }
+}
+
+fn not_transferable(why: &'static str) -> AgentError {
+    AgentError::State(why.into())
+}
+
+impl Agent {
+    /// Retires this selected agent's conversation and issues it for one
+    /// adoption by a newly built agent.
+    ///
+    /// Refused before any effect, leaving the conversation as it was, when
+    /// no boundary is selected, a turn or another idle operation is running,
+    /// this is a delegated agent, an approval is parked, an accepted input
+    /// is still waiting, the turn was cancelled, a recorded message has no
+    /// source the retiring boundary gives, or the todo list names a reply
+    /// that is no longer recorded.
+    ///
+    /// Notifications addressed to this agent are recorded first, as the
+    /// ordinary transfer records them, and the boundary is asked for the
+    /// source of every message the agent appended itself. Then the recorded
+    /// state, one source per message, the thread and the next save sequence
+    /// are issued together, and the source view is closed: this agent takes
+    /// no further entry. No model, tool, turn hook or checkpoint runs here.
+    pub async fn retire_conversation_with_view(
+        &self,
+    ) -> Result<ActualConversationTransfer, AgentError> {
+        let view = self.supported_view()?;
+        let _activity = self.begin_activity(true)?;
+        if view.parent.is_some() {
+            return Err(not_transferable(
+                "Only a conversation's own agent is carried over, not a delegated one.",
+            ));
+        }
+        if self.pending.lock().unwrap().is_some()
+            || self.parked_suspension.lock().unwrap().is_some()
+        {
+            return Err(not_transferable(
+                "Resolve the pending approval before carrying this conversation over.",
+            ));
+        }
+        if !self.turn_input.lock().unwrap().pending.is_empty() {
+            return Err(not_transferable(
+                "An accepted input is still waiting for a turn; the conversation was kept.",
+            ));
+        }
+        if self.take_cancel_request() {
+            return Err(AgentError::Cancelled);
+        }
+        let consistent = {
+            let state = self.state.lock().unwrap();
+            view.matches(&state.messages)
+        };
+        if !consistent {
+            view.close();
+            return Err(unsourced());
+        }
+        self.drain_agent_notifications_into_state();
+        self.settle_sources(view).await?;
+        // Complete immutable pairs, checked under the state and source
+        // guards: this agent's own commit beside each recorded message.
+        let messages = self.actual_sourced_messages()?;
+        let state = self.snapshot();
+        if state.messages.len() != messages.len() {
+            return Err(unsourced());
+        }
+        // The stored todos keep their origins only as replies that are still
+        // recorded. An origin that was summarized away has no successor.
+        let todos = view
+            .todos
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|origins| origins.len() == state.todos.len());
+        let located = match (&todos, state.todos.is_empty()) {
+            (_, true) => true,
+            (None, false) => false,
+            (Some(origins), false) => origins.iter().all(|origin| match origin {
+                PartFrom::Call { reply, .. } => {
+                    messages.iter().any(|message| message.source().is(reply))
+                }
+                _ => false,
+            }),
+        };
+        if !located {
+            return Err(not_transferable(
+                "The todo list refers to a reply that is no longer recorded; the conversation was kept.",
+            ));
+        }
+        if self.take_cancel_request() {
+            return Err(AgentError::Cancelled);
+        }
+        let transfer = ActualConversationTransfer::issued(
+            &view.owner,
+            state,
+            messages,
+            todos,
+            (
+                self.thread(),
+                self.seq.load(Ordering::SeqCst),
+                self.checkpoint_failed(),
+                self.recovery_info(),
+            ),
+        );
+        view.close();
+        Ok(transfer)
+    }
+
+    /// Adopts a transferred conversation into this newly built selected
+    /// agent. Model, middleware, tools, registry, boundary and cancellation
+    /// owners remain this agent's own.
+    ///
+    /// Refused, with nothing adopted and the transfer still unadopted, when
+    /// no boundary is selected, this agent is not fresh (it recorded or
+    /// saved something, has an approval parked or an input waiting), it is a
+    /// delegated agent or the retired one, the transfer was adopted before,
+    /// the turn is cancelled, or the adopter fails or returns anything but
+    /// one source per message.
+    ///
+    /// The agent issues one adopted commit per transferred message, each
+    /// naming its original, and `adopter` gives each a source of this
+    /// conversation. Then, at once: the recorded state becomes the
+    /// transferred one, every message keeps its role, calls and results
+    /// beside its new source, and the todo list's origins follow their
+    /// replies. The usage anchor of the other conversation is dropped, as the
+    /// ordinary transfer drops it. When this agent saves under the retired
+    /// agent's thread it continues that thread's save sequence, with its
+    /// failed-save flag and recovery notice; under another thread it keeps
+    /// its own. No model, tool, turn hook or checkpoint runs here.
+    pub async fn adopt_conversation_with_view(
+        &self,
+        transfer: &ActualConversationTransfer,
+        adopter: &dyn ConversationAdopter,
+    ) -> Result<(), AgentError> {
+        let refused = || {
+            not_transferable(
+                "A transferred conversation is adopted once, by a fresh idle agent with a source view.",
+            )
+        };
+        let view = self.supported_view()?;
+        let _activity = self.begin_activity(true)?;
+        let fresh = || {
+            let state = self.state.lock().unwrap();
+            state.messages.is_empty()
+                && state.todos.is_empty()
+                && state.files.is_empty()
+                && state.custom.is_empty()
+                && view.sources.lock().unwrap().is_empty()
+                && self.seq.load(Ordering::SeqCst) == 0
+        };
+        if view.parent.is_some()
+            || transfer.owner().same_agent(&view.owner)
+            || transfer.is_adopted()
+            || self.pending.lock().unwrap().is_some()
+            || self.parked_suspension.lock().unwrap().is_some()
+            || !self.turn_input.lock().unwrap().pending.is_empty()
+            || !fresh()
+        {
+            return Err(refused());
+        }
+        let mut commits = Vec::with_capacity(transfer.messages().len());
+        for index in 0..transfer.messages().len() {
+            commits.push(ActualRetainedCommit::adopted_issued(
+                &view.owner,
+                ActualAdoptedMessage::issued(transfer.clone(), index),
+            ));
+        }
+        let sources = adopter.adopted_sources(&commits).await?;
+        if sources.len() != commits.len() {
+            return Err(unsourced());
+        }
+        if self.take_cancel_request() {
+            return Err(AgentError::Cancelled);
+        }
+        view.live()?;
+        // A todo's origin follows the reply it names to that reply's new
+        // source. The retirement checked that each one is recorded.
+        let mut todos = Some(Vec::new());
+        for origin in transfer.todos().unwrap_or_default() {
+            let moved = match origin {
+                PartFrom::Call {
+                    reply,
+                    call_id,
+                    pointer,
+                } => transfer
+                    .messages()
+                    .iter()
+                    .position(|message| message.source().is(reply))
+                    .map(|index| PartFrom::Call {
+                        reply: sources[index].clone(),
+                        call_id: call_id.clone(),
+                        pointer: pointer.clone(),
+                    }),
+                _ => None,
+            };
+            match (moved, &mut todos) {
+                (Some(moved), Some(origins)) => origins.push(moved),
+                _ => todos = None,
+            }
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            let mut slots = view.sources.lock().unwrap();
+            if !state.messages.is_empty()
+                || !slots.is_empty()
+                || self.seq.load(Ordering::SeqCst) != 0
+                || !transfer.take()
+            {
+                return Err(refused());
+            }
+            let mut adopted = transfer.state().clone();
+            // A usage anchor from another conversation's model and views is
+            // not a token estimate for this one.
+            adopted.last_usage = None;
+            adopted.last_usage_msg_count = 0;
+            *state = adopted;
+            view.facts
+                .lock()
+                .unwrap()
+                .retained
+                .extend(commits.iter().cloned());
+            *slots = commits
+                .into_iter()
+                .zip(sources)
+                .map(|(commit, source)| Slot::Bound(source, commit))
+                .collect();
+            *view.todos.lock().unwrap() = todos;
+        }
+        if self.thread() == transfer.thread_id() {
+            self.seq.store(transfer.next_seq(), Ordering::SeqCst);
+            self.checkpoint_failed
+                .store(transfer.checkpoint_failed(), Ordering::SeqCst);
+            *self.recovery_info.lock().unwrap() = transfer.recovery();
+        }
+        Ok(())
     }
 }

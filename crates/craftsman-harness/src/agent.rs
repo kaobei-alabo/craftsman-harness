@@ -2632,6 +2632,10 @@ mod model_view_tests;
 mod frontier_tests;
 
 #[cfg(test)]
+#[path = "agent_view_transfer_tests.rs"]
+mod view_transfer_tests;
+
+#[cfg(test)]
 #[path = "agent_controller_event_tests.rs"]
 mod controller_event_tests;
 #[cfg(test)]

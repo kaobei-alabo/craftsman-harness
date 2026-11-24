@@ -25,11 +25,12 @@ use std::sync::Arc;
 #[path = "provenance_facts.rs"]
 mod facts;
 pub use facts::{
-    ActualAgentOwner, ActualBoundaryController, ActualBoundaryInput, ActualControllerBindings,
-    ActualHostScheduledCall, ActualIdleCompaction, ActualModelInput, ActualParkedCall,
-    ActualPlannedInvocation, ActualProviderReturn, ActualReceivedReply, ActualRequestInput,
-    ActualRetainedCommit, ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary,
-    ActualTaskReturn, ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
+    ActualAdoptedMessage, ActualAgentOwner, ActualBoundaryController, ActualBoundaryInput,
+    ActualControllerBindings, ActualConversationTransfer, ActualHostScheduledCall,
+    ActualIdleCompaction, ActualModelInput, ActualParkedCall, ActualPlannedInvocation,
+    ActualProviderReturn, ActualReceivedReply, ActualRequestInput, ActualRetainedCommit,
+    ActualSourcedMessage, ActualStagedHostMessage, ActualStagedSummary, ActualTaskReturn,
+    ActualTerminalOutcome, ActualToolFact, ActualToolInvocation, RetainedEvent,
 };
 pub(crate) use facts::{ActualFacts, ReturnRecorder};
 
@@ -677,6 +678,26 @@ pub type BoxedBoundaryFuture<'f, T> =
 
 fn refused<'f, T: Send + 'f>(why: &'static str) -> BoxedBoundaryFuture<'f, T> {
     Box::pin(std::future::ready(Err(AgentError::State(why.into()))))
+}
+
+/// Implemented by the host for one adoption of a transferred conversation,
+/// and handed to `Agent::adopt_conversation_with_view` for that one call.
+/// It is separate from the boundary on purpose: a boundary that was never
+/// asked to adopt has no adoption path at all.
+pub trait ConversationAdopter: Send + Sync {
+    /// One source of the adopting conversation for each adopted commit, in
+    /// order. Each commit names its transferred original. The host checks
+    /// every original against its own retired owner and admits it anew; an
+    /// error adopts nothing and leaves the transfer unadopted. Returning a
+    /// source grants no transport, restoration or permission authority.
+    fn adopted_sources<'a, 'b, 'f>(
+        &'a self,
+        adopted: &'b [ActualRetainedCommit],
+    ) -> BoxedBoundaryFuture<'f, Vec<SourceRef>>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f;
 }
 
 /// Implemented by the host for one conversation. Every method is called by

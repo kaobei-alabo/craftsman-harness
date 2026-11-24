@@ -93,6 +93,12 @@ Host declarations are not an automatic sensitive-data classifier.
 
 ## Admission, masked text and field records
 
+One thread can have more than one scope over time. A privacy conversation
+that is carried over for a settings change gets a namespace of its own under
+the same thread, so the same original has a different alias there. The vault
+is not asked to translate between them: the host reads the retired scope's
+records once, while it is live, and admits each original into the new scope.
+
 `MappingSession::capture_text()` captures original UTF-8 bytes and an input SHA256
 for the host-only detector. `mask(CapturedText, DetectorReport,
 DeclaredIdentifiers)` validates that hash, exact session binding, byte offsets,

@@ -2,7 +2,7 @@
 //! called by a normal selector. Password acquisition has finished before this
 //! sole ordinary reader exists; active-entry password reacquisition is refused.
 use super::{
-    FrontendConfiguration, OwnedSecretTerminal, PrivateTerminalError, UnixPopup,
+    FrontendConfiguration, OwnedSecretTerminal, PrivateTerminalError, SettingsAsked, UnixPopup,
     check_voice_configuration,
 };
 use crate::hitl::ApprovalState;
@@ -125,7 +125,7 @@ async fn local_work(work: LocalWork, owner: Arc<PrivateConversation>) -> Returne
     }
 }
 
-enum Returned {
+pub(super) enum Returned {
     Turn(Result<craftsman_harness::TurnResult, PrivateTurnError>),
     Steer(String, Result<bool, PrivateTurnError>),
     Decision(Result<Option<craftsman_harness::TurnResult>, PrivateTurnError>),
@@ -433,7 +433,27 @@ impl Frontend {
     }
     fn settings(&mut self) {
         let saving = std::mem::take(&mut self.app.mode_cycle_requested);
-        let action = self.app.pending_action.take();
+        let mut action = self.app.pending_action.take();
+        // A frontend the router selected holds its settings authority: the
+        // model, effort and mode pickers go there. What it does not take
+        // keeps its refusal below.
+        if let Some(asked) = &action
+            && !matches!(asked, AppAction::RemoveQueued(_) | AppAction::CancelTask(_))
+        {
+            let owner = self.owner.clone();
+            if let Some(authority) = &mut self.popup.inner.settings
+                && let Ok(cfg) = self.configuration.source(&owner)
+                && authority.asked(
+                    SettingsAsked::Action(asked),
+                    cfg,
+                    self.built.as_ref(),
+                    &mut self.app,
+                    &mut None,
+                )
+            {
+                action = None;
+            }
+        }
         match action {
             // The user's own queued drafts: a local list, as in the ordinary terminal.
             Some(AppAction::RemoveQueued(index)) => {
@@ -599,7 +619,10 @@ impl Frontend {
         self.app.dirty = true;
         Some((typed, queue))
     }
-    fn start(&mut self, typed: String, queue: bool) -> bool {
+    fn start(&mut self, mut typed: String, queue: bool) -> bool {
+        // The expansion of an extension command, where the lent authority
+        // gave one for this line.
+        let mut expanded = None;
         // One borrowed, trimmed view decides whether the line is a control.
         // Leading spaces do not turn a control into a model prompt, and the
         // raw line is what a refused control keeps as its draft.
@@ -638,13 +661,37 @@ impl Frontend {
                     &mut self.app,
                 ) {
                     if control == "/help" {
-                        self.app.push("In this private conversation these run: /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /tasks, /tasks cancel <name>, /mcp, /skills, /agents (list), /checkpoints, /memories, /lsp, /gadgets, /diff, /clear and /quit. Settings changes and every other command are not executed.");
+                        self.app.push("In this private conversation these run: /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /tasks, /tasks cancel <name>, /mcp, /skills, /agents (list), /checkpoints, /memories, /lsp, /gadgets, /diff, /clear and /quit. Where the ordinary `craftsman` start opened this terminal, /model, /effort and /mode change that setting: the conversation is carried over after a new unlock; /compact summarizes it; and an extension command sends its expansion to the model. Every other command is not executed.");
+                    }
+                    return false;
+                }
+                // The person's own model, effort and mode changes, a manual
+                // compaction and the extension commands, where the router
+                // lent their authority.
+                if let Some(authority) = &mut self.popup.inner.settings
+                    && authority.asked(
+                        SettingsAsked::Line(control),
+                        cfg,
+                        self.built.as_ref(),
+                        &mut self.app,
+                        &mut expanded,
+                    )
+                    && expanded.is_none()
+                {
+                    // Work it started for this line is this frontend's own
+                    // local work, inside a turn of its own cancellation.
+                    if let Some(work) =
+                        authority.work(&self.cancellation, &mut self.app.operation_cancellation)
+                    {
+                        self.app.running = true;
+                        self.work.spawn(work);
                     }
                     return false;
                 }
                 // A listing that waits for its owner runs as a task of this
                 // frontend; its text arrives like any other returned work.
-                if let Some(built) = self.built.as_ref()
+                if expanded.is_none()
+                    && let Some(built) = self.built.as_ref()
                     && let Some(listing) = crate::tui::commands::Listing::of(
                         control,
                         built.session_for_terminal(),
@@ -672,7 +719,13 @@ impl Frontend {
             self.shell_escape(command.trim().to_owned());
             return false;
         }
-        if control.starts_with('/') || control.starts_with('!') {
+        if expanded.is_some() && (self.app.running || self.app.operation_cancellation.is_some()) {
+            // As in the ordinary terminal, an extension command waits for
+            // running work as it was typed.
+            self.app.queue_follow_up(typed);
+            return false;
+        }
+        if expanded.is_none() && (control.starts_with('/') || control.starts_with('!')) {
             // No normal settings/save/reopen/transfer/extension adapter is
             // silently routed around the selected entry's actual source paths.
             self.app.push_error(
@@ -709,13 +762,29 @@ impl Frontend {
             let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
                 Box::pin(async move { Returned::Steer(source, task.steer(&typed).await) });
             self.work.spawn(future);
+        } else if parked && expanded.is_some() {
+            self.app
+                .push_error("Resolve the pending approval before running an extension command.");
+            self.app.queue_follow_up(typed);
+            self.queued_blocked = true;
         } else if parked {
             let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
                 Box::pin(async move { Returned::Decision(task.request_decision(&typed).await) });
             self.app.running = true;
             self.work.spawn(future);
         } else {
-            self.app.push_user(typed.clone());
+            // The person sees the line they typed. An extension command's
+            // expansion is model input only: it goes straight to the turn
+            // below and is never read again as a control or a shell escape.
+            let shown = match expanded {
+                Some(prompt) => {
+                    let line = typed;
+                    typed = prompt;
+                    line
+                }
+                None => typed.clone(),
+            };
+            self.app.push_user(shown);
             self.app.running = true;
             self.app.discard_stream_deltas = false;
             self.app.active_response = None;
@@ -878,7 +947,23 @@ impl Frontend {
         })
         .await
     }
-    async fn fresh_clear(&mut self) -> Result<(), PrivateTerminalError> {
+    /// `carry`: the conversation is retired for a settings change and its
+    /// record is adopted by the conversation that is built here.
+    async fn fresh_clear(&mut self, carry: bool) -> Result<(), PrivateTerminalError> {
+        if carry {
+            // The lent authority retires the conversation through its own
+            // owners first. A refusal keeps it, and this frontend, as they
+            // are.
+            let busy = self.app.running || !self.work.is_empty() || self.listings != 0;
+            let Some(authority) = &mut self.popup.inner.settings else {
+                return Err(PrivateTerminalError::InputHandoff);
+            };
+            if let Returned::Listing(Err(line)) = authority.retire(self.built.as_ref(), busy).await
+            {
+                self.app.push_error(line);
+                return Ok(());
+            }
+        }
         // The actual read future has returned/dropped at the select boundary.
         // Move its sole ownership out before cancelling/draining any old work;
         // no normal read can run during the subsequent requested password.
@@ -929,9 +1014,16 @@ impl Frontend {
         }
         drop(input);
         self.built = None; // no closed lane/client/view is used for the rebuild
-        let bootstrap = old
-            .capture_after_retirement()
-            .map_err(PrivateTerminalError::Source)?;
+        let bootstrap = match (carry, &mut self.popup.inner.settings) {
+            // The change is committed and the startup captured anew, for
+            // the successor of the conversation that was just retired. Its
+            // approval state takes the place of the retired start's.
+            (true, Some(authority)) => authority.recapture(&mut self.approval),
+            (true, None) => Err(PrivateTerminalError::InputHandoff),
+            (false, _) => old
+                .capture_after_retirement()
+                .map_err(PrivateTerminalError::Source),
+        }?;
         self.configuration.check_bootstrap(&bootstrap)?;
         self.popup.inner.secret_reader = true;
         self.popup
@@ -945,7 +1037,9 @@ impl Frontend {
                 .await
                 .map_err(PrivateTerminalError::Source)?,
         );
-        if fresh.thread_id() == old_id {
+        // A clear starts another thread; a carried conversation keeps its
+        // own, in a scope of its own.
+        if (fresh.thread_id() == old_id) != carry {
             fresh.close();
             return Err(PrivateTerminalError::InputHandoff);
         }
@@ -975,6 +1069,18 @@ impl Frontend {
         self.popup.inner.secret_reader = false;
         self.input = Some(OwnedNormalInput);
         self.build_full().await?;
+        if carry {
+            let Some(authority) = &mut self.popup.inner.settings else {
+                return Err(PrivateTerminalError::InputHandoff);
+            };
+            match authority.adopt(self.built.as_ref()).await {
+                Returned::Listing(Ok(line)) => self.app.push(line),
+                Returned::Listing(Err(reason)) => {
+                    return Err(PrivateTerminalError::CarryOver(reason));
+                }
+                _ => return Err(PrivateTerminalError::InputHandoff),
+            }
+        }
         Ok(())
     }
     async fn loop_inner(&mut self) -> Result<i32, PrivateTerminalError> {
@@ -1034,13 +1140,23 @@ impl Frontend {
                 });
                 if let Some((typed, queue)) = next {
                     if typed.trim() == "/clear" {
-                        self.fresh_clear().await?;
+                        self.fresh_clear(false).await?;
                         continue;
                     }
                     if self.start(typed, queue) {
                         return Ok(0);
                     }
                 }
+            }
+            // A validated settings change of the person's own: the
+            // conversation is retired and carried over, like a clear that
+            // keeps its record.
+            if self.app.modal.is_none()
+                && let Some(authority) = &self.popup.inner.settings
+                && authority.pending()
+            {
+                self.fresh_clear(true).await?;
+                continue;
             }
             if let Some(built) = self.built.as_mut() {
                 // This is the original real receiver, drained even while the

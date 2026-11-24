@@ -722,6 +722,45 @@ How each normal component runs on a selected agent today.
 | Gadget runtime and catalog | tracked: the update as a host note of parts; see "Gadget runtime" |
 | Decisions inside the approval gate, `ask_user` answers | recorded as results; no decision or answer witness yet |
 
+## Carrying a conversation into a new agent
+
+The ordinary transfer and reopening stay refused for an agent with a source
+view. A selected conversation is carried only by its own pair of operations.
+
+- `Agent::retire_conversation_with_view` is for an idle root agent with no
+  parked approval and no waiting input. It records notifications addressed
+  to the agent, asks the boundary for the source of every message the agent
+  appended itself, and then issues an `ActualConversationTransfer`: the
+  recorded state, the agent's own commit and source beside every message,
+  the thread and the next save sequence. Then it closes the source view; the
+  agent takes no further entry. A todo list that names a reply which is no
+  longer recorded refuses, and the conversation is kept.
+- `Agent::adopt_conversation_with_view` is for a fresh agent with a source
+  view: nothing recorded, nothing saved. It issues one commit per message
+  with the event `RetainedEvent::Adopted`, each naming its transferred
+  original, and a `ConversationAdopter` that the host hands to this one call
+  gives each a source of the new conversation. Then, at once, the recorded
+  state becomes the transferred one, every message stands beside its new
+  source, and a todo's origin follows its reply. Under the retired agent's
+  thread the save sequence continues. The transfer is adopted once; a
+  failed adoption leaves it unadopted.
+
+Neither runs a model, a tool, a turn hook or a checkpoint. A transfer cannot
+be built outside the framework, from a checkpoint, a caller's state or JSON.
+The adopter is not a boundary method on purpose: a boundary that was never
+asked to adopt has no adoption path. The adoption fact behind a commit is
+held erased and read only by `ActualRetainedCommit::adopted`.
+
+The privacy conversation's adopter is `privacy_session/view/adoption.rs`. It
+accepts only the successor that the retirement named, checks every original
+against the retired conversation, lane and commit, admits raw text anew from
+the retired capture, and renames the retired scope's placeholders in
+model-origin text. The source it gives is a kind of its own, beside the new
+agent's adopted commit; the request view sends raw pieces as their admitted
+views and model-origin pieces as renamed. A reply that was received with
+provider items is not carried. See
+[privacy-startup.md](privacy-startup.md#settings-changes-inside-a-conversation).
+
 ## Limits that will remain
 
 - A raw text that contains an issued placeholder is refused, including a

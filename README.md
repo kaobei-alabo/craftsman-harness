@@ -116,11 +116,14 @@ local state, `craftsman privacy init` creates the key, `craftsman privacy
 enable --detector <id>` adds the policy to a user file that has none, and
 `craftsman privacy set <setting> <value>` changes one setting of a file that
 enables privacy; nothing is enabled without that explicit command or your own
-edit. The private
-terminal is narrower than the ordinary one: read-only commands such as
-`/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs locally
-and a background task can be cancelled, but there is no settings change and
-no session resume. Voice input is owned only in a build that has it; its
+edit. Inside a private conversation `/model`, `/effort` and `/mode` change
+that setting: the conversation is retired, the password is asked again, and
+its whole record is carried into a new vault scope of the same thread. The
+private terminal is narrower than the ordinary one: read-only commands such
+as `/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs
+locally, a background task can be cancelled, `/compact` summarizes and your
+extension commands send their prompt to the model; but there is no session
+resume, and provider setup, harness and agent selection are refused. Voice input is owned only in a build that has it; its
 lifecycle was run without audio and it has not been validated with a
 microphone. This prototype has local test evidence
 only; it is not merged, installed or validated on hosted runners.

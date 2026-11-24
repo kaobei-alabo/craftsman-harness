@@ -257,6 +257,10 @@ pub enum RetainedEvent {
     Summary,
     ToolResult,
     Framework(FrameworkCommit),
+    /// Retained by adopting a transferred conversation. The event that first
+    /// produced the message is the transferred original's own; see
+    /// [`ActualRetainedCommit::adopted`].
+    Adopted,
 }
 
 /// Issued at the agent's actual append/commit, with the immutable item that
@@ -274,6 +278,9 @@ struct Retained {
     summary: Option<ActualStagedSummary>,
     parts: Option<Arc<[SourcePart]>>,
     host_stage: Option<ActualStagedHostMessage>,
+    /// The adopted message this commit was issued for, held erased: only
+    /// an adoption makes one, and only `adopted` reads it.
+    adopted: Option<SourceRef>,
 }
 
 impl ActualRetainedCommit {
@@ -292,6 +299,7 @@ impl ActualRetainedCommit {
             summary: None,
             parts: None,
             host_stage: None,
+            adopted: None,
         }))
     }
 
@@ -310,6 +318,7 @@ impl ActualRetainedCommit {
             summary: None,
             parts: None,
             host_stage: None,
+            adopted: None,
         }))
     }
 
@@ -323,6 +332,7 @@ impl ActualRetainedCommit {
             summary: Some(stage),
             parts: None,
             host_stage: None,
+            adopted: None,
         }))
     }
 
@@ -341,6 +351,7 @@ impl ActualRetainedCommit {
             summary: None,
             parts: Some(parts),
             host_stage: None,
+            adopted: None,
         }))
     }
 
@@ -354,7 +365,36 @@ impl ActualRetainedCommit {
             summary: None,
             parts: Some(stage.0.parts.clone()),
             host_stage: Some(stage),
+            adopted: None,
         }))
+    }
+
+    /// Issued only where a fresh agent adopts a transferred conversation,
+    /// for the message at `adoption`'s place. The message is the original's.
+    pub(crate) fn adopted_issued(owner: &ActualAgentOwner, adoption: ActualAdoptedMessage) -> Self {
+        Self(Arc::new(Retained {
+            owner: owner.clone(),
+            event: RetainedEvent::Adopted,
+            message: adoption.original().commit().message().clone(),
+            received: None,
+            edits: Vec::new(),
+            summary: None,
+            parts: None,
+            host_stage: None,
+            adopted: Some(SourceRef::new(adoption.0)),
+        }))
+    }
+
+    /// The transferred original behind an adopted message: the retiring
+    /// agent's own commit, with its true event, and the source that agent's
+    /// boundary kept beside it. `None` for every other event.
+    pub fn adopted(&self) -> Option<ActualAdoptedMessage> {
+        match &self.0.adopted {
+            Some(adoption) => adoption
+                .downcast::<AdoptedMessage>()
+                .map(ActualAdoptedMessage),
+            None => None,
+        }
     }
 
     pub fn host_stage(&self) -> Option<&ActualStagedHostMessage> {
@@ -507,6 +547,123 @@ impl ActualSourcedMessage {
     }
     pub fn source(&self) -> &SourceRef {
         &self.source
+    }
+}
+
+/// The whole recorded conversation of a selected agent, as it stood when that
+/// agent's own retirement closed its source view. Only
+/// `Agent::retire_conversation_with_view` issues one: for an idle root agent
+/// with no parked approval, after every recorded message had a source of the
+/// retiring boundary. It is immutable, and a fresh selected agent adopts it at
+/// most once. It is not a checkpoint image, a caller's state or JSON: nothing
+/// outside this crate can make one. It grants the host no source, transport,
+/// restoration or permission authority; the adopting host validates every
+/// original against its own retired owner.
+#[derive(Clone)]
+pub struct ActualConversationTransfer(Arc<Transfer>);
+struct Transfer {
+    owner: ActualAgentOwner,
+    state: AgentState,
+    messages: Vec<ActualSourcedMessage>,
+    todos: Option<Vec<super::PartFrom>>,
+    thread: String,
+    next_seq: u64,
+    checkpoint_failed: bool,
+    recovery: Option<crate::checkpoint::RecoveryInfo>,
+    adopted: std::sync::atomic::AtomicBool,
+}
+impl ActualConversationTransfer {
+    /// `saved` is the retiring agent's thread, its next save sequence,
+    /// whether its last save failed and its recovery notice.
+    pub(crate) fn issued(
+        owner: &ActualAgentOwner,
+        state: AgentState,
+        messages: Vec<ActualSourcedMessage>,
+        todos: Option<Vec<super::PartFrom>>,
+        saved: (String, u64, bool, Option<crate::checkpoint::RecoveryInfo>),
+    ) -> Self {
+        let (thread, next_seq, checkpoint_failed, recovery) = saved;
+        Self(Arc::new(Transfer {
+            owner: owner.clone(),
+            state,
+            messages,
+            todos,
+            thread,
+            next_seq,
+            checkpoint_failed,
+            recovery,
+            adopted: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+    /// The retired agent.
+    pub fn owner(&self) -> &ActualAgentOwner {
+        &self.0.owner
+    }
+    /// Every recorded message with the source the retired boundary kept
+    /// beside it, in the recorded order.
+    pub fn messages(&self) -> &[ActualSourcedMessage] {
+        &self.0.messages
+    }
+    /// The recorded state at retirement: messages, todos, files and custom
+    /// state. Read-only; the adopting agent takes exactly this.
+    pub fn state(&self) -> &AgentState {
+        &self.0.state
+    }
+    /// The thread the retired agent saved under.
+    pub fn thread_id(&self) -> &str {
+        &self.0.thread
+    }
+    pub fn same_transfer(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    /// Whether an agent has adopted this conversation.
+    pub fn is_adopted(&self) -> bool {
+        self.0.adopted.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub(crate) fn todos(&self) -> Option<&[super::PartFrom]> {
+        self.0.todos.as_deref()
+    }
+    pub(crate) fn next_seq(&self) -> u64 {
+        self.0.next_seq
+    }
+    pub(crate) fn checkpoint_failed(&self) -> bool {
+        self.0.checkpoint_failed
+    }
+    pub(crate) fn recovery(&self) -> Option<crate::checkpoint::RecoveryInfo> {
+        self.0.recovery
+    }
+    /// Marks the one adoption. `false` when it was adopted before.
+    pub(crate) fn take(&self) -> bool {
+        !self
+            .0
+            .adopted
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+/// One message of a transferred conversation at the adoption that retained
+/// it: the transfer and the message's place in it. Issued only with the
+/// adopting agent's commit; a place, a role or equal text cannot make one.
+#[derive(Clone)]
+pub struct ActualAdoptedMessage(Arc<AdoptedMessage>);
+struct AdoptedMessage {
+    transfer: ActualConversationTransfer,
+    index: usize,
+}
+impl ActualAdoptedMessage {
+    /// `index` is a place of `transfer`; the one caller iterates them.
+    pub(crate) fn issued(transfer: ActualConversationTransfer, index: usize) -> Self {
+        Self(Arc::new(AdoptedMessage { transfer, index }))
+    }
+    pub fn transfer(&self) -> &ActualConversationTransfer {
+        &self.0.transfer
+    }
+    pub fn index(&self) -> usize {
+        self.0.index
+    }
+    /// The retired agent's own commit and the source its boundary kept.
+    pub fn original(&self) -> &ActualSourcedMessage {
+        &self.0.transfer.0.messages[self.0.index]
     }
 }
 
@@ -1244,6 +1401,8 @@ opaque_debug!(
     ActualStagedSummary,
     ActualStagedHostMessage,
     ActualSourcedMessage,
+    ActualConversationTransfer,
+    ActualAdoptedMessage,
     ActualHostScheduledCall,
     ActualBoundaryController,
     ActualBoundaryInput,

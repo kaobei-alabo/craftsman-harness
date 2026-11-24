@@ -164,6 +164,15 @@ A new conversation is a new scope and counts against the vault's fixed capacity
 of 128 scopes that hold a value, 512 values per scope and 4096 values in total.
 Nothing is pruned, reused or raised.
 
+A conversation that is carried over for a settings change keeps its thread
+and gets a scope of its own: only the retirement of a conversation issues the
+binding of its successor, whose namespace names how many scopes the thread
+had before. It counts against the same capacity. The successor first admits
+every value the retired scope held, each as its own capture with the origin
+`RetiredValue` and the category that scope recorded; for such a capture the
+one span is the whole text and the detector is not asked about a value out
+of its context. Every other text is admitted as always.
+
 ## Admission
 
 One admission of one capture runs alone, in this order:

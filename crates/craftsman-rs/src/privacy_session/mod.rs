@@ -24,6 +24,11 @@
 //! The canonical record of what was typed, returned or received is kept by
 //! its own owner and is not changed here. A node's model view is a separate
 //! projection of it.
+//!
+//! A conversation is never rebound. When its settings change, it is retired
+//! and its record is carried into a new conversation of the same thread,
+//! which has a scope of its own and admits every original anew
+//! (`view/adoption.rs`).
 
 mod control;
 #[cfg(test)]
@@ -63,7 +68,7 @@ pub use transport::delegated_provider;
 pub use transport::{ViewChatProvider, ViewNativeProvider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    NativeReplay, PlannedOperation, ReceivedModel, SourceField,
+    NativeReplay, PlannedOperation, ReceivedModel, RetiredConversation, SourceField,
 };
 
 use crate::checkpoints::LibsqlCheckpointer;
@@ -166,6 +171,11 @@ pub enum AdmitError {
 pub struct FreshConversationBinding {
     thread_id: String,
     workspace: String,
+    /// How many scopes this thread had before this one. A reserved
+    /// conversation has none. Only the retirement of a conversation issues
+    /// the binding of its successor, which keeps the thread and is one
+    /// further; see `RetiredConversation::successor`.
+    generation: u32,
 }
 
 impl FreshConversationBinding {
@@ -182,6 +192,7 @@ impl FreshConversationBinding {
         Ok(Self {
             thread_id: LibsqlCheckpointer::new_thread_id(),
             workspace: format!("{:x}", digest.finalize()),
+            generation: 0,
         })
     }
 
@@ -190,12 +201,34 @@ impl FreshConversationBinding {
         &self.thread_id
     }
 
+    /// Whether this binding was made for `workspace`: its canonical path
+    /// has the digest this binding keeps.
+    pub(crate) fn is_for(&self, workspace: &Path) -> bool {
+        let Ok(workspace) = std::fs::canonicalize(workspace) else {
+            return false;
+        };
+        let mut digest = Sha256::new();
+        digest.update(b"craftsman/privacy-session/workspace/v1\0");
+        digest.update(workspace.as_os_str().as_encoded_bytes());
+        format!("{:x}", digest.finalize()) == self.workspace
+    }
+
+    /// A carried conversation keeps its thread and gets a scope of its own:
+    /// the namespace names how many scopes came before it, so it is never
+    /// the retired conversation's.
     fn namespace(&self) -> Result<HostNamespace, SessionStop> {
+        let carried;
         HostNamespace::supplied_by_host(
             "craftsman/privacy-session/v1",
             &self.workspace,
             &self.thread_id,
-            "conversation",
+            match self.generation {
+                0 => "conversation",
+                generation => {
+                    carried = format!("conversation/carried-{generation}");
+                    &carried
+                }
+            },
             "main+delegated+compaction/v1",
         )
         .map_err(|_| SessionStop::Scope)
@@ -754,11 +787,19 @@ pub enum RawOrigin {
     HostConfig,
     /// Fixed text built into the application.
     HostStatic,
+    /// One private value that the retired conversation of the same thread
+    /// held, on its own, with the category that conversation's vault scope
+    /// recorded for it. Made only while a retired record is adopted.
+    RetiredValue,
 }
 
 struct RawInner {
     origin: RawOrigin,
     text: Zeroizing<String>,
+    /// The category of a retired value. The whole text is that one value,
+    /// and admission takes the recorded category instead of asking the
+    /// detector about a value out of its context.
+    known: Option<Category>,
 }
 
 /// One actual raw source, immutable once captured. Cloning shares the same
@@ -778,6 +819,7 @@ impl CapturedRaw {
             inner: Arc::new(RawInner {
                 origin,
                 text: Zeroizing::new(text.to_owned()),
+                known: None,
             }),
         }
     }
@@ -1096,14 +1138,30 @@ impl PrivacySession {
         {
             return Err(refuse(AdmitRefusal::IssuedPlaceholder));
         }
-        let spans = match tokio::time::timeout_at(deadline, inner.detector.detect(text)).await {
-            Err(_) => return Err(inner.stopped(SessionStop::Deadline)),
-            Ok(Err(HookError::Input)) => return Err(refuse(AdmitRefusal::TooLarge)),
-            Ok(Err(error)) => return Err(inner.stopped(SessionStop::Detector(error))),
-            Ok(Ok(spans)) => spans,
+        let (whole, detected);
+        let spans: &[TextSpan] = match raw.inner.known {
+            // A retired value on its own: the one span is the whole text.
+            Some(category) => {
+                whole = [TextSpan {
+                    start: 0,
+                    end: text.len(),
+                    category,
+                }];
+                &whole
+            }
+            None => {
+                detected =
+                    match tokio::time::timeout_at(deadline, inner.detector.detect(text)).await {
+                        Err(_) => return Err(inner.stopped(SessionStop::Deadline)),
+                        Ok(Err(HookError::Input)) => return Err(refuse(AdmitRefusal::TooLarge)),
+                        Ok(Err(error)) => return Err(inner.stopped(SessionStop::Detector(error))),
+                        Ok(Ok(spans)) => spans,
+                    };
+                &detected
+            }
         };
         inner.live().map_err(AdmitError::Stopped)?;
-        preflight(text, &spans, &ledger).map_err(|error| match error {
+        preflight(text, spans, &ledger).map_err(|error| match error {
             Preflight::Refused(refusal) => refuse(refusal),
             Preflight::Vault(error) => inner.stopped(SessionStop::Vault(error)),
         })?;

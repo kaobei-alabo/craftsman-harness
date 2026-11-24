@@ -36,10 +36,13 @@ pub(crate) async fn normal_route(
         return Err(PrivateTerminalError::Startup(StartupError::Invocation));
     };
     requirements.select_normal_routing()?;
-    let terminal = match OwnedSecretTerminal::enter() {
+    let mut terminal = match OwnedSecretTerminal::enter() {
         Ok(terminal) => terminal,
         Err(error) => return Err(PrivateTerminalError::Source(BootstrapError::Key(error))),
     };
+    // Only this selected startup may change the person's settings from
+    // inside its conversation and carry the conversation over.
+    terminal.lend_router_settings();
     let code = terminal.run_captured_private(bootstrap, approval).await?;
     Ok(Some(code))
 }
@@ -230,18 +233,23 @@ pub(crate) async fn enable(
 
 /// The explicit settings writer. Its invocation is the user's authorization
 /// of this one change: it sets one named setting of the actual user file
-/// that enables privacy, where the ordinary terminal cannot be used to change
-/// it. Every other byte of the file is kept: the value of an existing member
-/// is replaced in place, and a missing member is inserted after the opening
-/// brace. The candidate is validated as a whole, and the same staged,
-/// identity-bound replacement as `enable` commits it. Nothing is turned off,
-/// no policy, provider or key member is touched, and no conversation is
-/// started. A running private conversation keeps the configuration it
-/// captured; the change applies to the next start.
+/// that enables privacy, without a conversation. Every other byte of the
+/// file is kept: the value of an existing member is replaced in place, and a
+/// missing member is inserted after the opening brace. The candidate is
+/// validated as a whole, and the same staged, identity-bound replacement as
+/// `enable` commits it. Nothing is turned off, no policy, provider or key
+/// member is touched, and no conversation is started. A running private
+/// conversation changes its settings through its own terminal, which
+/// carries the conversation over; one that is running elsewhere ends when
+/// its captured file changes.
 pub(crate) async fn set(key: &str, value: &str) -> std::result::Result<(), PrivateTerminalError> {
     // The settings this command knows, each with its own check of the value.
     let valid = match key {
-        "permission_mode" => crate::config::PermissionMode::parse(value).is_some(),
+        "permission_mode" => match crate::config::PermissionMode::parse(value) {
+            Some(mode) if mode_asks_before_writes(mode) => true,
+            Some(_) => return Err(StartupError::ModeDecidesWrites.into()),
+            None => false,
+        },
         "agent" => crate::agents::validate_agent_name(value).is_ok(),
         "model" => !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control),
         _ => return Err(StartupError::SettingUnsupported.into()),
@@ -249,70 +257,118 @@ pub(crate) async fn set(key: &str, value: &str) -> std::result::Result<(), Priva
     if !valid {
         return Err(StartupError::SettingValue.into());
     }
+    let original = enabled_original()?;
+    let candidate = edited(&original, &[(vec![key.to_owned()], value.into())])?;
+    commit(&original, &candidate)
+}
+
+/// Whether a file write still waits for the person under this permission
+/// mode. The gate of a private conversation lets the mode's own automatic
+/// decision stand for a reviewed write, so a mode that decides writes
+/// itself would write restored private values that nobody was shown. The
+/// settings writers of this module take only the modes that ask.
+pub(crate) fn mode_asks_before_writes(mode: crate::config::PermissionMode) -> bool {
+    use crate::config::PermissionMode;
+    matches!(mode, PermissionMode::Plan | PermissionMode::Manual)
+}
+
+/// The bytes of the actual user file, which must enable privacy. Read-only.
+pub(crate) fn enabled_original() -> std::result::Result<Vec<u8>, PrivateTerminalError> {
     let source = actual_source()?;
     if !source.is_enabled() {
         return Err(StartupError::SettingNeedsPolicy.into());
     }
-    let Ok((root, original)) = source.recheck_original() else {
+    let Ok((_, original)) = source.recheck_original() else {
         return Err(StartupError::Source.into());
     };
-    let Some((original, lease)) = original else {
-        return Err(StartupError::NoUserFile.into());
-    };
-    let encoded = serde_json::Value::from(value).to_string();
-    let candidate = match member_value(original, key) {
-        // One such member: its value is replaced where it stands.
-        Some(Some(span)) => {
-            let mut candidate = Vec::with_capacity(original.len() + encoded.len());
-            candidate.extend_from_slice(&original[..span.start]);
-            candidate.extend_from_slice(encoded.as_bytes());
-            candidate.extend_from_slice(&original[span.end..]);
-            candidate
-        }
-        // No such member: it is inserted after the opening brace.
-        Some(None) => {
-            let member = format!("\"{key}\":{encoded}");
-            match inserted(original, &member) {
-                Some(candidate) => candidate,
-                None => return Err(StartupError::Invalid.into()),
-            }
-        }
-        None => return Err(StartupError::Invalid.into()),
-    };
-    // The whole candidate, before anything is written: only this member
-    // differs and holds the value; the policy is still the valid enabled
-    // one; and it parses as the configuration a startup would take.
-    let (Ok(before), Ok(mut after)) = (
-        serde_json::from_slice::<serde_json::Value>(original),
-        serde_json::from_slice::<serde_json::Value>(&candidate),
-    ) else {
-        return Err(StartupError::Invalid.into());
-    };
-    let (Some(old), Some(new)) = (before.as_object(), after.as_object_mut()) else {
-        return Err(StartupError::Invalid.into());
-    };
-    if new.get(key).and_then(serde_json::Value::as_str) != Some(value) {
-        return Err(StartupError::Invalid.into());
+    match original {
+        Some((original, _)) => Ok(original.to_vec()),
+        None => Err(StartupError::NoUserFile.into()),
     }
-    match old.get(key) {
-        Some(previous) => {
-            new.insert(key.to_owned(), previous.clone());
-        }
-        None => {
-            new.remove(key);
-        }
-    }
+}
+
+/// `original` with each of `edits` applied: the value at a path of member
+/// names is set to a JSON value. An existing value is replaced where it
+/// stands; a missing member, with any missing objects above it, is inserted
+/// after the opening brace of the nearest object that exists. Every other
+/// byte is kept.
+///
+/// The whole candidate is validated before it is returned, and nothing is
+/// written here: it differs from the original in exactly those places; the
+/// policy member is untouched and is still the valid enabled one; and it
+/// parses as the configuration a startup would take, under this build's
+/// voice rule. A caller that knows what the edits mean checks that too.
+pub(crate) fn edited(
+    original: &[u8],
+    edits: &[(Vec<String>, serde_json::Value)],
+) -> std::result::Result<Vec<u8>, PrivateTerminalError> {
     use crate::privacy_policy::{PolicyError, reject_unavailable_user_source};
-    if after != before
+    let invalid = || PrivateTerminalError::Startup(StartupError::Invalid);
+    let Ok(before) = serde_json::from_slice::<serde_json::Value>(original) else {
+        return Err(invalid());
+    };
+    let mut expected = before.clone();
+    let mut candidate = original.to_vec();
+    for (path, value) in edits {
+        // The same edit on the parsed value says what the bytes must mean.
+        let mut at = &mut expected;
+        for (depth, key) in path.iter().enumerate() {
+            let Some(members) = at.as_object_mut() else {
+                return Err(invalid());
+            };
+            if depth + 1 == path.len() {
+                members.insert(key.clone(), value.clone());
+                break;
+            }
+            at = members
+                .entry(key.clone())
+                .or_insert_with(|| serde_json::json!({}));
+        }
+        candidate = match with_value_at(&candidate, path, &value.to_string()) {
+            Some(candidate) => candidate,
+            None => return Err(invalid()),
+        };
+    }
+    let Ok(after) = serde_json::from_slice::<serde_json::Value>(&candidate) else {
+        return Err(invalid());
+    };
+    if edits.iter().any(|(path, _)| path.is_empty())
+        || after != expected
+        || after.get("privacy") != before.get("privacy")
         || reject_unavailable_user_source(&candidate) != Err(PolicyError::NotYetAvailable)
     {
-        return Err(StartupError::Invalid.into());
+        return Err(invalid());
     }
     match serde_json::from_slice::<crate::config::Config>(&candidate) {
         Ok(configuration) => require_voice_off(&configuration)?,
-        Err(_) => return Err(StartupError::Invalid.into()),
+        Err(_) => return Err(invalid()),
     }
-    match root.replace_user_config(lease, original, &candidate) {
+    Ok(candidate)
+}
+
+/// Replaces the actual user file, which must still be `original` and enable
+/// privacy, with `candidate`, through the retained source's staged,
+/// identity-bound replacement, and reads it back. The refusals say which
+/// phase was reached: nothing replaced, a staging entry left, or written
+/// and then not verifiable.
+pub(crate) fn commit(
+    original: &[u8],
+    candidate: &[u8],
+) -> std::result::Result<(), PrivateTerminalError> {
+    let source = actual_source()?;
+    if !source.is_enabled() {
+        return Err(StartupError::SettingNeedsPolicy.into());
+    }
+    let Ok((root, held)) = source.recheck_original() else {
+        return Err(StartupError::Source.into());
+    };
+    let Some((held, lease)) = held else {
+        return Err(StartupError::NoUserFile.into());
+    };
+    if held != original {
+        return Err(StartupError::Source.into());
+    }
+    match root.replace_user_config(lease, held, candidate) {
         Ok(()) => {}
         Err((_, crate::privacy_key::root::WRITTEN)) => {
             return Err(StartupError::WrittenThenChanged.into());
@@ -330,15 +386,73 @@ pub(crate) async fn set(key: &str, value: &str) -> std::result::Result<(), Priva
         return Err(StartupError::WrittenThenChanged.into());
     };
     match written.recheck_original() {
-        Ok((_, Some((bytes, _)))) if written.is_enabled() && bytes == candidate.as_slice() => {
-            Ok(())
-        }
+        Ok((_, Some((bytes, _)))) if written.is_enabled() && bytes == candidate => Ok(()),
         _ => Err(StartupError::WrittenThenChanged.into()),
     }
 }
 
-/// Where the value of the top-level member `key` stands in the bytes of a
-/// JSON object. `Some(None)`: the object has no such member. `None`: the
+/// The startup of this same invocation, captured anew from the actual user
+/// source for a conversation that is carried over: the router's own steps
+/// up to the terminal, which is already entered. No conversation is
+/// reserved; the carried one brings its successor's binding.
+pub(crate) fn recapture()
+-> std::result::Result<(PrivateBootstrap, super::CapturedApprovalStart), PrivateTerminalError> {
+    let captured = match TerminalStartupCapture::capture_actual()? {
+        TerminalStartupCapture::Captured(captured) => captured,
+        TerminalStartupCapture::Legacy(_) => {
+            return Err(PrivateTerminalError::CarryOver(
+                "The user configuration no longer proposes privacy.".into(),
+            ));
+        }
+    };
+    let startup = captured.into_owned()?;
+    let approval = startup.approval_start()?;
+    let bootstrap = preflight(startup, false)?;
+    OwnedSecretTerminal::check_captured_bootstrap(&bootstrap)?;
+    let Some(requirements) = bootstrap.startup_requirements()? else {
+        return Err(PrivateTerminalError::Startup(StartupError::Invocation));
+    };
+    requirements.select_normal_routing()?;
+    Ok((bootstrap, approval))
+}
+
+/// `original` with the value at `path` set to the JSON text `encoded`. See
+/// [`edited`]. `None` when the bytes are not an object along the path.
+fn with_value_at(original: &[u8], path: &[String], encoded: &str) -> Option<Vec<u8>> {
+    let name = |key: &str| serde_json::Value::from(key).to_string();
+    let mut object = 0..original.len();
+    for (depth, key) in path.iter().enumerate() {
+        match member_value(&original[object.clone()], key)? {
+            Some(span) => {
+                let span = object.start + span.start..object.start + span.end;
+                if depth + 1 == path.len() {
+                    let mut candidate = Vec::with_capacity(original.len() + encoded.len());
+                    candidate.extend_from_slice(&original[..span.start]);
+                    candidate.extend_from_slice(encoded.as_bytes());
+                    candidate.extend_from_slice(&original[span.end..]);
+                    return Some(candidate);
+                }
+                object = span;
+            }
+            // Missing from here on: one new member that holds the rest of
+            // the path.
+            None => {
+                let mut value = encoded.to_owned();
+                for below in path[depth + 1..].iter().rev() {
+                    value = format!("{{{}:{value}}}", name(below));
+                }
+                let member = format!("{}:{value}", name(key));
+                let mut candidate = original[..object.start].to_vec();
+                candidate.extend_from_slice(&inserted(&original[object.start..], &member)?);
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Where the value of the member `key` stands in the bytes of one JSON
+/// object. `Some(None)`: the object has no such member. `None`: the
 /// bytes are not one object, or name the member more than once. Strings are
 /// passed with their escapes and nested values with their brackets; nothing
 /// is decoded but the member names. The caller validates the whole

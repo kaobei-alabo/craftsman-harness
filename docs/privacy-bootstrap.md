@@ -123,6 +123,18 @@ accepted text is passed without trimming or expansion; host catalog messages
 remain their separate actual records. No shell/reopen/transfer route is silently
 substituted for a typed private entry. Unsupported commands remain explicit.
 
+A built session can be retired for a successor and a newly built one can
+adopt it. `PrivateBuiltSession::retire_for_successor` runs the bound owner's
+checks, refuses a conversation that cannot be carried, reads the
+conversation's retired values, lets the agent retire and closes the key.
+`PrivateBootstrap::carrying` takes the successor's binding for the same
+workspace; only an unreserved bootstrap takes it. `PrivateBuiltSession::adopt`
+hands the agent the conversation's adopter and then the usage totals. Only
+the router-lent settings authority of the owned terminal calls them
+(`tui/privacy_unlock/owned/settings.rs`); the private captured entry does
+not. An extension command is expanded from the captured user root and
+workspace, and `/compact` runs through the bound task owner.
+
 The receiver presents core's original opaque approval request, keeps that
 exact presentation in the modal, displays the complete bounded derived call,
 and returns core's original decision after a real human choice. Raw feedback

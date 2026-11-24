@@ -8,6 +8,76 @@ use crate::privacy_key::Passphrase;
 use crate::privacy_key::{KeyError, Result, UnlockedVault};
 #[cfg(unix)]
 mod live;
+#[cfg(unix)]
+mod settings;
+
+/// What the owned interactive router lends the frontend it selected: the
+/// person's own settings changes for the running private conversation. A
+/// frontend without one refuses every settings change, as it always did.
+/// `settings.rs` is the one implementation and says what each step does.
+#[cfg(unix)]
+trait SettingsAuthority: Send {
+    /// A typed control or a picker's action. `true` when it was dealt with
+    /// here: a list was shown, a refusal was pushed, a change or local work
+    /// now waits, or `prompt` was set. `prompt` is the expansion of an
+    /// extension command: model input only, which the frontend hands to the
+    /// turn and never reads again as a control.
+    fn asked(
+        &mut self,
+        asked: SettingsAsked<'_>,
+        cfg: &crate::config::Config,
+        built: Option<&crate::privacy_bootstrap::PrivateBuiltSession>,
+        app: &mut crate::tui::app::App,
+        prompt: &mut Option<String>,
+    ) -> bool;
+    /// Local work that the line just asked about started, to run as the
+    /// frontend's own owned work. It runs inside a new turn of `session`,
+    /// which is left in `running` for the person's cancellation.
+    fn work(
+        &mut self,
+        session: &craftsman_harness::SessionCancellation,
+        running: &mut Option<craftsman_harness::TurnCancellation>,
+    ) -> Option<SettingsWork<'static>>;
+    /// Whether a validated change waits to be carried out.
+    fn pending(&self) -> bool;
+    /// Retires the conversation of `built` for its successor. `busy`: the
+    /// frontend still has work running, which refuses. It returns as the
+    /// frontend's other owned local work does: an error line when nothing
+    /// was retired, and then the change is dropped.
+    fn retire<'a>(
+        &'a mut self,
+        built: Option<&'a crate::privacy_bootstrap::PrivateBuiltSession>,
+        busy: bool,
+    ) -> SettingsWork<'a>;
+    /// After the frontend retired its owners: commits the change and
+    /// captures this invocation's startup anew for the successor. `live`
+    /// becomes that startup's own approval state, with what the person
+    /// granted during the conversation kept.
+    fn recapture(
+        &mut self,
+        live: &mut std::sync::Arc<std::sync::Mutex<crate::hitl::ApprovalState>>,
+    ) -> std::result::Result<crate::privacy_bootstrap::PrivateBootstrap, PrivateTerminalError>;
+    /// After the successor's session was built: adopts the retired record
+    /// into it. Returns the line to show, or why nothing was adopted.
+    fn adopt<'a>(
+        &'a mut self,
+        built: Option<&'a crate::privacy_bootstrap::PrivateBuiltSession>,
+    ) -> SettingsWork<'a>;
+}
+
+/// Work of the settings authority that the frontend awaits where it stands.
+/// It returns what the frontend's own local work returns: a line, or an
+/// error line.
+#[cfg(unix)]
+type SettingsWork<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = live::Returned> + Send + 'a>>;
+
+/// What a frontend asks its settings authority about.
+#[cfg(unix)]
+enum SettingsAsked<'a> {
+    Line(&'a str),
+    Action(&'a crate::tui::modals::AppAction),
+}
 
 #[derive(thiserror::Error)]
 pub enum PrivateTerminalError {
@@ -33,6 +103,12 @@ pub enum PrivateTerminalError {
     ApprovalSource,
     #[error("{0}")]
     Startup(crate::privacy_startup::StartupError),
+    /// The conversation was retired for a settings change of the person's
+    /// own and has no successor. Nothing of it is discarded silently.
+    #[error(
+        "The conversation was retired for a settings change and could not be carried into a new private scope. {0} It has ended; its record up to that point remains in the thread store."
+    )]
+    CarryOver(String),
 }
 impl std::fmt::Debug for PrivateTerminalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -141,6 +217,16 @@ impl OwnedSecretTerminal {
         bootstrap: &crate::privacy_bootstrap::PrivateBootstrap,
     ) -> std::result::Result<(), PrivateTerminalError> {
         FrontendConfiguration::Captured.check_bootstrap(bootstrap)
+    }
+    /// Called by the owned interactive router alone, for the startup it
+    /// selected: the frontend of this terminal may change the person's
+    /// model, effort and permission mode and carry the conversation over.
+    /// Every other entry leaves this unset and refuses settings changes.
+    pub(crate) fn lend_router_settings(&mut self) {
+        #[cfg(unix)]
+        {
+            self.inner.settings = Some(Box::new(settings::RouterSettings::default()));
+        }
     }
     /// Capture modes/authority and install signal ownership before raw entry.
     /// Windows refuses before secret input until secure storage is supported.
@@ -414,6 +500,8 @@ struct UnixPopup {
     shutdown: Shutdown,
     ui_events: Option<tokio::sync::mpsc::UnboundedReceiver<crate::tui::session_bridge::UiEvent>>,
     secret_reader: bool,
+    /// Lent by the owned interactive router alone; see [`SettingsAuthority`].
+    settings: Option<Box<dyn SettingsAuthority>>,
 }
 
 #[cfg(unix)]
@@ -438,6 +526,7 @@ impl UnixPopup {
             shutdown,
             ui_events: None,
             secret_reader: true,
+            settings: None,
         })
     }
 

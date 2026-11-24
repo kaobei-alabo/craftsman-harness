@@ -296,6 +296,21 @@ impl PrivateBootstrap {
         self.policy.recheck()?;
         Ok(self.operations.status()?)
     }
+    /// The bootstrap of the one conversation that succeeds a retired one:
+    /// the binding that the retirement itself named, for this same
+    /// workspace. Only an unreserved bootstrap takes it. The unlock that
+    /// follows opens that conversation's own scope.
+    #[cfg(unix)]
+    pub(crate) fn carrying(mut self, carried: &CarriedConversation) -> Result<Self> {
+        self.policy.recheck()?;
+        self.workspace.recheck()?;
+        let binding = carried.retired.successor();
+        if self.binding.is_some() || !binding.is_for(&self.workspace.canonical) {
+            return Err(BootstrapError::Workspace);
+        }
+        self.binding = Some(binding);
+        Ok(self)
+    }
     /// Explicit init with a real confirmation popup, exclusive creation and
     /// no enabling, adoption, cleanup deletion or subsequent model request.
     pub async fn initialize(self, terminal: &mut OwnedSecretTerminal) -> Result<()> {
@@ -866,6 +881,18 @@ pub struct PrivateBuiltSession {
     witness: BuildWitness,
 }
 
+/// What a private conversation leaves when it is retired for a settings
+/// change of the person's own: the agent's transfer of its whole record, the
+/// conversation's own retired values, and the session's usage totals. Made
+/// only by [`PrivateBuiltSession::retire_for_successor`]; adopted once, by
+/// the session built for the successor conversation.
+#[cfg(unix)]
+pub(crate) struct CarriedConversation {
+    transfer: craftsman_harness::provenance::ActualConversationTransfer,
+    retired: crate::privacy_session::RetiredConversation,
+    usage: (u64, u64),
+}
+
 /// What one actual build accepted and composed for the request that was made
 /// of it, held by the built owner. Every entry is an object of this build:
 /// - **the original request**, as the frontend made it before the builder
@@ -982,6 +1009,164 @@ impl PrivateBuiltSession {
     #[cfg(unix)]
     pub(crate) fn workspace(&self) -> &Path {
         &self.owner.workspace.canonical
+    }
+    /// The options of the actual invocation this conversation was started
+    /// with, when a startup issued it.
+    #[cfg(unix)]
+    pub(crate) fn startup_options(
+        &self,
+    ) -> Option<&crate::privacy_startup::CapturedTerminalOptions> {
+        self.owner
+            .policy
+            .startup()
+            .and_then(|owners| owners.requirements.terminal_options())
+    }
+    /// The captured user configuration root and the captured workspace,
+    /// for the extensions this conversation's start could see.
+    #[cfg(unix)]
+    pub(crate) fn extension_roots(&self) -> Option<(PathBuf, &Path)> {
+        self.owner.check_sources().ok()?;
+        let config = self
+            .owner
+            .policy
+            .root()
+            .with_captured_path(|path| Ok(path.to_owned()))
+            .ok()?;
+        Some((config, &self.owner.workspace.canonical))
+    }
+    /// The ordinary manual compaction of this bound session's own
+    /// conversation, as work for the frontend to own: the same idle
+    /// compaction as the ordinary terminal's, through the agent's tracked
+    /// path, so the summary and the kept messages keep their sources. The
+    /// bound owner is checked before it starts and the sources before its
+    /// line is shown.
+    #[cfg(unix)]
+    pub(crate) fn compact(
+        &self,
+    ) -> std::result::Result<
+        std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>,
+        String,
+    > {
+        let task = match self.task_owner() {
+            Ok(task) => task,
+            Err(error) => return Err(error.to_string()),
+        };
+        let compaction = self.session.compaction.clone();
+        Ok(Box::pin(async move {
+            let line = match task.agent.compact_idle_with_view(&compaction).await {
+                Ok(Some((before, after))) => {
+                    format!("compacted conversation: {before} -> {after} messages (saved)")
+                }
+                Ok(None) => "(conversation too short to compact)".into(),
+                Err(craftsman_harness::AgentError::Cancelled) => {
+                    "could not compact conversation: cancelled by the user".into()
+                }
+                Err(error) => format!("could not compact conversation: {error}"),
+            };
+            match task.owner.check_sources() {
+                Ok(()) => line,
+                Err(_) => {
+                    "The private source owner stopped; this local result is not shown.".into()
+                }
+            }
+        }))
+    }
+    /// The view of this bound session, after the same checks as a turn.
+    #[cfg(unix)]
+    fn bound_view(&self) -> std::result::Result<&crate::privacy_session::PrivacyView, String> {
+        if let Err(error) = self.task_owner() {
+            return Err(error.to_string());
+        }
+        match &self.session.privacy_view {
+            Some(view) => Ok(view),
+            None => Err(BootstrapError::Session(SessionStop::Closed).to_string()),
+        }
+    }
+    /// Read-only: whether this conversation can be carried over as it
+    /// stands. The line says why not; nothing is changed either way.
+    #[cfg(unix)]
+    pub(crate) fn carriable(&self) -> std::result::Result<(), String> {
+        let view = self.bound_view()?;
+        let agent = &self.session.agent;
+        if agent.pending_suspension().is_some() {
+            return Err(
+                "Resolve the pending approval before changing a setting; nothing was changed."
+                    .into(),
+            );
+        }
+        let running = self
+            .session
+            .registry
+            .list()
+            .iter()
+            .any(|(_, status)| matches!(status, craftsman_harness::AgentStatus::Running));
+        if running {
+            return Err(
+                "A background task is still running. Wait for it or cancel it before changing a setting; nothing was changed."
+                    .into(),
+            );
+        }
+        let Some(sources) = agent.recorded_sources() else {
+            return Err(BootstrapError::Session(SessionStop::Unbound).to_string());
+        };
+        match view.session().carriable(view.boundary(), &sources) {
+            Ok(()) => Ok(()),
+            Err(why) => Err(why.to_owned()),
+        }
+    }
+    /// Retires this conversation for its successor. In order: the same
+    /// read-only checks as [`carriable`](Self::carriable); the
+    /// conversation's own record of its private values, read while it is
+    /// live; then the agent's own retirement, which issues its whole record
+    /// and closes the source view, the send guard and the vault scope; then
+    /// the key. A refusal before the agent's retirement keeps the
+    /// conversation as it was. Nothing is sent, saved or replayed.
+    #[cfg(unix)]
+    pub(crate) async fn retire_for_successor(
+        &self,
+    ) -> std::result::Result<CarriedConversation, String> {
+        self.carriable()?;
+        let view = self.bound_view()?;
+        let retired = match view.session().retiring(view.boundary()) {
+            Ok(retired) => retired,
+            Err(stop) => return Err(stop.to_string()),
+        };
+        let usage = *self.session.usage.lock().unwrap();
+        let transfer = match self.session.agent.retire_conversation_with_view().await {
+            Ok(transfer) => transfer,
+            Err(error) => return Err(error.to_string()),
+        };
+        self.owner.close();
+        Ok(CarriedConversation {
+            transfer,
+            retired,
+            usage,
+        })
+    }
+    /// Adopts a retired conversation into this newly built session, which
+    /// was built for its successor. The agent issues one adopted commit per
+    /// recorded message and this conversation admits every original anew;
+    /// then the session's usage totals follow. An error adopts nothing.
+    #[cfg(unix)]
+    pub(crate) async fn adopt(
+        &self,
+        carried: &CarriedConversation,
+    ) -> std::result::Result<(), String> {
+        let view = self.bound_view()?;
+        let adopter = view.session().adopter(view.boundary(), &carried.retired);
+        if let Err(error) = self
+            .session
+            .agent
+            .adopt_conversation_with_view(&carried.transfer, &adopter)
+            .await
+        {
+            return Err(error.to_string());
+        }
+        *self.session.usage.lock().unwrap() = carried.usage;
+        match self.owner.check_sources() {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
     }
     pub async fn turn(
         &self,

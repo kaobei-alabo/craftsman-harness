@@ -19,7 +19,9 @@
 //! - an input a person typed, for a section that quotes it whole after the
 //!   controller installed on the agent accepted it;
 //! - the message that carries a call the installed completion controller
-//!   scheduled.
+//!   scheduled;
+//! - a message adopted from the retired conversation of the same thread,
+//!   beside this agent's own adopted commit (`adoption`).
 //!
 //! A conversation has one root agent and the agents it delegates tasks to.
 //! Each has a lane of its own: its replies and results are its own, and a
@@ -45,6 +47,9 @@ use craftsman_harness::{
     AgentError, HitlAction, ModelRequest, Msg, ToolCall, ToolDef, ToolOutcome,
 };
 use std::ops::Range;
+
+mod adoption;
+pub use adoption::RetiredConversation;
 
 /// What this conversation keeps beside a recorded item.
 enum ViewSource {
@@ -107,6 +112,20 @@ enum ViewSource {
     Hosted {
         node: AdmittedNode,
         scheduled: ActualHostScheduledCall,
+    },
+    /// A message this conversation adopted from the retired conversation of
+    /// its thread. `commit` is this agent's own adopted commit; the recorded
+    /// message is the retired one's, unchanged. What a model sees is made of
+    /// `content`, in order, and `calls`: raw text that this scope admitted
+    /// anew (`Admitted`), and model-origin text in this scope's placeholders
+    /// (`Carried`, by its view). Made only while the agent adopts; see
+    /// `adoption`.
+    Adopted {
+        owner: Arc<Inner>,
+        lane: Arc<Lane>,
+        commit: ActualRetainedCommit,
+        content: Vec<AdditionPart>,
+        calls: Vec<ToolCall>,
     },
 }
 
@@ -187,6 +206,10 @@ enum AdditionPart {
     /// The whole text of an input a person typed and the agent retained. It
     /// goes out as the view of that admitted input.
     Quoted(AdmittedNode),
+    /// Text a call of an adopted reply carried in its arguments. `text` is
+    /// what is recorded, as the retired conversation's model wrote it, and
+    /// `view` is the same place of that call in this scope's placeholders.
+    Carried { text: Arc<str>, view: Arc<str> },
 }
 
 /// The most owned host parts one conversation keeps admitted at a time.
@@ -874,6 +897,7 @@ impl PrivacySession {
                             }
                             (text.len(), text.to_string())
                         }
+                        AdditionPart::Carried { text, view } => (text.len(), view.to_string()),
                     };
                     let fits = content
                         .get(at..at + length)
@@ -881,7 +905,8 @@ impl PrivacySession {
                             AdditionPart::Admitted(node) | AdditionPart::Quoted(node) => {
                                 node.captured_text_is(recorded)
                             }
-                            AdditionPart::Model { text, .. } => **text == *recorded,
+                            AdditionPart::Model { text, .. }
+                            | AdditionPart::Carried { text, .. } => **text == *recorded,
                         });
                     if !fits {
                         return Err(SessionStop::Unbound);
@@ -914,6 +939,7 @@ impl PrivacySession {
                                     }
                                     system.push_str(text);
                                 }
+                                AdditionPart::Carried { view, .. } => system.push_str(view),
                             }
                         }
                     }
@@ -1126,6 +1152,49 @@ impl PrivacySession {
                         }
                         Msg::User {
                             content: format!("{}{text}{}", host(open)?, host(close)?),
+                        }
+                    }
+                    // A message adopted from the retired conversation of
+                    // this thread, beside this agent's own adopted commit.
+                    // Its role, ids and error flag are the recorded ones.
+                    (
+                        _,
+                        ViewSource::Adopted {
+                            owner,
+                            lane: adopted,
+                            commit,
+                            content,
+                            calls,
+                        },
+                    ) if Arc::ptr_eq(owner, inner)
+                        && Arc::ptr_eq(adopted, &lane)
+                        && commit.message() == message
+                        && retained_input_is(input, commit) =>
+                    {
+                        let mut text = String::new();
+                        for part in content {
+                            match part {
+                                AdditionPart::Admitted(node) => text.push_str(&quoted(node)?),
+                                AdditionPart::Carried { view, .. } => text.push_str(view),
+                                _ => return Err(SessionStop::Unbound),
+                            }
+                        }
+                        match message {
+                            Msg::User { .. } => Msg::User { content: text },
+                            Msg::Tool {
+                                tool_call_id,
+                                is_error,
+                                ..
+                            } => Msg::Tool {
+                                tool_call_id: tool_call_id.clone(),
+                                content: text,
+                                is_error: *is_error,
+                            },
+                            Msg::Assistant { .. } => Msg::Assistant {
+                                content: text,
+                                tool_calls: calls.clone(),
+                            },
+                            Msg::System { .. } => return Err(SessionStop::Unbound),
                         }
                     }
                     _ => return Err(SessionStop::Unbound),
@@ -1752,35 +1821,86 @@ impl ConversationBoundary {
                     call_id,
                     pointer,
                 } => {
-                    let node = self
-                        .session
-                        .committed_model(reply)
-                        .filter(|node| self.lane.related(&node.inner.lane))
-                        .ok_or_else(|| fault(unbound(inner)))?;
-                    let value = match &node.inner.message {
-                        Msg::Assistant { tool_calls, .. } => tool_calls
-                            .iter()
-                            .find(|call| call.id == *call_id)
-                            .and_then(|call| call.args.pointer(pointer)),
-                        _ => None,
+                    // The reply that asked for the call: one this lane's
+                    // agent committed, or one it adopted. `recorded` is that
+                    // reply as it is recorded; `seen` are the calls a model
+                    // of this scope sees for it, where they differ.
+                    let held = reply.downcast::<ViewSource>();
+                    let (recorded, seen, node) = match held.as_deref() {
+                        Some(ViewSource::Model(node))
+                            if node.committed_by(&self.session)
+                                && self.lane.related(&node.inner.lane) =>
+                        {
+                            (&node.inner.message, None, Some(node))
+                        }
+                        Some(ViewSource::Adopted {
+                            owner,
+                            lane,
+                            commit,
+                            calls,
+                            ..
+                        }) if Arc::ptr_eq(owner, inner) && Arc::ptr_eq(lane, &self.lane) => {
+                            (commit.message(), Some(calls), None)
+                        }
+                        _ => return Err(fault(unbound(inner))),
                     };
                     // Either the string itself, or its JSON encoding, as the
-                    // part says.
-                    let written = match (&part.from, value) {
-                        (PartFrom::Call { .. }, Some(serde_json::Value::String(text))) => {
-                            Some(text.clone())
-                        }
-                        (PartFrom::CallJson { .. }, Some(value)) => {
-                            serde_json::to_string(value).ok()
-                        }
-                        _ => None,
+                    // part says, at this place of the recorded call.
+                    let asked: &[ToolCall] = match recorded {
+                        Msg::Assistant { tool_calls, .. } => tool_calls,
+                        _ => &[],
                     };
+                    let mut written = None;
+                    for call in asked {
+                        if call.id == *call_id {
+                            written = match (&part.from, call.args.pointer(pointer)) {
+                                (PartFrom::Call { .. }, Some(serde_json::Value::String(text))) => {
+                                    Some(text.clone())
+                                }
+                                (PartFrom::CallJson { .. }, Some(value)) => {
+                                    serde_json::to_string(value).ok()
+                                }
+                                _ => None,
+                            };
+                            break;
+                        }
+                    }
                     if written.as_deref() != Some(&*part.text) {
                         return Err(fault(unbound(inner)));
                     }
-                    AdditionPart::Model {
-                        node,
-                        text: part.text.clone(),
+                    match (node, seen) {
+                        (Some(node), _) => AdditionPart::Model {
+                            node: node.clone(),
+                            text: part.text.clone(),
+                        },
+                        // The same place of the same call, as a model of
+                        // this scope sees the adopted reply.
+                        (None, Some(calls)) => {
+                            let mut view = None;
+                            for call in calls {
+                                if call.id == *call_id {
+                                    view = match (&part.from, call.args.pointer(pointer)) {
+                                        (
+                                            PartFrom::Call { .. },
+                                            Some(serde_json::Value::String(text)),
+                                        ) => Some(text.clone()),
+                                        (PartFrom::CallJson { .. }, Some(value)) => {
+                                            serde_json::to_string(value).ok()
+                                        }
+                                        _ => None,
+                                    };
+                                    break;
+                                }
+                            }
+                            match view {
+                                Some(view) => AdditionPart::Carried {
+                                    text: part.text.clone(),
+                                    view: Arc::from(view),
+                                },
+                                None => return Err(fault(unbound(inner))),
+                            }
+                        }
+                        (None, None) => return Err(fault(unbound(inner))),
                     }
                 }
                 // The part says its text is the whole text of something this

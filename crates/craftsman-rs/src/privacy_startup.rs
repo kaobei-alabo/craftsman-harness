@@ -18,7 +18,10 @@ use std::{
     },
 };
 mod route;
-pub(crate) use route::{enable, normal_route, set, status};
+pub(crate) use route::{
+    commit, edited, enable, enabled_original, mode_asks_before_writes, normal_route, recapture,
+    set, status,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StartupError {
@@ -90,6 +93,10 @@ pub enum StartupError {
         "This command changes a user file that enables privacy; without a policy the ordinary terminal changes settings. Nothing was changed."
     )]
     SettingNeedsPolicy,
+    #[error(
+        "That permission mode decides file writes without asking. With privacy enabled, a write that restores private values would then not be shown first. Use `plan` or `manual`. Nothing was changed."
+    )]
+    ModeDecidesWrites,
 }
 pub type Result<T> = std::result::Result<T, StartupError>;
 

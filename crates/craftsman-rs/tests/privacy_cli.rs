@@ -903,6 +903,8 @@ fn privacy_enable_refuses_without_changing_anything() {
 /// What the person types in the private conversation, and after its fresh
 /// clear. Both carry synthetic contact values with outer spaces.
 #[cfg(feature = "gadgets")]
+const MODE_DECIDES_WRITES: &str = "That permission mode decides file writes without asking. With privacy enabled, a write that restores private values would then not be shown first. Use `plan` or `manual`. Nothing was changed.";
+#[cfg(feature = "gadgets")]
 const TYPED: &str = "  Handle alice@example.invalid and +886 912 345 678.  ";
 #[cfg(feature = "gadgets")]
 const FOLLOW: &str = "  Follow up for alice@example.invalid.  ";
@@ -952,6 +954,9 @@ enum Script {
     Safe,
     /// A question, a contact written to a data file, a reply, a follow-up.
     Full,
+    /// A todo list that names the alias, a reply, and a reply after each of
+    /// two settings changes.
+    Carry,
 }
 
 /// The synthetic model. It answers by what the request actually carries:
@@ -989,6 +994,15 @@ impl wiremock::Respond for Model {
             match (self.script, index) {
                 (Script::Clear, 0) => say(format!("Clear-ready reply for {alias}.")),
                 (Script::Clear, _) => say(format!("Fresh reply for {alias}.")),
+                (Script::Carry, 0) => tool_call(
+                    "plan-reply",
+                    "write_todos",
+                    serde_json::json!({"todos":[
+                        {"content":format!("Reply to {alias}"),"status":"pending"}]}),
+                ),
+                (Script::Carry, 1) => say(format!("Planned for {alias}.")),
+                (Script::Carry, 2) => say(format!("Carried reply for {alias}.")),
+                (Script::Carry, _) => say(format!("Mode reply for {alias}.")),
                 (_, 0) => tool_call(
                     "ask-human",
                     "ask_user",
@@ -1372,6 +1386,19 @@ fn privacy_enable_writes_the_policy_after_a_real_approval_and_the_private_termin
             ["privacy", "set", "permission_mode", "sideways"],
             "The value is not valid for that setting. Nothing was changed.",
         ),
+        // A mode that decides file writes without asking.
+        (
+            ["privacy", "set", "permission_mode", "bypass-permissions"],
+            MODE_DECIDES_WRITES,
+        ),
+        (
+            ["privacy", "set", "permission_mode", "accept-edits"],
+            MODE_DECIDES_WRITES,
+        ),
+        (
+            ["privacy", "set", "permission_mode", "auto"],
+            MODE_DECIDES_WRITES,
+        ),
     ] {
         assert_eq!(
             home.run(&arguments),
@@ -1439,6 +1466,14 @@ fn privacy_enable_writes_the_policy_after_a_real_approval_and_the_private_termin
 /// prompt or model text is in any of them.
 #[cfg(feature = "gadgets")]
 fn assert_fixed_reports(output: &[u8]) {
+    // A conversation that ends after a reply: "Response ready".
+    assert_fixed_reports_ending(output, "state=done:app=craftsman:msg=UmVzcG9uc2UgcmVhZHk=");
+}
+
+/// As [`assert_fixed_reports`], for a terminal whose last work decides the
+/// final report `last`.
+#[cfg(feature = "gadgets")]
+fn assert_fixed_reports_ending(output: &[u8], last: &str) {
     let mut reports = Vec::new();
     let mut rest = output;
     while let Some(start) = rest.windows(7).position(|window| window == b"\x1b]7501;") {
@@ -1483,10 +1518,7 @@ fn assert_fixed_reports(output: &[u8]) {
         reports[reports.len() - 2],
         "state=clear:app=craftsman:id=craftsman/tasks"
     );
-    assert_eq!(
-        reports[reports.len() - 1],
-        "state=done:app=craftsman:msg=UmVzcG9uc2UgcmVhZHk="
-    );
+    assert_eq!(reports[reports.len() - 1], last);
 }
 
 /// Each private request carries an issued alias and none of the values the
@@ -1525,6 +1557,37 @@ fn thread_states(runtime: &tokio::runtime::Runtime, home: &Home) -> Vec<serde_js
             let state = row.get::<String>(0).unwrap();
             assert!(!state.contains(SECRET));
             states.push(serde_json::from_str(&state).unwrap());
+        }
+        states
+    })
+}
+
+/// Every recorded state of every thread in the synthetic home's store with
+/// its save sequence, in the order of thread and sequence.
+#[cfg(feature = "gadgets")]
+fn thread_history(runtime: &tokio::runtime::Runtime, home: &Home) -> Vec<(u64, serde_json::Value)> {
+    runtime.block_on(async {
+        let database = libsql::Builder::new_local(home.config.join("threads.db"))
+            .build()
+            .await
+            .unwrap();
+        let mut rows = database
+            .connect()
+            .unwrap()
+            .query(
+                "SELECT seq, state_json FROM checkpoints ORDER BY thread_id, seq",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut states = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            let state = row.get::<String>(1).unwrap();
+            assert!(!state.contains(SECRET));
+            states.push((
+                row.get::<u64>(0).unwrap(),
+                serde_json::from_str(&state).unwrap(),
+            ));
         }
         states
     })
@@ -1820,4 +1883,318 @@ fn the_private_terminal_owns_the_voice_controller_through_a_turn_a_clear_and_its
     // No model was downloaded: the directory the check made is empty.
     let models = setup.home.config.join("models");
     assert_eq!(std::fs::read_dir(&models).unwrap().count(), 0);
+}
+
+/// The alias a private request carries for the typed address: the one in
+/// its first user message.
+#[cfg(feature = "gadgets")]
+fn request_alias(body: &serde_json::Value) -> String {
+    let user = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .unwrap();
+    let end = user.find("@privacy.invalid").unwrap() + "@privacy.invalid".len();
+    user[user[..end].rfind("pv1-").unwrap()..end].to_owned()
+}
+
+/// A settings change inside a private conversation, through the real binary
+/// and the ordinary commands: the model and its effort, then the permission
+/// mode. Each change retires the conversation, writes the user file through
+/// the retained source's writer, asks for the vault password again and
+/// carries the whole record into a new scope of the same thread.
+///
+/// What it shows:
+/// - a refused selection changes nothing and asks for no password;
+/// - a permission mode that decides file writes without asking is refused
+///   the same way;
+/// - the file keeps every byte but the changed values: the named
+///   `provider/model` id and that model's own reasoning setting, then one
+///   inserted `permission_mode` member;
+/// - the next request goes to the newly selected model, with the earlier
+///   roles, call, id, result and reply in order;
+/// - every text of that request is in the new scope's alias, which differs
+///   from the retired one; the retired alias and the typed values are in no
+///   later request;
+/// - the todo list that a reply of the retired conversation stored is still
+///   offered, under the new alias;
+/// - an extension command's expansion is the next turn's input and nothing
+///   else, and the manual compaction answers through the agent's own path;
+/// - the store has one private thread, with every input in order.
+#[cfg(feature = "gadgets")]
+#[test]
+fn actual_normal_settings_changes_carry_the_private_conversation_into_a_new_scope() {
+    let setup = approved(Script::Carry);
+    // The user's own file for this case: one named provider with two models
+    // on this case's loopback endpoint, and the policy that pins the
+    // installed detector.
+    let providers = |selected: &str, reasoning: &str| {
+        format!(
+            r#""model":"fixture/{selected}","providers":{{"fixture":{{"protocol":"openai_chat_completions","base_url":"{}","api_key":"fixture-key","models":{{"first-model":{{"label":"First","settings":{{"reasoning":null}}}},"second-model":{{"label":"Second","reasoning_controls":{{"type":"effort","values":["low","high"]}},"settings":{{"reasoning":{reasoning}}}}}}}}}}},"harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"unknown":{{"kept":[1,2,3],"model":"nested, not \"this\" one"}},"privacy":{{"enabled":true,"detector":{{"gadget":"privacy-detector","function":"detect","component_sha256":"{}","manifest_sha256":"{}"}}}}"#,
+            setup.server.uri(),
+            setup.component,
+            setup.manifest
+        )
+    };
+    let authored = setup
+        .home
+        .user(&format!("{{{}}}", providers("first-model", "null")));
+    initialize(&setup.home);
+    let key = setup.key();
+    // One extension command of the user's own, under the user root.
+    std::fs::create_dir_all(setup.home.config.join("plugins")).unwrap();
+    std::fs::write(
+        setup.home.config.join("plugins/shout-flow.json"),
+        r#"{"version":1,"name":"shout-flow","commands":[{"name":"shout","description":"Answer loudly","prompt":"Answer about {$ARGS} in capitals."}]}"#,
+    )
+    .unwrap();
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    terminal.send(format!("{TYPED}\r").as_bytes());
+    terminal.wait_for("Planned for alice@example.invalid.");
+
+    // A selection the ordinary catalog refuses: a line, no password prompt,
+    // nothing written.
+    terminal.send(b"/model nowhere/none\r");
+    terminal.wait_for("Unknown model provider.");
+    assert!(!screen(&terminal.output).contains("Unlock private privacy key"));
+    assert_eq!(setup.home.user_bytes(), authored);
+
+    // The model and its effort.
+    terminal.send(b"/model fixture/second-model --reasoning=high\r");
+    terminal.unlock();
+    terminal.wait_for("Model: fixture/second-model");
+    let with_model = format!(
+        "{{{}}}",
+        providers("second-model", r#"{"type":"effort","value":"high"}"#)
+    );
+    assert_eq!(
+        String::from_utf8(setup.home.user_bytes()).unwrap(),
+        with_model
+    );
+    // The earlier transcript is still on the screen, and the session's
+    // usage totals came along: two replies of three and two tokens each.
+    assert!(screen(&terminal.output).contains("Planned for alice@example.invalid."));
+    terminal.send(b"/status\r");
+    terminal.wait_for("tokens: input 6, output 4");
+    terminal.send(format!("{FOLLOW}\r").as_bytes());
+    terminal.wait_for("Carried reply for alice@example.invalid.");
+
+    // A permission mode that decides file writes without asking is refused:
+    // a line, no password prompt, nothing written.
+    terminal.send(b"/mode bypass-permissions\r");
+    terminal.wait_for("That permission mode decides file writes without asking.");
+    assert!(!screen(&terminal.output).contains("Unlock private privacy key"));
+    assert_eq!(
+        String::from_utf8(setup.home.user_bytes()).unwrap(),
+        with_model
+    );
+    // A mode that asks: one member inserted after the opening brace.
+    terminal.send(b"/mode plan\r");
+    terminal.unlock();
+    terminal.wait_for("Permission mode: plan");
+    terminal.send(b"/status\r");
+    terminal.wait_for("mode: plan");
+    let with_mode = format!(
+        r#"{{"permission_mode":"plan",{}}}"#,
+        providers("second-model", r#"{"type":"effort","value":"high"}"#)
+    );
+    assert_eq!(
+        String::from_utf8(setup.home.user_bytes()).unwrap(),
+        with_mode
+    );
+    // An extension command: the person sees the line they typed, and its
+    // expansion goes to the model as the turn's input, masked like any
+    // other. It is not read as a control.
+    terminal.send(b"/shout alice@example.invalid\r");
+    terminal.wait_for("Mode reply for alice@example.invalid.");
+    assert!(screen(&terminal.output).contains("/shout alice@example.invalid"));
+    // The ordinary manual compaction runs on this conversation's own agent,
+    // over the carried record: nine recorded messages become a summary and
+    // the kept tail, after one summarizer request.
+    terminal.send(b"/compact\r");
+    terminal.wait_for("compacted conversation: 9 -> 5 messages (saved)");
+    terminal.send(b"/quit\r");
+    let (output, code) = terminal.finish();
+    assert_eq!(code, 0, "{}", plain(&output));
+    // The last work was the compaction, not a reply: "Ready".
+    assert_fixed_reports_ending(&output, "state=idle:app=craftsman:msg=UmVhZHk=");
+    setup.assert_unchanged(with_mode.as_bytes(), &key);
+
+    // Five private requests: two in the first scope, one in the second,
+    // and in the third the extension command's turn and the summarizer's.
+    let requests = setup.private_requests();
+    let bodies: Vec<serde_json::Value> = requests
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 5);
+    let models: Vec<&str> = bodies
+        .iter()
+        .map(|body| body["model"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        models,
+        [
+            "first-model",
+            "first-model",
+            "second-model",
+            "second-model",
+            "second-model"
+        ]
+    );
+    // One alias per scope, each different from the others.
+    let aliases: Vec<String> = bodies.iter().map(request_alias).collect();
+    assert_eq!(aliases[0], aliases[1]);
+    assert_ne!(aliases[1], aliases[2]);
+    assert_ne!(aliases[2], aliases[3]);
+    assert_ne!(aliases[1], aliases[3]);
+    assert_eq!(aliases[3], aliases[4]);
+    for (index, request) in requests.iter().enumerate().skip(2) {
+        let text = std::str::from_utf8(&request.body).unwrap();
+        for retired in &aliases[..index] {
+            if *retired != aliases[index] {
+                assert!(!text.contains(retired.as_str()), "a retired alias was sent");
+            }
+        }
+    }
+    // The carried record, as the newly selected model is given it: every
+    // message but the system text and the runtime's own catalog note, which
+    // is carried too and stays one.
+    let conversation = |body: &serde_json::Value| -> Vec<serde_json::Value> {
+        let messages = body["messages"].as_array().unwrap();
+        let notes = messages
+            .iter()
+            .filter(|message| {
+                message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.starts_with("<gadget_catalog_update sha256=\""))
+            })
+            .count();
+        assert_eq!(notes, 1);
+        messages
+            .iter()
+            .filter(|message| {
+                message["role"] != "system"
+                    && !message["content"].as_str().is_some_and(|content| {
+                        content.starts_with("<gadget_catalog_update sha256=\"")
+                    })
+            })
+            .cloned()
+            .collect()
+    };
+    let roles = |body: &serde_json::Value| -> Vec<String> {
+        conversation(body)
+            .iter()
+            .map(|message| message["role"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        roles(&bodies[2]),
+        ["user", "assistant", "tool", "assistant", "user"]
+    );
+    assert_eq!(
+        roles(&bodies[3]),
+        [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "user",
+            "assistant",
+            "user"
+        ]
+    );
+    for (body, alias) in bodies.iter().zip(&aliases).skip(2).take(2) {
+        let messages = conversation(body);
+        // The typed input, admitted anew: the same words around this
+        // scope's aliases, which keep the lengths of what they stand for.
+        let first = messages[0]["content"].as_str().unwrap();
+        assert!(
+            first.starts_with(&format!("  Handle {alias} and +")),
+            "{first}"
+        );
+        assert!(first.ends_with(".  "));
+        assert_eq!(
+            first.len(),
+            TYPED.len() - "alice@example.invalid".len() + alias.len()
+        );
+        let call = &messages[1]["tool_calls"][0];
+        assert_eq!(call["id"], "plan-reply");
+        assert_eq!(call["function"]["name"], "write_todos");
+        let arguments: serde_json::Value =
+            serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            arguments["todos"][0]["content"],
+            format!("Reply to {alias}").as_str()
+        );
+        assert_eq!(messages[2]["tool_call_id"], "plan-reply");
+        assert!(
+            messages[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("Reply to {alias}"))
+        );
+        assert_eq!(
+            messages[3]["content"],
+            format!("Planned for {alias}.").as_str()
+        );
+        // The stored todo is still offered, under this scope's alias.
+        let system = std::str::from_utf8(
+            &requests[bodies.iter().position(|other| other == body).unwrap()].body,
+        )
+        .unwrap();
+        assert!(system.contains(&format!("- [Pending] Reply to {alias}")));
+    }
+    assert_eq!(
+        bodies[3]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .nth(2)
+            .unwrap()["content"],
+        format!("Carried reply for {}.", aliases[3]).as_str()
+    );
+    // The extension command's expansion is the last input of the last
+    // request, with the typed address under this scope's alias.
+    assert_eq!(
+        conversation(&bodies[3]).last().unwrap()["content"],
+        format!("Answer about {} in capitals.", aliases[3]).as_str()
+    );
+    // One private thread and one unbroken save sequence across both
+    // carries. Before the compaction its record held every input in order,
+    // as it was made: the stored todo is the first scope's text.
+    assert_eq!(setup.private_threads().len(), 1);
+    let history = thread_history(&setup.runtime, &setup.home);
+    let private: Vec<&(u64, serde_json::Value)> = history
+        .iter()
+        .filter(|(_, state)| {
+            typed_inputs(state).first().map(String::as_str) != Some("Check the detector.")
+        })
+        .collect();
+    let saved: Vec<u64> = private.iter().map(|(seq, _)| *seq).collect();
+    assert_eq!(saved, (0..saved.len() as u64).collect::<Vec<_>>());
+    let whole = private
+        .iter()
+        .map(|(_, state)| state)
+        .find(|state| state["messages"].as_array().unwrap().len() == 9)
+        .expect("the record before the compaction");
+    assert_eq!(
+        typed_inputs(whole),
+        [
+            TYPED,
+            FOLLOW,
+            "Answer about alice@example.invalid in capitals."
+        ]
+    );
+    assert_eq!(
+        whole["todos"][0]["content"],
+        format!("Reply to {}", aliases[0]).as_str()
+    );
+    let (_, last) = private.last().unwrap();
+    assert_eq!(last["messages"].as_array().unwrap().len(), 5);
 }
