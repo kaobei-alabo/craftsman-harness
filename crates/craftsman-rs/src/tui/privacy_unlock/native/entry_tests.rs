@@ -738,12 +738,23 @@ async fn run_setup_child(case: Case) {
         "the router's early answer for this fixture"
     );
     if matches!(case, Case::NormalInit) {
-        // The invocation's own controls refuse first, before voice or key.
+        // The invocation's own controls refuse first, before voice or key:
+        // a resumed session, a one-shot message and another frontend.
         let resumed =
             crate::Cli::try_parse_from(["craftsman", "--session", "fixture-thread"]).unwrap();
         assert!(matches!(
             crate::privacy_startup::normal_route(&resumed).await,
             Err(PrivateTerminalError::Startup(StartupError::Resume))
+        ));
+        let one_shot = crate::Cli::try_parse_from(["craftsman", "-m", "fixture message"]).unwrap();
+        assert!(matches!(
+            crate::privacy_startup::normal_route(&one_shot).await,
+            Err(PrivateTerminalError::Startup(StartupError::OneShot))
+        ));
+        let other = crate::Cli::try_parse_from(["craftsman", "--no-mouse", "setup"]).unwrap();
+        assert!(matches!(
+            crate::privacy_startup::normal_route(&other).await,
+            Err(PrivateTerminalError::Startup(StartupError::Frontend))
         ));
     }
     // The read-only status says the same, in fixed text.

@@ -171,6 +171,17 @@ impl Frontend {
     }
 
     pub(super) async fn build_full(&mut self) -> Result<(), PrivateTerminalError> {
+        // The password prompt has ended and the ordinary reader owns input.
+        // A startup that the router selected now gets the mouse capture its
+        // actual invocation chose; the private entry keeps none.
+        if let Ok(Some(requirements)) = self.owner.startup_requirements()
+            && requirements.normal_routing_selected()
+            && let Some(options) = requirements.terminal_options()
+            && options.mouse_capture()
+            && self.popup.inner.guard.capture_mouse(true).is_err()
+        {
+            return Err(PrivateTerminalError::Terminal);
+        }
         let result = self.construct().await;
         if !self.configuration.is_captured() {
             // The legacy route drops a construction that has not returned
@@ -555,6 +566,11 @@ impl Frontend {
             .input
             .take()
             .ok_or(PrivateTerminalError::InputHandoff)?;
+        // No mouse report may reach the password prompt that follows; the
+        // rebuild switches the capture on again.
+        if self.popup.inner.guard.capture_mouse(false).is_err() {
+            return Err(PrivateTerminalError::InputHandoff);
+        }
         let old = self.owner.clone();
         let old_id = old.thread_id().to_owned();
         let old_guard = old.session_guard_for_retirement();

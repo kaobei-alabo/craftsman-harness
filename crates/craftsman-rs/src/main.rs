@@ -199,13 +199,12 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         privacy_cli::run(command).await?;
         return Ok(std::process::ExitCode::SUCCESS);
     }
-    // Only the owned interactive invocation can be a privacy conversation. Its
-    // actual user source is captured before the loader and every terminal,
-    // store, provider or helper effect. Every other frontend keeps the loader.
-    if cli.command.is_none()
-        && cli.message.is_none()
-        && let Some(code) = privacy_startup::normal_route(&cli).await?
-    {
+    // The actual user source is captured right after the parse, before the
+    // loader and every terminal, store, provider or helper effect. Only the
+    // owned interactive invocation can become a privacy conversation; with an
+    // enabled policy every other frontend, a one-shot message and a resumed
+    // session are refused here. Without one the loader below is unchanged.
+    if let Some(code) = privacy_startup::normal_route(&cli).await? {
         return Ok(std::process::ExitCode::from(code as u8));
     }
     let mut cfg = Config::load()?.unwrap_or_default();

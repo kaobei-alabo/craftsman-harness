@@ -1,13 +1,14 @@
 # Private terminal startup capture and the interactive route
 
-This is implemented local source on an unmerged, uninstalled branch. `main`
-passes its own parsed invocation to `privacy_startup::normal_route` when the
-invocation is the owned interactive one: no subcommand and no `-m`. An enabled
-policy in the actual user file then starts the private terminal. Every other
-frontend still starts with `Config::load`, which refuses an enabled user policy
-before frontend, store or provider effects. Nothing enables privacy for the
-user: there is no configuration writer and no automatic password popup without
-that policy. `craftsman privacy status` and `craftsman privacy init` are the
+This is implemented local source on an unmerged, uninstalled branch. Right
+after the parse, `main` passes its own parsed invocation to
+`privacy_startup::normal_route`. An enabled policy in the actual user file then
+starts the private terminal for the owned interactive invocation, and refuses
+every other one with fixed text: another frontend, a one-shot message, a
+resumed session, or input and output that are not a terminal. Without an
+enabled policy the unchanged `Config::load` and legacy startup follow. Nothing
+enables privacy for the user: there is no configuration writer and no
+automatic password popup without that policy. `craftsman privacy status` and `craftsman privacy init` are the
 two explicit commands. See [the normal interactive route](#the-normal-interactive-route).
 
 `privacy_startup::TerminalStartupCapture::capture_actual` parses the actual CLI
@@ -156,11 +157,12 @@ restrictions of an enabled policy, not defects of the legacy path:
 - Slash and shell commands other than `/clear`, `/quit` and `/exit` are not
   executed; the draft is kept.
 - Settings, model, effort and setup saves are refused.
-- The mouse is not captured, whatever the invocation chose: the password popup
-  must be the only raw reader. The terminal behaves as with `--no-mouse`.
+- The mouse is captured as the invocation chose, but never during a password
+  prompt, where the popup must be the only raw reader. Capture starts when the
+  ordinary reader takes over and stops before a fresh-clear prompt.
 - OSC 7501 status is not reported and `terminal.osc7501` is not read.
-- `--session` and a non-terminal stdin or stdout refuse. `-m`, `setup` and every
-  other subcommand keep the loader's refusal.
+- `--session`, `-m`, `setup`, every other subcommand except `privacy`, and a
+  non-terminal stdin or stdout refuse.
 - Declared identifiers refuse. A build without the gadgets feature refuses.
   Windows refuses until secure key storage is reviewed.
 
@@ -191,8 +193,12 @@ with the real parsed fixture invocation. They share one script each with the
 captured cases, so assertions and deadlines are the same. One more case covers
 the router's early answers on synthetic user files that never reach a detector
 or a model: voice not turned off, a disabled policy, and a valid policy without
-a key, where `--session` refuses first, followed by `privacy init` through the
-child's own terminal and a second `init` that refuses.
+a key, where `--session`, `-m` and another frontend refuse first, followed by
+`privacy init` through the child's own terminal and a second `init` that
+refuses. The five normal cases run with the default mouse choice. In one
+observed run the terminal switched capture on after each unlock and off before
+the fresh-clear prompt and at exit, and the private captured entry emitted no
+mouse control sequence. No case sends a mouse event or asserts this.
 
 The first run of that last case missed a screen stage although the child had
 completed and the expected line was in the captured bytes. The parent now waits
@@ -204,7 +210,7 @@ The router first returned `anyhow` errors. With the cases calling it, the
 gadget test binary's unwind section was 16,787,900 bytes, 10,684 over the
 unchanged 16,777,216-byte limit. The router now returns the terminal's own
 typed error, and its combinator closures are plain matches. The section is
-16,776,096 bytes, 1,120 under, with no linker warning. That margin is thin.
+16,776,188 bytes, 1,028 under, with no linker warning. That margin is thin.
 
 Not covered: a build without the gadgets feature, a non-terminal invocation,
 `--session`, non-default permission options, an Always effect across a fresh
@@ -267,7 +273,8 @@ the owned password UI and an actual fresh conversation shared across every lane,
 retains accepted human inputs, and retires/rebuilds on `/clear`. Reopen, transfer,
 replay and void rebinding cannot substitute for fresh ownership. A separately
 validated enable writer remains later work; presence is not unlock or source
-consent. No route for ACP, `-m`, service or another frontend is selected.
+consent. No route for ACP, `-m`, service or another frontend is selected;
+with an enabled policy the router refuses them.
 
 New isolated-file checks exercise actual selected-source capture and consuming
 ownership, project/caller exclusion, absent/disabled compatibility, existing

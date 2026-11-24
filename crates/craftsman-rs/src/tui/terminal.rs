@@ -24,6 +24,9 @@ pub(super) struct TerminalGuard {
 
 struct TerminalOwner {
     mouse: bool,
+    // Capture that the private terminal switches on after entry: its password
+    // popup must first be the only raw reader. Restoration switches it off.
+    late_mouse: AtomicBool,
     restored: AtomicBool,
     program_status: Mutex<Option<Reporter>>,
     #[cfg(unix)]
@@ -88,6 +91,7 @@ impl TerminalGuard {
         enable_raw_mode()?;
         let owner = Arc::new(TerminalOwner {
             mouse,
+            late_mouse: AtomicBool::new(false),
             restored: AtomicBool::new(false),
             program_status: Mutex::new(None),
             #[cfg(unix)]
@@ -108,6 +112,27 @@ impl TerminalGuard {
             return Err(error.into());
         }
         Ok(Self { owner })
+    }
+
+    /// The private terminal's mouse capture, outside its password prompts.
+    /// Fixed control sequences only; a restored terminal is left alone.
+    #[cfg(unix)]
+    pub(super) fn capture_mouse(&self, enabled: bool) -> io::Result<()> {
+        if self.owner.restored.load(Ordering::Acquire)
+            || self.owner.late_mouse.swap(enabled, Ordering::AcqRel) == enabled
+        {
+            return Ok(());
+        }
+        // The same queued commands as entry and restoration use.
+        use crossterm::QueueableCommand;
+        use std::io::Write;
+        let mut output = stdout();
+        if enabled {
+            output.queue(EnableMouseCapture)?;
+        } else {
+            output.queue(DisableMouseCapture)?;
+        }
+        output.flush()
     }
 
     pub(super) fn enable_program_status(&self, enabled: bool) {
@@ -213,7 +238,7 @@ impl TerminalOwner {
             let _ = reporter.finish(&mut stdout().lock(), Status::Error);
         }
         let _ = disable_raw_mode();
-        if self.mouse {
+        if self.mouse || self.late_mouse.load(Ordering::Acquire) {
             let _ = execute!(
                 stdout(),
                 DisableMouseCapture,

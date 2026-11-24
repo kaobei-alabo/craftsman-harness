@@ -1,7 +1,9 @@
-//! The one normal caller of the startup capture: the owned interactive
-//! `craftsman` invocation, before the legacy loader and every terminal, store,
-//! provider or helper effect. It hands the captured owners to the existing
-//! private entry unchanged. It writes nothing and enables nothing.
+//! The one normal caller of the startup capture. `main` calls it right after
+//! the parse, before the legacy loader and every terminal, store, provider or
+//! helper effect. Only the owned interactive invocation can be selected; it
+//! hands the captured owners to the existing private entry unchanged. With an
+//! enabled policy every other invocation is refused here. It writes nothing
+//! and enables nothing.
 use super::{
     ActualTerminalControls, Result, SourceSelection, StartupError, TerminalStartupCapture,
     UserSourceOrigin, capture_user_source, finish_source,

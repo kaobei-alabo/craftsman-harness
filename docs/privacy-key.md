@@ -8,8 +8,8 @@ password when the actual user file enables a policy. There is no `unlock` or
 `privacy_policy::CapturedPolicy` and `privacy_cli::PrivateKeyOperations`.
 Normal sessions retain their existing behavior when user privacy policy is
 absent or disabled. For every frontend other than the interactive terminal an
-enabled user policy still refuses as not yet available before
-frontend/store/provider initialization; malformed policy does not turn it off.
+enabled user policy still refuses before frontend/store/provider
+initialization; malformed policy does not turn it off.
 
 The [private startup options component](privacy-startup.md) also retains actual
 parsed terminal overrides and the existing host allow-list source. Its opaque

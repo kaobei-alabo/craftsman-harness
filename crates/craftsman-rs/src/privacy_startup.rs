@@ -156,11 +156,13 @@ impl StartupRequirements {
         self.completed.fetch_or(ROUTED, Ordering::SeqCst);
         Ok(())
     }
+    #[cfg(unix)]
     pub(crate) fn normal_routing_selected(&self) -> bool {
         self.completed.load(Ordering::SeqCst) & ROUTED == ROUTED
     }
     /// Only an actual bound session is this evidence; it cannot be built
     /// outside the conversation's own full-session request.
+    #[cfg(unix)]
     pub(crate) fn complete_owned_entry(&self, _: &crate::privacy_bootstrap::PrivateBuiltSession) {
         self.completed.fetch_or(ENTERED, Ordering::SeqCst);
     }
