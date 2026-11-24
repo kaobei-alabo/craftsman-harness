@@ -112,14 +112,17 @@ stored originals and uses keyed lookup indexes; original messages, tool results,
 history and checkpoints keep their existing plaintext form. Workspace files
 keep their current contents. Only recognized supported values are masked;
 unrecognized content is sent as written. `craftsman privacy status` reports the
-local state, `craftsman privacy init` creates the key, and `craftsman privacy
-enable --detector <id>` adds the policy to a user file that has none; nothing
-is enabled without that explicit command or your own edit. The private
+local state, `craftsman privacy init` creates the key, `craftsman privacy
+enable --detector <id>` adds the policy to a user file that has none, and
+`craftsman privacy set <setting> <value>` changes one setting of a file that
+enables privacy; nothing is enabled without that explicit command or your own
+edit. The private
 terminal is narrower than the ordinary one: read-only commands such as
 `/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs locally
 and a background task can be cancelled, but there is no settings change and
-no session resume. Voice input is owned only in a build that has it and has
-not been validated with a microphone. This prototype has local test evidence
+no session resume. Voice input is owned only in a build that has it; its
+lifecycle was run without audio and it has not been validated with a
+microphone. This prototype has local test evidence
 only; it is not merged, installed or validated on hosted runners.
 Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments

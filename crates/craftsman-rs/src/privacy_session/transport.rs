@@ -129,8 +129,11 @@ impl ViewChatProvider {
         let defaults = admitted_defaults(&session, &client.chat_request_defaults()).await?;
         Ok(Self {
             receipt: Arc::new(super::WireReceipt {
+                #[cfg(unix)]
                 session: session.clone(),
+                #[cfg(unix)]
                 guard: session.send_guard(),
+                #[cfg(unix)]
                 native: false,
                 accepted: Default::default(),
             }),
@@ -258,8 +261,11 @@ impl ViewNativeProvider {
         let defaults = admitted_defaults(&session, &defaults).await?;
         Ok(Self {
             receipt: Arc::new(super::WireReceipt {
+                #[cfg(unix)]
                 session: session.clone(),
+                #[cfg(unix)]
                 guard: session.send_guard(),
+                #[cfg(unix)]
                 native: true,
                 accepted: Default::default(),
             }),

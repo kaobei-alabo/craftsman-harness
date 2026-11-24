@@ -543,7 +543,9 @@ fn privacy_status_reports_the_local_state_and_only_a_preflight() {
         )
     );
     let enabled_line = "Privacy policy: enabled in the user configuration.";
-    #[cfg(feature = "gadgets")]
+    // A build without voice input refuses a source that asks for voice. A
+    // build with it keeps the setting; the voice case covers that build.
+    #[cfg(all(feature = "gadgets", not(feature = "voice")))]
     let refusals = [
         (
             enabled(""),
@@ -554,6 +556,11 @@ fn privacy_status_reports_the_local_state_and_only_a_preflight() {
             "No mapping-vault key exists yet. Run `craftsman privacy init` first; nothing was unlocked.",
         ),
     ];
+    #[cfg(all(feature = "gadgets", feature = "voice"))]
+    let refusals = [(
+        enabled(VOICE_OFF),
+        "No mapping-vault key exists yet. Run `craftsman privacy init` first; nothing was unlocked.",
+    )];
     #[cfg(not(feature = "gadgets"))]
     let refusals = [(
         enabled(VOICE_OFF),
@@ -627,6 +634,7 @@ fn only_the_eligible_interactive_invocation_takes_the_privacy_capture() {
 fn actual_normal_startup_answers_early_and_init_stays_create_only() {
     // A refused capture is final: the terminal never starts as privacy-off.
     for (user, refusal) in [
+        #[cfg(not(feature = "voice"))]
         (
             enabled(""),
             "Enabled privacy requires voice.enabled:false in the user configuration; voice input has no private adapter.",
@@ -827,13 +835,29 @@ fn privacy_enable_refuses_without_changing_anything() {
         assert_eq!(home.user_bytes(), user);
     }
 
-    // Voice is never turned off to make the candidate pass.
+    // The settings writer is for a file that enables privacy.
     let user = home.user(r#"{"base_url":"http://127.0.0.1:9","model":"synthetic-model"}"#);
-    refused(
-        &home,
-        "Enabled privacy requires voice.enabled:false in the user configuration; voice input has no private adapter.",
+    assert_eq!(
+        home.run(&["privacy", "set", "model", "another-model"]),
+        (
+            "Error: This command changes a user file that enables privacy; without a policy the ordinary terminal changes settings. Nothing was changed.\n"
+                .to_owned(),
+            1
+        )
     );
     assert_eq!(home.user_bytes(), user);
+
+    // Voice is never turned off to make the candidate pass. A build without
+    // voice input refuses a file that does not turn it off itself.
+    #[cfg(not(feature = "voice"))]
+    {
+        let user = home.user(r#"{"base_url":"http://127.0.0.1:9","model":"synthetic-model"}"#);
+        refused(
+            &home,
+            "Enabled privacy requires voice.enabled:false in the user configuration; voice input has no private adapter.",
+        );
+        assert_eq!(home.user_bytes(), user);
+    }
 
     let user = home.user(
         r#"{"base_url":"http://127.0.0.1:9","model":"synthetic-model","voice":{"enabled":false},"unknown":{"kept":[1,2,3]}}"#,
@@ -1105,7 +1129,7 @@ fn approved(script: Script) -> Approved {
     let home = Home::new();
     let (component, manifest) = install_detector(&home);
     let user = home.user(&format!(
-        r#"{{"base_url":"{}","api_key":"fixture-key","model":"fixture-model","harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"unknown":{{"kept":[1,2,3]}}}}"#,
+        r#"{{"base_url":"{}","api_key":"fixture-key","model":"fixture-model","harness_profile":"general","voice":{{"enabled":false}},"gadgets":{{"enabled":true}},"mcp_servers":[],"lsp_servers":{{}},"unknown":{{"kept":[1,2,3],"model":"nested, not \"this\" one"}}}}"#,
         server.uri()
     ));
     let grants = home.config.join("gadgets/.grants.json");
@@ -1282,7 +1306,10 @@ fn privacy_enable_writes_the_policy_after_a_real_approval_and_the_private_termin
     let mut after: serde_json::Value = serde_json::from_slice(&written).unwrap();
     after.as_object_mut().unwrap().remove("privacy").unwrap();
     assert_eq!(after, before);
-    assert_eq!(after["unknown"], serde_json::json!({"kept":[1,2,3]}));
+    assert_eq!(
+        after["unknown"],
+        serde_json::json!({"kept":[1,2,3],"model":"nested, not \"this\" one"})
+    );
     // The command wrote no grant, left no staged file and kept the mode.
     assert_eq!(&std::fs::read(&grants).unwrap(), stored);
     assert!(!home.config.join("config.json.privacy-enable").exists());
@@ -1304,6 +1331,57 @@ fn privacy_enable_writes_the_policy_after_a_real_approval_and_the_private_termin
         )
     );
     assert_eq!(home.user_bytes(), written);
+
+    // The explicit settings writer: one setting, every other byte kept.
+    let set = "The setting was written to your user configuration. It applies to the next start.\n";
+    // An existing member's value is replaced where it stands. The member of
+    // the same name inside another value, with a comma and escaped quotes in
+    // its text, is not this one and stays.
+    assert_eq!(
+        home.run(&["privacy", "set", "model", "second-model"]),
+        (set.to_owned(), 0)
+    );
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert_eq!(text.matches(r#""model":"fixture-model""#).count(), 1);
+    let replaced = text.replace(r#""model":"fixture-model""#, r#""model":"second-model""#);
+    assert_eq!(home.user_bytes(), replaced.as_bytes());
+    // A missing member is inserted after the opening brace, and replaced
+    // where it then stands.
+    assert_eq!(
+        home.run(&["privacy", "set", "permission_mode", "plan"]),
+        (set.to_owned(), 0)
+    );
+    assert_eq!(
+        home.user_bytes(),
+        format!(r#"{{"permission_mode":"plan",{}"#, &replaced[1..]).as_bytes()
+    );
+    assert_eq!(
+        home.run(&["privacy", "set", "permission_mode", "manual"]),
+        (set.to_owned(), 0)
+    );
+    let written = format!(r#"{{"permission_mode":"manual",{}"#, &replaced[1..]).into_bytes();
+    assert_eq!(home.user_bytes(), written);
+    // Refusals change nothing: a setting it does not know, a value that is
+    // not one of that setting's.
+    for (arguments, refusal) in [
+        (
+            ["privacy", "set", "effort", "high"],
+            "This command sets `permission_mode`, `model` or `agent`. Nothing was changed.",
+        ),
+        (
+            ["privacy", "set", "permission_mode", "sideways"],
+            "The value is not valid for that setting. Nothing was changed.",
+        ),
+    ] {
+        assert_eq!(
+            home.run(&arguments),
+            (format!("Error: {refusal}\n"), 1),
+            "{arguments:?}"
+        );
+        assert_eq!(home.user_bytes(), written);
+    }
+    assert_eq!(&std::fs::read(&grants).unwrap(), stored);
+    assert!(!home.config.join("config.json.privacy-enable").exists());
 
     // The status before and after the key exists.
     let enabled_line = "Privacy policy: enabled in the user configuration.";
@@ -1686,4 +1764,60 @@ fn actual_normal_private_entry_owns_human_review_question_file_and_checkpoint_wi
         "private file review",
         "Contact delivered alice@example.invalid",
     );
+}
+
+/// The owned voice controller in a build that has voice input, on a
+/// synthetic home with no voice model and no permission to download one.
+/// The controller's session ends at its model check, before it opens any
+/// audio device or connection: nothing is captured, downloaded or called.
+/// The case shows the adapter's ownership and lifecycle around that:
+/// - the captured source keeps `voice.enabled:true` and the terminal starts;
+/// - the voice key reaches the ordinary input owner, this frontend starts
+///   the ordinary controller from the captured configuration, and the
+///   controller's own event arrives through the frontend's channel at the
+///   ordinary handler, which shows its fixed line;
+/// - a private turn runs after it;
+/// - a fresh clear retires the controller before its password prompt, and
+///   the voice key starts a new one for the new conversation;
+/// - the terminal ends with exit code 0 and restored modes.
+///
+/// It is not hardware validation: no microphone, model or transcription is
+/// involved. Neither full test mode compiles voice input, so this case runs
+/// only in a build with the default features.
+#[cfg(all(feature = "voice", feature = "gadgets"))]
+#[test]
+fn the_private_terminal_owns_the_voice_controller_through_a_turn_a_clear_and_its_exit() {
+    let setup = approved(Script::Clear);
+    // The user's own edit: a policy, and voice input left on.
+    let mut user: serde_json::Value = serde_json::from_slice(&setup.user).unwrap();
+    user["voice"]["enabled"] = true.into();
+    user["privacy"] = serde_json::json!({"enabled":true,"detector":{
+        "gadget":"privacy-detector","function":"detect",
+        "component_sha256":setup.component,"manifest_sha256":setup.manifest}});
+    let user = setup.home.user(&user.to_string());
+    initialize(&setup.home);
+    let key = setup.key();
+    let missing = "The local voice model is missing";
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    terminal.send(b"\x07");
+    terminal.wait_for(missing);
+    terminal.send(format!("{TYPED}\r").as_bytes());
+    terminal.wait_for("Clear-ready reply for alice@example.invalid.");
+    terminal.send(b"/clear\r");
+    terminal.unlock();
+    terminal.send(b"\x07");
+    terminal.wait_for(missing);
+    terminal.send(format!("{FOLLOW}\r").as_bytes());
+    terminal.wait_for("Fresh reply for alice@example.invalid.");
+    terminal.send(b"/quit\r");
+    let (_, code) = terminal.finish();
+    assert_eq!(code, 0);
+
+    setup.assert_unchanged(&user, &key);
+    assert_eq!(setup.private_requests().len(), 2);
+    // No model was downloaded: the directory the check made is empty.
+    let models = setup.home.config.join("models");
+    assert_eq!(std::fs::read_dir(&models).unwrap().count(), 0);
 }

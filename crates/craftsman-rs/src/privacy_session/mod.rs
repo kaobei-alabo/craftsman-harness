@@ -310,6 +310,9 @@ struct Accepted {
     parts: [usize; COMPOSED_PARTS],
     /// The builder decided about the controller adapters.
     controllers: bool,
+    /// The choices of the request the builder acted on, each set at the
+    /// place where it did, as the bits of the request's own choices.
+    produced: usize,
     /// Every middleware the builder kept, after it found that each has a
     /// source path.
     middleware: Option<Vec<std::sync::Weak<dyn craftsman_harness::AgentMiddleware>>>,
@@ -355,8 +358,19 @@ pub(crate) enum ComposedPart {
     ReplySink,
     /// The prompt for questions to the person.
     AskPrompt,
+    /// What the main stream is given: the display itself when there is one,
+    /// in place of the requested token sink; else the requested sink.
+    TokenSink,
+    /// The requested round sink, where the main lane's round sink is made.
+    RoundSink,
+    /// How many extra tools were installed, and the sum of their addresses.
+    ExtraTools,
+    ExtraToolIdentities,
+    /// How many gadgets the gadget runtime was told are allowed.
+    #[cfg(feature = "gadgets")]
+    AllowedGadgets,
 }
-pub(crate) const COMPOSED_PARTS: usize = 13;
+pub(crate) const COMPOSED_PARTS: usize = 18;
 
 /// One thing the builder accepted, said at the place where it took it.
 pub(crate) enum Accept<'a> {
@@ -370,6 +384,8 @@ pub(crate) enum Accept<'a> {
     /// The decision about the controller adapters; the installed ones are
     /// said as parts.
     Controllers,
+    /// The builder acted on this choice of the request, here.
+    Produced(usize),
     /// Exactly these middleware, each with a source path.
     Middleware(&'a [Arc<dyn craftsman_harness::AgentMiddleware>]),
 }
@@ -383,8 +399,12 @@ pub(crate) enum Accept<'a> {
 /// cannot be inspected. When the builder accepts the provider for a lane,
 /// the receipt is marked with that selection and lane.
 pub struct WireReceipt {
+    // Read only by the unix-only check of a built session.
+    #[cfg(unix)]
     pub(super) session: Arc<PrivacySession>,
+    #[cfg(unix)]
     pub(super) guard: Arc<SendGuard>,
+    #[cfg(unix)]
     pub(super) native: bool,
     /// The address of the selection's report that accepted this provider,
     /// with the lane in its low bits; zero until then.
@@ -405,7 +425,9 @@ impl SelectionReport {
     pub(crate) fn accept(&self, accepted: Accept<'_>) {
         let mut record = self.accepted.lock().unwrap();
         match accepted {
-            Accept::Request(request) => record.request = Some(request),
+            Accept::Request(request) => {
+                let _ = record.request.replace(request);
+            }
             Accept::Lane(lane, receipt) => {
                 // The receipt itself now names this selection and lane.
                 receipt.accepted.store(
@@ -415,13 +437,14 @@ impl SelectionReport {
                 record.lanes[lane as usize] = Some(Arc::downgrade(receipt));
             }
             Accept::Part(part, address) => record.parts[part as usize] = address,
-            Accept::Controllers => record.controllers = true,
+            Accept::Controllers => record.controllers |= true,
+            Accept::Produced(choice) => record.produced |= 1 << choice,
             Accept::Middleware(kept) => {
                 let mut held = Vec::with_capacity(kept.len());
                 for entry in kept {
                     held.push(Arc::downgrade(entry));
                 }
-                record.middleware = Some(held);
+                let _ = record.middleware.replace(held);
             }
         }
     }
@@ -431,11 +454,17 @@ impl SelectionReport {
     /// - **The request.** The builder built from the very request the host
     ///   made (`request`), and installed that request's own prompts and
     ///   sinks where it installs them.
-    /// - **The lanes.** The root agent's provider is alive. Its receipt, and
-    ///   that of every other lane still alive, holds this conversation and
-    ///   its guard and was accepted by this selection for that lane. None
-    ///   is native where the policy requires inspectable items. A lane whose
-    ///   provider is gone can send nothing.
+    /// - **The lanes.** The root agent's provider was accepted. Every accepted
+    ///   provider is alive: a provider that was dropped or replaced leaves
+    ///   its receipt unavailable, and that refuses. Each receipt holds this
+    ///   conversation and its guard and was accepted by this selection for
+    ///   that lane. None is native where the policy requires inspectable
+    ///   items.
+    /// - **The choices.** The builder acted on each choice of the request at
+    ///   its own place: exactly the requested ones where the choice alone
+    ///   decides, and no unrequested one where the configuration decides
+    ///   too. No output owner, send guard or script capture was requested;
+    ///   a privacy conversation has no place that installs them.
     /// - **The parts.** The display, the file review and the controller
     ///   adapters are the objects the boundary holds; an adapter exists
     ///   exactly for each controller the builder made, and those controllers
@@ -475,7 +504,8 @@ impl SelectionReport {
                         return Err(BuildRefusal::OpaqueProviderItems);
                     }
                 }
-                None if lane == ModelLane::Main as usize => {
+                // Accepted and gone, or the root agent's never accepted.
+                None if record.lanes[lane].is_some() || lane == ModelLane::Main as usize => {
                     return Err(BuildRefusal::RequestedPart);
                 }
                 None => {}
@@ -509,7 +539,39 @@ impl SelectionReport {
             Some(controller) => Arc::as_ptr(controller) as usize,
             None => 0,
         };
-        use crate::agent::request_fact as fact;
+        use crate::agent::request_fact::{self as fact, choice};
+        // Where the choice alone decides, the builder acted exactly on the
+        // requested ones. Where the user's configuration decides too
+        // (gadgets), it acted on no unrequested one.
+        let alone = (1 << choice::INTERRUPT)
+            | (1 << choice::ROUND_LIMITS)
+            | (1 << choice::MEMORY)
+            | (1 << choice::WORKFLOW)
+            | (1 << choice::VERIFICATION)
+            | (1 << choice::CONTEXT)
+            | (1 << choice::FAILURE)
+            | (1 << choice::CANCELLATION);
+        let never =
+            (1 << choice::OUTPUT_GUARD) | (1 << choice::SEND_GUARD) | (1 << choice::SCRIPT_CAPTURE);
+        let choices = request[fact::CHOICES];
+        if record.produced & alone != choices & alone
+            || record.produced & !choices != 0
+            || choices & never != 0
+            || choices & (1 << choice::WORKSPACE_ROOT) == 0
+            || request[fact::OUTPUT_CLOSED] != 0
+            || part[ComposedPart::TokenSink as usize]
+                != if replies != 0 {
+                    replies
+                } else {
+                    request[fact::TOKEN_SINK]
+                }
+            || part[ComposedPart::RoundSink as usize] != request[fact::ROUND_SINK]
+            || part[ComposedPart::ExtraTools as usize] != request[fact::EXTRA_TOOLS]
+            || part[ComposedPart::ExtraToolIdentities as usize]
+                != request[fact::EXTRA_TOOL_IDENTITIES]
+        {
+            return Err(BuildRefusal::RequestedPart);
+        }
         if record.request.as_ref() != Some(request)
             || !record.controllers
             || part[ComposedPart::ReplyDisplay as usize] != replies

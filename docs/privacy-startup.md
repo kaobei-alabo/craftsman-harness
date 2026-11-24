@@ -177,13 +177,29 @@ count, a name or a supported-feature flag.
   their adapters, and of the prompts and sinks at the place where it installs
   them.
 - **Every middleware it kept**, after it found that each has a source path.
+- **Each choice it acted on.** At the place where the builder acts on a
+  choice of the request (round limits, workflow, memory, verification,
+  context, failure controls, the cancellation owner, model interruption,
+  the gadget runtime and its options) it says so.
+- **What it installed for the main stream and the tools.** The main stream's
+  sink, the round sink, and the extra tools as they are installed, by
+  object.
 
 The conversation accepts a built session only when all of this holds:
 
-- the root agent's provider is alive, and its receipt and that of every other
-  lane still alive holds this conversation and its guard and carries this
-  selection and that lane; none is the native provider, because the policy
-  requires that everything sent can be inspected;
+- the root agent's provider was accepted, and every accepted provider is
+  alive: a provider that was dropped or replaced leaves its receipt
+  unavailable, and that refuses. Each receipt holds this conversation and
+  its guard and carries this selection and that lane; none is the native
+  provider, because the policy requires that everything sent can be
+  inspected;
+- the builder acted on exactly the requested choices where the choice alone
+  decides, and on no unrequested one where the configuration decides too;
+  no output owner, send guard or script capture was requested, because a
+  privacy conversation has no place that installs them;
+- the main stream is given the display itself when there is one, in place of
+  the requested token sink, and otherwise the requested sink; the round sink
+  and the installed extra tools are the request's own;
 - the display, the file review and the adapters are the very objects the
   root agent's boundary holds; an adapter exists exactly for each controller
   the builder made, and those controllers are the built session's own;
@@ -205,17 +221,18 @@ remains the gate.
 
 **Limits of the witness.**
 
-- The request's choices (round limits, workflow, memory, verification,
-  context, failure controls, gadget and workspace options) are compared
-  between host and builder, but no choice is traced to the single part it
-  produces. The kept middleware are witnessed as objects, not by choice.
-- The token and round sinks and the extra tools are compared in the
-  request; where they are installed is not recorded. In a privacy
-  conversation the main stream goes to the reply display instead.
+- Identity is the address of a live object, compared while its owner holds
+  it. A receipt is the one exception: the provider that issued it keeps it.
+- Where the user's configuration decides with the choice (the gadget
+  runtime), the check is that nothing unrequested was produced, not that the
+  requested part exists.
+- The cancellation owner is recorded as installed, not by object: it has no
+  address to compare.
 - The controller adapters are compared by object with what the boundary
   holds. The framework's own binding check of them runs when the agent is
   bound; it is not run again at issuance.
-- A lane whose provider is gone is not a refusal: it can send nothing.
+- A build whose witness disagrees has never been produced by a test: the
+  cases show that real builds satisfy it.
 
 Not implemented, and refused when a startup requests it: a model wire whose
 provider items cannot be inspected. It is never downgraded or recorded as
@@ -241,8 +258,19 @@ A build without voice input refuses a source that does not set
 `voice.enabled:false`: the setting could not be honoured, and it is never
 turned off for the user. `enable` and the status follow the same rule.
 
-**Not validated:** no test mode compiles the voice controller, so the
-adapter is type-checked only. It has never run with a microphone or a model.
+**Validated without audio.** A case of `tests/privacy_cli.rs` runs only in a
+build with voice input, which neither full test mode makes. On a synthetic
+home with no voice model and no permission to download one, the controller's
+session ends at its model check, before it opens an audio device or a
+connection. The case shows the ownership and lifecycle around that: the
+captured source keeps `voice.enabled:true`; the voice key starts the
+ordinary controller from the captured configuration; the controller's own
+event arrives through the frontend's channel at the ordinary handler; a
+private turn runs after it; a fresh clear retires the controller before its
+password prompt and the key starts a new one; the terminal ends cleanly.
+
+**Not validated:** capture, transcription and a dictated draft. No
+microphone, model or audio fixture was used.
 
 ### The private terminal
 
@@ -280,15 +308,16 @@ runs, the terminal does the following.
   only a new prompt, not another control, lets the queue be tried again.
 - **Settings changes are refused** before any mutation: permission mode,
   model, effort, harness, agent, voice model and provider setup. Actions
-  that are not saves get their own refusal. A settings change would need
-  three things that do not exist yet:
-  - a validated writer that replaces one existing member of the user file
-    and keeps every other byte (`enable` can only add a member);
+  that are not saves get their own refusal. Outside a conversation the
+  explicit `craftsman privacy set` command writes a setting (see below).
+  Inside one, a settings change would also need:
   - an adoption of the retired conversation's committed record by the
-    freshly unlocked one: every message is bound to its own source in the
-    old conversation's vault scope, and a conversation is never rebound;
-  - a carry-over of files, todos, custom state and usage with it, without
-    replaying any model, tool or hook work.
+    freshly unlocked one. Every recorded message has a source that the
+    framework issued from the event of the turn that produced it, and the
+    source-view boundary has no witness for a restored or adopted message.
+    Adding one changes the framework's boundary, which this work may not;
+  - a carry-over of files, todos, custom state and usage with that record,
+    without replaying any model, tool or hook work.
   Until then the captured source is not rewritten under a live
   conversation, and a fresh clear remains the only rebuild: it starts a new
   conversation and keeps no history.
@@ -364,6 +393,24 @@ user file. Its explicit invocation is the authorization of that one change.
   still act between the last check and the rename: this is not a
   cross-process compare-and-swap, and no power-loss durability is claimed.
 
+`craftsman privacy set <setting> <value>` changes one setting of a user file
+that enables privacy, where the ordinary terminal cannot be used to change
+it. It knows `permission_mode`, `model` and `agent`, each with its own check
+of the value.
+
+- An existing member's value is replaced where it stands; a missing member
+  is inserted after the opening brace. Every other byte is kept. A member of
+  the same name inside another value is not touched, and a file that names
+  the member twice is refused.
+- The whole candidate is validated before anything is written: only that
+  member differs and holds the value, the policy is still the valid enabled
+  one, and it parses as a startup would take it. The voice rule of the build
+  applies; nothing is turned off.
+- The same staged, identity-bound replacement as `enable` commits it, with
+  the same refusals and limits.
+- It starts no conversation. A running private conversation keeps the
+  configuration it captured; the change applies to the next start.
+
 The detector's source approval is given through the existing gadget approval
 prompt of the ordinary terminal, before the policy is enabled. Data-file rules
 and identifiers are the user's own later edits.
@@ -377,7 +424,8 @@ and identifiers are the user's own later edits.
   through its own `main` on synthetic user files in a private temporary
   directory, with a synthetic model that the test itself serves on a
   loopback address.
-  It has eleven cases; eight need the gadgets feature.
+  It has twelve cases. Eight need the gadgets feature, and one more needs
+  voice input too, so the full test modes run eleven and three of them.
   - *Setup through the real runtime.* The ordinary terminal runs once: the
     synthetic model calls the detector gadget, and the person approves its
     first use at the real prompt, which names the gadget and the hash of its
@@ -388,8 +436,11 @@ and identifiers are the user's own later edits.
     one member after the brace; the member pins exactly the installed
     component and manifest; every other member, including one the program
     does not know, has its value; no grant was written and the mode is
-    still user-only. A second run refuses. Status then reports the missing
-    key, and after `init` a passed preflight.
+    still user-only. A second run refuses. `set` then replaces one member
+    where it stands, inserts a missing one and replaces that, each time
+    with every other byte kept, and refuses an unknown setting and an
+    invalid value. Status then reports the missing key, and after `init` a
+    passed preflight.
   - *The private terminal runs with that policy:* unlock, a masked turn, a
     fresh clear with a new unlock and thread, a second masked turn, fixed
     status reports throughout, and three plaintext thread records.
@@ -425,7 +476,7 @@ missed every stage after the password in the inherited screen reader; an
 inherited case asserts the capture's `Invalid` answer for an unparsable file,
 so a line-and-column answer was withdrawn.
 
-The gadget test binary's unwind section is 16,776,564 bytes, 652 under
+The gadget test binary's unwind section is 16,776,872 bytes, 344 under
 the unchanged 16,777,216-byte limit, with no linker warning. The five
 captured cases' scripts and their three child functions are each folded into
 one future, token for token, which is where the room for the witness came

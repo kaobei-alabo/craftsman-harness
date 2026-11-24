@@ -3,8 +3,8 @@
 This slice implements real owned-terminal init/unlock and key/user-policy/
 pinned-detector/conversation composition. On this unmerged branch the eligible
 owned interactive `craftsman` invocation selects it for an enabled user
-policy, and `craftsman privacy status`, `init` and `enable` are its explicit
-commands. There is no `/privacy`, ACP, `-m`, `--session` or service route: for
+policy, and `craftsman privacy status`, `init`, `enable` and `set` are its
+explicit commands. There is no `/privacy`, ACP, `-m`, `--session` or service route: for
 those an enabled policy still refuses before frontend, store or provider
 effects. The existing absent/disabled path is unchanged.
 

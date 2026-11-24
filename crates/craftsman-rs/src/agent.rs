@@ -1198,6 +1198,44 @@ pub(crate) mod request_fact {
     pub(crate) const ALLOWED_GADGETS: usize = 13;
     /// The two owners that the delegated agents' tools are handed.
     pub(crate) const DELEGATED_TOOL_OWNERS: usize = 14;
+    /// The bit of each choice in [`CHOICES`].
+    pub(crate) mod choice {
+        pub(crate) const INTERRUPT: usize = 0;
+        pub(crate) const ROUND_LIMITS: usize = 1;
+        pub(crate) const MEMORY: usize = 2;
+        pub(crate) const WORKFLOW: usize = 3;
+        pub(crate) const VERIFICATION: usize = 4;
+        pub(crate) const CONTEXT: usize = 5;
+        pub(crate) const FAILURE: usize = 6;
+        pub(crate) const CANCELLATION: usize = 7;
+        // The next three and the last are read only by the unix-only check.
+        #[cfg(unix)]
+        pub(crate) const OUTPUT_GUARD: usize = 8;
+        #[cfg(unix)]
+        pub(crate) const SEND_GUARD: usize = 9;
+        #[cfg(unix)]
+        pub(crate) const WORKSPACE_ROOT: usize = 10;
+        #[cfg(feature = "gadgets")]
+        pub(crate) const LOCAL_GADGETS: usize = 11;
+        #[cfg(feature = "gadgets")]
+        pub(crate) const TRUST_WORKSPACE: usize = 12;
+        #[cfg(unix)]
+        pub(crate) const SCRIPT_CAPTURE: usize = 13;
+    }
+}
+
+/// The builder says, at the place where it acts on a choice of the request
+/// of a privacy selection, that it did.
+macro_rules! produced {
+    ($extras:expr, $choice:ident) => {
+        if let Some(selection) = &$extras.privacy_view {
+            selection
+                .report()
+                .accept(crate::privacy_session::Accept::Produced(
+                    request_fact::choice::$choice,
+                ));
+        }
+    };
 }
 
 /// The address of the object an optional owner hands over, zero for none.
@@ -1922,6 +1960,7 @@ async fn build_session_with_capture_profile(
         return None;
     }
     let context_options = if construction.prepared().is_none() && extras.context_compilation {
+        produced!(extras, CONTEXT);
         match crate::context_compiler::ContextOptions::parse(cfg.extra.get("context")) {
             Ok(options) => options,
             Err(error) => {
@@ -1935,6 +1974,7 @@ async fn build_session_with_capture_profile(
         crate::context_compiler::ContextOptions::default()
     };
     let failure_options = if construction.prepared().is_none() && extras.failure_controls {
+        produced!(extras, FAILURE);
         match crate::failure_control::Settings::parse(cfg.extra.get("failure_control")) {
             Ok(options) => options,
             Err(error) => {
@@ -2019,6 +2059,7 @@ async fn build_session_with_capture_profile(
         None
     };
     let verification_plan = if construction.prepared().is_none() && extras.verification {
+        produced!(extras, VERIFICATION);
         let captured_config = cfg.clone();
         let captured_root = cwd.clone();
         match crate::util::spawn_blocking(move || {
@@ -2169,6 +2210,24 @@ async fn build_session_with_capture_profile(
         report.accept(Accept::Part(
             ComposedPart::ReplySink,
             owner_address!(&extras.human_reply_sink),
+        ));
+    }
+    if let Some(selection) = &extras.privacy_view {
+        // What the next two statements install: the display's own sink in
+        // place of the requested token sink when there is a display, else
+        // the requested one; and the requested round sink in both cases.
+        use crate::privacy_session::{Accept, ComposedPart};
+        let report = selection.report();
+        report.accept(Accept::Part(
+            ComposedPart::TokenSink,
+            match &reply_display {
+                Some(display) => Arc::as_ptr(display) as usize,
+                None => owner_address!(&extras.token_sink),
+            },
+        ));
+        report.accept(Accept::Part(
+            ComposedPart::RoundSink,
+            owner_address!(&extras.round_sink),
         ));
     }
     let main_sink = match &reply_display {
@@ -2717,12 +2776,24 @@ async fn build_session_with_capture_profile(
             options.prompt = extras.approval_prompt.clone();
             options.allowed_gadgets = extras.allowed_gadgets.clone();
             options.trust_workspace = extras.trust_workspace;
+            if let Some(selection) = &extras.privacy_view {
+                selection
+                    .report()
+                    .accept(crate::privacy_session::Accept::Part(
+                        crate::privacy_session::ComposedPart::AllowedGadgets,
+                        extras.allowed_gadgets.len(),
+                    ));
+            }
+            if extras.trust_workspace {
+                produced!(extras, TRUST_WORKSPACE);
+            }
             options.workspace_checkpoints = workspace_checkpoints.clone();
             crate::gadgets::GadgetRuntime::new(&cwd, &crate::config::config_dir(), options)
                 .map_err(Into::into)
         });
         match runtime {
             Ok(runtime) => {
+                produced!(extras, LOCAL_GADGETS);
                 let runtime = Arc::new(runtime);
                 shared_tools.extend(runtime.tools());
                 Some(runtime)
@@ -3162,6 +3233,7 @@ async fn build_session_with_capture_profile(
                 let memory =
                     MemoryMiddleware::new(backend.clone(), vec!["/memories/AGENTS.md".into()]);
                 if extras.task_focused_memory {
+                    produced!(extras, MEMORY);
                     memory.task_focused()
                 } else {
                     memory
@@ -3293,6 +3365,7 @@ async fn build_session_with_capture_profile(
     }
 
     if construction.prepared().is_none() && extras.task_workflow {
+        produced!(extras, WORKFLOW);
         // A transparent observer inside the unchanged approval gate sees only
         // actual admitted tool calls. It never dispatches/retries/approves work.
         middleware.push(Arc::new(
@@ -3367,9 +3440,13 @@ async fn build_session_with_capture_profile(
         .durable_turn_checkpoints(
             construction.prepared().is_none() && extras.cancellation_session.is_some(),
         )
-        .interrupt_model_on_cancel(
-            construction.prepared().is_none() && extras.interrupt_model_on_cancel,
-        )
+        .interrupt_model_on_cancel({
+            let interrupt = construction.prepared().is_none() && extras.interrupt_model_on_cancel;
+            if interrupt {
+                produced!(extras, INTERRUPT);
+            }
+            interrupt
+        })
         .system_prompt(system)
         .backend(backend.clone())
         .registry(registry.clone())
@@ -3377,6 +3454,7 @@ async fn build_session_with_capture_profile(
         .thread_id(thread_id.clone())
         .harness_profile(harness_profile.clone());
     if let Some(rounds) = terminal_max_rounds {
+        produced!(extras, ROUND_LIMITS);
         builder = builder.max_rounds(rounds).finish_on_round_limit(true);
     }
     // In a privacy conversation the configured controllers are installed
@@ -3456,6 +3534,9 @@ async fn build_session_with_capture_profile(
         builder = builder.state(Arc::new(Mutex::new(prepared.initial_state().clone())));
     }
     if construction.prepared().is_none() {
+        if extras.cancellation_session.is_some() {
+            produced!(extras, CANCELLATION);
+        }
         if let Some(session) = extras.cancellation_session {
             builder = builder.cancellation_session(session);
         }
@@ -3517,6 +3598,8 @@ async fn build_session_with_capture_profile(
 
     // Host-supplied extensions (ACP wires the a2ui `render_ui` tool). Kept
     // generic so this builder never grows mode-specific logic.
+    // The extra tools as they are installed: how many, and which objects.
+    let mut installed_tools = (0usize, 0usize);
     for t in extras.extra_tools {
         if verification.is_some() && t.def().name == "verify" {
             if let Some(sink) = &extras.activity_sink {
@@ -3524,7 +3607,20 @@ async fn build_session_with_capture_profile(
             }
             return None;
         }
+        installed_tools.0 += 1;
+        installed_tools.1 = installed_tools
+            .1
+            .wrapping_add(&*t as *const _ as *const () as usize);
         builder = builder.tool(t);
+    }
+    if let Some(selection) = &extras.privacy_view {
+        use crate::privacy_session::{Accept, ComposedPart};
+        let report = selection.report();
+        report.accept(Accept::Part(ComposedPart::ExtraTools, installed_tools.0));
+        report.accept(Accept::Part(
+            ComposedPart::ExtraToolIdentities,
+            installed_tools.1,
+        ));
     }
 
     let agent = builder.build();

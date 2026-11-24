@@ -5,7 +5,7 @@ use crate::privacy_key::{ConfigRoot, KeyError, KeyManager, Passphrase, Result, U
 
 /// `craftsman privacy <command>`. No command sends a model request. `status`
 /// and `init` change no configuration; `enable` adds the policy it is asked
-/// for and nothing else.
+/// for and `set` changes the one setting it is asked to, and nothing else.
 #[derive(clap::Subcommand)]
 pub enum Command {
     /// Show the local privacy policy, mapping-vault key and startup preflight. Read-only.
@@ -21,6 +21,13 @@ pub enum Command {
         #[arg(long, value_name = "NAME", default_value = "detect")]
         function: String,
     },
+    /// Set one setting of a user configuration that enables privacy: permission_mode, model or agent.
+    Set {
+        /// The setting to change.
+        key: String,
+        /// Its new value.
+        value: String,
+    },
 }
 
 pub async fn run(
@@ -32,6 +39,12 @@ pub async fn run(
             init().await?;
             println!(
                 "The mapping-vault key and vault were created. Privacy is not enabled by this command."
+            );
+        }
+        Command::Set { key, value } => {
+            crate::privacy_startup::set(key, value).await?;
+            println!(
+                "The setting was written to your user configuration. It applies to the next start."
             );
         }
         Command::Enable { detector, function } => {

@@ -1,7 +1,7 @@
 # Private key and trusted policy ownership
 
 This is the Step A key and policy foundation. On this unmerged branch,
-`craftsman privacy status`, `init` and `enable` select its explicit
+`craftsman privacy status`, `init`, `enable` and `set` select its explicit
 operations, and the eligible interactive `craftsman` invocation asks for the
 vault password when the actual user file enables a policy. There is no
 `unlock` command. The private app owners are `privacy_key::KeyManager`,

@@ -228,6 +228,203 @@ pub(crate) async fn enable(
     }
 }
 
+/// The explicit settings writer. Its invocation is the user's authorization
+/// of this one change: it sets one named setting of the actual user file
+/// that enables privacy, where the ordinary terminal cannot be used to change
+/// it. Every other byte of the file is kept: the value of an existing member
+/// is replaced in place, and a missing member is inserted after the opening
+/// brace. The candidate is validated as a whole, and the same staged,
+/// identity-bound replacement as `enable` commits it. Nothing is turned off,
+/// no policy, provider or key member is touched, and no conversation is
+/// started. A running private conversation keeps the configuration it
+/// captured; the change applies to the next start.
+pub(crate) async fn set(key: &str, value: &str) -> std::result::Result<(), PrivateTerminalError> {
+    // The settings this command knows, each with its own check of the value.
+    let valid = match key {
+        "permission_mode" => crate::config::PermissionMode::parse(value).is_some(),
+        "agent" => crate::agents::validate_agent_name(value).is_ok(),
+        "model" => !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control),
+        _ => return Err(StartupError::SettingUnsupported.into()),
+    };
+    if !valid {
+        return Err(StartupError::SettingValue.into());
+    }
+    let source = actual_source()?;
+    if !source.is_enabled() {
+        return Err(StartupError::SettingNeedsPolicy.into());
+    }
+    let Ok((root, original)) = source.recheck_original() else {
+        return Err(StartupError::Source.into());
+    };
+    let Some((original, lease)) = original else {
+        return Err(StartupError::NoUserFile.into());
+    };
+    let encoded = serde_json::Value::from(value).to_string();
+    let candidate = match member_value(original, key) {
+        // One such member: its value is replaced where it stands.
+        Some(Some(span)) => {
+            let mut candidate = Vec::with_capacity(original.len() + encoded.len());
+            candidate.extend_from_slice(&original[..span.start]);
+            candidate.extend_from_slice(encoded.as_bytes());
+            candidate.extend_from_slice(&original[span.end..]);
+            candidate
+        }
+        // No such member: it is inserted after the opening brace.
+        Some(None) => {
+            let member = format!("\"{key}\":{encoded}");
+            match inserted(original, &member) {
+                Some(candidate) => candidate,
+                None => return Err(StartupError::Invalid.into()),
+            }
+        }
+        None => return Err(StartupError::Invalid.into()),
+    };
+    // The whole candidate, before anything is written: only this member
+    // differs and holds the value; the policy is still the valid enabled
+    // one; and it parses as the configuration a startup would take.
+    let (Ok(before), Ok(mut after)) = (
+        serde_json::from_slice::<serde_json::Value>(original),
+        serde_json::from_slice::<serde_json::Value>(&candidate),
+    ) else {
+        return Err(StartupError::Invalid.into());
+    };
+    let (Some(old), Some(new)) = (before.as_object(), after.as_object_mut()) else {
+        return Err(StartupError::Invalid.into());
+    };
+    if new.get(key).and_then(serde_json::Value::as_str) != Some(value) {
+        return Err(StartupError::Invalid.into());
+    }
+    match old.get(key) {
+        Some(previous) => {
+            new.insert(key.to_owned(), previous.clone());
+        }
+        None => {
+            new.remove(key);
+        }
+    }
+    use crate::privacy_policy::{PolicyError, reject_unavailable_user_source};
+    if after != before
+        || reject_unavailable_user_source(&candidate) != Err(PolicyError::NotYetAvailable)
+    {
+        return Err(StartupError::Invalid.into());
+    }
+    match serde_json::from_slice::<crate::config::Config>(&candidate) {
+        Ok(configuration) => require_voice_off(&configuration)?,
+        Err(_) => return Err(StartupError::Invalid.into()),
+    }
+    match root.replace_user_config(lease, original, &candidate) {
+        Ok(()) => {}
+        Err((_, crate::privacy_key::root::WRITTEN)) => {
+            return Err(StartupError::WrittenThenChanged.into());
+        }
+        Err((_, crate::privacy_key::root::STAGE_LEFT)) => {
+            return Err(StartupError::StagedLeftover.into());
+        }
+        Err((crate::privacy_key::KeyError::Changed, _)) => {
+            return Err(StartupError::Source.into());
+        }
+        Err((error, _)) => return Err(BootstrapError::Key(error).into()),
+    }
+    drop(source);
+    let Ok(written) = actual_source() else {
+        return Err(StartupError::WrittenThenChanged.into());
+    };
+    match written.recheck_original() {
+        Ok((_, Some((bytes, _)))) if written.is_enabled() && bytes == candidate.as_slice() => {
+            Ok(())
+        }
+        _ => Err(StartupError::WrittenThenChanged.into()),
+    }
+}
+
+/// Where the value of the top-level member `key` stands in the bytes of a
+/// JSON object. `Some(None)`: the object has no such member. `None`: the
+/// bytes are not one object, or name the member more than once. Strings are
+/// passed with their escapes and nested values with their brackets; nothing
+/// is decoded but the member names. The caller validates the whole
+/// candidate afterwards.
+fn member_value(original: &[u8], key: &str) -> Option<Option<std::ops::Range<usize>>> {
+    // The index after the string that starts at `at`.
+    fn string_end(bytes: &[u8], at: usize) -> Option<usize> {
+        let mut index = at + 1;
+        loop {
+            match bytes.get(index)? {
+                b'"' => return Some(index + 1),
+                b'\\' => index += 2,
+                _ => index += 1,
+            }
+        }
+    }
+    fn skip_space(bytes: &[u8], mut at: usize) -> usize {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    }
+    let mut at = skip_space(original, 0);
+    if original.get(at) != Some(&b'{') {
+        return None;
+    }
+    at = skip_space(original, at + 1);
+    let mut found = None;
+    if original.get(at) == Some(&b'}') {
+        return Some(None);
+    }
+    loop {
+        if original.get(at) != Some(&b'"') {
+            return None;
+        }
+        let name_end = string_end(original, at)?;
+        let name: String = serde_json::from_slice(&original[at..name_end]).ok()?;
+        at = skip_space(original, name_end);
+        if original.get(at) != Some(&b':') {
+            return None;
+        }
+        let start = skip_space(original, at + 1);
+        // The end of this value: a string, a bracketed value, or a scalar.
+        let mut end = start;
+        let mut depth = 0usize;
+        loop {
+            match original.get(end)? {
+                b'"' => end = string_end(original, end)?,
+                b'{' | b'[' => {
+                    depth += 1;
+                    end += 1;
+                }
+                b'}' | b']' if depth > 0 => {
+                    depth -= 1;
+                    end += 1;
+                }
+                b',' | b'}' if depth == 0 => break,
+                byte if depth == 0 && byte.is_ascii_whitespace() => break,
+                _ => end += 1,
+            }
+            if depth == 0
+                && original
+                    .get(start)
+                    .is_some_and(|first| matches!(first, b'"' | b'{' | b'['))
+            {
+                break;
+            }
+        }
+        if end == start {
+            return None;
+        }
+        if name == key {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(start..end);
+        }
+        at = skip_space(original, end);
+        match original.get(at)? {
+            b',' => at = skip_space(original, at + 1),
+            b'}' => return Some(found),
+            _ => return None,
+        }
+    }
+}
+
 fn actual_source() -> Result<CapturedUserConfiguration> {
     let Ok(root) = ConfigRoot::capture_actual() else {
         return Err(StartupError::Source);
@@ -279,6 +476,12 @@ async fn policy_member(_: &ConfigRoot, _: &str, _: &str) -> Result<String> {
 /// `original` with one member inserted right after the opening brace of its
 /// top-level object. Every original byte stays where it was.
 fn candidate(original: &[u8], member: &str) -> Option<Vec<u8>> {
+    inserted(original, &format!("\"privacy\":{member}"))
+}
+
+/// `original` with the member text `member` inserted right after the opening
+/// brace of its top-level object. Every original byte stays where it was.
+fn inserted(original: &[u8], member: &str) -> Option<Vec<u8>> {
     let mut open = 0;
     while original.get(open)?.is_ascii_whitespace() {
         open += 1;
@@ -292,7 +495,6 @@ fn candidate(original: &[u8], member: &str) -> Option<Vec<u8>> {
     }
     let mut candidate = Vec::with_capacity(original.len() + member.len() + 16);
     candidate.extend_from_slice(&original[..=open]);
-    candidate.extend_from_slice(b"\"privacy\":");
     candidate.extend_from_slice(member.as_bytes());
     if original[next] != b'}' {
         candidate.push(b',');

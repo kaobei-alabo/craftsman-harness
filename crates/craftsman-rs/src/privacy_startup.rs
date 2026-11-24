@@ -18,7 +18,7 @@ use std::{
     },
 };
 mod route;
-pub(crate) use route::{enable, normal_route, status};
+pub(crate) use route::{enable, normal_route, set, status};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StartupError {
@@ -82,6 +82,14 @@ pub enum StartupError {
         "The user configuration was not replaced. The staging name `config.json.privacy-enable` could not be confirmed as the file this command created; that entry was left in place."
     )]
     StagedLeftover,
+    #[error("This command sets `permission_mode`, `model` or `agent`. Nothing was changed.")]
+    SettingUnsupported,
+    #[error("The value is not valid for that setting. Nothing was changed.")]
+    SettingValue,
+    #[error(
+        "This command changes a user file that enables privacy; without a policy the ordinary terminal changes settings. Nothing was changed."
+    )]
+    SettingNeedsPolicy,
 }
 pub type Result<T> = std::result::Result<T, StartupError>;
 
