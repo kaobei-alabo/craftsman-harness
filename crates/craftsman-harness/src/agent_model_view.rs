@@ -2330,11 +2330,13 @@ impl Agent {
             if !state.messages.is_empty()
                 || !slots.is_empty()
                 || self.seq.load(Ordering::SeqCst) != 0
-                || !transfer.take()
             {
                 return Err(refused());
             }
-            let mut adopted = transfer.state().clone();
+            // The one take: the recorded state leaves the transfer here.
+            let Some(mut adopted) = transfer.take() else {
+                return Err(refused());
+            };
             // A usage anchor from another conversation's model and views is
             // not a token estimate for this one.
             adopted.last_usage = None;

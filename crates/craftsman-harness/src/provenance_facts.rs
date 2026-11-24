@@ -563,7 +563,8 @@ impl ActualSourcedMessage {
 pub struct ActualConversationTransfer(Arc<Transfer>);
 struct Transfer {
     owner: ActualAgentOwner,
-    state: AgentState,
+    /// The recorded state, until the one adoption takes it.
+    state: std::sync::Mutex<Option<AgentState>>,
     messages: Vec<ActualSourcedMessage>,
     todos: Option<Vec<super::PartFrom>>,
     thread: String,
@@ -585,7 +586,7 @@ impl ActualConversationTransfer {
         let (thread, next_seq, checkpoint_failed, recovery) = saved;
         Self(Arc::new(Transfer {
             owner: owner.clone(),
-            state,
+            state: std::sync::Mutex::new(Some(state)),
             messages,
             todos,
             thread,
@@ -604,10 +605,14 @@ impl ActualConversationTransfer {
     pub fn messages(&self) -> &[ActualSourcedMessage] {
         &self.0.messages
     }
-    /// The recorded state at retirement: messages, todos, files and custom
-    /// state. Read-only; the adopting agent takes exactly this.
-    pub fn state(&self) -> &AgentState {
-        &self.0.state
+    /// A copy of the recorded state at retirement: messages, todos, files
+    /// and custom state. The adopting agent takes exactly this, and takes
+    /// it out: `None` once an agent has adopted the conversation. Every
+    /// adopted commit keeps this transfer for the retired agent's own
+    /// commit and source of its message ([`messages`](Self::messages)),
+    /// and those stay; a second copy of the whole record does not.
+    pub fn state(&self) -> Option<AgentState> {
+        self.0.state.lock().unwrap().clone()
     }
     /// The thread the retired agent saved under.
     pub fn thread_id(&self) -> &str {
@@ -632,12 +637,18 @@ impl ActualConversationTransfer {
     pub(crate) fn recovery(&self) -> Option<crate::checkpoint::RecoveryInfo> {
         self.0.recovery
     }
-    /// Marks the one adoption. `false` when it was adopted before.
-    pub(crate) fn take(&self) -> bool {
-        !self
+    /// Marks the one adoption and hands out the recorded state, which the
+    /// transfer no longer holds afterwards. `None` when it was adopted
+    /// before.
+    pub(crate) fn take(&self) -> Option<AgentState> {
+        if self
             .0
             .adopted
             .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return None;
+        }
+        self.0.state.lock().unwrap().take()
     }
 }
 

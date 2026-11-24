@@ -318,16 +318,24 @@ async fn a_retired_conversation_is_adopted_with_its_roles_results_state_and_save
         refuse: false,
         leave_one_out: false,
     };
+    // The state as the transfer holds it until the adoption takes it.
+    let recorded = transfer
+        .state()
+        .expect("the recorded state, before the adoption");
     fresh
         .adopt_conversation_with_view(&transfer, &adopter)
         .await
         .expect("a fresh selected agent adopts");
     assert!(transfer.is_adopted());
+    // The adoption took the recorded state out of the transfer; each
+    // message's own commit and source stay with it.
+    assert!(transfer.state().is_none());
+    assert_eq!(transfer.messages().len(), recorded.messages.len());
     // Adoption saved nothing either.
     assert_eq!(sequences(&saves, "thread"), before);
     {
         let state = fresh.state.lock().unwrap();
-        assert_eq!(state.messages, transfer.state().messages);
+        assert_eq!(state.messages, recorded.messages);
         assert_eq!(state.custom.get("kept"), Some(&serde_json::json!(7)));
         assert_eq!(state.files.get("note.txt"), Some(&FileData::text("x")));
         assert!(matches!(&state.messages[1],
@@ -343,7 +351,7 @@ async fn a_retired_conversation_is_adopted_with_its_roles_results_state_and_save
     let seen = wire.seen.lock().unwrap();
     let request = &seen[0];
     assert_eq!(request.messages.len(), 5);
-    assert_eq!(request.messages[..4], transfer.state().messages[..]);
+    assert_eq!(request.messages[..4], recorded.messages[..]);
     assert_eq!(request.events[..4], [RetainedEvent::Adopted; 4]);
     assert_eq!(request.events[4], RetainedEvent::Input);
     assert_eq!(
@@ -589,11 +597,15 @@ async fn a_todo_list_follows_its_reply_into_the_adopted_conversation() {
         refuse: false,
         leave_one_out: false,
     };
+    // The state as the transfer holds it until the adoption takes it.
+    let recorded = transfer
+        .state()
+        .expect("the recorded state, before the adoption");
     fresh
         .adopt_conversation_with_view(&transfer, &adopter)
         .await
         .expect("adoption with a todo list");
-    assert_eq!(fresh.state.lock().unwrap().todos, transfer.state().todos);
+    assert_eq!(fresh.state.lock().unwrap().todos, recorded.todos);
     fresh
         .run_turn_with_view("go on", fresh_host.held("input"))
         .await

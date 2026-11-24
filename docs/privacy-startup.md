@@ -618,10 +618,18 @@ corrected:
 - **The adoption is awaited where it stands.** While every retired value
   and raw capture is admitted again, the terminal draws nothing and
   observes no input, cancellation or shutdown.
-- **The retired scope is closed but not released.** Each adopted commit
-  keeps the whole transfer, and with it the retired record, its sources
-  and the retired conversation's owner, for the life of the successor;
-  repeated changes chain them.
+- **The retired scope is closed but not released.** The one adoption now
+  takes the recorded state out of the transfer, so no second copy of the
+  whole record stays behind. Each adopted commit still keeps the transfer
+  for the retired agent's own commit and source of its message, which is
+  the message's provenance and is meant to stay. Through those sources the
+  retired conversation's owner stays referenced as well, for the life of
+  the successor, and with it what that owner holds: its closed vault
+  session and the vault and key material behind it, its detector, and its
+  record of masked texts with their originals in memory. Repeated changes
+  chain them. Releasing those needs the vault to give up its key material
+  and connection at a close while its session objects are still
+  referenced; that is not implemented.
 
 The router applies the same rule to a start: when the invocation's own
 option or the captured file selects a mode that decides file writes, or an
