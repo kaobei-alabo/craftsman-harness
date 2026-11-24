@@ -396,8 +396,9 @@ async fn actual_owned_pty_reports_approval_question_completion_and_restores_mode
 async fn actual_owned_pty_opt_out_emits_no_status_even_for_control_text_in_reply() {
     let directory = tempfile::tempdir().unwrap();
     let mut pty = Pty::start(directory.path(), "disabled");
-    pty.wait_text("AUTH", 0).await;
-    let asked = String::from_utf8_lossy(&pty.output.lock().unwrap()).len();
+    // The startup stage ends before the prompt is written, and its offset is
+    // past a whole match, so it stays a character boundary as output grows.
+    let started = pty.wait_text("AUTH", 0).await;
     pty.write(b"Give the fixture response.\r").await;
     // Diff rendering places the separate words with cursor-position commands.
     // Observe the real escaped suffix, then check the whole committed answer.
@@ -412,8 +413,8 @@ async fn actual_owned_pty_opt_out_emits_no_status_even_for_control_text_in_reply
     let drawn = pty.wait_text(FRAME_END, shown).await;
     let bytes = pty.output.lock().unwrap().clone();
     let frames = String::from_utf8_lossy(&bytes);
-    if let Some(running) = frames[asked..drawn].find(RUNNING_COMPOSER) {
-        pty.wait_text(IDLE_COMPOSER, asked + running).await;
+    if let Some(running) = frames[started..drawn].find(RUNNING_COMPOSER) {
+        pty.wait_text(IDLE_COMPOSER, started + running).await;
     }
     pty.write(b"\x04").await;
     pty.finish(directory.path()).await;

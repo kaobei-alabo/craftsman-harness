@@ -163,8 +163,9 @@ The case now decides from what the terminal itself draws. A frame drawn
 while a turn runs has the running composer title, which holds `Ctrl-C stop`;
 the first frame after the turn has returned draws the idle title, which
 begins `message ·`, over it. The case waits for the end of the frame that
-drew the reply's suffix. If a running title was drawn since the prompt, it
-then waits for the idle title after it. If none was, the turn had already
+drew the reply's suffix. If a running title was drawn since the startup
+stage, which ends before the prompt is written, it then waits for the idle
+title after it. If none was, the turn had already
 returned when that frame was drawn, because the terminal draws at most one
 frame every 16 milliseconds and a short turn can fit between two. Only then
 does it send Ctrl-D, through the unchanged input path. The reply is the
