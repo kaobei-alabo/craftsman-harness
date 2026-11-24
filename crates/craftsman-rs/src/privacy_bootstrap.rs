@@ -1,7 +1,7 @@
 //! Private owned-input/key/policy/conversation and full-session composition.
 //! Only the owned interactive router selects it, through the startup capture.
-//! A startup's requirements stay incomplete until that router and this
-//! composition's own bound session complete them.
+//! Readiness of a build belongs to its own bound session, which checks its
+//! binding each time it issues a turn.
 use crate::privacy_cli::{FilePresence, PrivateKeyOperations};
 use crate::privacy_key::{ConfigRoot, KeyError, UnlockedVault};
 use crate::privacy_policy::RetainedUserConfigurationSource;
@@ -200,8 +200,8 @@ impl PolicyOwner {
 
 impl OwnedTerminalStartup {
     /// Consume only the actual startup issuer's configuration, policy, source
-    /// and still-incomplete requirements. The owned interactive router and the
-    /// private captured entry are its callers.
+    /// and requirements. The owned interactive router and the private
+    /// captured entry are its callers.
     /// Workspace capture/reservation reuse the existing actual native owners.
     pub fn into_private_bootstrap(self, workspace: &Path) -> Result<PrivateBootstrap> {
         let (configuration, policy, source, requirements) = self
@@ -323,6 +323,24 @@ impl PrivateBootstrap {
         conversation.check_sources()?;
         Ok(conversation)
     }
+    /// Read-only, before any terminal or key work: the detector that this
+    /// policy pins is installed with exactly those bytes, declares no
+    /// capability and has a stored source approval. Nothing is compiled,
+    /// described, run or approved here; every later call checks again.
+    pub(crate) async fn detector_source_approved(&self) -> Result<()> {
+        self.require_detector_policy()?;
+        #[cfg(feature = "gadgets")]
+        {
+            let pinned = pinned_detector(&self.policy, &self.workspace)?;
+            if pinned.source_approved().await.is_err() {
+                return Err(BootstrapError::Source);
+            }
+            self.policy.recheck()?;
+            Ok(())
+        }
+        #[cfg(not(feature = "gadgets"))]
+        Err(BootstrapError::DetectorUnavailable)
+    }
     fn require_detector_policy(&self) -> Result<()> {
         self.policy.recheck_startup()?;
         let proposed = self
@@ -346,7 +364,16 @@ fn detector(
     policy: &CapturedPolicy,
     workspace: &Workspace,
 ) -> Result<crate::privacy_hook::Detector> {
-    use crate::privacy_hook::{Detector, DetectorPin, PinnedDetector};
+    Ok(crate::privacy_hook::Detector::pinned(pinned_detector(
+        policy, workspace,
+    )?))
+}
+#[cfg(feature = "gadgets")]
+fn pinned_detector(
+    policy: &CapturedPolicy,
+    workspace: &Workspace,
+) -> Result<crate::privacy_hook::PinnedDetector> {
+    use crate::privacy_hook::{DetectorPin, PinnedDetector};
     let selected = policy
         .proposed_detector()?
         .ok_or(BootstrapError::NoPolicy)?;
@@ -375,7 +402,7 @@ fn detector(
         .map_err(|_| BootstrapError::Source)?;
     policy.recheck()?;
     workspace.recheck()?;
-    Ok(Detector::pinned(pinned))
+    Ok(pinned)
 }
 #[cfg(not(feature = "gadgets"))]
 fn detector(_: &CapturedPolicy, _: &Workspace) -> Result<crate::privacy_hook::Detector> {
@@ -654,16 +681,10 @@ impl PrivateConversation {
                 .refuse_materialized(session, PrivateBuildError::Source(error))
                 .await);
         }
-        let built = PrivateBuiltSession {
+        Ok(PrivateBuiltSession {
             session,
             owner: self.clone(),
-        };
-        // This actual bound session is the evidence its startup's entry needs.
-        // A startup that no router selected stays incomplete all the same.
-        if let Some(owners) = self.policy.startup() {
-            owners.requirements.complete_owned_entry(&built);
-        }
-        Ok(built)
+        })
     }
     /// The shared builder had already materialized `session` when this
     /// owner's binding or source check refused it. A startup-issued owner
@@ -797,7 +818,6 @@ pub struct PrivateBuiltSession {
     session: crate::agent::Session,
     owner: Arc<PrivateConversation>,
 }
-
 #[derive(thiserror::Error)]
 pub enum PrivateTurnError {
     #[error("The private terminal source owner stopped before this input.")]
@@ -839,6 +859,30 @@ impl PrivateBuiltSession {
             .ok_or(PrivateTurnError::Source(BootstrapError::Session(
                 SessionStop::Closed,
             )))?;
+        // A startup that the router selected submits model turns and effects
+        // only through its own bound session. This is the build-specific half
+        // of its readiness, checked for every submission and by this actual
+        // session alone: it still is the live conversation's thread, view and
+        // send guard, with the sources just rechecked. A stale or foreign
+        // binding is refused; a fresh clear builds a new session whose own
+        // binding is checked here again.
+        #[cfg(unix)]
+        if let Some(owners) = self.owner.policy.startup()
+            && owners.requirements.normal_routing_selected()
+        {
+            let guard = match &self.session.send_guard {
+                Some(guard) => Arc::ptr_eq(guard, &self.owner.session.send_guard()),
+                None => false,
+            };
+            if !guard
+                || self.session.thread_id != self.owner.thread_id()
+                || !Arc::ptr_eq(view.session(), &self.owner.session)
+            {
+                return Err(PrivateTurnError::Source(BootstrapError::Session(
+                    SessionStop::Closed,
+                )));
+            }
+        }
         Ok(PrivateTaskOwner {
             agent: self.session.agent.clone(),
             view: view.clone_for_terminal(),

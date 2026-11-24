@@ -92,12 +92,6 @@ enum Case {
     NormalClearEntry,
     #[cfg(feature = "gadgets")]
     NormalClearCancel,
-    #[cfg(feature = "gadgets")]
-    NormalVoice,
-    #[cfg(feature = "gadgets")]
-    NormalDisabled,
-    #[cfg(feature = "gadgets")]
-    NormalInit,
 }
 impl Case {
     fn name(self) -> &'static str {
@@ -145,12 +139,6 @@ impl Case {
             Self::NormalClearEntry => "normal-clear-entry",
             #[cfg(feature = "gadgets")]
             Self::NormalClearCancel => "normal-clear-cancel",
-            #[cfg(feature = "gadgets")]
-            Self::NormalVoice => "normal-voice",
-            #[cfg(feature = "gadgets")]
-            Self::NormalDisabled => "normal-disabled",
-            #[cfg(feature = "gadgets")]
-            Self::NormalInit => "normal-init",
         }
     }
     fn selected(arguments: impl Iterator<Item = std::ffi::OsString>) -> Option<Self> {
@@ -215,12 +203,6 @@ impl Case {
             "normal-clear-entry" => Self::NormalClearEntry,
             #[cfg(feature = "gadgets")]
             "normal-clear-cancel" => Self::NormalClearCancel,
-            #[cfg(feature = "gadgets")]
-            "normal-voice" => Self::NormalVoice,
-            #[cfg(feature = "gadgets")]
-            "normal-disabled" => Self::NormalDisabled,
-            #[cfg(feature = "gadgets")]
-            "normal-init" => Self::NormalInit,
             _ => return None,
         })
     }
@@ -284,10 +266,7 @@ async fn private_key_ui_child(case: Case) {
         | Case::NormalFullEntry
         | Case::NormalSafeEntry
         | Case::NormalClearEntry
-        | Case::NormalClearCancel
-        | Case::NormalVoice
-        | Case::NormalDisabled
-        | Case::NormalInit => {
+        | Case::NormalClearCancel => {
             unreachable!("captured entry dispatched before ordinary popup fixture")
         }
         Case::Init | Case::TailInit => {

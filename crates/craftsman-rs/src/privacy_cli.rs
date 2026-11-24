@@ -1,41 +1,70 @@
 //! Explicit local key operations and the `craftsman privacy` command that
-//! selects them. There is no enable writer; presence is not unlock, ownership
-//! approval or privacy.
+//! selects them. Presence is not unlock, ownership approval or privacy, and
+//! only the explicit `enable` command changes the user file.
 use crate::privacy_key::{ConfigRoot, KeyError, KeyManager, Passphrase, Result, UnlockedVault};
 
-/// `craftsman privacy <command>`. Neither command enables privacy, changes the
-/// user configuration or sends a model request.
+/// `craftsman privacy <command>`. No command sends a model request. `status`
+/// and `init` change no configuration; `enable` adds the policy it is asked
+/// for and nothing else.
 #[derive(clap::Subcommand)]
 pub enum Command {
-    /// Show the local privacy policy, mapping-vault key and startup state. Read-only.
+    /// Show the local privacy policy, mapping-vault key and startup preflight. Read-only.
     Status,
     /// Create the local mapping-vault key and vault. Create-only; asks for a new password twice.
     Init,
+    /// Add a privacy policy to your user configuration. Only when it has none.
+    Enable {
+        /// The installed user gadget to pin as the detector; it must already be approved.
+        #[arg(long, value_name = "ID")]
+        detector: String,
+        /// The detector function to call.
+        #[arg(long, value_name = "NAME", default_value = "detect")]
+        function: String,
+    },
 }
 
-pub async fn run(command: &Command) -> crate::privacy_bootstrap::Result<()> {
-    use crate::privacy_bootstrap::{BootstrapError, PrivateBootstrap};
+pub async fn run(
+    command: &Command,
+) -> std::result::Result<(), crate::tui::privacy_unlock::PrivateTerminalError> {
     match command {
-        Command::Status => println!("{}", crate::privacy_startup::status()),
+        Command::Status => println!("{}", crate::privacy_startup::status().await),
         Command::Init => {
-            let Ok(workspace) = std::env::current_dir() else {
-                return Err(BootstrapError::Workspace);
-            };
-            let bootstrap = PrivateBootstrap::capture_actual(&workspace)?;
-            // Refuse before any terminal or password prompt. The create-only
-            // worker checks absence again; nothing is adopted or replaced.
-            if bootstrap.status()? != FilePresence::Missing {
-                return Err(BootstrapError::Key(KeyError::AlreadyInitialized));
-            }
-            let mut terminal = crate::tui::privacy_unlock::OwnedSecretTerminal::enter()?;
-            let created = bootstrap.initialize(&mut terminal).await;
-            drop(terminal);
-            created?;
+            init().await?;
             println!(
                 "The mapping-vault key and vault were created. Privacy is not enabled by this command."
             );
         }
+        Command::Enable { detector, function } => {
+            crate::privacy_startup::enable(detector, function).await?;
+            println!(
+                "A privacy policy was added to your user configuration. `craftsman privacy status` shows what a start still needs."
+            );
+        }
     }
+    Ok(())
+}
+
+/// Create-only initialization through the owned password popup. It refuses
+/// before any terminal or prompt when a key file exists; the create-only
+/// worker checks absence again, and nothing is adopted or replaced. It
+/// enables nothing and changes no configuration.
+pub(crate) async fn init()
+-> std::result::Result<(), crate::tui::privacy_unlock::PrivateTerminalError> {
+    use crate::privacy_bootstrap::{BootstrapError, PrivateBootstrap};
+    let Ok(workspace) = std::env::current_dir() else {
+        return Err(BootstrapError::Workspace.into());
+    };
+    let bootstrap = PrivateBootstrap::capture_actual(&workspace)?;
+    if bootstrap.status()? != FilePresence::Missing {
+        return Err(BootstrapError::Key(KeyError::AlreadyInitialized).into());
+    }
+    let mut terminal = match crate::tui::privacy_unlock::OwnedSecretTerminal::enter() {
+        Ok(terminal) => terminal,
+        Err(error) => return Err(BootstrapError::Key(error).into()),
+    };
+    let created = bootstrap.initialize(&mut terminal).await;
+    drop(terminal);
+    created?;
     Ok(())
 }
 

@@ -1,11 +1,11 @@
 # Private owned password input and conversation bootstrap
 
 This slice implements real owned-terminal init/unlock and key/user-policy/
-pinned-detector/conversation composition. On this unmerged branch the owned
-interactive `craftsman` invocation selects it for an enabled user policy, and
-`craftsman privacy status` and `craftsman privacy init` are its explicit
-commands. There is no `enable` writer, `/privacy`, ACP, `-m` or service route:
-for those an enabled policy still refuses before frontend, store or provider
+pinned-detector/conversation composition. On this unmerged branch the eligible
+owned interactive `craftsman` invocation selects it for an enabled user
+policy, and `craftsman privacy status`, `init` and `enable` are its explicit
+commands. There is no `/privacy`, ACP, `-m`, `--session` or service route: for
+those an enabled policy still refuses before frontend, store or provider
 effects. The existing absent/disabled path is unchanged.
 
 The [startup capture and interactive route](privacy-startup.md) keeps the
@@ -199,11 +199,13 @@ first failure is retained; no assertion or deadline was changed, and its cause
 is not established.
 
 Five normal cases run the same five scripts through the production router, as
-`main` calls it for an interactive invocation. Each shares its script with the
-captured case, so assertions and deadlines are the same. A further case covers
-the router's early answers and `privacy init` on synthetic user files. Details
-and the retained first failure of that case are in
-[privacy-startup.md](privacy-startup.md).
+`main` calls it for an eligible interactive invocation. Each shares its script
+with the captured case, so assertions and deadlines are the same. The router's
+early answers, the explicit commands and a refused build are checked through
+the real binary in `tests/privacy_cli.rs`. Every private build admits the
+system text through the pinned detector, so a start without an installed and
+approved detector is refused by the build after the unlock. Details and the
+retained first failures are in [privacy-startup.md](privacy-startup.md).
 
 The ordinary macOS clear checks exercise actual owned PTYs, real key/KDF/vault,
 captured policy, approved source-built WASM and the shared Chat builder. Fresh

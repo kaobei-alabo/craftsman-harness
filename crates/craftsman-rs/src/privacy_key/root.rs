@@ -167,6 +167,77 @@ impl ConfigRoot {
         }
     }
 
+    /// The enable writer's one effect: replace the user file that `lease`
+    /// holds with `candidate`, only while that lease still reads exactly
+    /// `original`. The candidate goes to a new, exclusive, user-only file in
+    /// the same held directory, is flushed, and is renamed over `config.json`.
+    /// A leftover of that staging name is never adopted or overwritten. A
+    /// failure before the rename leaves the user file as it was and removes
+    /// only this operation's own staged file. The staleness check is a
+    /// sample taken just before the rename, not a writer lease, and no
+    /// power-loss durability is claimed.
+    pub(crate) fn replace_user_config(
+        &self,
+        lease: &FileLease,
+        original: &[u8],
+        candidate: &[u8],
+    ) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::{io::Write, os::fd::AsRawFd};
+            const STAGED: &str = "config.json.privacy-enable";
+            if candidate.len() > CONFIG_LIMIT {
+                return Err(KeyError::Bounds);
+            }
+            self.recheck()?;
+            let mut file = self
+                .open_raw(STAGED, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)
+                .map_err(|_| KeyError::Io)?;
+            let directory = self.ancestors.last().ok_or(KeyError::Root)?.as_raw_fd();
+            let staged = std::ffi::CString::new(STAGED).map_err(|_| KeyError::Root)?;
+            let written = match secure_file(&file.metadata().map_err(|_| KeyError::Io)?, true) {
+                Err(error) => Err(error),
+                Ok(()) if file.write_all(candidate).is_err() || file.sync_all().is_err() => {
+                    Err(KeyError::Io)
+                }
+                // Staleness: the held user file still is the one that was read.
+                Ok(()) => match lease.verify_configuration_bytes(original) {
+                    Err(error) => Err(error),
+                    Ok(()) => self.recheck(),
+                },
+            };
+            let renamed = match written {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    let status = unsafe {
+                        libc::renameat(
+                            directory,
+                            staged.as_ptr(),
+                            directory,
+                            c"config.json".as_ptr(),
+                        )
+                    };
+                    if status == 0 {
+                        Ok(())
+                    } else {
+                        Err(KeyError::Io)
+                    }
+                }
+            };
+            if renamed.is_err() {
+                // Only the exclusive file this call created, by the held directory.
+                unsafe { libc::unlinkat(directory, staged.as_ptr(), 0) };
+                return renamed;
+            }
+            self.recheck()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (lease, original, candidate);
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
     pub(super) fn read_envelope(&self) -> Result<(Zeroizing<Vec<u8>>, FileLease)> {
         #[cfg(unix)]
         {

@@ -112,11 +112,13 @@ stored originals and uses keyed lookup indexes; original messages, tool results,
 history and checkpoints keep their existing plaintext form. Workspace files
 keep their current contents. Only recognized supported values are masked;
 unrecognized content is sent as written. `craftsman privacy status` reports the
-local state and `craftsman privacy init` creates the key; neither enables
-anything, and there is no enable command. The private terminal is narrower
-than the ordinary one: no voice, no slash commands beyond `/clear` and
-`/quit`, no settings saves, no session resume. This prototype has local test
-evidence only; it is not merged, installed or validated on hosted runners.
+local state, `craftsman privacy init` creates the key, and `craftsman privacy
+enable --detector <id>` adds the policy to a user file that has none; nothing
+is enabled without that explicit command or your own edit. The private
+terminal is narrower than the ordinary one: read-only local commands such as
+`/help` and `/status` work, but there is no voice, no settings change, no
+shell escape and no session resume. This prototype has local test evidence
+only; it is not merged, installed or validated on hosted runners.
 Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments
 are not restoration destinations. See [privacy development](docs/privacy-hooks.md)

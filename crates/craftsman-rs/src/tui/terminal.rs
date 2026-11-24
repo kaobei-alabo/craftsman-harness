@@ -25,7 +25,8 @@ pub(super) struct TerminalGuard {
 struct TerminalOwner {
     mouse: bool,
     // Capture that the private terminal switches on after entry: its password
-    // popup must first be the only raw reader. Restoration switches it off.
+    // popup must first be the only raw reader. True while that capture may be
+    // on; restoration then attempts the disable.
     late_mouse: AtomicBool,
     restored: AtomicBool,
     program_status: Mutex<Option<Reporter>>,
@@ -116,23 +117,33 @@ impl TerminalGuard {
 
     /// The private terminal's mouse capture, outside its password prompts.
     /// Fixed control sequences only; a restored terminal is left alone.
+    /// `late_mouse` means that capture may be on: it is set before the first
+    /// byte of an enable is written and cleared only after a disable was
+    /// written and flushed, so an incomplete write in either direction leaves
+    /// it set and restoration still attempts the disable.
     #[cfg(unix)]
     pub(super) fn capture_mouse(&self, enabled: bool) -> io::Result<()> {
-        if self.owner.restored.load(Ordering::Acquire)
-            || self.owner.late_mouse.swap(enabled, Ordering::AcqRel) == enabled
-        {
-            return Ok(());
-        }
         // The same queued commands as entry and restoration use.
         use crossterm::QueueableCommand;
         use std::io::Write;
+        if self.owner.restored.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut output = stdout();
         if enabled {
+            if self.owner.late_mouse.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
             output.queue(EnableMouseCapture)?;
-        } else {
-            output.queue(DisableMouseCapture)?;
+            return output.flush();
         }
-        output.flush()
+        if !self.owner.late_mouse.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        output.queue(DisableMouseCapture)?;
+        output.flush()?;
+        self.owner.late_mouse.store(false, Ordering::Release);
+        Ok(())
     }
 
     pub(super) fn enable_program_status(&self, enabled: bool) {

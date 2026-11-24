@@ -69,7 +69,17 @@ impl FrontendConfiguration {
             .map_err(PrivateTerminalError::Source)?;
         match (self, captured) {
             (Self::Legacy(_), None) => Ok(()),
-            (Self::Captured, Some(cfg)) => check_voice_configuration(cfg),
+            (Self::Captured, Some(cfg)) => {
+                check_voice_configuration(cfg)?;
+                // The ordinary terminal refuses an invalid status setting
+                // before any effect; so does this one, before any key work.
+                match crate::tui::program_status::enabled(cfg) {
+                    Ok(_) => Ok(()),
+                    Err(_) => Err(PrivateTerminalError::Startup(
+                        crate::privacy_startup::StartupError::Invalid,
+                    )),
+                }
+            }
             _ => Err(PrivateTerminalError::Build(
                 crate::privacy_bootstrap::PrivateBuildError::Unavailable,
             )),
@@ -243,7 +253,7 @@ impl OwnedSecretTerminal {
     /// renderer or permission authority: the live approval state is the one
     /// the same startup issued, taken through the bootstrap's own retained
     /// requirements. The owned interactive router enters here after it
-    /// selected the startup; any other caller's requirements stay incomplete.
+    /// selected the startup; any other caller's startup is not a selected one.
     pub async fn run_captured_private(
         self,
         bootstrap: crate::privacy_bootstrap::PrivateBootstrap,

@@ -208,6 +208,26 @@ impl CapturedUserConfiguration {
         matches!(self.policy, Policy::Proposed(_))
     }
 
+    /// Whether the actual user file has a `privacy` member at all.
+    pub(crate) fn has_policy(&self) -> bool {
+        !matches!(self.policy, Policy::Absent)
+    }
+
+    /// The enable writer's source: the held root, and the bounded original
+    /// bytes of the actual user file with its lease, after a recheck. `None`
+    /// for the bytes means that no user file exists. Nothing here is an owner
+    /// of a candidate; the candidate becomes a source only by being read back.
+    pub(crate) fn recheck_original(&self) -> Result<(&ConfigRoot, Option<(&[u8], &FileLease)>)> {
+        self.recheck()?;
+        Ok((
+            &self.root,
+            match (&self.bytes, &self.source) {
+                (Some(bytes), Some(source)) => Some((bytes.as_slice(), source)),
+                _ => None,
+            },
+        ))
+    }
+
     #[cfg(feature = "gadgets")]
     pub(crate) fn has_identifiers(&self) -> bool {
         matches!(&self.policy, Policy::Proposed(policy) if !policy.literals.is_empty())

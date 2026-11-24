@@ -1,6 +1,6 @@
 //! Actual-user startup capture for the owned interactive terminal. The `route`
-//! child is the one normal caller. A captured selection is a proposal: it
-//! activates nothing until that router and the owned entry complete it.
+//! child is the one normal caller. A captured selection is a proposal: by
+//! itself it activates nothing.
 use crate::config::{Config, PermissionMode};
 use crate::hitl::ApprovalState;
 use crate::privacy_key::{ConfigRoot, KeyError};
@@ -14,11 +14,11 @@ use std::{
     io::IsTerminal,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 mod route;
-pub(crate) use route::{normal_route, status};
+pub(crate) use route::{enable, normal_route, status};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StartupError {
@@ -58,6 +58,22 @@ pub enum StartupError {
         "The mapping-vault key files are incomplete; nothing was unlocked, adopted or deleted."
     )]
     KeyIncomplete,
+    #[error(
+        "The installed detector gadget does not match the policy's pins or has no stored source approval; nothing was unlocked."
+    )]
+    Detector,
+    #[error(
+        "The user configuration already has a privacy policy; this command only adds one. Nothing was changed."
+    )]
+    PolicyPresent,
+    #[error(
+        "No user configuration file exists; configure a model connection first. Nothing was changed."
+    )]
+    NoUserFile,
+    #[error(
+        "The detector gadget is not installed under the user configuration or has no stored source approval. Nothing was changed."
+    )]
+    DetectorNotApproved,
 }
 pub type Result<T> = std::result::Result<T, StartupError>;
 
@@ -100,27 +116,36 @@ pub enum StartupPrerequisite {
     FinalSourceAndNativeValidation,
 }
 
+impl StartupPrerequisite {
+    /// Review of the routing and final source and native validation are
+    /// process evidence. They hold merge and install. A running startup can
+    /// neither produce nor record them, and they are no part of its runtime
+    /// eligibility.
+    pub fn is_delivery_evidence(self) -> bool {
+        matches!(
+            self,
+            Self::ReviewedNormalTerminalRouting | Self::FinalSourceAndNativeValidation
+        )
+    }
+}
+
 /// Obligations retained through consuming access; these are not host-policy
-/// permissions. Each is recorded as complete only by the owner that actually
-/// completed it for this startup: the normal router, and the conversation
-/// whose bound full session exists. No flag, Config or caller value sets one.
-/// Completion is runtime state of one startup. It is not evidence of review,
-/// hosted or native validation; those gate merge and install, not this object.
+/// permissions, and this shared object never says that a session is ready.
+/// It keeps one observation about the source and the invocation: that the
+/// actual router selected this startup. It is shared by every conversation of
+/// the startup, including the ones a fresh clear builds, so nothing about one
+/// built session is stored here. Readiness of a build belongs to that actual
+/// bound session and is checked where it issues a turn
+/// (`PrivateBuiltSession::task_owner`).
 pub struct StartupRequirements {
     pending: [StartupPrerequisite; 6],
     options: Option<CapturedTerminalOptions>,
-    // One bit per prerequisite, in declaration order.
-    completed: AtomicU8,
+    // Set once, by the router, after its read-only preflight of this source
+    // and invocation: the policy is enabled, voice is explicitly off (so none
+    // of the unimplemented voice integration is requested) and key files
+    // exist. An observation, not a prerequisite label.
+    selected: AtomicBool,
 }
-/// The actual router selected this startup from the real invocation: routing,
-/// and voice. Voice integration is not implemented; the router selects only
-/// a source that explicitly turns voice off, so none of it is requested.
-const ROUTED: u8 = 0b01_0001;
-/// The owned entry holds its bound full session: the fresh shared
-/// conversation, every requested part with its private view (a wire whose
-/// items cannot be inspected was refused by that build), the owned key with
-/// its pinned detector, and the final source check that the build ends with.
-const ENTERED: u8 = 0b10_1110;
 impl StartupRequirements {
     fn pending() -> Self {
         Self {
@@ -133,19 +158,17 @@ impl StartupRequirements {
                 StartupPrerequisite::FinalSourceAndNativeValidation,
             ],
             options: None,
-            completed: AtomicU8::new(0),
+            selected: AtomicBool::new(false),
         }
     }
     pub fn prerequisites(&self) -> &[StartupPrerequisite] {
         &self.pending
     }
-    /// Refuses until every prerequisite was completed for this startup.
+    /// Always refuses. These retained obligations alone activate nothing: a
+    /// routed startup submits model turns and effects only through its own
+    /// bound session, which checks that binding for every submission.
     pub fn require_normal_activation(&self) -> Result<()> {
-        if self.completed.load(Ordering::SeqCst) == ROUTED | ENTERED {
-            Ok(())
-        } else {
-            Err(StartupError::NotYetAvailable)
-        }
+        Err(StartupError::NotYetAvailable)
     }
     /// Private to this module and its router. A startup without the actual
     /// parsed invocation's options cannot be selected.
@@ -153,18 +176,13 @@ impl StartupRequirements {
         if self.options.is_none() {
             return Err(StartupError::Invocation);
         }
-        self.completed.fetch_or(ROUTED, Ordering::SeqCst);
+        self.selected.store(true, Ordering::SeqCst);
         Ok(())
     }
+    /// Whether the actual router selected this startup.
     #[cfg(unix)]
     pub(crate) fn normal_routing_selected(&self) -> bool {
-        self.completed.load(Ordering::SeqCst) & ROUTED == ROUTED
-    }
-    /// Only an actual bound session is this evidence; it cannot be built
-    /// outside the conversation's own full-session request.
-    #[cfg(unix)]
-    pub(crate) fn complete_owned_entry(&self, _: &crate::privacy_bootstrap::PrivateBuiltSession) {
-        self.completed.fetch_or(ENTERED, Ordering::SeqCst);
+        self.selected.load(Ordering::SeqCst)
     }
     pub fn terminal_options(&self) -> Option<&CapturedTerminalOptions> {
         self.options.as_ref()

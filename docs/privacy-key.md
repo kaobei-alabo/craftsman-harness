@@ -1,10 +1,10 @@
 # Private key and trusted policy ownership
 
 This is the Step A key and policy foundation. On this unmerged branch,
-`craftsman privacy status` and `craftsman privacy init` select its explicit
-operations, and the interactive `craftsman` invocation asks for the vault
-password when the actual user file enables a policy. There is no `unlock` or
-`enable` command. The private app owners are `privacy_key::KeyManager`,
+`craftsman privacy status`, `init` and `enable` select its explicit
+operations, and the eligible interactive `craftsman` invocation asks for the
+vault password when the actual user file enables a policy. There is no
+`unlock` command. The private app owners are `privacy_key::KeyManager`,
 `privacy_policy::CapturedPolicy` and `privacy_cli::PrivateKeyOperations`.
 Normal sessions retain their existing behavior when user privacy policy is
 absent or disabled. For every frontend other than the interactive terminal an
@@ -128,9 +128,11 @@ file appearing after captured absence fail its source recheck.
 }
 ```
 
-This schema is a proposal constraint, with placeholder pins. The interactive
-route also needs a created key, `voice.enabled:false`, no identifiers and the
-detector's stored source approval; see [privacy-startup.md](privacy-startup.md). IDs and
+This schema is a proposal constraint, with placeholder pins. `craftsman
+privacy enable --detector <id>` writes this member with the pins of the
+installed, approved detector. The interactive route also needs a created key,
+`voice.enabled:false` and no identifiers; see
+[privacy-startup.md](privacy-startup.md). IDs and
 function names are restricted ASCII up to 64 bytes; each pin is exactly 64
 lowercase hex characters. There are at most 64 distinct nonempty literal
 identifiers, each at most 256 UTF-8 bytes, 16 KiB combined. The policy's encoded

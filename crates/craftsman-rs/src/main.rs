@@ -43,7 +43,7 @@ mod oneshot_io;
 mod picker;
 mod platform_os;
 mod plugins;
-// Key/policy owners of the owned private terminal; there is no enable writer.
+// Key/policy owners of the owned private terminal and its explicit commands.
 #[doc(hidden)]
 pub mod privacy_bootstrap;
 #[doc(hidden)]
@@ -199,13 +199,29 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         privacy_cli::run(command).await?;
         return Ok(std::process::ExitCode::SUCCESS);
     }
-    // The actual user source is captured right after the parse, before the
-    // loader and every terminal, store, provider or helper effect. Only the
-    // owned interactive invocation can become a privacy conversation; with an
-    // enabled policy every other frontend, a one-shot message and a resumed
-    // session are refused here. Without one the loader below is unchanged.
-    if let Some(code) = privacy_startup::normal_route(&cli).await? {
-        return Ok(std::process::ExitCode::from(code as u8));
+    // Only the eligible owned interactive invocation takes the privacy
+    // capture: no subcommand, no one-shot message, no resumed session, and a
+    // terminal on both ends. Its actual user source is captured before the
+    // loader and every terminal, store, provider or helper effect. Every other
+    // invocation keeps the loader below and its rejection of an enabled policy.
+    if cli.command.is_none()
+        && cli.message.is_none()
+        && cli.session.is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        match privacy_startup::normal_route(&cli).await {
+            Ok(None) => {}
+            Ok(Some(code)) => return Ok(std::process::ExitCode::from(code as u8)),
+            // After the unlock, the build is where a missing detector approval
+            // or model connection first shows; the status command names it.
+            Err(refusal @ tui::privacy_unlock::PrivateTerminalError::Build(_)) => {
+                anyhow::bail!(
+                    "{refusal} `craftsman privacy status` reports what a private start still needs."
+                );
+            }
+            Err(refusal) => return Err(refusal.into()),
+        }
     }
     let mut cfg = Config::load()?.unwrap_or_default();
     if let Some(mode) = cli

@@ -248,6 +248,68 @@ fn doctor_text(cfg: &Config, session: Option<&Session>) -> String {
     rows.join("\n")
 }
 
+/// The local, read-only commands of `handle_slash`, for a frontend that owns
+/// its session itself. The same text owners answer; nothing is saved, started
+/// or sent to a model, and the configuration is only read. `false`: the line
+/// is not one of them.
+pub(super) fn handle_local(
+    line: &str,
+    cfg: &Config,
+    session: Option<&Session>,
+    approval: &Arc<Mutex<ApprovalState>>,
+    app: &mut App,
+) -> bool {
+    match line.split_whitespace().next().unwrap_or_default() {
+        "/help" => {
+            let text = help_text(app);
+            app.push(text);
+        }
+        "/status" => {
+            let text = status_text(cfg, session, approval, app);
+            app.push(text);
+        }
+        "/doctor" => app.push(doctor_text(cfg, session)),
+        "/config" => app.push(config_text(cfg, session)),
+        "/version" => app.push(format!("craftsman {}", env!("CARGO_PKG_VERSION"))),
+        "/tokens" => match session {
+            Some(session) => {
+                let (input, output) = *session.usage.lock().unwrap();
+                app.push(format!("tokens: ↑{input} ↓{output}"));
+            }
+            None => app.push("no agent yet"),
+        },
+        "/queue" => show_queue_modal(app),
+        "/copy" => app.copy_requested = true,
+        "/editor" => {
+            app.modal = Some(Modal::Editor(EditorModal {
+                text: app.input.clone(),
+            }));
+            app.dirty = true;
+        }
+        "/context" => match session {
+            Some(session) => {
+                let state = session.agent.state.lock().unwrap();
+                let window = match cfg.model.as_deref() {
+                    Some(model) => cfg.model_context_window(model),
+                    None => None,
+                };
+                let report = match &session.controls {
+                    Some(controls) => controls.context.render(&state, window),
+                    None => crate::context_compiler::render_disabled(&state, window),
+                };
+                drop(state);
+                match report {
+                    Ok(report) => app.push(report),
+                    Err(error) => app.push_error(error.to_string()),
+                }
+            }
+            None => app.push("Context inspector: the local session is not initialized yet."),
+        },
+        _ => return false,
+    }
+    true
+}
+
 pub(super) async fn handle_slash(
     line: &str,
     cfg: &mut Config,

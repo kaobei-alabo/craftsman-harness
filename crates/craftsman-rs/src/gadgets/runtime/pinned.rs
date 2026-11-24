@@ -357,6 +357,71 @@ impl GadgetRuntime {
         })
     }
 
+    /// The checks of `call_pinned` that precede compilation, and nothing
+    /// after them: the installed bytes are the pinned ones, declare no
+    /// capability and have a stored grant for exactly those bytes at that
+    /// source. No guest is compiled, described or run, and nothing is
+    /// approved here.
+    pub(crate) async fn pinned_source_approved(
+        &self,
+        pin: &PinnedSource,
+    ) -> Result<(), GadgetError> {
+        if !valid_id(&pin.id)
+            || !hash_shape(&pin.component_sha256)
+            || !hash_shape(&pin.manifest_sha256)
+        {
+            return Err(GadgetError::new(
+                ErrorKind::InvalidArgs,
+                "invalid pinned gadget source",
+            ));
+        }
+        let (bundle, _) = self.pinned_bundle(pin).await?;
+        let grants = self.grants.clone();
+        let granted = blocking(move || {
+            grants.approved_exact(
+                &bundle.manifest.id,
+                &bundle.source,
+                bundle.hash.as_ref().unwrap(),
+                &bundle.manifest.capabilities,
+            )
+        })
+        .await?;
+        if !granted {
+            return Err(GadgetError::new(
+                ErrorKind::NeedsApproval,
+                "the pinned gadget has no stored approval for these exact bytes",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The pin of the user-level gadget as it is installed now: its id and
+    /// the SHA-256 of both files, read through the same held directory and
+    /// with the same file rules as the pinned call. It selects a source and
+    /// approves nothing; `pinned_source_approved` still has to accept it.
+    pub(crate) async fn installed_pin(&self, id: &str) -> Result<PinnedSource, GadgetError> {
+        if !valid_id(id) {
+            return Err(GadgetError::new(
+                ErrorKind::InvalidArgs,
+                "invalid pinned gadget source",
+            ));
+        }
+        let config = self.config.clone();
+        let id = id.to_owned();
+        blocking(move || {
+            let anchored = Anchored::open(&config, &id)?;
+            let manifest_sha256 = digest(&anchored.read("gadget.toml", MAX_MANIFEST_BYTES)?);
+            let component_sha256 = digest(&anchored.read("gadget.wasm", MAX_COMPONENT_BYTES)?);
+            anchored.confirm(&config, &id)?;
+            Ok(PinnedSource {
+                id,
+                component_sha256,
+                manifest_sha256,
+            })
+        })
+        .await
+    }
+
     /// Reads the user-level source afresh, without the scan cache and without
     /// resolving any link, and returns it only if it is exactly the pinned one.
     ///

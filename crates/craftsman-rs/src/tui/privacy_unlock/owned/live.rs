@@ -15,6 +15,7 @@ use crate::tui::{
     input::handle_terminal_event,
     modals::AppAction,
     privacy_approval,
+    program_status::Status,
     render::draw_session,
     session_bridge::{UiBridge, UiEvent, apply_turn_cancellation},
     terminal::copy_to_clipboard,
@@ -142,6 +143,14 @@ impl Frontend {
             popup.secret_reader = false;
             let input = OwnedNormalInput;
             let app = App::new(cfg);
+            // The ordinary terminal's fixed-text OSC 7501 status, for a
+            // startup the router selected and unless the user turned it off.
+            if let Ok(Some(requirements)) = owner.startup_requirements()
+                && requirements.normal_routing_selected()
+                && crate::tui::program_status::enabled(cfg) == Ok(true)
+            {
+                popup.guard.enable_program_status(true);
+            }
             Ok((cancellation, receiver, bridge, prompt, ui, input, app))
         })();
         let (cancellation, receiver, bridge, prompt, ui, input, app) = match result {
@@ -252,6 +261,21 @@ impl Frontend {
             .built
             .as_ref()
             .map(|built| built.session_for_terminal());
+        // Change-only, fixed states and messages; nothing is written when the
+        // reporter is off. No name, prompt or model text enters it.
+        let registry = match session {
+            Some(session) => Some(session.registry.as_ref()),
+            None => None,
+        };
+        if self
+            .popup
+            .inner
+            .guard
+            .report_program_status(self.app.current_program_status(pending), registry, pending)
+            .is_err()
+        {
+            return Err(PrivateTerminalError::Terminal);
+        }
         draw_session(
             &mut self.popup.inner.terminal,
             &mut self.app,
@@ -326,23 +350,37 @@ impl Frontend {
         }
         handle_terminal_event(&mut self.app, event)
     }
+    fn refuse_save(&mut self) {
+        let result = self.owner.before_configuration_save();
+        self.app.push_error(match result {
+            Err(error) => error.to_string(),
+            Ok(()) => BootstrapError::SettingsSaveRefused.to_string(),
+        });
+    }
     fn settings(&mut self) {
         let saving = std::mem::take(&mut self.app.mode_cycle_requested);
         let action = self.app.pending_action.take();
-        if saving || action.is_some() {
-            // Before any permission/model/effort/setup configuration mutation.
-            // The ordinary terminal's save and transfer paths remain untouched.
-            if matches!(action, Some(AppAction::RemoveQueued(_))) {
-                if let Some(AppAction::RemoveQueued(index)) = action {
-                    self.app.queued_messages.remove(index);
-                }
-            } else {
-                let result = self.owner.before_configuration_save();
-                self.app.push_error(match result {
-                    Err(error) => error.to_string(),
-                    Ok(()) => BootstrapError::SettingsSaveRefused.to_string(),
-                });
+        match action {
+            // The user's own queued drafts: a local list, as in the ordinary terminal.
+            Some(AppAction::RemoveQueued(index)) => {
+                self.app.queued_messages.remove(index);
             }
+            // Not saves: a picker, a reopen and a background-task control.
+            // None of them has a private adapter; nothing was changed.
+            Some(
+                AppAction::ChooseModel(_)
+                | AppAction::EditProvider(_)
+                | AppAction::ResumeSession(_)
+                | AppAction::CancelTask(_),
+            ) => self.app.push_error(
+                "This control has no reviewed private entry adapter; it was not executed.",
+            ),
+            // Everything else would change the captured settings: refused
+            // before any permission, model, effort or setup mutation. The
+            // ordinary terminal's save and transfer paths remain untouched.
+            Some(_) => self.refuse_save(),
+            None if saving => self.refuse_save(),
+            None => {}
         }
         if self.app.voice_request.take().is_some() {
             self.app
@@ -368,14 +406,43 @@ impl Frontend {
         Some((typed, queue))
     }
     fn start(&mut self, typed: String, queue: bool) -> bool {
-        if matches!(typed.trim(), "/quit" | "/exit") {
+        // One borrowed, trimmed view decides whether the line is a control.
+        // Leading spaces do not turn a control into a model prompt, and the
+        // raw line is what a refused control keeps as its draft.
+        let control = typed.trim();
+        if matches!(control, "/quit" | "/exit") {
             return true;
         }
-        if typed.trim() == "/clear" {
+        if control == "/clear" {
             self.app.push_error("In-place private clear requires a fresh exclusive unlock and is unsupported; the current conversation is retained.");
             return false;
         }
-        if typed.starts_with('/') || typed.starts_with('!') {
+        if control.starts_with('/') && self.configuration.is_captured() {
+            // The ordinary terminal's own read-only local commands. They read
+            // the retained configuration and session; nothing is saved,
+            // started or sent, and the line never becomes model input. The
+            // legacy caller-Config entry keeps its earlier refusal.
+            let owner = self.owner.clone();
+            if let Ok(cfg) = self.configuration.source(&owner) {
+                let session = match self.built.as_ref() {
+                    Some(built) => Some(built.session_for_terminal()),
+                    None => None,
+                };
+                if crate::tui::commands::handle_local(
+                    control,
+                    cfg,
+                    session,
+                    &self.approval,
+                    &mut self.app,
+                ) {
+                    if control == "/help" {
+                        self.app.push("In this private conversation only /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /clear and /quit run. The other commands are not executed.");
+                    }
+                    return false;
+                }
+            }
+        }
+        if control.starts_with('/') || control.starts_with('!') {
             // No normal settings/save/reopen/transfer/shell/extension adapter is
             // silently routed around the selected entry's actual source paths.
             self.app.push_error(
@@ -483,6 +550,19 @@ impl Frontend {
             });
         }
         let cursor = self.popup.inner.terminal.show_cursor();
+        // The ordinary terminal's final verdict, one attempt.
+        let status = if result.is_err() || cursor.is_err() {
+            Status::Error
+        } else if self.popup.inner.shutdown.exit_code() != 0 || self.app.running {
+            Status::Idle
+        } else {
+            match self.app.program_status {
+                Status::Done => Status::Done,
+                Status::Error => Status::Error,
+                _ => Status::Idle,
+            }
+        };
+        let _ = self.popup.inner.guard.finish_program_status(status);
         match result {
             Err(primary) => {
                 if cursor.is_err() {
@@ -658,18 +738,6 @@ impl Frontend {
         Ok(())
     }
     async fn loop_inner(&mut self) -> Result<i32, PrivateTerminalError> {
-        // A startup that the normal router selected takes input only once
-        // every prerequisite was completed for it. A startup that no router
-        // selected is the private entry, whose requirements stay incomplete.
-        if let Some(requirements) = self
-            .owner
-            .startup_requirements()
-            .map_err(PrivateTerminalError::Source)?
-            && requirements.normal_routing_selected()
-            && requirements.require_normal_activation().is_err()
-        {
-            return Err(PrivateTerminalError::Build(PrivateBuildError::Unavailable));
-        }
         let mut tick = tokio::time::interval(Duration::from_millis(16));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {

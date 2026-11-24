@@ -58,6 +58,51 @@ pub struct PinnedDetector {
 }
 
 impl PinnedDetector {
+    /// Whether a call would pass its source checks now: the installed bytes
+    /// are the pinned ones, declare no capability and have a stored approval.
+    /// Nothing is compiled, described or run, and nothing is approved.
+    pub async fn source_approved(&self) -> Result<(), HookError> {
+        match self.runtime.pinned_source_approved(&self.pin.source).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(HookError::Source),
+        }
+    }
+
+    /// The detector as the user installed it under `config_root`, pinned to
+    /// the bytes that are there now. A selector for the enable writer only:
+    /// it approves nothing, and `source_approved` must still accept it.
+    pub async fn installed(
+        workspace: &Path,
+        config_root: &Path,
+        gadget: &str,
+        function: &str,
+    ) -> Result<Self, HookError> {
+        let options = RuntimeOptions {
+            disk_cache: false,
+            ..RuntimeOptions::default()
+        };
+        let runtime =
+            GadgetRuntime::new(workspace, config_root, options).map_err(|_| HookError::Source)?;
+        let Ok(source) = runtime.installed_pin(gadget).await else {
+            return Err(HookError::Source);
+        };
+        let pin = DetectorPin::supplied_by_host(
+            gadget,
+            function,
+            &source.component_sha256,
+            &source.manifest_sha256,
+        )?;
+        Ok(Self { runtime, pin })
+    }
+
+    /// The pinned SHA-256 of the component and of the manifest, as lowercase hex.
+    pub fn pins(&self) -> (&str, &str) {
+        (
+            &self.pin.source.component_sha256,
+            &self.pin.source.manifest_sha256,
+        )
+    }
+
     /// `workspace` is the session's workspace root and `config_root` the
     /// user's configuration root that holds `gadgets/<id>/`. Nothing is read
     /// from the gadget here; every call checks the source again.
