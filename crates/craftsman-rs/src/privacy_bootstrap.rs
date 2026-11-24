@@ -1148,10 +1148,16 @@ impl PrivateBuiltSession {
                     .into(),
             );
         }
-        let Some(sources) = agent.recorded_sources() else {
-            return Err(BootstrapError::Session(SessionStop::Unbound).to_string());
+        // Every recorded message with its source, as the agent holds them;
+        // none while a message has no source yet.
+        let recorded = match agent.actual_sourced_messages() {
+            Ok(recorded) => Some(recorded),
+            Err(_) => None,
         };
-        match view.session().carriable(view.boundary(), &sources) {
+        match view
+            .session()
+            .carriable(view.boundary(), recorded.as_deref())
+        {
             Ok(()) => Ok(()),
             Err(why) => Err(why.to_owned()),
         }
@@ -1169,6 +1175,9 @@ impl PrivateBuiltSession {
     ) -> std::result::Result<CarriedConversation, String> {
         self.carriable()?;
         let view = self.bound_view()?;
+        // The vault's room for the successor scope, asked while this
+        // conversation is still whole. Nothing is reserved by it.
+        view.session().successor_has_room().await?;
         let retired = match view.session().retiring(view.boundary()) {
             Ok(retired) => retired,
             Err(stop) => return Err(stop.to_string()),

@@ -12,6 +12,18 @@ use file_data::{CapturedFileRule, RawFileRule};
 #[cfg(test)]
 mod file_data_tests;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 const POLICY_BYTES: usize = 32 * 1024;
 const USER_CONFIG_BYTES: usize = crate::privacy_key::root::CONFIG_LIMIT;
 
@@ -141,7 +153,7 @@ impl fmt::Debug for RetainedUserConfigurationSource {
 }
 impl RetainedUserConfigurationSource {
     pub fn recheck(&self) -> Result<()> {
-        self.root.recheck().map_err(|_| PolicyError::Source)?;
+        or_return!(self.root.recheck(), PolicyError::Source);
         match (&self.source, &self.bytes) {
             (Some(source), Some(bytes)) => source
                 .verify_configuration_bytes(bytes)
@@ -173,8 +185,10 @@ impl CapturedUserConfiguration {
             .map_err(UserConfigurationCaptureError::BeforeSource)?;
         let (configuration, policy, source, bytes) = match read {
             Some((bytes, source)) => {
-                let configuration: crate::config::Config = serde_json::from_slice(&bytes)
-                    .map_err(|_| UserConfigurationCaptureError::Invalid)?;
+                let configuration: crate::config::Config = or_return!(
+                    serde_json::from_slice(&bytes),
+                    UserConfigurationCaptureError::Invalid
+                );
                 let policy = if configuration.extra.contains_key("privacy") {
                     parse_user_source(&bytes).map_err(UserConfigurationCaptureError::Refused)?
                 } else {
@@ -198,7 +212,7 @@ impl CapturedUserConfiguration {
     }
 
     fn recheck(&self) -> Result<()> {
-        self.root.recheck().map_err(|_| PolicyError::Source)?;
+        or_return!(self.root.recheck(), PolicyError::Source);
         match (&self.source, &self.bytes) {
             (Some(source), Some(bytes)) => source
                 .verify_configuration_bytes(bytes)
@@ -301,7 +315,7 @@ impl CapturedPolicy {
         &self.root
     }
     fn capture(root: ConfigRoot) -> Result<Self> {
-        let read = root.read_user_config().map_err(|_| PolicyError::Source)?;
+        let read = or_return!(root.read_user_config(), PolicyError::Source);
         let (policy, source) = match read {
             Some((bytes, source)) => (parse_user_source(&bytes)?, Some(source)),
             None => (Policy::Absent, None),
@@ -320,13 +334,11 @@ impl CapturedPolicy {
         Ok(captured)
     }
     pub fn recheck(&self) -> Result<()> {
-        self.root.recheck().map_err(|_| PolicyError::Source)?;
+        or_return!(self.root.recheck(), PolicyError::Source);
         if let Some(file) = &self.source {
-            file.recheck().map_err(|_| PolicyError::Source)?;
+            or_return!(file.recheck(), PolicyError::Source);
         } else {
-            self.root
-                .verify_config_absent()
-                .map_err(|_| PolicyError::Source)?;
+            or_return!(self.root.verify_config_absent(), PolicyError::Source);
         }
         if let Policy::Proposed(policy) = &self.policy {
             for rule in &policy.file_rules {
@@ -503,7 +515,7 @@ fn parse_user_source(bytes: &[u8]) -> Result<Policy> {
     if bytes.len() > USER_CONFIG_BYTES {
         return Err(PolicyError::Invalid);
     }
-    let UserSource(raw) = serde_json::from_slice(bytes).map_err(|_| PolicyError::Invalid)?;
+    let UserSource(raw) = or_return!(serde_json::from_slice(bytes), PolicyError::Invalid);
     let Some(raw) = raw else {
         return Ok(Policy::Absent);
     };

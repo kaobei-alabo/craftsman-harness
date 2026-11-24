@@ -478,8 +478,26 @@ The steps, in order:
    because the build of the new conversation would refuse it only after
    the retirement. A refusal is a line; the conversation goes on.
 2. **Retired.** The conversation must be idle: no running turn, no local
-   work, no running background task and no parked approval. Its own record
-   of every private value is read while it is live. Then the agent retires:
+   work, no running background task and no parked approval. Before anything
+   is retired, three things are decided read-only, and a refusal of any
+   keeps the conversation as it was:
+   - *Every recorded message with its source.* The one function that the
+     adoption decides with is applied to the live record: the source is
+     this conversation's own, on its lane, it fits its message (the
+     captured text, the commit, the call, the parts that make up exactly
+     the recorded content), a reply has no provider items, and every
+     model-origin text can be renamed. A message that has no source yet
+     refuses.
+   - *The renaming.* It is done here with this scope's own placeholders,
+     so that an occurrence that cannot be renamed is found now.
+   - *The vault's room.* The vault is asked whether it has room for one
+     further scope with as many mappings and sealed bytes as this scope
+     holds, under the unchanged bounds of an insertion: 512 mappings in a
+     scope, 4,096 mappings and the sealed-byte bound in the vault, 128
+     distinct scopes. Nothing is reserved, raised or pruned.
+
+   Its own record of every private value is read while it is live. Then
+   the agent retires:
    it issues its whole record and closes the source view, and with it the
    send guard, the vault scope and the key. A refusal up to here keeps the
    conversation as it was, with one exception: a record that no longer
@@ -529,7 +547,16 @@ What the adoption does with each recorded message:
 - **Model-origin text** (replies, call arguments, summaries) keeps its words.
   Each placeholder of the retired scope in it is replaced by the new scope's
   placeholder for the same value, and the new send guard checks the result.
-  Nothing is restored into it.
+  Nothing is restored into it. An occurrence counts where restoration would
+  read it as a placeholder of its category, as a whole token. That matters
+  for a telephone placeholder, which is digits in the shape of its original:
+  the same digits attached to more digits, or as one group of a longer
+  spaced, dotted or bracketed number, are not the placeholder and stay. Of
+  two occurrences of which one lies within the other the longer is taken;
+  two that overlap otherwise refuse. One thing cannot be told apart: a
+  number that a model wrote by itself, standing alone, that equals a
+  telephone placeholder. It is renamed like the placeholder, as restoration
+  would restore it.
 - A stored todo keeps naming the reply that wrote it, now by that reply's
   new source.
 
@@ -575,12 +602,19 @@ Sub-agents' own records are not carried.
 Known defects of the carry-over, from the independent review, not yet
 corrected:
 
-- **The check before the retirement is weaker than the adoption.** It
-  accepts a record by the kind of each source. The adoption also requires
-  that each source fits its message, that a host note or summary has its
-  commit, that the content matches and that renamed placeholders do not
-  overlap. A record that fails one of those fails after the retirement and
-  the write, and the terminal ends, with the error described above.
+- **What only the new scope can decide still fails after the retirement.**
+  The check before the retirement and the adoption now decide each
+  recorded message with one function, and the vault is asked for room
+  first. Three things remain that are decided only when the new scope
+  exists, and a failure of one ends the terminal with the error described
+  above: the new scope's own admission of the raw text, which runs the
+  detector; the new send guard's reading of the renamed text; and the
+  vault's insertions themselves, which are checked again when they are
+  made. The room that was read is no reservation: a mapping written in
+  between by another conversation of the same vault, or a sealed length
+  that differs from the retired scope's, can still refuse. The read counts
+  the retired scope's mappings; a value the detector reports in the new
+  scope and did not report in the old one is not counted.
 - **The adoption is awaited where it stands.** While every retired value
   and raw capture is admitted again, the terminal draws nothing and
   observes no input, cancellation or shutdown.

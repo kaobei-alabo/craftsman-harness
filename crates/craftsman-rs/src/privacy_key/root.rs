@@ -3,6 +3,18 @@ use super::{KeyError, Result, envelope::ENVELOPE_BYTES};
 use std::{fmt, path::PathBuf};
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 pub const KEY_FILENAME: &str = "privacy-key.v1";
 pub(crate) const CONFIG_LIMIT: usize = 1024 * 1024;
 
@@ -349,8 +361,8 @@ impl ConfigRoot {
                     }
                 })?;
             secure_file(&file.metadata().map_err(|_| KeyError::Io)?, true)?;
-            file.write_all(bytes).map_err(|_| KeyError::Io)?;
-            file.sync_all().map_err(|_| KeyError::Io)?;
+            or_return!(file.write_all(bytes), KeyError::Io);
+            or_return!(file.sync_all(), KeyError::Io);
             self.recheck()?;
             // Retain a separately no-follow opened readable descriptor only if
             // its complete identity matches the file this operation created.
@@ -446,7 +458,10 @@ impl ConfigRoot {
         mode: libc::mode_t,
     ) -> std::io::Result<std::fs::File> {
         use std::os::fd::{AsRawFd, FromRawFd};
-        let name = std::ffi::CString::new(name).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+        let name = or_return!(
+            std::ffi::CString::new(name),
+            std::io::Error::from(std::io::ErrorKind::InvalidInput)
+        );
         let directory = self
             .ancestors
             .last()
@@ -468,7 +483,7 @@ impl ConfigRoot {
     #[cfg(unix)]
     fn exists(&self, name: &str) -> Result<bool> {
         use std::os::fd::AsRawFd;
-        let name = std::ffi::CString::new(name).map_err(|_| KeyError::Root)?;
+        let name = or_return!(std::ffi::CString::new(name), KeyError::Root);
         let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
         let directory = self.ancestors.last().ok_or(KeyError::Root)?;
         let status = unsafe {
@@ -492,10 +507,8 @@ impl ConfigRoot {
     #[cfg(unix)]
     fn open_existing(&self, name: &str, private: bool) -> Result<FileLease> {
         self.recheck()?;
-        let file = self
-            .open_raw(name, libc::O_RDONLY, 0)
-            .map_err(|_| KeyError::Missing)?;
-        let metadata = file.metadata().map_err(|_| KeyError::Io)?;
+        let file = or_return!(self.open_raw(name, libc::O_RDONLY, 0), KeyError::Missing);
+        let metadata = or_return!(file.metadata(), KeyError::Io);
         secure_file(&metadata, private)?;
         let lease = FileLease {
             identity: identity(&metadata),
@@ -637,7 +650,7 @@ impl FileLease {
                 fd::{AsRawFd, FromRawFd},
                 unix::fs::MetadataExt,
             };
-            let actual = self.file.metadata().map_err(|_| KeyError::Io)?;
+            let actual = or_return!(self.file.metadata(), KeyError::Io);
             secure_file(&actual, self.private)?;
             let descriptor = unsafe {
                 libc::openat(
@@ -650,7 +663,7 @@ impl FileLease {
                 return Err(KeyError::Changed);
             }
             let named = unsafe { std::fs::File::from_raw_fd(descriptor) };
-            let named = named.metadata().map_err(|_| KeyError::Io)?;
+            let named = or_return!(named.metadata(), KeyError::Io);
             secure_file(&named, self.private)?;
             if identity(&named) != identity(&actual) {
                 return Err(KeyError::Changed);
@@ -676,17 +689,17 @@ impl FileLease {
     fn read_bounded(&self, maximum: usize, exact: Option<usize>) -> Result<Zeroizing<Vec<u8>>> {
         use std::os::unix::fs::FileExt;
         self.recheck()?;
-        let length = usize::try_from(self.metadata.len()).map_err(|_| KeyError::Bounds)?;
+        let length = or_return!(usize::try_from(self.metadata.len()), KeyError::Bounds);
         if length > maximum || exact.is_some_and(|n| n != length) {
             return Err(KeyError::Invalid);
         }
         let mut bytes = Zeroizing::new(vec![0; length]);
         let mut read = 0;
         while read < length {
-            let count = self
-                .file
-                .read_at(&mut bytes[read..], read as u64)
-                .map_err(|_| KeyError::Io)?;
+            let count = or_return!(
+                self.file.read_at(&mut bytes[read..], read as u64),
+                KeyError::Io
+            );
             if count == 0 {
                 return Err(KeyError::Changed);
             }
@@ -741,7 +754,7 @@ fn secure_directory(meta: &std::fs::Metadata, final_root: bool) -> Result<()> {
 #[cfg(unix)]
 fn open_directory_at(parent: i32, name: &std::ffi::OsStr) -> Result<std::fs::File> {
     use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
-    let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| KeyError::Root)?;
+    let name = or_return!(std::ffi::CString::new(name.as_bytes()), KeyError::Root);
     let descriptor = unsafe {
         libc::openat(
             parent,

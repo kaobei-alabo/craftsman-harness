@@ -358,6 +358,14 @@ impl MappingSession {
         storage::resolve(self.live.clone(), aliases).await
     }
 
+    /// Read-only: whether the vault has room now for one further scope with
+    /// as many mappings and sealed bytes as this session's scope holds,
+    /// under the unchanged bounds of an insertion. Nothing is reserved; the
+    /// insertions themselves are checked again.
+    pub async fn admits_successor_scope(&self) -> Result<bool> {
+        storage::admits_successor(self.live.clone()).await
+    }
+
     pub fn close(&self) {
         self.live.close();
     }

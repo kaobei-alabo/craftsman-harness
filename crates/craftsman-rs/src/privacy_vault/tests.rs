@@ -1760,3 +1760,68 @@ async fn symlink_hardlink_and_nonprivate_root_or_file_refuse_without_touching_fo
         );
     }
 }
+
+#[tokio::test]
+async fn room_for_a_successor_scope_is_read_with_the_insertion_bounds_and_writes_nothing() {
+    let first = "room.first@synthetic.example";
+    let second = "room.second@synthetic.example";
+    let text = format!("{first} {second}");
+    let values = [(first, Category::Email), (second, Category::Email)];
+    // What these two mappings seal to, read from a store that holds them.
+    let sealed = {
+        let (_temp, root, vault) = fresh(Limits::default()).await;
+        let scoped = session(&vault);
+        // A scope that holds nothing asks for nothing.
+        assert!(scoped.admits_successor_scope().await.unwrap());
+        mask_values(&scoped, &text, &values).await.unwrap();
+        assert!(scoped.admits_successor_scope().await.unwrap());
+        let probe = Probe::open(&root).await;
+        assert_eq!(probe.count().await, 2);
+        let mut rows = probe
+            .conn
+            .query("SELECT sum(length(sealed)) FROM vault_mappings", ())
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        usize::try_from(row.get::<i64>(0).unwrap()).unwrap()
+    };
+    assert!(sealed > 0);
+    for (case, room) in [(0, false), (1, true), (2, false), (3, true)] {
+        let mut limits = Limits::default();
+        match case {
+            // Two are held and two more are wanted: three do not admit them,
+            // four do. A scope's own bound may not exceed the vault's.
+            0 => (limits.scope_mappings, limits.vault_mappings) = (2, 3),
+            1 => (limits.scope_mappings, limits.vault_mappings) = (2, 4),
+            // The sealed bytes fit once and not twice, then exactly twice.
+            2 => limits.ciphertext_bytes = 2 * sealed - 1,
+            3 => limits.ciphertext_bytes = 2 * sealed,
+            _ => unreachable!(),
+        }
+        let (_temp, root, vault) = fresh(limits).await;
+        let scoped = session(&vault);
+        mask_values(&scoped, &text, &values).await.unwrap();
+        assert_eq!(
+            scoped.admits_successor_scope().await.unwrap(),
+            room,
+            "case {case}"
+        );
+        // Asked, not taken: the store holds what it held, a refusal closed
+        // nothing, and the answer is the same when asked again.
+        assert_eq!(Probe::open(&root).await.count().await, 2);
+        scoped.capture_text("safe").unwrap();
+        assert_eq!(scoped.admits_successor_scope().await.unwrap(), room);
+        // Another scope of the same vault is asked about what it holds
+        // itself: nothing.
+        let other = vault
+            .session(namespace("synthetic-project-11", "synthetic-thread-33"))
+            .unwrap();
+        assert!(other.admits_successor_scope().await.unwrap());
+        // A closed session is not answered.
+        scoped.close();
+        assert_eq!(
+            scoped.admits_successor_scope().await.unwrap_err(),
+            PrivacyError::Closed
+        );
+    }
+}

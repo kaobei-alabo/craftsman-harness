@@ -15,6 +15,18 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 const MAX_TEXT: usize = 256 * 1024;
 const MAX_RECORDS: usize = 512;
 const MAX_REPLACEMENTS: usize = 4096;
@@ -181,7 +193,7 @@ impl<'a> Restorer<'a> {
     }
 
     fn matches(&self, text: &str, reject_ambiguous: bool) -> Result<Vec<Replacement>> {
-        let count = self.records.len().map_err(|_| RestoreError::Scope)?;
+        let count = or_return!(self.records.len(), RestoreError::Scope);
         if text.len() > MAX_TEXT
             || count > MAX_RECORDS
             || text
@@ -286,7 +298,10 @@ impl<'a> Restorer<'a> {
         // Serde admits the complete grammar first. The bounded lexer below
         // preserves every byte outside changed string-value tokens; it does not
         // reserialize numbers, reorder keys or silently merge duplicate keys.
-        serde_json::from_str::<serde_json::Value>(text).map_err(|_| RestoreError::Input)?;
+        or_return!(
+            serde_json::from_str::<serde_json::Value>(text),
+            RestoreError::Input
+        );
         let bytes = text.as_bytes();
         let mut objects: Vec<Option<BTreeSet<[u8; 32]>>> = Vec::new();
         let mut output = Zeroizing::new(String::new());
@@ -331,7 +346,7 @@ impl<'a> Restorer<'a> {
                         following += 1;
                     }
                     let key = bytes.get(following) == Some(&b':');
-                    let count = self.records.len().map_err(|_| RestoreError::Scope)?;
+                    let count = or_return!(self.records.len(), RestoreError::Scope);
                     work = work
                         .checked_add(
                             decoded
@@ -449,7 +464,10 @@ pub fn file_candidate(
     match format {
         FileDataFormat::PlainText => display_text(text, restored),
         FileDataFormat::JsonDocument => {
-            serde_json::from_str::<serde_json::Value>(text).map_err(|_| RestoreError::Input)?;
+            or_return!(
+                serde_json::from_str::<serde_json::Value>(text),
+                RestoreError::Input
+            );
             let values = json_value_strings(text)?;
             let mut encoded = Vec::with_capacity(restored.len());
             for occurrence in restored {
@@ -471,8 +489,10 @@ pub fn file_candidate(
                 });
             }
             let candidate = display_text(text, &encoded)?;
-            serde_json::from_str::<serde_json::Value>(&candidate)
-                .map_err(|_| RestoreError::Input)?;
+            or_return!(
+                serde_json::from_str::<serde_json::Value>(&candidate),
+                RestoreError::Input
+            );
             Ok(candidate)
         }
     }
@@ -555,7 +575,11 @@ fn push_bounded(output: &mut String, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn token_boundary(text: &str, start: usize, end: usize, category: Category) -> bool {
+/// Whether `start..end` of `text` stands as a whole token for a placeholder
+/// of `category`. Also the rule by which a retired scope's placeholders are
+/// renamed for a successor: an occurrence that restoration would not read
+/// as a placeholder is not renamed as one.
+pub(crate) fn token_boundary(text: &str, start: usize, end: usize, category: Category) -> bool {
     let previous = text[..start].chars().next_back();
     let next = text[end..].chars().next();
     match category {

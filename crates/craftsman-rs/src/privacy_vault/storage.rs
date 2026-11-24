@@ -25,6 +25,18 @@ mod open_observation;
 #[cfg(all(test, windows))]
 mod windows_tests;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 const APPLICATION_ID: i64 = 0x43505631;
 const DB_BYTES: u64 = 32 * 1024 * 1024;
 const WAL_BYTES: u64 = 16 * 1024 * 1024;
@@ -86,9 +98,7 @@ impl Vault {
     ) -> Result<Self> {
         let started = Instant::now();
         let limits = limits.validate()?;
-        let key = source
-            .acquire_privacy_key()
-            .map_err(|_| PrivacyError::Key)?;
+        let key = or_return!(source.acquire_privacy_key(), PrivacyError::Key);
         Self::open_key(
             location,
             key,
@@ -114,7 +124,7 @@ impl Vault {
             open: open.clone(),
             accepted: false,
         };
-        let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
+        let runtime = or_return!(tokio::runtime::Handle::try_current(), PrivacyError::Worker);
         #[cfg(test)]
         observation.pre_dispatch();
         let opened = crate::util::blocking(move || {
@@ -187,9 +197,7 @@ impl Vault {
         hook: InitHook,
     ) -> Result<Self> {
         let started = Instant::now();
-        let key = source
-            .acquire_privacy_key()
-            .map_err(|_| PrivacyError::Key)?;
+        let key = or_return!(source.acquire_privacy_key(), PrivacyError::Key);
         Self::open_key(location, key, limits.validate()?, started, Some(hook)).await
     }
 }
@@ -435,7 +443,7 @@ async fn integer(conn: &Connection, sql: &str, budget: &mut Budget) -> Result<i6
     let row = next(&mut rows, budget)
         .await?
         .ok_or(PrivacyError::Integrity)?;
-    let value = row.get(0).map_err(|_| PrivacyError::Integrity)?;
+    let value = or_return!(row.get(0), PrivacyError::Integrity);
     if next(&mut rows, budget).await?.is_some() {
         return Err(PrivacyError::Integrity);
     }
@@ -601,7 +609,7 @@ async fn open_worker(
     if fresh {
         #[cfg(test)]
         budget.opening_enter(open_observation::Phase::FreshTransaction);
-        getrandom::fill(&mut id).map_err(|_| PrivacyError::Key)?;
+        or_return!(getrandom::fill(&mut id), PrivacyError::Key);
         let sealed = keys.seal(&crypto::header_aad(&id), Zeroizing::new(HEADER.to_vec()))?;
         begin(&conn, "BEGIN IMMEDIATE", &mut budget).await?;
         let created = async {
@@ -756,11 +764,12 @@ async fn read_header(conn: &Connection, keys: &Keys, budget: &mut Budget) -> Res
     {
         return Err(PrivacyError::Integrity);
     }
-    let id: [u8; 16] = row
-        .get::<Vec<u8>>(5)
-        .map_err(|_| PrivacyError::Integrity)?
-        .try_into()
-        .map_err(|_| PrivacyError::Integrity)?;
+    let id: [u8; 16] = or_return!(
+        row.get::<Vec<u8>>(5)
+            .map_err(|_| PrivacyError::Integrity)?
+            .try_into(),
+        PrivacyError::Integrity
+    );
     let sealed = Sealed {
         nonce: row
             .get::<Vec<u8>>(6)
@@ -773,9 +782,10 @@ async fn read_header(conn: &Connection, keys: &Keys, budget: &mut Budget) -> Res
         return Err(PrivacyError::Integrity);
     }
     budget.work(sealed.bytes.len())?;
-    let plain = keys
-        .open(&crypto::header_aad(&id), &sealed)
-        .map_err(|_| PrivacyError::Key)?;
+    let plain = or_return!(
+        keys.open(&crypto::header_aad(&id), &sealed),
+        PrivacyError::Key
+    );
     if plain.as_slice() != HEADER {
         return Err(PrivacyError::Key);
     }
@@ -817,7 +827,7 @@ impl NativeLocation {
         // 128-component ceiling bounds this list. Check root-to-leaf as before.
         for ancestor in root.ancestors().collect::<Vec<_>>().into_iter().rev() {
             budget.io()?;
-            let meta = fs::symlink_metadata(ancestor).map_err(|_| PrivacyError::Io)?;
+            let meta = or_return!(fs::symlink_metadata(ancestor), PrivacyError::Io);
             if meta.file_type().is_symlink() || !meta.is_dir() {
                 return Err(PrivacyError::Integrity);
             }
@@ -855,7 +865,7 @@ impl NativeLocation {
                     return Err(PrivacyError::Integrity);
                 }
                 budget.io()?;
-                file.sync_all().map_err(|_| PrivacyError::Io)?;
+                or_return!(file.sync_all(), PrivacyError::Io);
                 true
             }
             Err(error)
@@ -935,7 +945,7 @@ fn inspect(
     budget: &mut Budget,
 ) -> Result<NativeIdentity> {
     budget.io()?;
-    let meta = fs::symlink_metadata(path).map_err(|_| PrivacyError::Io)?;
+    let meta = or_return!(fs::symlink_metadata(path), PrivacyError::Io);
     if meta.file_type().is_symlink()
         || (directory && !meta.is_dir())
         || (!directory && (!meta.is_file() || meta.len() > limit))
@@ -1016,7 +1026,7 @@ pub(super) async fn mask(
     }
     let mut slot = OwnedSlot::reserve(&live.vault)?;
     let worker_live = live.clone();
-    let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
+    let runtime = or_return!(tokio::runtime::Handle::try_current(), PrivacyError::Worker);
     let started = Instant::now();
     let returned = crate::util::blocking(move || {
         let mut budget = Budget::new(worker_live.vault.limits, Some(worker_live.clone()));
@@ -1076,7 +1086,7 @@ pub(super) async fn resolve(live: Arc<SessionLife>, aliases: &[&str]) -> Result<
         .collect();
     let mut slot = OwnedSlot::reserve(&live.vault)?;
     let worker_live = live.clone();
-    let runtime = tokio::runtime::Handle::try_current().map_err(|_| PrivacyError::Worker)?;
+    let runtime = or_return!(tokio::runtime::Handle::try_current(), PrivacyError::Worker);
     let started = Instant::now();
     let returned = crate::util::blocking(move || {
         let mut budget = Budget::new(worker_live.vault.limits, Some(worker_live.clone()));
@@ -1107,6 +1117,92 @@ pub(super) async fn resolve(live: Arc<SessionLife>, aliases: &[&str]) -> Result<
     Ok(result)
 }
 
+/// Read-only: whether the vault, as its store stands now, has room for one
+/// further scope that holds as many mappings and as many sealed bytes as
+/// this session's scope holds. The bounds are the unchanged ones an
+/// insertion into an empty scope is held to: the mappings of one scope, the
+/// mappings and the sealed bytes of the whole vault, and its distinct
+/// scopes. Nothing is reserved, written or pruned, so this is no promise:
+/// the insertions themselves are checked again, each when it is made.
+pub(super) async fn admits_successor(live: Arc<SessionLife>) -> Result<bool> {
+    let mut guard = RequestGuard {
+        live: live.clone(),
+        accepted: false,
+    };
+    live.check()?;
+    let mut slot = OwnedSlot::reserve(&live.vault)?;
+    let worker_live = live.clone();
+    let runtime = match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime,
+        Err(_) => return Err(PrivacyError::Worker),
+    };
+    let started = Instant::now();
+    let returned = crate::util::blocking(move || {
+        let mut budget = Budget::new(worker_live.vault.limits, Some(worker_live.clone()));
+        budget.started = started;
+        let result = runtime.block_on(successor_worker(&worker_live, &mut budget));
+        if let Err(error) = &result {
+            slot.inner.fail_storage(*error);
+        }
+        slot.returned = true;
+        drop(slot);
+        result
+    })
+    .await;
+    let result = match returned {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            live.vault.fail_storage(PrivacyError::Worker);
+            return Err(PrivacyError::Worker);
+        }
+    };
+    live.check()?;
+    guard.accepted = true;
+    Ok(result)
+}
+
+async fn successor_worker(live: &Arc<SessionLife>, budget: &mut Budget) -> Result<bool> {
+    let inner = &live.vault;
+    inner.native.recheck(budget)?;
+    let conn = match inner.conn.lock() {
+        Ok(conn) => conn,
+        Err(_) => return Err(PrivacyError::Integrity),
+    };
+    begin(&conn, "BEGIN DEFERRED", budget).await?;
+    let read = async {
+        // What this scope holds, by the store's own count and lengths.
+        let mut rows = query(
+            &conn,
+            "SELECT count(*), coalesce(sum(length(sealed)), 0) FROM vault_mappings WHERE scope = ?1",
+            vec![Value::Blob(live.scope.to_vec())],
+            budget,
+        )
+        .await?;
+        let Some(row) = next(&mut rows, budget).await? else {
+            return Err(PrivacyError::Integrity);
+        };
+        let (Ok(held), Ok(sealed)) = (row.get::<i64>(0), row.get::<i64>(1)) else {
+            return Err(PrivacyError::Integrity);
+        };
+        let (Ok(held), Ok(sealed)) = (usize::try_from(held), usize::try_from(sealed)) else {
+            return Err(PrivacyError::Integrity);
+        };
+        drop(rows);
+        let stats = stats(&conn, budget).await?;
+        inner.native.recheck(budget)?;
+        let limits = &budget.limits;
+        Ok(held <= limits.scope_mappings
+            && stats.count + held <= limits.vault_mappings
+            && stats.bytes + sealed <= limits.ciphertext_bytes
+            && (held == 0 || stats.scopes < 128))
+    }
+    .await;
+    // Nothing was written; the read transaction is ended either way.
+    rollback(&conn, budget).await?;
+    read
+}
+
 struct Stats {
     count: usize,
     bytes: usize,
@@ -1118,12 +1214,18 @@ async fn stats(conn: &Connection, budget: &mut Budget) -> Result<Stats> {
     let row = next(&mut rows, budget)
         .await?
         .ok_or(PrivacyError::Integrity)?;
-    let count = usize::try_from(row.get::<i64>(0).map_err(|_| PrivacyError::Integrity)?)
-        .map_err(|_| PrivacyError::Integrity)?;
-    let bytes = usize::try_from(row.get::<i64>(1).map_err(|_| PrivacyError::Integrity)?)
-        .map_err(|_| PrivacyError::Integrity)?;
-    let scopes = usize::try_from(row.get::<i64>(2).map_err(|_| PrivacyError::Integrity)?)
-        .map_err(|_| PrivacyError::Integrity)?;
+    let count = or_return!(
+        usize::try_from(row.get::<i64>(0).map_err(|_| PrivacyError::Integrity)?),
+        PrivacyError::Integrity
+    );
+    let bytes = or_return!(
+        usize::try_from(row.get::<i64>(1).map_err(|_| PrivacyError::Integrity)?),
+        PrivacyError::Integrity
+    );
+    let scopes = or_return!(
+        usize::try_from(row.get::<i64>(2).map_err(|_| PrivacyError::Integrity)?),
+        PrivacyError::Integrity
+    );
     if count > budget.limits.vault_mappings
         || bytes > budget.limits.ciphertext_bytes
         || scopes > 128
@@ -1166,25 +1268,28 @@ async fn read_scope(
             return Err(PrivacyError::Integrity);
         }
         let category = Category::from_code(row.get(5).map_err(|_| PrivacyError::Integrity)?)?;
-        let version: i64 = row.get(6).map_err(|_| PrivacyError::Integrity)?;
+        let version: i64 = or_return!(row.get(6), PrivacyError::Integrity);
         if version != FORMAT_VERSION as i64 {
             return Err(PrivacyError::Integrity);
         }
-        let stored_scope: [u8; 32] = row
-            .get::<Vec<u8>>(7)
-            .map_err(|_| PrivacyError::Integrity)?
-            .try_into()
-            .map_err(|_| PrivacyError::Integrity)?;
-        let identity: [u8; 32] = row
-            .get::<Vec<u8>>(8)
-            .map_err(|_| PrivacyError::Integrity)?
-            .try_into()
-            .map_err(|_| PrivacyError::Integrity)?;
-        let alias_tag: [u8; 32] = row
-            .get::<Vec<u8>>(9)
-            .map_err(|_| PrivacyError::Integrity)?
-            .try_into()
-            .map_err(|_| PrivacyError::Integrity)?;
+        let stored_scope: [u8; 32] = or_return!(
+            row.get::<Vec<u8>>(7)
+                .map_err(|_| PrivacyError::Integrity)?
+                .try_into(),
+            PrivacyError::Integrity
+        );
+        let identity: [u8; 32] = or_return!(
+            row.get::<Vec<u8>>(8)
+                .map_err(|_| PrivacyError::Integrity)?
+                .try_into(),
+            PrivacyError::Integrity
+        );
+        let alias_tag: [u8; 32] = or_return!(
+            row.get::<Vec<u8>>(9)
+                .map_err(|_| PrivacyError::Integrity)?
+                .try_into(),
+            PrivacyError::Integrity
+        );
         if stored_scope != *scope {
             return Err(PrivacyError::Integrity);
         }
@@ -1389,7 +1494,7 @@ async fn mask_worker(
     let selected = format::validate_spans(&input.text, &input.digest, report, &declared, budget)?;
     let inner = &live.vault;
     inner.native.recheck(budget)?;
-    let conn = inner.conn.lock().map_err(|_| PrivacyError::Integrity)?;
+    let conn = or_return!(inner.conn.lock(), PrivacyError::Integrity);
     begin(&conn, "BEGIN IMMEDIATE", budget).await?;
     let prepared = async {
         let mut mappings = read_scope(inner, &conn, &live.scope, budget).await?;
@@ -1512,7 +1617,7 @@ async fn resolve_worker(
 ) -> Result<ResolutionRecords> {
     let inner = &live.vault;
     inner.native.recheck(budget)?;
-    let conn = inner.conn.lock().map_err(|_| PrivacyError::Integrity)?;
+    let conn = or_return!(inner.conn.lock(), PrivacyError::Integrity);
     begin(&conn, "BEGIN DEFERRED", budget).await?;
     let prepared = async {
         let mappings = read_scope(inner, &conn, &live.scope, budget).await?;
