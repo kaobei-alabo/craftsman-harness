@@ -557,7 +557,6 @@ fn last_invocation(agent: &Agent) -> craftsman_harness::provenance::ActualToolIn
 /// person what the application's own reader shows: the call the agent
 /// carried, with the operation's preview taken under the digest the agent
 /// handed over. `seen` is what the person was shown.
-#[cfg(unix)]
 fn person_reads(
     session: &Arc<PrivacySession>,
     agent: &Agent,
@@ -1264,14 +1263,12 @@ use craftsman_harness::SubAgentSpec;
 use craftsman_harness::builtin::SubAgentMiddleware;
 
 /// What a delegated agent's gate was shown, and what it answers.
-#[cfg(unix)]
 #[derive(Default)]
 struct GateSeat {
     shown: Mutex<Vec<String>>,
     deny: std::sync::atomic::AtomicBool,
 }
 
-#[cfg(unix)]
 struct DelegatedFiles {
     f: Files,
     seat: Arc<GateSeat>,
@@ -1282,7 +1279,6 @@ struct DelegatedFiles {
 /// One conversation whose root agent delegates to `helper`, which has the
 /// two file tools behind its own gate. `channel` says whether that gate can
 /// ask a person.
-#[cfg(unix)]
 async fn delegated_files(
     vault: &Vault,
     root: &MockServer,
@@ -1349,7 +1345,6 @@ async fn delegates_a_note(root: &MockServer, side: &MockServer, content: &str) {
 }
 
 /// What the delegated agent's model was told about its write.
-#[cfg(unix)]
 async fn told_the_helper(side: &MockServer) -> String {
     bodies(side).await[1]["messages"][3]["content"]
         .as_str()
@@ -2537,7 +2532,8 @@ async fn a_reviewed_and_approved_write_or_edit_is_refused_unsupported_and_no_fil
     nothing_original_sent(&server).await;
 
     // A file someone rewrote after the approval keeps what that someone
-    // wrote. The write is refused, and nothing of the operation reaches the
+    // wrote. The effect request refuses before the file is compared, so the
+    // refusal is the same one, and nothing of the operation reaches the
     // file.
     let server = MockServer::start().await;
     let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
@@ -2560,8 +2556,10 @@ async fn a_reviewed_and_approved_write_or_edit_is_refused_unsupported_and_no_fil
         .run_turn_with_view(f.typed.clone(), f.source.clone())
         .await
         .unwrap();
-    let (text, is_error) = result_at(&f.agent, 2);
-    assert!(is_error, "{text}");
+    assert_eq!(
+        result_at(&f.agent, 2),
+        (FileRefusal::Unsupported.to_string(), true)
+    );
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "changed by someone else"
@@ -2718,6 +2716,441 @@ async fn a_gates_automatic_policy_decides_on_what_would_be_written_and_an_allowe
         }
         assert_eq!(std::fs::read_dir(f.dir.path()).unwrap().count(), 0);
         assert!(f.around.steps.lock().unwrap().is_empty() != allowed);
+        assert!(f.session.check().is_ok());
+        nothing_original_sent(&server).await;
+    }
+}
+
+// Three more cases for a target without the private file effect, each
+// made from the unix case it stands for: the person-approval branch of
+// the decision check, a delegated agent's own gate, and the refusing
+// rounds of the registered main gate.
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn a_parked_write_needs_a_shown_review_and_an_approved_one_is_refused_unsupported() {
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+    let p = &f.placeholder;
+    *f.reviewer.decide.lock().unwrap() = Decide::Park;
+    scripted(
+        &server,
+        vec![
+            file_call(
+                "c1",
+                "write_file",
+                json!({"file_path": "note.txt", "content": format!("to {p}")}),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    let suspended = f
+        .agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    assert!(matches!(suspended, TurnResult::Suspended(_)));
+    // The call is parked. The agent carries the operation and its digest
+    // with the parked call, and nothing is on disk.
+    let parked = f.agent.actual_parked_call().unwrap();
+    let reviewed = ReviewedFile::of_parked(&parked).expect("the parked call carries its operation");
+    assert!(parked.shown().is_some());
+    assert!(!f.dir.path().join("note.txt").exists());
+
+    // A reader that asks a person without showing the operation: its
+    // approval is a real input of that person, with the digest the agent
+    // carried, but nobody was shown what will be written. The tool refuses,
+    // and the operation is over.
+    let decision = fixture_human_input(&f.session, &f.agent, &HitlAction::Approve);
+    assert_eq!(
+        decision
+            .downcast::<crate::privacy_entry::HumanDecisionInput>()
+            .unwrap()
+            .shown(),
+        parked.shown()
+    );
+    f.agent
+        .resume_with_view(HitlAction::Approve, "Denied.", decision)
+        .await
+        .unwrap();
+    assert_eq!(
+        result_at(&f.agent, 2),
+        (FileRefusal::NotApproved.to_string(), true)
+    );
+    assert!(!f.dir.path().join("note.txt").exists());
+    assert!(!reviewed.is_done());
+    assert_eq!(reviewed.shown_arguments().err(), Some(FileRefusal::Spent));
+
+    // The same again with a reader that shows the person the preview under
+    // the digest the agent handed over: the approval counts, and the
+    // resumed call is refused where the file effect would begin.
+    let server = MockServer::start().await;
+    let f = files(&vault, &server, Some(FileDataFormat::PlainText)).await;
+    *f.reviewer.decide.lock().unwrap() = Decide::Park;
+    scripted(
+        &server,
+        vec![
+            file_call(
+                "c1",
+                "write_file",
+                json!({"file_path": "note.txt", "content": format!("to {}", f.placeholder)}),
+            ),
+            answer("chat", &["done"]),
+        ],
+    )
+    .await;
+    f.agent
+        .run_turn_with_view(f.typed.clone(), f.source.clone())
+        .await
+        .unwrap();
+    let parked = f.agent.actual_parked_call().unwrap();
+    let reviewed = ReviewedFile::of_parked(&parked).unwrap();
+    // Under a digest that is not this operation's, or under none, a reader
+    // is shown nothing.
+    for wrong in [Some([7; 32]), None] {
+        assert_eq!(
+            reviewed.shown_to_reader(wrong, |_| ()).err(),
+            Some(FileRefusal::NotApproved)
+        );
+    }
+    let seen = Arc::default();
+    let decision = person_reads(&f.session, &f.agent, &seen);
+    f.agent
+        .resume_with_view(HitlAction::Approve, "Denied.", decision)
+        .await
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [json!({"file_path": "note.txt", "content": format!("to {EMAIL}")})]
+    );
+    assert_eq!(
+        result_at(&f.agent, 2),
+        (FileRefusal::Unsupported.to_string(), true)
+    );
+    assert_eq!(std::fs::read_dir(f.dir.path()).unwrap().count(), 0);
+    // It ran once, as the plan that was parked, and did not write.
+    let invocation = last_invocation(&f.agent);
+    assert!(invocation.resumed() && invocation.was_planned_as(parked.planned()));
+    assert!(!reviewed.is_done());
+    assert_eq!(reviewed.shown_arguments().err(), Some(FileRefusal::Spent));
+    nothing_original_sent(&server).await;
+}
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn a_delegated_agents_write_is_decided_by_its_own_gate_and_an_allowed_one_is_refused_unsupported()
+ {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(&dir).await;
+
+    // Approved by the person at the delegated agent's gate.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(
+        &vault,
+        &root,
+        &side,
+        Some(FileDataFormat::PlainText),
+        true,
+        Default::default(),
+    )
+    .await;
+    let (p, n) = (d.f.placeholder.clone(), d.number.clone());
+    assert!(!n.contains("pv1-"));
+    delegates_a_note(&root, &side, &format!("Contact {p} or call {n}.")).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    let note = d.f.dir.path().join("note.txt");
+    assert!(!note.exists());
+    // The gate asked once, about the content that would be written. It was
+    // shown no placeholder, with a marker or without one.
+    let shown = d.seat.shown.lock().unwrap().clone();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].contains(&format!("Contact {EMAIL} or call {PHONE}.")));
+    assert!(!shown[0].contains(&p) && !shown[0].contains(&n));
+    // The agent's own file tool ran, and its write was the refusal.
+    assert_eq!(
+        *d.f.around.steps.lock().unwrap(),
+        ["began note.txt", "finished note.txt"]
+    );
+    // The delegated agent's call stays as its model wrote it, and its model
+    // is told the refusal.
+    assert_eq!(
+        told_the_helper(&side).await,
+        FileRefusal::Unsupported.to_string()
+    );
+    let call = bodies(&side).await[1]["messages"][2]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(call.contains(&p) && call.contains(&n));
+    for server in [&root, &side] {
+        nothing_original_sent(server).await;
+    }
+
+    // Refused by the person: nothing is written, and the file tool never
+    // ran.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(
+        &vault,
+        &root,
+        &side,
+        Some(FileDataFormat::PlainText),
+        true,
+        Default::default(),
+    )
+    .await;
+    d.seat.deny.store(true, std::sync::atomic::Ordering::SeqCst);
+    delegates_a_note(&root, &side, &format!("Contact {}.", d.f.placeholder)).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert!(!d.f.dir.path().join("note.txt").exists());
+    assert_eq!(d.seat.shown.lock().unwrap().len(), 1);
+    assert!(d.f.around.steps.lock().unwrap().is_empty());
+    assert!(told_the_helper(&side).await.contains("not this one"));
+
+    // A gate that cannot ask anyone refuses, as for any delegated write.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(
+        &vault,
+        &root,
+        &side,
+        Some(FileDataFormat::PlainText),
+        false,
+        Default::default(),
+    )
+    .await;
+    delegates_a_note(&root, &side, &format!("Contact {}.", d.f.placeholder)).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert!(!d.f.dir.path().join("note.txt").exists());
+    assert!(d.f.around.steps.lock().unwrap().is_empty());
+    assert!(
+        told_the_helper(&side)
+            .await
+            .contains("requires user approval")
+    );
+
+    // No rule of the user's policy for the file: refused before the gate is
+    // asked. The call names only the telephone alias, which has no marker;
+    // it is not written to the file as it is.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, None, true, Default::default()).await;
+    delegates_a_note(&root, &side, &format!("Call {}.", d.number)).await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert!(!d.f.dir.path().join("note.txt").exists());
+    assert!(d.seat.shown.lock().unwrap().is_empty());
+    assert!(d.f.around.steps.lock().unwrap().is_empty());
+    assert_eq!(
+        told_the_helper(&side).await,
+        FileRefusal::NoRule.to_string()
+    );
+
+    // The gate's automatic policy allows file changes: nobody is asked, the
+    // policy's decision on the real content is carried in the delegated
+    // lane, the file tool runs and its write is the refusal. In plan mode
+    // the same policy denies, and the file tool never runs.
+    for (mode, allowed) in [
+        (crate::config::PermissionMode::Manual, true),
+        (crate::config::PermissionMode::Plan, false),
+    ] {
+        let (root, side) = (MockServer::start().await, MockServer::start().await);
+        let state = crate::hitl::ApprovalState {
+            mode,
+            auto_approve: true,
+            ..Default::default()
+        };
+        let d = delegated_files(
+            &vault,
+            &root,
+            &side,
+            Some(FileDataFormat::PlainText),
+            true,
+            state,
+        )
+        .await;
+        delegates_a_note(&root, &side, &format!("Call {}.", d.number)).await;
+        d.f.agent
+            .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+            .await
+            .unwrap();
+        let note = d.f.dir.path().join("note.txt");
+        assert!(d.seat.shown.lock().unwrap().is_empty());
+        assert!(!note.exists());
+        match allowed {
+            true => {
+                assert_eq!(
+                    told_the_helper(&side).await,
+                    FileRefusal::Unsupported.to_string()
+                );
+                assert_eq!(
+                    *d.f.around.steps.lock().unwrap(),
+                    ["began note.txt", "finished note.txt"]
+                );
+            }
+            false => assert!(d.f.around.steps.lock().unwrap().is_empty()),
+        }
+        for server in [&root, &side] {
+            nothing_original_sent(server).await;
+        }
+    }
+
+    // A call that names no placeholder is the delegated agent's ordinary
+    // write: asked about and written as the model wrote it.
+    let (root, side) = (MockServer::start().await, MockServer::start().await);
+    let d = delegated_files(&vault, &root, &side, None, true, Default::default()).await;
+    delegates_a_note(&root, &side, "Nothing private.").await;
+    d.f.agent
+        .run_turn_with_view(d.f.typed.clone(), d.f.source.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(d.f.dir.path().join("note.txt")).unwrap(),
+        "Nothing private."
+    );
+    assert_eq!(d.seat.shown.lock().unwrap().len(), 1);
+}
+
+#[cfg(not(unix))]
+#[tokio::test]
+async fn registered_main_gate_refusals_leave_the_legacy_prompt_unasked_and_save_the_record() {
+    use craftsman_harness::testing::MemCheckpointer;
+    let root = tempfile::tempdir().unwrap();
+    let vault = vault(&root).await;
+    // Of that case's six rounds, the three that write no file: a denial by
+    // the person at the registered UI (2), a gate that has a legacy prompt
+    // and no registered UI (4), and a registered UI that gives no answer
+    // (5). The body is that case's own; only the rounds differ, so its
+    // branches for a written file are not reached here.
+    for case in [2, 4, 5] {
+        let server = MockServer::start().await;
+        let state = Arc::new(Mutex::new(crate::hitl::ApprovalState {
+            auto_approve: case == 3,
+            ..Default::default()
+        }));
+        let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = read_count.clone();
+        let policy = state.clone();
+        let callback: crate::agent::ApprovalPrompt = Arc::new(move |_, _, details| {
+            assert!(policy.try_lock().is_ok());
+            assert!(details.contains(EMAIL));
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match case {
+                1 => crate::agent::ApprovalPromptResult::ApproveAlways,
+                2 => crate::agent::ApprovalPromptResult::Reject("actual person declined".into()),
+                _ => crate::agent::ApprovalPromptResult::Approve,
+            }
+        });
+        let mut absent_owner = None;
+        let private = if case == 5 {
+            let (prompt, ui) =
+                crate::privacy_entry::register_privacy_approval_ui(Arc::new(|_| None));
+            absent_owner = Some(ui);
+            Some(prompt)
+        } else {
+            (case < 3).then(|| bound_test_ui(callback.clone()))
+        };
+        let store = Arc::new(MemCheckpointer::default());
+        let f = set_up_with_main_gate(
+            &vault,
+            &server,
+            Some(FileDataFormat::PlainText),
+            Arc::new(|_| {}),
+            None,
+            Some(MainGate {
+                approval: state.clone(),
+                legacy: Some(callback),
+                private,
+                store: store.clone(),
+            }),
+        )
+        .await;
+        let mut script = vec![file_call(
+            "c1",
+            "write_file",
+            json!({
+                "file_path": "note.txt", "content": format!("Contact {}.", f.placeholder)
+            }),
+        )];
+        if case == 1 {
+            script.push(file_call(
+                "c2",
+                "write_file",
+                json!({
+                    "file_path": "second.txt", "content": format!("Contact {}.", f.placeholder)
+                }),
+            ));
+        }
+        script.push(answer("chat", &["done"]));
+        scripted(&server, script).await;
+        f.agent
+            .run_turn_with_view(f.typed.clone(), f.source.clone())
+            .await
+            .unwrap();
+        let writes = matches!(case, 0 | 1 | 3);
+        if writes {
+            assert_eq!(
+                std::fs::read_to_string(f.dir.path().join("note.txt")).unwrap(),
+                format!("Contact {EMAIL}.")
+            );
+            let invocation = last_invocation(&f.agent);
+            let input = invocation
+                .decision_source()
+                .unwrap()
+                .downcast::<crate::privacy_entry::InlineDecisionInput>()
+                .unwrap();
+            assert!(input.registered_session().is_some() && !input.edited());
+            assert_eq!(input.action(), Some(HitlAction::Approve));
+        } else {
+            assert!(!f.dir.path().join("note.txt").exists());
+            assert!(f.agent.actual_terminal_outcomes().unwrap().is_empty());
+            assert!(result_at(&f.agent, 2).1);
+        }
+        assert_eq!(
+            read_count.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(case < 3)
+        );
+        assert_eq!(state.lock().unwrap().auto_approve, matches!(case, 1 | 3));
+        if case == 1 {
+            assert_eq!(
+                std::fs::read_to_string(f.dir.path().join("second.txt")).unwrap(),
+                format!("Contact {EMAIL}.")
+            );
+        }
+        if case == 4 {
+            assert!(result_at(&f.agent, 2).0.contains("registered private UI"));
+        }
+        if case == 5 {
+            assert!(absent_owner.is_some());
+            assert!(
+                result_at(&f.agent, 2)
+                    .0
+                    .contains("no actual answered approval")
+            );
+        }
+        let state = f.agent.state.lock().unwrap().clone();
+        assert_eq!(
+            store.saves.lock().unwrap().last().unwrap().2.messages,
+            state.messages
+        );
+        assert!(
+            state
+                .messages
+                .iter()
+                .any(|msg| matches!(msg, Msg::Assistant { tool_calls, .. }
+            if tool_calls.iter().any(|call| call.args.to_string().contains(&f.placeholder))))
+        );
         assert!(f.session.check().is_ok());
         nothing_original_sent(&server).await;
     }
