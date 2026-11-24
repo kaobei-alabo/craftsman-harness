@@ -127,11 +127,14 @@ pub struct SupportedFileData {
 }
 pub struct FileEffectRequest {
     pub(super) data: FileDataRequest,
+    #[cfg(unix)]
     pub(super) parent_device: u64,
+    #[cfg(unix)]
     pub(super) parent_inode: u64,
 }
 pub struct RetainedFileEffect {
     request: Weak<DataRequest>,
+    #[cfg(unix)]
     directory: File,
 }
 
@@ -321,6 +324,7 @@ impl RetainedFileEffect {
             .upgrade()
             .is_some_and(|actual| Arc::ptr_eq(&actual, &request.data.0))
     }
+    #[cfg(unix)]
     pub(super) fn directory(&self) -> &File {
         &self.directory
     }

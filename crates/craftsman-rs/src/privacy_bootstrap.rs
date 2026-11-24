@@ -140,6 +140,7 @@ impl Workspace {
         self.recheck()?;
         Ok(binding)
     }
+    #[cfg(unix)]
     fn duplicate_owned(&self) -> Result<Self> {
         self.recheck()?;
         #[cfg(unix)]
@@ -479,12 +480,14 @@ impl Drop for ClearBeforeBuild<'_> {
     }
 }
 impl PrivateConversation {
+    #[cfg(unix)]
     pub(crate) fn session_guard_for_retirement(&self) -> Arc<crate::privacy_send::SendGuard> {
         self.session.send_guard()
     }
     /// Startup retirement shares the retained four-owner object; legacy
     /// root-only retirement recaptures after source/workspace rechecks. Both
     /// delay reservation until unlock; equal bytes or paths renew no authority.
+    #[cfg(unix)]
     pub(crate) fn capture_after_retirement(&self) -> Result<PrivateBootstrap> {
         match self.policy.recheck() {
             Ok(()) => {}
@@ -972,12 +975,15 @@ impl PrivateBuiltSession {
     /// Real shutdown of a session that returned to a frontend which had
     /// already begun to retire and so was never installed. Nothing of the
     /// session is handed out; dropping this afterwards closes the owner.
+    #[cfg(unix)]
     pub(crate) async fn shut_down(self) -> bool {
         self.session.shut_down_owned().await
     }
+    #[cfg(unix)]
     pub(crate) fn session_for_terminal(&self) -> &crate::agent::Session {
         &self.session
     }
+    #[cfg(unix)]
     pub(crate) fn session_for_terminal_mut(&mut self) -> &mut crate::agent::Session {
         &mut self.session
     }

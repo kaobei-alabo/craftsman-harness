@@ -20,8 +20,13 @@ use std::sync::{Arc, Mutex, Weak};
 mod approval_ui;
 mod inline;
 pub(crate) use approval_ui::{
-    PrivacyApprovalDecision, PrivacyApprovalPresentation, PrivacyApprovalPrompt,
-    PrivacyApprovalRequest, PrivacyApprovalUi, PrivacyApprovalView, register_privacy_approval_ui,
+    PrivacyApprovalDecision, PrivacyApprovalPrompt, PrivacyApprovalRequest,
+};
+// The receiver's side: the terminal's modal on unix, and cases everywhere.
+#[cfg(any(unix, test))]
+pub(crate) use approval_ui::{
+    PrivacyApprovalPresentation, PrivacyApprovalUi, PrivacyApprovalView,
+    register_privacy_approval_ui,
 };
 pub(crate) use inline::{InlineDecisionInput, InlineDecisionProducer};
 

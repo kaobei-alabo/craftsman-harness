@@ -1,6 +1,8 @@
 use super::envelope::Envelope;
 use super::*;
-use crate::privacy_vault::{HostNamespace, PrivacyError, VaultLocation};
+#[cfg(unix)]
+use crate::privacy_vault::HostNamespace;
+use crate::privacy_vault::{PrivacyError, VaultLocation};
 
 fn pass(value: &str) -> Passphrase {
     Passphrase::from_owned(Zeroizing::new(value.as_bytes().to_vec())).unwrap()

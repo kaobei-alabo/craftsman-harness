@@ -13,6 +13,7 @@ type Callback =
     Arc<dyn Fn(PrivacyApprovalRequest) -> Option<PrivacyApprovalDecision> + Send + Sync>;
 
 struct UiOwner;
+#[cfg(any(unix, test))]
 pub(crate) struct PrivacyApprovalUi(Arc<UiOwner>);
 pub(crate) struct PrivacyApprovalPrompt {
     owner: Weak<UiOwner>,
@@ -22,6 +23,7 @@ pub(crate) struct PrivacyApprovalPrompt {
 /// A creates this pair at the actual fresh TUI receiver registration. Only the
 /// receiver/modal owns Ui; the callback carries the event sender and returns
 /// the original opaque decision received from that receiver, never a factory.
+#[cfg(any(unix, test))]
 pub(crate) fn register_privacy_approval_ui(
     callback: Callback,
 ) -> (Arc<PrivacyApprovalPrompt>, Arc<PrivacyApprovalUi>) {
@@ -49,8 +51,11 @@ struct Request {
 /// content, and the texts made from it. The request holds it from its issue
 /// until its answer is consumed, and a presentation while it is read.
 struct Preview {
+    #[cfg(any(unix, test))]
     call: ToolCall,
+    #[cfg(any(unix, test))]
     summary: String,
+    #[cfg(any(unix, test))]
     details: String,
 }
 struct RequestState {
@@ -62,7 +67,9 @@ struct RequestState {
     returned: Option<PrivacyApprovalDecision>,
 }
 
+#[cfg(any(unix, test))]
 pub(crate) struct PrivacyApprovalPresentation(Arc<Presented>);
+#[cfg(any(unix, test))]
 struct Presented {
     request: PrivacyApprovalRequest,
     ui: Weak<UiOwner>,
@@ -78,6 +85,7 @@ struct Decision {
     choice: HumanChoice,
 }
 
+#[cfg(any(unix, test))]
 pub(crate) struct PrivacyApprovalView<'a> {
     pub(crate) call: &'a ToolCall,
     pub(crate) summary: &'a str,
@@ -100,6 +108,10 @@ impl PrivacyApprovalPrompt {
         if self.owner.upgrade().is_none() {
             return Err(FileRefusal::NotApproved);
         }
+        // What a person is shown is read by the terminal's modal, on unix,
+        // and by cases. Elsewhere no receiver exists that could show it.
+        #[cfg(not(any(unix, test)))]
+        let _ = (call, summary, details);
         Ok(PrivacyApprovalRequest(Arc::new(Request {
             gate: Arc::downgrade(gate),
             ui: self.owner.clone(),
@@ -110,8 +122,11 @@ impl PrivacyApprovalPrompt {
             state: Mutex::new(RequestState {
                 callback_open: true,
                 preview: Some(Arc::new(Preview {
+                    #[cfg(any(unix, test))]
                     call,
+                    #[cfg(any(unix, test))]
                     summary,
+                    #[cfg(any(unix, test))]
                     details,
                 })),
                 presented: None,
@@ -232,6 +247,7 @@ impl Drop for CallbackOwnership {
     }
 }
 
+#[cfg(any(unix, test))]
 impl PrivacyApprovalUi {
     /// A uses this only when its receiver installs the exact request's real
     /// modal. It does not prove rendered/human origin without those callsites.
@@ -301,6 +317,7 @@ impl PrivacyApprovalUi {
     }
 }
 
+#[cfg(any(unix, test))]
 impl PrivacyApprovalPresentation {
     pub(crate) fn review(&self) -> PrivacyApprovalView<'_> {
         let preview = &self.0.preview;
@@ -335,8 +352,8 @@ macro_rules! opaque_debug {
 }
 opaque_debug!(
     PrivacyApprovalRequest,
-    PrivacyApprovalPresentation,
     PrivacyApprovalDecision,
-    PrivacyApprovalPrompt,
-    PrivacyApprovalUi
+    PrivacyApprovalPrompt
 );
+#[cfg(any(unix, test))]
+opaque_debug!(PrivacyApprovalPresentation, PrivacyApprovalUi);

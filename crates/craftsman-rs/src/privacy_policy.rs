@@ -70,7 +70,7 @@ impl DetectorPolicy {
     }
     /// Test-only. A format read from two paths grants nothing: production
     /// asks `supported_data` and `retained_data_effect` for an actual request.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn file_data_format(
         &self,
         workspace: &std::path::Path,

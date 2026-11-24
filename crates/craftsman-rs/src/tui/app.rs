@@ -1189,7 +1189,9 @@ impl App {
             return Status::Stopping;
         }
         match self.modal.as_ref() {
-            Some(Modal::Approval(_) | Modal::PrivacyApproval(_)) => Status::Permission,
+            Some(Modal::Approval(_)) => Status::Permission,
+            #[cfg(unix)]
+            Some(Modal::PrivacyApproval(_)) => Status::Permission,
             Some(Modal::Ask(_)) => Status::Question,
             _ if self.running || initializing => Status::Working,
             _ => self.program_status,

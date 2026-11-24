@@ -118,6 +118,7 @@ pub(super) fn handle_terminal_event(app: &mut App, event: Event) -> bool {
         Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(app, key),
         Event::Paste(text) => {
             match app.modal.as_mut() {
+                #[cfg(unix)]
                 Some(Modal::PrivacyApproval(modal)) => modal.paste(&text),
                 Some(Modal::Approval(modal)) if modal.feedback_mode => {
                     modal.feedback.push_str(&text)
