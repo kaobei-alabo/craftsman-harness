@@ -14,6 +14,7 @@ mod settings;
 /// The value of `$result`, or for any error a return of `$error`. A plain
 /// match where an adapter call with a closure stood: the same work in the
 /// same order, without a function of its own for each place.
+#[cfg(unix)]
 macro_rules! or_return {
     ($result:expr, $error:expr) => {
         match $result {

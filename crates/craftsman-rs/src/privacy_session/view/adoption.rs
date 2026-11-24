@@ -43,18 +43,23 @@
 //!
 //! No model, tool or hook runs here. The old originals are sent nowhere.
 
+// On a target that is not unix, a test build needs only the renaming.
+#[cfg(any(unix, test))]
 use super::*;
+#[cfg(unix)]
 use craftsman_harness::provenance::ConversationAdopter;
 
 /// A piece of what a model sees for an adopted message: raw text, admitted
 /// anew by the adopting conversation from the retired capture. It goes out
 /// as that admission's view.
+#[cfg(unix)]
 fn host(node: AdmittedNode) -> AdditionPart {
     AdditionPart::Admitted(node)
 }
 
 /// A piece of what a model sees for an adopted message: model-origin text
 /// in the adopting scope's placeholders. It goes out as it is.
+#[cfg(unix)]
 fn model(text: Arc<str>) -> AdditionPart {
     AdditionPart::Carried {
         text: text.clone(),
@@ -63,6 +68,7 @@ fn model(text: Arc<str>) -> AdditionPart {
 }
 
 /// One mapping the retired scope held, as its own record gave it.
+#[cfg(unix)]
 struct RetiredValue {
     placeholder: String,
     original: Zeroizing<String>,
@@ -74,6 +80,7 @@ struct RetiredValue {
 /// scope held. Made only by [`PrivacySession::retiring`], from the live
 /// conversation. It cannot be built from a string, a file or a caller's
 /// state, and it is neither cloned nor serialized.
+#[cfg(unix)]
 pub struct RetiredConversation {
     inner: Arc<Inner>,
     lane: Arc<Lane>,
@@ -81,12 +88,14 @@ pub struct RetiredConversation {
     values: Vec<RetiredValue>,
 }
 
+#[cfg(unix)]
 impl std::fmt::Debug for RetiredConversation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RetiredConversation([private])")
     }
 }
 
+#[cfg(unix)]
 impl RetiredConversation {
     /// The binding of the one conversation that may adopt this record: the
     /// same thread and workspace, one scope further. `None` when the
@@ -108,11 +117,13 @@ impl RetiredConversation {
 
 /// One placeholder of a retired scope: the placeholder, the adopting
 /// scope's placeholder for the same value, and the value's category.
+#[cfg(any(unix, test))]
 type Name = (String, String, Category);
 
 /// Whether the parts of a recorded message are the conversation's own, are
 /// exactly its recorded content, and can be renamed where they are
 /// model-origin text.
+#[cfg(unix)]
 fn parts_carry(parts: &[AdditionPart], content: &str, owner: &Arc<Inner>, names: &[Name]) -> bool {
     let mut recorded = String::with_capacity(content.len());
     for part in parts {
@@ -141,6 +152,7 @@ fn parts_carry(parts: &[AdditionPart], content: &str, owner: &Arc<Inner>, names:
 }
 
 /// Whether the arguments of every call can be renamed.
+#[cfg(unix)]
 fn calls_carry(calls: &[ToolCall], names: &[Name]) -> bool {
     for call in calls {
         if renamed_value(&call.args, names).is_none() {
@@ -159,6 +171,7 @@ fn calls_carry(calls: &[ToolCall], names: &[Name]) -> bool {
 /// conversation, and in the adoption, for the retired one. What only the
 /// adopting scope can decide is not decided here: its own admission of the
 /// raw text and its send guard's reading of the renamed text.
+#[cfg(unix)]
 fn carries(
     held: &ViewSource,
     first: &ActualRetainedCommit,
@@ -305,13 +318,17 @@ fn carries(
 
 /// Why a conversation cannot be carried over as it stands. Decided before
 /// anything is retired; the conversation is kept.
+#[cfg(unix)]
 pub(crate) const NOT_CARRIED_RECORD: &str = "A recorded message of this conversation cannot be carried into a new private scope. The setting was not changed.";
 /// Not a statement that the conversation cannot be carried: the agent gives
 /// such a message its source when it next enters, and would at a retirement.
 /// It only cannot be decided before one.
+#[cfg(unix)]
 pub(crate) const NOT_SOURCED_YET: &str = "A recorded message of this conversation has no source yet, so the conversation cannot be checked before it is retired. It gets one with the next turn. The setting was not changed.";
+#[cfg(unix)]
 pub(crate) const NOT_CARRIED_ROOM: &str = "The private vault has no room for this conversation's values in a new private scope. The setting was not changed.";
 
+#[cfg(unix)]
 impl PrivacySession {
     /// Whether the conversation behind `boundary` can be carried over now,
     /// given every recorded message with the source the agent keeps beside
@@ -435,6 +452,7 @@ impl PrivacySession {
     }
 }
 
+#[cfg(unix)]
 impl ConversationBoundary {
     /// After this boundary's agent adopted `transfer`: the controllers that
     /// were newly installed on that agent take the adopted record over,
@@ -490,6 +508,7 @@ impl ConversationBoundary {
 }
 
 /// See [`PrivacySession::adopter`].
+#[cfg(unix)]
 pub(crate) struct Adoption<'a> {
     session: &'a Arc<PrivacySession>,
     boundary: &'a ConversationBoundary,
@@ -510,6 +529,7 @@ pub(crate) struct Adoption<'a> {
 /// What cannot be told apart: a number a model wrote by itself that stands
 /// alone and equals a telephone placeholder. It is renamed like the
 /// placeholder, as restoration would restore it.
+#[cfg(any(unix, test))]
 fn renamed(text: &str, names: &[Name]) -> Option<String> {
     // Each occurrence as one number, so that plain numbers are put in
     // order: where it starts, then its length counted down, then which name
@@ -557,6 +577,7 @@ fn renamed(text: &str, names: &[Name]) -> Option<String> {
 
 /// [`renamed`] for every string value of a call's arguments. Names of
 /// members and everything that is not a string stay as they are.
+#[cfg(unix)]
 fn renamed_value(value: &serde_json::Value, names: &[Name]) -> Option<serde_json::Value> {
     Some(match value {
         serde_json::Value::String(text) => serde_json::Value::String(renamed(text, names)?),
@@ -578,6 +599,7 @@ fn renamed_value(value: &serde_json::Value, names: &[Name]) -> Option<serde_json
     })
 }
 
+#[cfg(unix)]
 impl Adoption<'_> {
     fn unbound(&self) -> AgentError {
         fault(unbound(&self.session.inner))
@@ -665,6 +687,7 @@ impl Adoption<'_> {
     }
 }
 
+#[cfg(unix)]
 impl ConversationAdopter for Adoption<'_> {
     fn adopted_sources<'a, 'b, 'f>(
         &'a self,

@@ -20,6 +20,7 @@ pub struct AskUserTool {
 
 /// The prompt this tool holds, read from the tool.
 impl crate::privacy_session::Consumer for AskUserTool {
+    #[cfg(unix)]
     fn held(&self) -> [usize; 5] {
         [
             crate::privacy_session::held_address!(&self.prompt),

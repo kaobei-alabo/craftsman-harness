@@ -40,6 +40,7 @@ pub struct ApprovalMiddleware {
 /// activity sinks, the approval prompt, the call prompt and the prompt for
 /// private decisions.
 impl crate::privacy_session::Consumer for ApprovalMiddleware {
+    #[cfg(unix)]
     fn held(&self) -> [usize; 5] {
         use crate::privacy_session::held_address;
         [

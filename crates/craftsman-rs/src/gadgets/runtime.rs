@@ -260,6 +260,8 @@ pub(crate) fn allowed_mark(allowed: &BTreeSet<String>) -> usize {
 impl GadgetRuntime {
     /// What this runtime itself holds from its construction: the mark of
     /// its allowed gadget ids, and whether it trusts the workspace.
+    // Read only by the unix-only check of a built session.
+    #[cfg(unix)]
     pub(crate) fn allowance(&self) -> (usize, bool) {
         (
             allowed_mark(&self.options.allowed_gadgets),

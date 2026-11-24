@@ -255,6 +255,7 @@ pub struct ReplyDisplay {
 /// sink, the sink it gives the provider, the round sink it made and the
 /// requested round sink that one calls.
 impl super::Consumer for ReplyDisplay {
+    #[cfg(unix)]
     fn held(&self) -> [usize; 5] {
         [
             &*self.show as *const _ as *const () as usize,

@@ -424,6 +424,7 @@ pub(crate) fn commit(
 /// source for a conversation that is carried over: the router's own steps
 /// up to the terminal, which is already entered. No conversation is
 /// reserved; the carried one brings its successor's binding.
+#[cfg(unix)]
 pub(crate) fn recapture()
 -> std::result::Result<(PrivateBootstrap, super::CapturedApprovalStart), PrivateTerminalError> {
     let captured = match TerminalStartupCapture::capture_actual()? {

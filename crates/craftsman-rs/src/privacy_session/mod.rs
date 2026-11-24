@@ -80,8 +80,11 @@ pub use transport::delegated_provider;
 pub use transport::{ViewChatProvider, ViewNativeProvider};
 pub use view::{
     ActualToolResult, ApprovedOperation, CommittedModelNode, ConversationBoundary, FieldPlace,
-    NativeReplay, PlannedOperation, ReceivedModel, RetiredConversation, SourceField,
+    NativeReplay, PlannedOperation, ReceivedModel, SourceField,
 };
+// Handed on where the owned terminal that carries a conversation is compiled.
+#[cfg(unix)]
+pub use view::RetiredConversation;
 
 use crate::checkpoints::LibsqlCheckpointer;
 use crate::privacy_hook::{Detector, HookError, MAX_TEXT_BYTES, TextSpan};
@@ -215,6 +218,7 @@ impl FreshConversationBinding {
 
     /// Whether this binding was made for `workspace`: its canonical path
     /// has the digest this binding keeps.
+    #[cfg(unix)]
     pub(crate) fn is_for(&self, workspace: &Path) -> bool {
         let Ok(workspace) = std::fs::canonicalize(workspace) else {
             return false;
@@ -382,6 +386,8 @@ struct Accepted {
 /// request's owners, by address and zero for none. A statement about the
 /// request cannot stand in for this.
 pub(crate) trait Consumer: Send + Sync {
+    // Read only by the unix-only check of a built session.
+    #[cfg(unix)]
     fn held(&self) -> [usize; 5];
 }
 

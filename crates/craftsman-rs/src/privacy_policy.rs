@@ -168,6 +168,7 @@ impl RetainedUserConfigurationSource {
     }
     /// Whether `bytes` are exactly the bytes of the user file this source
     /// was captured with, after the root and the lease were checked again.
+    #[cfg(unix)]
     pub(crate) fn holds(&self, bytes: &[u8]) -> bool {
         match (self.recheck(), &self.bytes) {
             (Ok(()), Some(held)) => held.as_slice() == bytes,

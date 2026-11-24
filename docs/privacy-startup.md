@@ -659,6 +659,14 @@ replaced and why; or replaced, or possibly replaced, and not verified. A
 write that was made or may have been made is never told as unwritten.
 Sub-agents' own records are not carried.
 
+The carry-over belongs to the owned terminal, which exists on unix. The
+retirement, the adoption, the handing over to the new controllers and the
+readers of the build witness are compiled there and nowhere else, each
+gated like the function that calls it; a test that every platform compiles
+keeps the renaming it needs. No build for another target has been made on
+this branch since the carry-over was added, so that such a build compiles
+without a new warning is a prediction from the source, not a result.
+
 Known defects of the carry-over, from the independent review, not yet
 corrected:
 

@@ -209,6 +209,7 @@ impl SelectedControls {
     /// own reset, as for an inherited conversation: on its own bookkeeping
     /// keys alone, with no message shown to it. Only those keys are
     /// written back.
+    #[cfg(unix)]
     pub(super) fn adopted(&self, state: &mut AgentState) -> Result<(), AgentError> {
         let keys = self.original.own_keys();
         on_own_keys(state, None, &keys, |own| self.original.reset(own))
@@ -367,6 +368,7 @@ impl SelectedVerification {
     /// conversation of its thread; the boundary checked that before it
     /// calls this. The original controller takes it as a restored record:
     /// nothing earlier counts as checked, and fresh checks are required.
+    #[cfg(unix)]
     pub(super) fn adopted(&self) {
         self.original.mark_restored();
         if let Ok(mut directed) = self.directed.lock() {

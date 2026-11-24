@@ -18,10 +18,10 @@ use std::{
     },
 };
 mod route;
-pub(crate) use route::{
-    commit, edited, enable, enabled_original, mode_asks_before_writes, normal_route, recapture,
-    set, status,
-};
+pub(crate) use route::{enable, normal_route, set, status};
+// What the settings authority of the owned terminal takes from the router.
+#[cfg(unix)]
+pub(crate) use route::{commit, edited, enabled_original, mode_asks_before_writes, recapture};
 
 /// The value of `$result`, or for any error a return of `$error`. A plain
 /// match where an adapter call with a closure stood: the same work in the

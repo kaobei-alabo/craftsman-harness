@@ -430,6 +430,7 @@ impl VoiceController {
     /// directory, and without the download opt-in nothing that exists there
     /// is renamed or removed ([`ensure_model_under`]). Every other part of
     /// the controller is the one `spawn` starts.
+    #[cfg(any(unix, test))]
     pub(crate) fn spawn_with_model_root(
         mut config: VoiceConfig,
         events: mpsc::UnboundedSender<VoiceEvent>,

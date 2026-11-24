@@ -49,6 +49,7 @@ use craftsman_harness::{
 use std::ops::Range;
 
 mod adoption;
+#[cfg(unix)]
 pub use adoption::RetiredConversation;
 
 /// The value of `$result`, or for any error a return of `$error`. A plain
@@ -131,7 +132,9 @@ enum ViewSource {
     /// `content`, in order, and `calls`: raw text that this scope admitted
     /// anew (`Admitted`), and model-origin text in this scope's placeholders
     /// (`Carried`, by its view). Made only while the agent adopts; see
-    /// `adoption`.
+    /// `adoption`, which is compiled where the owned terminal that carries
+    /// a conversation is.
+    #[cfg(unix)]
     Adopted {
         owner: Arc<Inner>,
         lane: Arc<Lane>,
@@ -1169,6 +1172,7 @@ impl PrivacySession {
                     // A message adopted from the retired conversation of
                     // this thread, beside this agent's own adopted commit.
                     // Its role, ids and error flag are the recorded ones.
+                    #[cfg(unix)]
                     (
                         _,
                         ViewSource::Adopted {
@@ -1874,24 +1878,28 @@ impl ConversationBoundary {
                     // reply as it is recorded; `seen` are the calls a model
                     // of this scope sees for it, where they differ.
                     let held = reply.downcast::<ViewSource>();
-                    let (recorded, seen, node) = match held.as_deref() {
-                        Some(ViewSource::Model(node))
-                            if node.committed_by(&self.session)
-                                && self.lane.related(&node.inner.lane) =>
-                        {
-                            (&node.inner.message, None, Some(node))
-                        }
-                        Some(ViewSource::Adopted {
-                            owner,
-                            lane,
-                            commit,
-                            calls,
-                            ..
-                        }) if Arc::ptr_eq(owner, inner) && Arc::ptr_eq(lane, &self.lane) => {
-                            (commit.message(), Some(calls), None)
-                        }
-                        _ => return Err(fault(unbound(inner))),
-                    };
+                    // The type of `seen` is written out: where no adopted
+                    // reply is compiled, no arm gives it one.
+                    let (recorded, seen, node): (_, Option<&Vec<ToolCall>>, _) =
+                        match held.as_deref() {
+                            Some(ViewSource::Model(node))
+                                if node.committed_by(&self.session)
+                                    && self.lane.related(&node.inner.lane) =>
+                            {
+                                (&node.inner.message, None, Some(node))
+                            }
+                            #[cfg(unix)]
+                            Some(ViewSource::Adopted {
+                                owner,
+                                lane,
+                                commit,
+                                calls,
+                                ..
+                            }) if Arc::ptr_eq(owner, inner) && Arc::ptr_eq(lane, &self.lane) => {
+                                (commit.message(), Some(calls), None)
+                            }
+                            _ => return Err(fault(unbound(inner))),
+                        };
                     // Either the string itself, or its JSON encoding, as the
                     // part says, at this place of the recorded call.
                     let asked: &[ToolCall] = match recorded {
