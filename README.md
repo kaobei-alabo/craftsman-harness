@@ -168,7 +168,7 @@ then it applies to the interactive `craftsman` start only. It keeps your
 original records locally and gives the model a separate masked view.
 
 - **Vault password.** Asked at startup, after `/clear`, and when you change
-  the model, effort or mode. The vault encrypts the original values and its
+  the model, effort or mode. The vault encrypts the original values and uses
   keyed lookup indexes. Local messages, history and checkpoints keep their
   existing plaintext form.
 - **What is masked.** Supported email addresses and phone numbers. Anything
@@ -183,9 +183,10 @@ original records locally and gives the model a separate masked view.
   voice controller, so the next start loads the model again. Finishing a
   dictation normally keeps it.
 
-This is a prototype. It has been validated locally from source; hosted CI,
-merge and install are pending. It does not make all data private and is not
-supported on every model connection. Activation, commands and limits:
+Privacy mode is experimental. It does not make all data private and is not
+supported on every model connection; what has been validated, and on which
+platforms, is in the [current status](docs/runtime-status.md). Activation,
+commands and limits:
 [startup and commands](docs/privacy-startup.md) ·
 [hook design](docs/privacy-hooks.md) ·
 [send guard](docs/privacy-send.md) ·
