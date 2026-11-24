@@ -33,8 +33,9 @@ use wiremock::{Mock, MockServer};
 use zeroize::Zeroizing;
 
 const ID: &str = "privacy-detector";
-const HELPER: &str = "gadgets::privacy_detector_tests::restore_wires::restore_wires_native_fixture";
-const MARKER: &str = "craftsman-privacy-restore-wires=";
+pub(super) const HELPER: &str =
+    "gadgets::privacy_detector_tests::restore_wires::restore_wires_native_fixture";
+pub(super) const MARKER: &str = "craftsman-privacy-restore-wires=";
 const EMAIL: &str = "alice@example.invalid";
 const WIRES: [&str; 4] = ["chat", "responses", "claude", "gemini"];
 
