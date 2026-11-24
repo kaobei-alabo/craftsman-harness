@@ -950,7 +950,7 @@ impl Frontend {
                     &mut self.app,
                 ) {
                     if control == "/help" {
-                        self.app.push("In this private conversation these run: /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /tasks, /tasks cancel <name>, /mcp, /skills, /agents (list), /checkpoints, /memories, /lsp, /gadgets, /diff, /clear and /quit. Where the ordinary `craftsman` start opened this terminal, /model, /effort and /mode change that setting: the conversation is carried over after a new unlock; /compact summarizes it; and an extension command sends its expansion to the model. Every other command is not executed.");
+                        self.app.push("In this private conversation these run: /help, /status, /context, /doctor, /config, /version, /tokens, /queue, /copy, /editor, /tasks, /tasks cancel <name>, /mcp, /skills, /agents (list), /checkpoints, /memories, /lsp, /gadgets, /diff, /clear and /quit. Where the ordinary `craftsman` start opened this terminal, /model, /effort and /mode change that setting: the conversation is carried over after a new unlock; /compact summarizes it; and an extension command sends its expansion to the model. A `!command` runs in the workspace this conversation was captured for. In a build with voice input, where this conversation keeps voice input on, /voice on restarts a paused voice controller and changes no setting. Every other command is not executed.");
                     }
                     return false;
                 }

@@ -125,11 +125,19 @@ and as a change, and so is a model whose connection returns items that
 cannot be inspected. The
 private terminal is narrower than the ordinary one: read-only commands such
 as `/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs
-locally, a background task can be cancelled, `/compact` summarizes and your
-extension commands send their prompt to the model; but there is no session
-resume, and provider setup, harness and agent selection are refused. Voice input is owned only in a build that has it; its
-ownership and lifecycle were run in such a build without audio, and capture
-and transcription have never been run. This prototype has local test evidence
+locally in the workspace the conversation was captured for, a background
+task can be cancelled, `/compact` summarizes and your extension commands
+send their prompt to the model; but there is no session resume, and
+provider setup, harness and agent selection are refused. Voice input is
+owned only in a build that has it. Its model cache is the `models`
+directory of the configuration root the conversation captured, which a
+voice start creates when it is missing and otherwise leaves alone unless
+you opted into the download; `/voice on` restarts a paused controller;
+and ending a dictation retires the controller, so the next start loads
+the model again. Its ownership and lifecycle were run in such a build
+without audio, and capture and transcription have never been run. See
+[private voice input and shell escape](docs/privacy-voice.md). This
+prototype has local test evidence
 only; it is not merged, installed or validated on hosted runners.
 Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments

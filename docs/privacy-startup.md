@@ -355,6 +355,20 @@ The private terminal then owns the ordinary local voice controller.
   can be awaited there, and nothing is claimed about capture that was still
   stopping.
 
+The model cache, the restart with `/voice on`, the retirement of a
+controller when a dictation is ended here, the controller's own event
+receiver and the directory of the shell escape are described in
+[privacy-voice.md](privacy-voice.md), with what was run and what was not.
+In short: the cache is the `models` directory under the configuration root
+this conversation captured, and a voice start creates that directory when
+it is missing, so a start is not read-only; `/voice on` is answered only
+while the captured source holds and has voice input on, and changes no
+setting; a cancel, the draft bound and a restart retire the owned
+controller, so the next start loads the model again and counts failures
+anew; and `!command` runs in the workspace the conversation was captured
+for, by path, with the ordinary executor. No case cancels a dictation or
+supplies a voice event, and no microphone, model or download was used.
+
 A build without voice input refuses a source that does not set
 `voice.enabled:false`: the setting could not be honoured, and it is never
 turned off for the user. `enable` and the status follow the same rule.
