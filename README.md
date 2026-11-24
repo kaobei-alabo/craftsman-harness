@@ -64,102 +64,57 @@ older installation.
 ## How a request runs
 
 Local commands and controls are answered in the terminal. A prompt enters the
-agent loop, which can repeat tool rounds before it answers.
-
-<details>
-<summary>Current flow, from your input to the response</summary>
+agent loop, which can repeat tool rounds before it answers. The diagram shows
+what runs today.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","fontFamily":"sans-serif","fontSize":"14px"},"flowchart":{"nodeSpacing":18,"rankSpacing":24}}}%%
 flowchart TD
     Q["Your input"] --> R{"Local command<br/>or control?"}
     R -->|Yes| C["Handled locally<br/>setup · pickers · status · shell escape"]
-    C --> O["Terminal"]
     R -->|Prompt| P["Prepare the round<br/>instructions · history · tools<br/>context, compaction and stop checks"]
     P --> H{"Privacy policy<br/>enabled?"}
     H -->|No| M["Your configured model"]
-    H -->|"Yes, before every send"| K["Required privacy hook<br/>mask supported values · guard the request"]
+    H -->|"Yes, before every send"| K["Required privacy guard<br/>masks supported values · checks the request"]
     K -->|Passes| M
-    K -->|Guard fails| X["Model work stops<br/>input and completed effects are kept"]
     M -->|Tool calls| G{"Mode, permission<br/>and approval"}
     G -->|"Native or MCP"| N["Host tools and configured MCP<br/>files · shell · web<br/>their own boundaries"]
     G -->|Gadget| W["WASM gadget<br/>Wasmtime · approved capabilities"]
-    G -->|Refused| T["Record the actual result"]
+    G -->|Refused| T["Record and save<br/>the actual result"]
     N --> T
     W --> T
     T -->|Next round| P
     M -->|Final answer| D["Show the reply<br/>originals restored for display<br/>when privacy is on"]
-    D --> S["Checkpoint attempt<br/>saved, or the failure is reported"]
+    P -->|"Stop requested<br/>or round limit"| X["Model work stops<br/>completed effects are kept"]
+    K -->|Guard fails| X
+    M -->|"Request fails<br/>or is cancelled"| X
+    T -->|Save fails| X
+    D --> S["Save the outcome<br/>saved, or the failure is reported"]
     X --> S
-    P -->|"Cancel, error or limit"| S
-    M -->|Request fails| S
-    S --> O
+    S --> O["Terminal"]
+    C --> O
     classDef wasm fill:#dcefee,stroke:#408b8b,color:#263238;
     classDef optional stroke-dasharray: 5 5;
+    classDef stop fill:#f6eeee,stroke:#a36a6a,color:#263238;
     class W wasm;
     class K optional;
+    class X stop;
 ```
 
 - **Boundaries.** WASM contains gadget code. Native shell commands and MCP
   servers keep their own execution and permission boundaries.
-- **Privacy.** With a policy enabled, the hook is required before every model
-  send. If its guard fails, the request is not sent.
-- **Saving.** A checkpoint is attempted as work completes. A save that fails
-  is reported as a failure, not shown as saved.
+- **Privacy.** With a policy enabled, the guard is required before every
+  model send. If it fails, the request is not sent.
+- **Stops.** A cancel, a failed request or a failed save stops model work;
+  what was already done stays. At the round limit the turn pauses, and a
+  follow-up continues it.
+- **Saving.** The terminal saves each tool result and the final outcome as
+  work completes. A save that fails is reported as a failure, not shown as
+  saved.
 
 Code: [submission routing](crates/craftsman-rs/src/tui/commands.rs) ·
 [session construction](crates/craftsman-rs/src/agent.rs) ·
 [agent loop](crates/craftsman-harness/src/agent.rs)
-
-</details>
-
-## Script sandbox: current and planned
-
-Rust gadgets already run in Wasmtime. A common sandbox for compatible
-**Python, JavaScript and TypeScript** scripts, with a review layer for their
-file changes, is planned. It is not shipped.
-
-<details>
-<summary>What differs between today and the plan</summary>
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#f3f4f4","primaryTextColor":"#263238","primaryBorderColor":"#82959b","lineColor":"#64767b","clusterBkg":"#f8fafb","clusterBorder":"#a9b7bd","fontFamily":"sans-serif","fontSize":"16px"},"flowchart":{"nodeSpacing":24,"rankSpacing":28,"wrappingWidth":230,"subGraphTitleMargin":{"top":14,"bottom":14}}}}%%
-flowchart TB
-    H["Same agent harness<br/>query · model · context · history"]
-
-    subgraph BEFORE["Current"]
-        B1["Inputs<br/>host file tools, or files a gadget was granted"]
-        B2["Execution<br/>Rust gadgets in Wasmtime"]
-        B3["Changes<br/>the permission checks of each tool"]
-        B1 --> B2 --> B3
-    end
-
-    subgraph AFTER["Planned, not shipped"]
-        A1["Inputs<br/>task-scoped snapshots"]
-        A2["Execution<br/>Python · JavaScript · TypeScript<br/>WASM interpreter + virtual /work"]
-        A3["Changes<br/>create, update and delete plan<br/>reviewed as a batch"]
-        A1 --> A2 --> A3
-    end
-
-    H --> B1
-    H --> A1
-    B3 --> R["Results return to the agent"]
-    A3 --> R
-    classDef planned fill:#dcefee,stroke:#408b8b,color:#263238;
-    class A1,A2,A3 planned;
-```
-
-- **Planned, not included today:** script interpreters in WASM, a virtual
-  `/work` for the files a script touches, and a create, update and delete
-  plan that is reviewed as a batch.
-- **Not part of the plan:** arbitrary native runtimes, package installers or
-  containers running inside the sandbox.
-- **Unchanged either way:** native shell commands and MCP connections keep
-  their own execution boundaries.
-
-Scope and progress: [script runner](docs/wasm-script-runner.md).
-
-</details>
 
 ## Privacy mode: experimental and opt-in
 
@@ -210,6 +165,7 @@ commands and limits:
   [failure controls](docs/failure-controls.md)
 - **Project:** [architecture and current limits](docs/runtime-status.md) ·
   [evaluations](docs/coding-evaluation.md) ·
-  [build and native validation](docs/production-readiness.md)
+  [build and native validation](docs/production-readiness.md) ·
+  [planned script runner, not shipped](docs/wasm-script-runner.md)
 
 MIT licensed. See [LICENSE](LICENSE) and [third-party notices](NOTICE).
