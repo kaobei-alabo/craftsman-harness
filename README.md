@@ -128,8 +128,8 @@ as `/help`, `/status`, `/tasks` and `/diff` work, a shell escape runs
 locally, a background task can be cancelled, `/compact` summarizes and your
 extension commands send their prompt to the model; but there is no session
 resume, and provider setup, harness and agent selection are refused. Voice input is owned only in a build that has it; its
-lifecycle was run without audio and it has not been validated with a
-microphone. This prototype has local test evidence
+ownership and lifecycle were run in such a build without audio, and capture
+and transcription have never been run. This prototype has local test evidence
 only; it is not merged, installed or validated on hosted runners.
 Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments

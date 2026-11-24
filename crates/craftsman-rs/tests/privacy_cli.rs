@@ -1811,6 +1811,14 @@ fn entry_conversation(script: Script, application: Option<&str>, review: &str, f
         // runner; its output is shown and nothing of it reaches the model.
         terminal.send(b"!printf local-%s-ok shell\r");
         terminal.wait_for("local-shell-ok");
+        // A shell escape typed while another runs is not executed and is
+        // kept as it was typed.
+        terminal.send(b"!sleep 1; printf first-%s-done shell\r!printf second-%s-ok shell\r");
+        terminal.wait_for("A shell escape waits for the running work");
+        terminal.wait_for("first-shell-done");
+        // It stays in the queue, behind the refused command of this case,
+        // which a new prompt releases.
+        assert!(screen(&terminal.output).contains("): !printf second-%s-ok shell"));
         // The agent picker is shown; choosing in it would be a settings
         // change. Escape closes it.
         terminal.send(b"/agents\r");
@@ -1941,6 +1949,56 @@ fn the_private_terminal_owns_the_voice_controller_through_a_turn_a_clear_and_its
 
 /// The alias a private request carries for the typed address: the one in
 /// its first user message.
+/// A voice key typed behind a clear command, before the password prompt, in
+/// a build that has voice input. It asks for the microphone, and that
+/// request does not cross the password prompt: after the unlock a whole
+/// turn runs and nothing of the voice has reported. A new press of the key
+/// then starts the controller, whose own outcome on this synthetic home is
+/// the missing model. Nothing is captured, downloaded or called.
+///
+/// In such a build a space typed in an empty composer asks for the voice
+/// too, so this case types no input that begins with one: the key behind
+/// the clear is the only request before the unlock.
+#[cfg(all(feature = "voice", feature = "gadgets"))]
+#[test]
+fn a_voice_key_typed_before_the_password_prompt_starts_nothing_after_the_unlock() {
+    let setup = approved(Script::Clear);
+    let mut user: serde_json::Value = serde_json::from_slice(&setup.user).unwrap();
+    user["voice"]["enabled"] = true.into();
+    user["privacy"] = serde_json::json!({"enabled":true,"detector":{
+        "gadget":"privacy-detector","function":"detect",
+        "component_sha256":setup.component,"manifest_sha256":setup.manifest}});
+    let user = setup.home.user(&user.to_string());
+    initialize(&setup.home);
+    let key = setup.key();
+    let missing = "The local voice model is missing";
+
+    let mut terminal = Terminal::start(&setup.home, &[]);
+    terminal.unlock();
+    terminal.send(format!("{}\r", TYPED.trim()).as_bytes());
+    terminal.wait_for("Clear-ready reply for alice@example.invalid.");
+    assert!(!screen(&terminal.output).contains(missing));
+    terminal.send(b"/clear\r\x07");
+    terminal.unlock();
+    terminal.send(format!("{}\r", FOLLOW.trim()).as_bytes());
+    terminal.wait_for("Fresh reply for alice@example.invalid.");
+    let shown = screen(&terminal.output);
+    assert!(
+        !shown.contains(missing),
+        "the voice started without a new request; the screen was:\n{shown}"
+    );
+    terminal.send(b"\x07");
+    terminal.wait_for(missing);
+    terminal.send(b"/quit\r");
+    let (_, code) = terminal.finish();
+    assert_eq!(code, 0);
+
+    setup.assert_unchanged(&user, &key);
+    assert_eq!(setup.private_requests().len(), 2);
+    let models = setup.home.config.join("models");
+    assert_eq!(std::fs::read_dir(&models).unwrap().count(), 0);
+}
+
 #[cfg(feature = "gadgets")]
 fn request_alias(body: &serde_json::Value) -> String {
     let user = body["messages"]

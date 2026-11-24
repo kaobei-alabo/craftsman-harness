@@ -171,7 +171,13 @@ count, a name or a supported-feature flag.
   every later wrapping. The receipt holds that conversation and that guard
   and says which of the two providers issued it. Where the builder takes the
   provider for a lane, before the framework gets it, it records the receipt
-  and the receipt is marked with this selection and lane.
+  and the receipt is marked with this selection and lane. At the statement
+  that installs a lane's provider (the root agent's builder, a delegated
+  agent's specification, the summarizer) it says that the lane is
+  installed.
+- **Said once.** The request, each lane's receipt, each part and the
+  middleware are recorded once. A second, different statement of one of
+  them is kept out of the record and refuses the selection.
 - **Each composed part and installed owner.** The builder records the
   address of the reply display, the file review, the controllers it made and
   their adapters, and of the prompts and sinks at the place where it installs
@@ -187,9 +193,12 @@ count, a name or a supported-feature flag.
 
 The conversation accepts a built session only when all of this holds:
 
-- the root agent's provider was accepted, and every accepted provider is
-  alive: a provider that was dropped or replaced leaves its receipt
-  unavailable, and that refuses. Each receipt holds this conversation and
+- the builder accepted a provider for each of the three lanes, and
+  installed the root agent's. Every provider it installed is alive: an
+  installed provider that was dropped or replaced leaves its receipt
+  unavailable, and that refuses. Only an accepted provider that was
+  installed nowhere (the delegated lane's, when no delegated agent is
+  configured) may be gone. Each live receipt holds this conversation and
   its guard and carries this selection and that lane; none is the native
   provider, because the policy requires that everything sent can be
   inspected;
@@ -226,11 +235,31 @@ remains the gate.
 - Where the user's configuration decides with the choice (the gadget
   runtime), the check is that nothing unrequested was produced, not that the
   requested part exists.
-- The cancellation owner is recorded as installed, not by object: it has no
-  address to compare.
+- **The prompts and sinks are taken from the request, not from the
+  consumer.** The builder records each at the statement that installs it,
+  from the request it holds there. That shows the builder reached that
+  statement with the request's own object. It does not read the object back
+  from the approval middleware, the question tool or the display that was
+  constructed, and keeps no reference to those consumers, so the later
+  comparison at issuance is of two recorded values. Reading them back from
+  the live consumers is not implemented.
+- The cancellation owner, and the owner handed to each checked provider,
+  are recorded as installed, not by object.
+- A provider's receipt does not state the sinks that provider was given.
+  The output-closed wrapper is not recorded; a request that has an output
+  owner is refused instead. Of the registered tools only the question tool
+  is compared with the agent's own registry entry; the extra tools are
+  recorded by count and address, the file wrappers and the verifier tool
+  are not.
+- The choices are compared as the request's bits with the bits the builder
+  set where it acted. For the two controllers the produced object is
+  compared as well; for the other choices it is not.
+- The middleware witness is of the root agent's list. The delegated agents'
+  own parts are outside it.
 - The controller adapters are compared by object with what the boundary
-  holds. The framework's own binding check of them runs when the agent is
-  bound; it is not run again at issuance.
+  holds. The framework checks their binding at every entry of the agent (a
+  turn, a compaction, a retirement); the witness does not record that such
+  a check passed, and reports a live adapter whether or not one has.
 - A build whose witness disagrees has never been produced by a test: the
   cases show that real builds satisfy it.
 
@@ -249,7 +278,18 @@ The private terminal then owns the ordinary local voice controller.
   text and is submitted as the same private input.
 - It is cancelled and shut down for real first in every retirement, so
   before the password prompt of a fresh clear and inside the 30-second bound.
-  Its event task is awaited there.
+  Its event task is aborted and then awaited there: left to end by itself
+  it would wait for every sender of the controller, and one kept anywhere
+  would hold up the cleanup behind it.
+- A voice key typed before a password prompt asks for nothing afterwards:
+  the request is dropped before the prompt, and the voice starts only on a
+  new one.
+- A dictated segment that would take the draft past the bound of typed and
+  pasted input is refused whole and the dictation is cancelled; the earlier
+  draft stays.
+- A submitted draft leaves no dictation marker or text behind, as in the
+  ordinary terminal. A request to recreate the controller shuts it down for
+  real and resets the voice state.
 - A dropped frontend tells it to cancel and aborts its event task; nothing
   can be awaited there, and nothing is claimed about capture that was still
   stopping.
@@ -267,10 +307,17 @@ captured source keeps `voice.enabled:true`; the voice key starts the
 ordinary controller from the captured configuration; the controller's own
 event arrives through the frontend's channel at the ordinary handler; a
 private turn runs after it; a fresh clear retires the controller before its
-password prompt and the key starts a new one; the terminal ends cleanly.
+password prompt and the key starts a new one; the terminal ends cleanly. A
+second case types the voice key behind a clear command: after the unlock a
+whole turn runs and nothing of the voice has reported, and a new press of
+the key then starts the controller. That case types no input that begins
+with a space, because in such a build a space in an empty composer asks for
+the voice too.
 
-**Not validated:** capture, transcription and a dictated draft. No
-microphone, model or audio fixture was used.
+**Not validated:** capture, transcription and a dictated draft, and with
+them the bound on a dictated segment, the state after a dictated draft is
+submitted and the controller's reset. Those need a real voice event; none
+was injected. No microphone, model or audio fixture was used.
 
 ### The private terminal
 
@@ -296,7 +343,12 @@ runs, the terminal does the following.
   locally by the ordinary runner with the captured configuration's shell
   settings and native limits, inside a cancellation turn of this frontend.
   Its output is shown. Neither command nor output becomes model input or a
-  record of the conversation.
+  record of the conversation. The runner takes no directory and runs where
+  the process stands, so the command runs only while that is still the
+  workspace the conversation was captured for; otherwise it is refused. A
+  command that is not executed is kept as it was typed: one that only
+  waited for running work is tried again after it, and a refused one waits
+  for a new prompt, like every refused control.
 - **Local work is owned.** A listing and a shell escape run as one kind of
   task of the frontend. Each checks the conversation's source where it runs
   and again before its result is shown; a source that stopped gives a fixed
@@ -507,7 +559,11 @@ user file. Its explicit invocation is the authorization of that one change.
   is removed only while it still names the created file; an entry that
   cannot be confirmed as that file is left in place and the command says so.
   Every failure after the rename is reported as written and then changed or
-  unverifiable, never as unchanged; nothing is restored over the file.
+  unverifiable, never as unchanged; nothing is restored over the file. A
+  rename that was refused, with the staging name gone afterwards, is
+  reported as such: that absence is the one sign that the rename may have
+  taken effect, so the command says that the file may have been replaced
+  and does not call it unchanged. No case produces that outcome.
 - **Limits.** The checks before the rename are samples. Another writer can
   still act between the last check and the rename: this is not a
   cross-process compare-and-swap, and no power-loss durability is claimed.
@@ -548,7 +604,7 @@ and identifiers are the user's own later edits.
   through its own `main` on synthetic user files in a private temporary
   directory, with a synthetic model that the test itself serves on a
   loopback address.
-  It has fourteen cases. Ten need the gadgets feature, and one more needs
+  It has fifteen cases. Ten need the gadgets feature, and two more need
   voice input too, so the full test modes run thirteen and three of them.
   - *Setup through the real runtime.* The ordinary terminal runs once: the
     synthetic model calls the detector gadget, and the person approves its
@@ -636,7 +692,13 @@ found one alone. In this slice: the carry case's first run expected no
 catalog note among the carried messages, and it is carried like every other;
 its first compaction expected a conversation too short to summarize, and the
 agent summarized it; and the report check expected a reply as the last work,
-where it was the compaction. The status check for the modes that decide
+where it was the compaction. In the corrections after the independent
+review: the kept shell escape was first expected to run as soon as the
+running one ended, but in that case the queue is held by the case's earlier
+refused command, which only a new prompt releases, and the check now is
+that the line is kept; the voice type-ahead case first typed inputs with
+leading spaces, which in a build with voice input ask for the voice
+themselves, and it now types none. The status check for the modes that decide
 writes first expected the mode refusal in every build; a build without the
 detector feature answers with that feature's refusal first, as it does for
 every source, and the expectation now says so. A rule that asked a person
@@ -671,13 +733,17 @@ evidence for the correction and that run is not. Runs of these cases under
 artificial load, made before the cause was read from the recordings, are
 no evidence either way and are not counted.
 
-The gadget test binary's unwind section is 16,776,828 bytes, 388 under
+The gadget test binary's unwind section is 16,777,004 bytes, 212 under
 the unchanged 16,777,216-byte limit, with no linker warning. The start's
 mode check and the four added stages had brought it to 288 under, 84 bytes
 more than on the carried-conversation commit. The unlock loop of the retry
 then replaced an adapter call with a plain match in the function that this
-binary links, and the section is 100 bytes smaller. The budget selection,
-the wire check and the retry's own state are not linked into it. The first
+binary links, which left 388. The corrections after the independent
+review are linked into this binary: the lanes' record, the record that is
+said once, the writer's phase and the shell escape's directory check.
+Written with adapter calls they left 40 bytes; as plain matches that do
+the same work they leave 212. The budget selection, the wire check, the
+retry's own state and the voice corrections are not linked into it. The first
 wiring of the settings flow was 1,932 bytes over. What that binary reaches
 of it now adds no generic instantiation there: the adoption fact behind a
 commit is held erased, an adopted message is made of the parts the request

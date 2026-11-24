@@ -229,6 +229,10 @@ pub(crate) async fn enable(
             return Err(StartupError::WrittenThenChanged.into());
         }
         // Nothing was replaced, and the staging entry was left in place.
+        // The rename was refused and the staging name was gone afterwards.
+        Err((_, crate::privacy_key::root::UNCONFIRMED)) => {
+            return Err(StartupError::RenameUnconfirmed.into());
+        }
         Err((_, crate::privacy_key::root::STAGE_LEFT)) => {
             return Err(StartupError::StagedLeftover.into());
         }
@@ -393,6 +397,10 @@ pub(crate) fn commit(
         Ok(()) => {}
         Err((_, crate::privacy_key::root::WRITTEN)) => {
             return Err(StartupError::WrittenThenChanged.into());
+        }
+        // The rename was refused and the staging name was gone afterwards.
+        Err((_, crate::privacy_key::root::UNCONFIRMED)) => {
+            return Err(StartupError::RenameUnconfirmed.into());
         }
         Err((_, crate::privacy_key::root::STAGE_LEFT)) => {
             return Err(StartupError::StagedLeftover.into());

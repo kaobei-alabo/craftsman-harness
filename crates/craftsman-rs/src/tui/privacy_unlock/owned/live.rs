@@ -96,6 +96,30 @@ enum LocalWork {
 /// where the work runs and again before its result is published; a source
 /// that stopped gives the fixed line below and not the result. The shell
 /// runs inside its own cancellation turn.
+/// The most bytes a voice event can add to the composer draft, for the
+/// events that add any: the committed text beyond what the draft already
+/// holds of this segment (`held` bytes), the final text, a separator before
+/// each and the one that may follow the dictation.
+#[cfg(feature = "voice")]
+fn dictated_bytes(event: &crate::voice::VoiceEvent, held: usize) -> Option<usize> {
+    use crate::voice::VoiceEvent;
+    match event {
+        VoiceEvent::Partial { committed, .. } => {
+            Some(committed.len().saturating_sub(held).saturating_add(2))
+        }
+        VoiceEvent::SegmentFinal {
+            text, committed, ..
+        } => Some(
+            committed
+                .len()
+                .saturating_sub(held)
+                .saturating_add(text.len())
+                .saturating_add(3),
+        ),
+        _ => None,
+    }
+}
+
 async fn local_work(work: LocalWork, owner: Arc<PrivateConversation>) -> Returned {
     const STOPPED: &str = "The private source owner stopped; this local result is not shown.";
     let before = owner.check_sources().is_ok();
@@ -368,6 +392,25 @@ impl Frontend {
                     Err(_) => break,
                 },
             };
+            // Dictated text enters the same draft as typed text and keeps
+            // its bound. A segment that would take the draft past it is
+            // refused whole and the dictation is cancelled; the earlier
+            // draft stays as it is.
+            #[cfg(feature = "voice")]
+            if let UiEvent::Voice(dictated) = &event
+                && self.app.voice.active()
+                && let Some(extra) = dictated_bytes(dictated, self.app.voice.committed.len())
+                && self
+                    .app
+                    .input
+                    .len()
+                    .checked_add(extra)
+                    .is_none_or(|size| size > crate::privacy_hook::MAX_TEXT_BYTES)
+            {
+                crate::tui::input::request_voice_cancel(&mut self.app);
+                self.app.push_error("This whole private input exceeds its byte bound; the earlier draft is retained.");
+                continue;
+            }
             let session = self
                 .built
                 .as_ref()
@@ -523,6 +566,26 @@ impl Frontend {
                 forward,
             ));
         }
+        if matches!(request, VoiceRequest::Recreate) {
+            // As in the ordinary terminal: the controller is shut down for
+            // real and the voice state starts over. The next Start spawns a
+            // new one from the captured settings. The shutdown is this
+            // frontend's own local work, joined by the retirement.
+            if let Some((controller, forward)) = self.voice.take() {
+                let future: Pin<Box<dyn Future<Output = Returned> + Send>> = Box::pin(async move {
+                    controller.shutdown().await;
+                    forward.abort();
+                    let _ = forward.await;
+                    Returned::Listing(Ok("Voice input was shut down and reset.".into()))
+                });
+                self.work.spawn(future);
+                self.listings += 1;
+            }
+            self.app.voice.state = crate::voice::VoiceState::Idle;
+            self.app.voice.partials_enabled = None;
+            self.app.dirty = true;
+            return;
+        }
         let Some((controller, _)) = &self.voice else {
             return;
         };
@@ -530,20 +593,22 @@ impl Frontend {
             VoiceRequest::Start => controller.start(),
             VoiceRequest::StopAndFinalize => controller.stop_and_finalize(),
             VoiceRequest::CancelSegment => controller.cancel_segment(),
-            // The captured settings cannot change under this conversation,
-            // so there is nothing to recreate the controller for.
             VoiceRequest::Cancel | VoiceRequest::Recreate => controller.cancel(),
         }
     }
-    /// Cancels and shuts the owned voice controller down for real and waits
-    /// for its event task. Called first in every retirement, so before any
+    /// Cancels and shuts the owned voice controller down for real, then
+    /// ends its event task. Called first in every retirement, so before any
     /// password prompt of a fresh clear and inside the 30-second bound. The
-    /// controller's own shutdown stops capture and transcription.
+    /// controller's own shutdown stops capture and transcription. The event
+    /// task is aborted and then awaited: it would otherwise run until every
+    /// sender of the controller is gone, and a sender kept somewhere would
+    /// hold up every cleanup behind it. The UI receiver is closed by then.
     #[cfg(feature = "voice")]
     async fn retire_voice(&mut self) {
         if let Some((controller, forward)) = self.voice.take() {
             controller.cancel();
             controller.shutdown().await;
+            forward.abort();
             let _ = forward.await;
         }
         crate::tui::input::request_voice_cancel(&mut self.app);
@@ -579,27 +644,43 @@ impl Frontend {
     /// shell settings and its native limits, inside a turn of this
     /// frontend's own cancellation. Its output is shown here. Neither the
     /// command nor the output becomes model input or a record of the
-    /// conversation.
-    fn shell_escape(&mut self, command: String) {
+    /// conversation. The ordinary runner takes no directory and runs where
+    /// the process stands, so the command runs only while that is still the
+    /// workspace this conversation was captured for. `false`: nothing was
+    /// started, and the caller keeps the line.
+    fn shell_escape(&mut self, command: String) -> bool {
         if self.app.running {
             self.app
                 .push_error("A shell escape waits for the running work; it was not executed.");
-            return;
+            return false;
         }
         let owner = self.owner.clone();
         let settings = match self.configuration.source(&owner) {
             Ok(cfg) => crate::shell::ShellSettings::from_config(cfg),
             Err(error) => {
                 self.app.push_error(error.to_string());
-                return;
+                return false;
             }
         };
+        let here = match std::env::current_dir() {
+            Ok(here) => std::fs::canonicalize(here.as_path()),
+            Err(error) => Err(error),
+        };
+        let same = match (&here, &self.built) {
+            (Ok(here), Some(built)) => here.as_path() == built.workspace(),
+            _ => false,
+        };
+        if !same {
+            self.app.push_error("The current directory is not the workspace this conversation was captured for; the shell escape was not executed.");
+            return false;
+        }
         let turn = self.cancellation.new_turn();
         self.app.running = true;
         self.app.operation_cancellation = Some(turn.clone());
         let future: Pin<Box<dyn Future<Output = Returned> + Send>> =
             Box::pin(local_work(LocalWork::Shell(command, settings, turn), owner));
         self.work.spawn(future);
+        true
     }
     fn submission(&mut self) -> Option<(String, bool)> {
         if !std::mem::take(&mut self.app.submit_requested) {
@@ -616,6 +697,14 @@ impl Frontend {
         self.app.selection_anchor = None;
         self.app.history_index = None;
         self.app.history_draft = None;
+        // As the ordinary submission: no dictation marker or text of the
+        // submitted draft stays behind for the next one.
+        #[cfg(feature = "voice")]
+        {
+            self.app.voice.marker = None;
+            self.app.voice.tentative.clear();
+            self.app.voice.committed.clear();
+        }
         self.app.dirty = true;
         Some((typed, queue))
     }
@@ -716,7 +805,16 @@ impl Frontend {
         if let Some(command) = control.strip_prefix('!')
             && self.configuration.is_captured()
         {
-            self.shell_escape(command.trim().to_owned());
+            let waits = self.app.running;
+            if !self.shell_escape(command.trim().to_owned()) {
+                // The line is kept as it was typed. One that only waited
+                // for running work is tried again after it, as in the
+                // ordinary terminal; a refused one waits for a new prompt.
+                self.app.queue_follow_up(typed);
+                if !waits {
+                    self.queued_blocked = true;
+                }
+            }
             return false;
         }
         if expanded.is_some() && (self.app.running || self.app.operation_cancellation.is_some()) {
@@ -1011,6 +1109,14 @@ impl Frontend {
                 return Err(PrivateTerminalError::Cancelled);
             }
             retained += 1;
+        }
+        // A voice key among that type-ahead asked for the microphone. No
+        // such request crosses the password prompt: after the unlock the
+        // voice starts only on a new request.
+        #[cfg(feature = "voice")]
+        {
+            crate::tui::input::request_voice_cancel(&mut self.app);
+            self.app.voice_request = None;
         }
         drop(input);
         self.built = None; // no closed lane/client/view is used for the rebuild

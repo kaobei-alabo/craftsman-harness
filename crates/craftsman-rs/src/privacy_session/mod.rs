@@ -338,6 +338,10 @@ struct Accepted {
     /// The receipt of each lane's view provider, kept weakly: the provider
     /// that issued it holds it, and it is gone when that provider is.
     lanes: [Option<std::sync::Weak<WireReceipt>>; 3],
+    /// Whether the builder installed each lane's provider, said at the
+    /// statement that installs it. An accepted provider that was never
+    /// installed anywhere may be gone; an installed one may not.
+    bound: [bool; 3],
     /// The address of each composed part and installed owner, zero while
     /// absent, in the order of [`ComposedPart`].
     parts: [usize; COMPOSED_PARTS],
@@ -411,6 +415,8 @@ pub(crate) enum Accept<'a> {
     Request([usize; crate::agent::REQUEST_FACTS]),
     /// For this lane, the view provider that issued this receipt.
     Lane(ModelLane, &'a Arc<WireReceipt>),
+    /// This lane's accepted provider is installed, here.
+    Bound(ModelLane),
     /// As this part, the object at this address, which the builder made or
     /// installed.
     Part(ComposedPart, usize),
@@ -454,31 +460,49 @@ impl SelectionReport {
         self.refusal.lock().unwrap().get_or_insert(refusal);
     }
 
-    /// The builder says what it accepted.
+    /// The builder says what it accepted. The request, each lane, each part
+    /// and the middleware are said once: a second, different statement of
+    /// one of them is kept out of the record and refuses the selection.
     pub(crate) fn accept(&self, accepted: Accept<'_>) {
         let mut record = self.accepted.lock().unwrap();
+        let mut again = false;
         match accepted {
-            Accept::Request(request) => {
-                let _ = record.request.replace(request);
-            }
-            Accept::Lane(lane, receipt) => {
-                // The receipt itself now names this selection and lane.
-                receipt.accepted.store(
-                    self as *const Self as usize | lane as usize,
-                    Ordering::Release,
-                );
-                record.lanes[lane as usize] = Some(Arc::downgrade(receipt));
-            }
-            Accept::Part(part, address) => record.parts[part as usize] = address,
+            Accept::Request(request) => match &record.request {
+                Some(held) => again = *held != request,
+                None => record.request = Some(request),
+            },
+            Accept::Lane(lane, receipt) => match &record.lanes[lane as usize] {
+                Some(held) => again = held.as_ptr() != Arc::as_ptr(receipt),
+                None => {
+                    // The receipt itself now names this selection and lane.
+                    receipt.accepted.store(
+                        self as *const Self as usize | lane as usize,
+                        Ordering::Release,
+                    );
+                    record.lanes[lane as usize] = Some(Arc::downgrade(receipt));
+                }
+            },
+            Accept::Bound(lane) => record.bound[lane as usize] = true,
+            Accept::Part(part, address) => match record.parts[part as usize] {
+                0 => record.parts[part as usize] = address,
+                held => again = held != address,
+            },
             Accept::Controllers => record.controllers |= true,
             Accept::Produced(choice) => record.produced |= 1 << choice,
-            Accept::Middleware(kept) => {
-                let mut held = Vec::with_capacity(kept.len());
-                for entry in kept {
-                    held.push(Arc::downgrade(entry));
+            Accept::Middleware(kept) => match &record.middleware {
+                Some(_) => again = true,
+                None => {
+                    let mut held = Vec::with_capacity(kept.len());
+                    for entry in kept {
+                        held.push(Arc::downgrade(entry));
+                    }
+                    record.middleware = Some(held);
                 }
-                let _ = record.middleware.replace(held);
-            }
+            },
+        }
+        drop(record);
+        if again {
+            self.refuse(BuildRefusal::RequestedPart);
         }
     }
 
@@ -487,9 +511,11 @@ impl SelectionReport {
     /// - **The request.** The builder built from the very request the host
     ///   made (`request`), and installed that request's own prompts and
     ///   sinks where it installs them.
-    /// - **The lanes.** The root agent's provider was accepted. Every accepted
-    ///   provider is alive: a provider that was dropped or replaced leaves
-    ///   its receipt unavailable, and that refuses. Each receipt holds this
+    /// - **The lanes.** The builder accepted a provider for each of the three
+    ///   lanes, and installed the root agent's. Every provider it installed
+    ///   is alive: an installed provider that was dropped or replaced leaves
+    ///   its receipt unavailable, and that refuses. Only an accepted provider
+    ///   that was installed nowhere may be gone. Each live receipt holds this
     ///   conversation and its guard and was accepted by this selection for
     ///   that lane. None is native where the policy requires inspectable
     ///   items.
@@ -516,13 +542,18 @@ impl SelectionReport {
         let Some(view) = &built.privacy_view else {
             return Err(BuildRefusal::RequestedPart);
         };
+        // A statement the record refused to take twice refuses here too.
+        if self.refusal.lock().unwrap().is_some() {
+            return Err(BuildRefusal::RequestedPart);
+        }
         let record = self.accepted.lock().unwrap();
         let guard = session.send_guard();
         let mut lane = 0;
         while lane < record.lanes.len() {
             let receipt = match &record.lanes[lane] {
                 Some(receipt) => receipt.upgrade(),
-                None => None,
+                // A lane the builder never accepted a provider for.
+                None => return Err(BuildRefusal::RequestedPart),
             };
             match receipt {
                 Some(receipt) => {
@@ -537,10 +568,11 @@ impl SelectionReport {
                         return Err(BuildRefusal::OpaqueProviderItems);
                     }
                 }
-                // Accepted and gone, or the root agent's never accepted.
-                None if record.lanes[lane].is_some() || lane == ModelLane::Main as usize => {
+                // Installed and gone. The root agent's is always installed.
+                None if record.bound[lane] || lane == ModelLane::Main as usize => {
                     return Err(BuildRefusal::RequestedPart);
                 }
+                // Accepted, installed nowhere, and gone with the builder.
                 None => {}
             }
             lane += 1;

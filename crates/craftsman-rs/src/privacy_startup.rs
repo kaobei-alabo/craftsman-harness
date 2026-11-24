@@ -82,6 +82,10 @@ pub enum StartupError {
     )]
     WrittenThenChanged,
     #[error(
+        "The replacement of the user configuration was refused, and its staging name `config.json.privacy-enable` was gone afterwards: the file may have been replaced. `craftsman privacy status` shows its present state."
+    )]
+    RenameUnconfirmed,
+    #[error(
         "The user configuration was not replaced. The staging name `config.json.privacy-enable` could not be confirmed as the file this command created; that entry was left in place."
     )]
     StagedLeftover,

@@ -1238,6 +1238,20 @@ macro_rules! produced {
     };
 }
 
+/// The builder says, at the statement that installs the accepted provider
+/// of a lane of a privacy selection, that it did.
+macro_rules! bound {
+    ($extras:expr, $lane:ident) => {
+        if let Some(selection) = &$extras.privacy_view {
+            selection
+                .report()
+                .accept(crate::privacy_session::Accept::Bound(
+                    crate::privacy_session::ModelLane::$lane,
+                ));
+        }
+    };
+}
+
 /// The address of the object an optional owner hands over, zero for none.
 macro_rules! owner_address {
     ($owner:expr) => {
@@ -3030,6 +3044,8 @@ async fn build_session_with_capture_profile(
 
     let mut delegated_agents: Vec<SubAgentSpec> = Vec::new();
     if let Some(general_purpose) = general_purpose {
+        // Its specification holds the delegated lane's provider.
+        bound!(extras, Delegated);
         delegated_agents.push(general_purpose);
     }
     // Gadget manifests and the deprecated JSON loader may contribute
@@ -3085,6 +3101,7 @@ async fn build_session_with_capture_profile(
             interrupt_on: vec![],
             max_depth: 1,
         });
+        bound!(extras, Delegated);
     }
 
     // A THIRD StreamingLlmProvider drives CompactionMiddleware's summarization
@@ -3210,6 +3227,7 @@ async fn build_session_with_capture_profile(
         compaction_provider,
         compaction_trigger,
     ));
+    bound!(extras, Summaries);
 
     let scoped_framework = construction
         .framework_scope()
@@ -3435,6 +3453,8 @@ async fn build_session_with_capture_profile(
             kept
         }
     };
+    // The next statement installs the root agent's provider.
+    bound!(extras, Main);
     let mut builder = Agent::builder(provider)
         .name("main")
         .durable_turn_checkpoints(

@@ -185,7 +185,10 @@ impl ConfigRoot {
     /// confirmed as that file is left in place, and the refusal carries
     /// [`STAGE_LEFT`]. A leftover of that name is never adopted or
     /// overwritten. A failure after the rename carries [`WRITTEN`]: the file
-    /// was replaced, and what followed could not be verified.
+    /// was replaced, and what followed could not be verified. A rename that
+    /// was refused, with the staging name gone afterwards, carries
+    /// [`UNCONFIRMED`]: that absence is the one sign that the rename may
+    /// have taken effect, so it is not reported as unchanged.
     ///
     /// The checks before the rename are samples: another writer can still
     /// act between the last check and the rename. This is not a
@@ -230,12 +233,14 @@ impl ConfigRoot {
                     Err(_) => None,
                 },
             };
+            // `true` beside an error: the rename itself was asked for and
+            // refused.
             let committed = match &staged.created {
-                None => Err(KeyError::Io),
+                None => Err((KeyError::Io, false)),
                 Some((created, metadata)) => match secure_file(metadata, true) {
-                    Err(error) => Err(error),
+                    Err(error) => Err((error, false)),
                     Ok(()) if file.write_all(candidate).is_err() || file.sync_all().is_err() => {
-                        Err(KeyError::Io)
+                        Err((KeyError::Io, false))
                     }
                     Ok(()) => self.commit_staged(STAGED, *created, lease, original, candidate),
                 },
@@ -247,8 +252,12 @@ impl ConfigRoot {
                     Ok(()) => Ok(()),
                     Err(error) => Err((error, WRITTEN)),
                 },
-                Err(error) if staged.remove_own() => Err((error, UNCHANGED)),
-                Err(error) => Err((error, STAGE_LEFT)),
+                Err((error, renaming)) => match staged.remove_own() {
+                    // Refused, and yet the staging name is gone.
+                    Some(true) if renaming => Err((error, UNCONFIRMED)),
+                    Some(_) => Err((error, UNCHANGED)),
+                    None => Err((error, STAGE_LEFT)),
+                },
             }
         }
         #[cfg(not(unix))]
@@ -259,7 +268,8 @@ impl ConfigRoot {
     }
 
     /// The staging name still is the created file with the candidate's
-    /// bytes; the original is still what was read; then the rename.
+    /// bytes; the original is still what was read; then the rename. `true`
+    /// beside an error: the rename itself was asked for and refused.
     #[cfg(unix)]
     fn commit_staged(
         &self,
@@ -268,20 +278,29 @@ impl ConfigRoot {
         lease: &FileLease,
         original: &[u8],
         candidate: &[u8],
-    ) -> Result<()> {
+    ) -> std::result::Result<(), (KeyError, bool)> {
         use std::os::fd::AsRawFd;
-        let reopened = self.open_existing(name, true)?;
-        if reopened.identity != created
-            || reopened
-                .read_bounded(CONFIG_LIMIT, Some(candidate.len()))?
-                .as_slice()
-                != candidate
-        {
-            return Err(KeyError::Changed);
+        let reopened = match self.open_existing(name, true) {
+            Ok(reopened) => reopened,
+            Err(error) => return Err((error, false)),
+        };
+        let staged = match reopened.read_bounded(CONFIG_LIMIT, Some(candidate.len())) {
+            Ok(staged) => staged,
+            Err(error) => return Err((error, false)),
+        };
+        if reopened.identity != created || staged.as_slice() != candidate {
+            return Err((KeyError::Changed, false));
         }
-        lease.verify_configuration_bytes(original)?;
-        self.recheck()?;
-        let directory = self.ancestors.last().ok_or(KeyError::Root)?.as_raw_fd();
+        if let Err(error) = lease.verify_configuration_bytes(original) {
+            return Err((error, false));
+        }
+        if let Err(error) = self.recheck() {
+            return Err((error, false));
+        }
+        let Some(directory) = self.ancestors.last() else {
+            return Err((KeyError::Root, false));
+        };
+        let directory = directory.as_raw_fd();
         let status = unsafe {
             libc::renameat(
                 directory,
@@ -293,7 +312,7 @@ impl ConfigRoot {
         if status == 0 {
             Ok(())
         } else {
-            Err(KeyError::Io)
+            Err((KeyError::Io, true))
         }
     }
 
@@ -500,10 +519,13 @@ impl ConfigRoot {
 /// was changed and nothing of this operation is left. `STAGE_LEFT`: nothing
 /// was changed, and the staging name could not be confirmed as the file this
 /// operation created, so that entry was left in place. `WRITTEN`: the file
-/// was replaced, and what followed could not be verified.
+/// was replaced, and what followed could not be verified. `UNCONFIRMED`:
+/// the rename was refused and the staging name was gone afterwards, so the
+/// file may have been replaced; it is not known which.
 pub(crate) const UNCHANGED: u8 = 0;
 pub(crate) const STAGE_LEFT: u8 = 1;
 pub(crate) const WRITTEN: u8 = 2;
+pub(crate) const UNCONFIRMED: u8 = 3;
 
 /// The staged entry of one replacement: the held directory, the fixed name
 /// and the identity of the file this operation created under it.
@@ -516,10 +538,11 @@ struct Staged {
 #[cfg(unix)]
 impl Staged {
     /// After a refusal: removes the staging name only while it still names
-    /// the created file. `false`: the name now is another entry, or cannot
-    /// be told apart, and was left in place. The comparison is a sample
-    /// taken just before the removal.
-    fn remove_own(&self) -> bool {
+    /// the created file. `Some(true)`: the name was already gone.
+    /// `Some(false)`: it was the created file and was removed. `None`: the
+    /// name now is another entry, or cannot be told apart, and was left in
+    /// place. The comparison is a sample taken just before the removal.
+    fn remove_own(&self) -> Option<bool> {
         let mut found: libc::stat = unsafe { std::mem::zeroed() };
         let status = unsafe {
             libc::fstatat(
@@ -530,13 +553,20 @@ impl Staged {
             )
         };
         if status != 0 {
-            return std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT);
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+                return Some(true);
+            }
+            return None;
         }
         let own = match &self.created {
             Some((created, _)) => *created == (found.st_dev as u64, found.st_ino as u64),
             None => false,
         };
-        own && unsafe { libc::unlinkat(self.directory, self.name.as_ptr(), 0) } == 0
+        if own && unsafe { libc::unlinkat(self.directory, self.name.as_ptr(), 0) } == 0 {
+            Some(false)
+        } else {
+            None
+        }
     }
 }
 
