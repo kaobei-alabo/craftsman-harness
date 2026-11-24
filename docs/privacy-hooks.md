@@ -3,10 +3,13 @@
 Private Step A now provides [real key and trusted policy ownership](privacy-key.md):
 a password-wrapped random vault key, strict user-source policy before project
 merges, create-only initialization and existing-only opening. Enabled policy
-still refuses as unavailable in normal frontends. An unselected
-[owned password popup and private composition](privacy-bootstrap.md) now read
+still refuses as unavailable in every frontend but one. The
+[owned password popup and private composition](privacy-bootstrap.md) read
 the retained non-echoing terminal directly and bind key/policy owners to a
-pinned detector and fresh conversation. No normal command selects them.
+pinned detector and fresh conversation. On the unmerged privacy branch only
+the eligible interactive `craftsman` invocation selects them, through the
+[interactive route](privacy-startup.md#the-normal-interactive-route). The
+merged and installed builds select none of this.
 The private owned `/clear` now retires old work/key/session owners, reacquires
 the password on its sole retained reader and builds a distinct fresh thread.
 Ordinary macOS PTYs cover that rebuild, Escape/Ctrl-C cancellation and a
@@ -47,7 +50,8 @@ summary as model text in an explicit source-derived request. Kept native items
 remain bound to their original replies after movement; changed native replies
 refuse normal replay. Delegated tasks, messages and notification envelopes now
 have actual agent/parent/commit witnesses in the private combined source.
-Nothing selects it in a normal session. The local union includes actual
+Only that unmerged interactive route selects it; no other session does. The
+local union includes actual
 captured-user key/policy, owned private receiver/modal/input/fresh-clear,
 controller adapters, opaque inline decisions and typed source-bound file
 consumers. Full frontend coverage and independent combined-source/full-native

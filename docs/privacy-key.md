@@ -176,7 +176,7 @@ unlock reserves another actual id and builds the complete fresh session.
 Cancellation or any failure ends the entry without starting a replacement or
 disabling privacy. The 128-scope ceiling and exhaustion remain unchanged.
 
-The unselected owned terminal entry now requests the complete actual terminal
+The owned terminal entry now requests the complete actual terminal
 extras and retains/pumps its real receiver through construction and turns.
 Its typed tasks hold the same view/agent/key-policy owners while the UI drains
 the actual notification receiver continuously. Questions and opaque core

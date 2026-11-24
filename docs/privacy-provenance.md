@@ -60,7 +60,7 @@ not detection of everything a model writes or of opaque provider content.
 | Drawing replies in the terminal | implemented, private: the root boundary tells a frontend's display when the agent has retained a reply, and the terminal's bridge and application draw its human view once through the safe backend. The stream is held and never drawn; see [privacy-restore.md](privacy-restore.md) |
 | Reopening, transferring or rebinding a privacy conversation | refused |
 | Restoration into what a person reads and into the content of `write_file` and `edit_file` | implemented, private, for the root agent and for delegated agents in their own lanes. The file operation is the source the boundary returns from `before_review` for the agent's plan, its digest is what `reviewed_operation_digest` gives, and the independently registered gate input/policy decision travels as a non-authoritative annotation and is validated against its actual issuer, plan, preview and final invocation at the file tool; the file tool runs its own checkpoint and diagnostics around the derived write; see [privacy-restore.md](privacy-restore.md). Every other tool argument, memory files, delete and rename are not restored |
-| Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is unselected by normal routes; data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
+| Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is selected only by the unmerged interactive route ([privacy-startup.md](privacy-startup.md)); data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
 | Secret input, frontend selector, activation | not implemented |
 
 ## Framework boundary
@@ -870,10 +870,12 @@ recorded message, from the source of its accepted-input event.
 
 **What remains.** These are not part of the adapters:
 
-- no normal frontend selects a privacy conversation. The local combined source
-  now has the captured-user key/policy and owned private UI/entry/clear owners,
-  with original opaque inline decisions; their independent combined-source,
-  full-native and activation gates remain separate;
+- no frontend but the unmerged interactive route of
+  [privacy-startup.md](privacy-startup.md) selects a privacy conversation. The
+  local combined source has the captured-user key/policy and owned private
+  UI/entry/clear owners, with original opaque inline decisions; their
+  independent combined-source, full-native, merge and install gates remain
+  separate;
 - a script capture is refused at selection;
 - a scheduled check that a gate parks cannot be resumed, and nothing in the
   application parks a call;

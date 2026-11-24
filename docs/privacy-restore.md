@@ -25,7 +25,7 @@ what is written to disk are separate views derived from that record.
 | A parked call's source and preview | legacy test-only registered-reader primitive retained; production input is unregistered until an opaque UI lifetime adapter exists |
 | The file tool's own workspace checkpoint, language diagnostics and result around a derived write | kept; the tool takes only its write from the derived operation |
 | The user's rule for file content (`supported_file_data` / `retained_file_effect`) | local typed range/effect consumer and actual captured-user provider integrated; independent combined-source/native proof pending; the old format-only hook is test-only and supplies no authority |
-| Owned private terminal entry, key/bootstrap, receiver/modal/input and fresh `/clear` | A's immutable source is integrated locally; normal routes remain unselected and combined native/full-suite acceptance is pending |
+| Owned private terminal entry, key/bootstrap, receiver/modal/input and fresh `/clear` | A's immutable source is integrated locally; only the unmerged interactive route of [privacy-startup.md](privacy-startup.md) selects it, every other route remains unselected, and independent review and hosted native acceptance are pending |
 | Memory files, MCP, gadget, shell, web and every other tool argument | not restored |
 | Delete, rename, batch plans | unchanged; no restoration |
 | A sealed human input for an inline prompt | registered producer and opaque UI request/presentation/decision plus A's actual private receiver/modal/choice source are integrated; independent combined-source/native validation pending |
@@ -296,8 +296,10 @@ wrote it, and goes back to the model through its ordinary projection.
   or without one: it stops before the call runs.
 - A delegated agent's text is not drawn by a frontend, so it has no human
   view; its final answer returns to the root agent as a tool result.
-- No normal session can reach any of this: the user's policy has no owner
-  outside fixtures, and the terminal has no entry for a privacy turn.
+- Only the unmerged interactive route reaches any of this: the eligible
+  interactive invocation with an enabled user policy
+  ([privacy-startup.md](privacy-startup.md)). No other session, frontend or
+  installed build does.
   Declared verification, context compilation and failure controls are now
   installed behind the conversation's adapters; see
   [privacy-provenance.md](privacy-provenance.md), "Controller adapters".

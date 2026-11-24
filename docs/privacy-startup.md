@@ -268,9 +268,10 @@ Data-file rules and identifiers are the user's own later edits.
 - **`enable`'s success path is not in the committed inventory.** It needs a
   stored approval that only the terminal's approval prompt or the in-process
   fixture creates, and the in-process case put the unit-test binary 3,376
-  bytes over the unwind limit. It passed once on the uncommitted tree: the
-  writer added the policy, a second run refused, and the fresh-clear
-  conversation ran through the router with the written policy.
+  bytes over the unwind limit. It passed once on the uncommitted tree and
+  once with that case applied out of tree to commit `943c150`: the writer
+  added the policy, a second run refused, and the fresh-clear conversation
+  ran through the router with the written policy.
 
 First failures, all retained: the cases' first run with status reports missed
 every stage after the password in the inherited screen reader; an inherited
@@ -344,17 +345,20 @@ The route consumes these same owners before the competing normal
 TerminalGuard/EventStream, store, provider and helper construction. It uses
 the owned password UI and an actual fresh conversation shared across every lane,
 retains accepted human inputs, and retires/rebuilds on `/clear`. Reopen, transfer,
-replay and void rebinding cannot substitute for fresh ownership. A separately
-validated enable writer remains later work; presence is not unlock or source
-consent. No route for ACP, `-m`, service or another frontend is selected;
-with an enabled policy the router refuses them.
+replay and void rebinding cannot substitute for fresh ownership. The enable
+writer is the explicit `craftsman privacy enable` command described above;
+presence is not unlock or source consent. No route for ACP, `-m`, service or
+another frontend is selected: they are not passed to the router, and with an
+enabled policy the unchanged loader refuses them.
 
 New isolated-file checks exercise actual selected-source capture and consuming
 ownership, project/caller exclusion, absent/disabled compatibility, existing
 source bounds, malformed policy, file/root replacement, link rules and fixed
 output. Test origins exist only under cfg(test), use synthetic user files and
-cannot issue runtime origins. The real CLI/TTY readiness path is source-reviewed
-and remains unselected; these checks enter no terminal or private MAIN probe.
+cannot issue runtime origins. These isolated-file checks enter no terminal or
+private MAIN probe. The real CLI and terminal path is the route above; the
+terminal cases and the real-binary test under
+[Evidence and limits](#evidence-and-limits) exercise it.
 
 This document does not certify the final union's size or warnings, core file
 consumer corrections, native/full17/all-four/every-step inventories, independent

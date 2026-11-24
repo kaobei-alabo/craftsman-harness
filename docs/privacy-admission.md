@@ -33,7 +33,7 @@ It is local, unmerged and not installed.
 | The gadget catalog update as a host note of parts; instruction files, skills and extensions as separate pieces of the system prompt; host tool outcomes that repeat an argument | implemented, private; see provenance |
 | Mixed text from verification, context and failure controls | implemented, private, behind adapters around the original controllers, including a check the verification controller schedules, its stop note and compaction. See provenance, "Controller adapters" |
 | Display and file restoration | not implemented |
-| Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is unselected by normal routes; data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
+| Key envelope, unlock and captured user policy | the local private union contains the real envelope/existing-only key owner and `PrivateConversation`, which implements `CapturedUserPolicy` from the actual user source before project merges. Its owned terminal entry is selected only by the unmerged interactive route ([privacy-startup.md](privacy-startup.md)); data-file restoration proposals remain inert pending the canonical supported-field/effect guard |
 | Secret input, frontend selector, activation | not implemented |
 
 ## Detector contract

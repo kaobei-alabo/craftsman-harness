@@ -122,7 +122,7 @@ only; it is not merged, installed or validated on hosted runners.
 Supported file restoration is limited to validated
 Contact data; shell commands, paths, source code and arbitrary MCP arguments
 are not restoration destinations. See [privacy development](docs/privacy-hooks.md)
-and [startup, status and init](docs/privacy-startup.md).
+and [startup, status, init and enable](docs/privacy-startup.md).
 
 ## Planned WASM enhancement
 
