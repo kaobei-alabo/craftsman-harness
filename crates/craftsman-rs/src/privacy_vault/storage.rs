@@ -1153,6 +1153,9 @@ pub(super) async fn resolve(live: Arc<SessionLife>, aliases: &[&str]) -> Result<
 /// mappings and the sealed bytes of the whole vault, and its distinct
 /// scopes. Nothing is reserved, written or pruned, so this is no promise:
 /// the insertions themselves are checked again, each when it is made.
+/// Read-only is said of the store. Like every request to the vault, this
+/// one marks the vault failed when its I/O, its worker or the store's
+/// integrity fails, and the vault then refuses everything.
 pub(super) async fn admits_successor(live: Arc<SessionLife>) -> Result<bool> {
     let mut guard = RequestGuard {
         live: live.clone(),

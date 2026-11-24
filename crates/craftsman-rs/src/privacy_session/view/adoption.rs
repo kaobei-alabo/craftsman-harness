@@ -283,6 +283,10 @@ fn carries(
 /// anything is retired; the conversation is kept.
 pub(crate) const NOT_CARRIED_CONTROLLERS: &str = "This conversation runs with context, failure or verification controls, whose records cannot be carried into a new private scope yet. The setting was not changed.";
 pub(crate) const NOT_CARRIED_RECORD: &str = "A recorded message of this conversation cannot be carried into a new private scope. The setting was not changed.";
+/// Not a statement that the conversation cannot be carried: the agent gives
+/// such a message its source when it next enters, and would at a retirement.
+/// It only cannot be decided before one.
+pub(crate) const NOT_SOURCED_YET: &str = "A recorded message of this conversation has no source yet, so the conversation cannot be checked before it is retired. It gets one with the next turn. The setting was not changed.";
 pub(crate) const NOT_CARRIED_ROOM: &str = "The private vault has no room for this conversation's values in a new private scope. The setting was not changed.";
 
 impl PrivacySession {
@@ -324,9 +328,10 @@ impl PrivacySession {
             names.push((known.placeholder.clone(), String::new(), category));
         }
         drop(ledger);
-        // A message that has no source yet cannot be decided, and refuses.
+        // A message that has no source yet cannot be decided here. That
+        // is its own refusal: the record is not said to be uncarriable.
         let Some(recorded) = recorded else {
-            return Err(NOT_CARRIED_RECORD);
+            return Err(NOT_SOURCED_YET);
         };
         for message in recorded {
             let Some(held) = message.source().downcast::<ViewSource>() else {

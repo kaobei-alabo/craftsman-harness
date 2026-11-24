@@ -361,7 +361,8 @@ impl MappingSession {
     /// Read-only: whether the vault has room now for one further scope with
     /// as many mappings and sealed bytes as this session's scope holds,
     /// under the unchanged bounds of an insertion. Nothing is reserved; the
-    /// insertions themselves are checked again.
+    /// insertions themselves are checked again. The store is only read, but
+    /// a failure of the read marks the vault failed, as for every request.
     pub async fn admits_successor_scope(&self) -> Result<bool> {
         storage::admits_successor(self.live.clone()).await
     }

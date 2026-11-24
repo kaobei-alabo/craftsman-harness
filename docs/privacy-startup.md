@@ -479,22 +479,27 @@ The steps, in order:
    the retirement. A refusal is a line; the conversation goes on.
 2. **Retired.** The conversation must be idle: no running turn, no local
    work, no running background task and no parked approval. Before anything
-   is retired, three things are decided read-only, and a refusal of any
-   keeps the conversation as it was:
+   is retired, three things are decided without changing the record or
+   the store, and a refusal of any keeps the conversation as it was:
    - *Every recorded message with its source.* The one function that the
      adoption decides with is applied to the live record: the source is
      this conversation's own, on its lane, it fits its message (the
      captured text, the commit, the call, the parts that make up exactly
      the recorded content), a reply has no provider items, and every
      model-origin text can be renamed. A message that has no source yet
-     refuses.
+     cannot be decided here, and that is a refusal of its own: it does not
+     say that the record cannot be carried, because the agent gives such a
+     message its source when it next enters.
    - *The renaming.* It is done here with this scope's own placeholders,
      so that an occurrence that cannot be renamed is found now.
    - *The vault's room.* The vault is asked whether it has room for one
      further scope with as many mappings and sealed bytes as this scope
      holds, under the unchanged bounds of an insertion: 512 mappings in a
      scope, 4,096 mappings and the sealed-byte bound in the vault, 128
-     distinct scopes. Nothing is reserved, raised or pruned.
+     distinct scopes. Nothing is reserved, raised or pruned, and the store
+     is only read. The question is still a request to the vault like any
+     other: if its I/O, its worker or the store's integrity fails, the
+     vault is marked failed and refuses everything from then on.
 
    Its own record of every private value is read while it is live. Then
    the agent retires:
