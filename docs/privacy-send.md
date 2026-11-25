@@ -6,9 +6,11 @@ there is no configuration key, command, frontend option, key source, detector
 run, masking, restoration or hook registration. Normal sessions behave exactly
 as before, and privacy remains inactive.
 
-Its source has a source-scoped independent acceptance and one passing full
-local run on macOS, described under [Evidence](#evidence). It has no hosted
-run, is not merged to main and is not installed.
+Its source has a source-scoped independent acceptance and passing full local
+runs on macOS, described under [Evidence](#evidence). It is merged to main
+under PR #33 as `a903af65`. That PR's hosted run and the separate run on the
+merged main each passed all four contexts in both native modes, and that main
+is installed locally. Nothing selects the guard in the installed build.
 
 This is one slice of the work described in [privacy hooks](privacy-hooks.md).
 It builds on the [private vault](privacy-vault.md). It is a separate candidate
@@ -316,10 +318,16 @@ repeated for the corrections.
 These are synthetic, sequential tests. No detector ran, no model service was
 contacted and no paid call was made.
 
-**What has not run.**
+**Hosted runs, and what has not run.**
 
-- Linux and Windows have not run these cases. There is no hosted run of the
-  guard.
+- PR #33's hosted run
+  [44981644431](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44981644431)
+  at `4bea365` ran these cases on Linux, macOS and Windows and passed all four
+  contexts, every mandatory step and both native modes. The separate run on the
+  merged main,
+  [44985966590](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44985966590),
+  passed its independent audit at `a903af65` in the same way, and that main is
+  installed locally.
 - The foundation's earlier hosted run
   [44937824282](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44937824282)
   refused its Windows data fixture at `pe.align.section`. Its merged PR head's
@@ -333,11 +341,9 @@ contacted and no paid call was made.
   Its tree does not contain this guard, so neither the run nor the installed
   build gives the guard coverage.
 - No test ran in the default voice configuration.
-- The guard is not merged to main and not installed, and no key, policy, hook,
-  masking, restoration or activation exists.
-
-Hosted validation of the guard on all four contexts in both native modes, and
-an independent proof of main after the guard is merged, remain before delivery.
+- No key, policy, hook, masking, restoration or activation exists in the
+  merged or installed source. Later private work that would use the guard is
+  local, unreviewed and not installed.
 
 ## Known gaps
 

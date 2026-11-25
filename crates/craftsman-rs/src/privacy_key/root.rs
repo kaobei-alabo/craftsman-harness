@@ -1,0 +1,770 @@
+//! Captured actual config-root ownership. Never creates a directory or adopts files.
+use super::{KeyError, Result, envelope::ENVELOPE_BYTES};
+use std::{fmt, path::PathBuf};
+use zeroize::Zeroizing;
+
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+#[cfg(unix)]
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
+pub const KEY_FILENAME: &str = "privacy-key.v1";
+pub(crate) const CONFIG_LIMIT: usize = 1024 * 1024;
+
+/// Only the actual user config source (or an owned test directory) can mint this.
+pub struct ConfigRoot {
+    path: PathBuf,
+    #[cfg(unix)]
+    ancestors: Vec<std::fs::File>,
+    #[cfg(unix)]
+    names: Vec<std::ffi::OsString>,
+}
+impl fmt::Debug for ConfigRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PrivacyConfigRoot([private])")
+    }
+}
+impl ConfigRoot {
+    /// Retains the same directory authority for independent policy/key owners;
+    /// never obtains another root by reopening a caller's string.
+    pub(crate) fn duplicate_owned(&self) -> Result<Self> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let copy = Self {
+                path: self.path.clone(),
+                ancestors: self
+                    .ancestors
+                    .iter()
+                    .map(|file| file.try_clone().map_err(|_| KeyError::Io))
+                    .collect::<Result<Vec<_>>>()?,
+                names: self.names.clone(),
+            };
+            copy.recheck()?;
+            Ok(copy)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    pub(crate) fn with_captured_path<T>(
+        &self,
+        use_root: impl FnOnce(&std::path::Path) -> Result<T>,
+    ) -> Result<T> {
+        self.recheck()?;
+        let result = use_root(&self.path)?;
+        self.recheck()?;
+        Ok(result)
+    }
+
+    /// Whether `directory` is this root's own final directory, by the device
+    /// and inode of the two held descriptors and by nothing a caller says.
+    /// It answers a refusal check for a proposed data location only: no
+    /// descriptor, path or identity value leaves this owner, and an identity
+    /// that cannot be read is an error, never a "no".
+    #[cfg(unix)]
+    pub(crate) fn is_final_directory(&self, directory: &std::fs::File) -> Result<bool> {
+        let own = self.ancestors.last().ok_or(KeyError::Root)?;
+        Ok(identity(&own.metadata().map_err(|_| KeyError::Io)?)
+            == identity(&directory.metadata().map_err(|_| KeyError::Io)?))
+    }
+
+    pub(crate) fn verify_config_absent(&self) -> Result<()> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            if self.exists("config.json")? {
+                Err(KeyError::Changed)
+            } else {
+                Ok(())
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+    pub(super) fn file_presence(&self) -> Result<(bool, bool)> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let key = self.exists(KEY_FILENAME)?;
+            let vault = self.exists("privacy-vault.db")?;
+            if key {
+                self.open_existing(KEY_FILENAME, true)?;
+            }
+            if vault {
+                self.open_existing("privacy-vault.db", true)?;
+            }
+            Ok((key, vault))
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+    pub fn capture_actual() -> Result<Self> {
+        #[cfg(unix)]
+        {
+            Self::capture(crate::config::config_dir())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn capture_owned_startup_fixture(path: PathBuf) -> Result<Self> {
+        Self::capture(path)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn capture_owned_test_root(path: &std::path::Path) -> Result<Self> {
+        Self::capture(path.to_owned())
+    }
+
+    pub(super) fn vault_location(&self) -> Result<crate::privacy_vault::VaultLocation> {
+        self.recheck()?;
+        crate::privacy_vault::VaultLocation::under_host_config_root(&self.path)
+            .map_err(|_| KeyError::Root)
+    }
+
+    pub(super) fn ensure_absent_pair(&self) -> Result<()> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            for name in [
+                KEY_FILENAME,
+                "privacy-vault.db",
+                "privacy-vault.db-wal",
+                "privacy-vault.db-shm",
+                "privacy-vault.db-journal",
+            ] {
+                if self.exists(name)? {
+                    return Err(KeyError::AlreadyInitialized);
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    pub(crate) fn read_user_config(&self) -> Result<Option<(Zeroizing<Vec<u8>>, FileLease)>> {
+        #[cfg(unix)]
+        {
+            if !self.exists("config.json")? {
+                return Ok(None);
+            }
+            let lease = self.open_existing("config.json", false)?;
+            let bytes = lease.read_bounded(CONFIG_LIMIT, None)?;
+            self.recheck()?;
+            Ok(Some((bytes, lease)))
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    /// The enable writer's one effect: replace the user file that `lease`
+    /// holds with `candidate`, only while that lease still reads exactly
+    /// `original`.
+    ///
+    /// The candidate goes to a new, exclusive, user-only file in the same
+    /// held directory. That staged entry is this operation's own by the
+    /// identity of the file it created, from creation through every return.
+    /// Before the commit the staging name is reopened without following a
+    /// link and must still be that very file: regular, single-link,
+    /// user-only, with exactly the candidate's bytes. Then the original named
+    /// file, its source and the root's ancestors are checked again, and the
+    /// staged file is renamed over `config.json`.
+    ///
+    /// On any refusal before the rename the staging name is removed only
+    /// while it still names the created file. An entry that cannot be
+    /// confirmed as that file is left in place, and the refusal carries
+    /// [`STAGE_LEFT`]. A leftover of that name is never adopted or
+    /// overwritten. A failure after the rename carries [`WRITTEN`]: the file
+    /// was replaced, and what followed could not be verified. A rename that
+    /// was refused, with the staging name gone afterwards, carries
+    /// [`UNCONFIRMED`]: that absence is the one sign that the rename may
+    /// have taken effect, so it is not reported as unchanged.
+    ///
+    /// The checks before the rename are samples: another writer can still
+    /// act between the last check and the rename. This is not a
+    /// cross-process compare-and-swap, and no power-loss durability is
+    /// claimed.
+    pub(crate) fn replace_user_config(
+        &self,
+        lease: &FileLease,
+        original: &[u8],
+        candidate: &[u8],
+    ) -> std::result::Result<(), (KeyError, u8)> {
+        #[cfg(unix)]
+        {
+            use std::{io::Write, os::fd::AsRawFd};
+            const STAGED: &str = "config.json.privacy-enable";
+            if candidate.len() > CONFIG_LIMIT {
+                return Err((KeyError::Bounds, UNCHANGED));
+            }
+            if let Err(error) = self.recheck() {
+                return Err((error, UNCHANGED));
+            }
+            // The lease is of `config.json` in this root's own directory.
+            let Some(directory) = self.ancestors.last() else {
+                return Err((KeyError::Root, UNCHANGED));
+            };
+            let (Ok(held), Ok(leased)) = (directory.metadata(), lease.parent.metadata()) else {
+                return Err((KeyError::Io, UNCHANGED));
+            };
+            if identity(&held) != identity(&leased) || lease.name.as_bytes() != b"config.json" {
+                return Err((KeyError::Changed, UNCHANGED));
+            }
+            let Ok(mut file) =
+                self.open_raw(STAGED, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, 0o600)
+            else {
+                return Err((KeyError::Io, UNCHANGED));
+            };
+            let staged = Staged {
+                directory: directory.as_raw_fd(),
+                name: c"config.json.privacy-enable",
+                created: match file.metadata() {
+                    Ok(metadata) => Some((identity(&metadata), metadata)),
+                    Err(_) => None,
+                },
+            };
+            // `true` beside an error: the rename itself was asked for and
+            // refused.
+            let committed = match &staged.created {
+                None => Err((KeyError::Io, false)),
+                Some((created, metadata)) => match secure_file(metadata, true) {
+                    Err(error) => Err((error, false)),
+                    Ok(()) if file.write_all(candidate).is_err() || file.sync_all().is_err() => {
+                        Err((KeyError::Io, false))
+                    }
+                    Ok(()) => self.commit_staged(STAGED, *created, lease, original, candidate),
+                },
+            };
+            match committed {
+                // The rename happened. Whatever fails from here on, the file
+                // was replaced: it is never reported as unchanged.
+                Ok(()) => match self.recheck() {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err((error, WRITTEN)),
+                },
+                Err((error, renaming)) => match staged.remove_own() {
+                    // Refused, and yet the staging name is gone.
+                    Some(true) if renaming => Err((error, UNCONFIRMED)),
+                    Some(_) => Err((error, UNCHANGED)),
+                    None => Err((error, STAGE_LEFT)),
+                },
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (lease, original, candidate);
+            Err((KeyError::SecureStorageUnsupported, UNCHANGED))
+        }
+    }
+
+    /// The staging name still is the created file with the candidate's
+    /// bytes; the original is still what was read; then the rename. `true`
+    /// beside an error: the rename itself was asked for and refused.
+    #[cfg(unix)]
+    fn commit_staged(
+        &self,
+        name: &str,
+        created: (u64, u64),
+        lease: &FileLease,
+        original: &[u8],
+        candidate: &[u8],
+    ) -> std::result::Result<(), (KeyError, bool)> {
+        use std::os::fd::AsRawFd;
+        let reopened = match self.open_existing(name, true) {
+            Ok(reopened) => reopened,
+            Err(error) => return Err((error, false)),
+        };
+        let staged = match reopened.read_bounded(CONFIG_LIMIT, Some(candidate.len())) {
+            Ok(staged) => staged,
+            Err(error) => return Err((error, false)),
+        };
+        if reopened.identity != created || staged.as_slice() != candidate {
+            return Err((KeyError::Changed, false));
+        }
+        if let Err(error) = lease.verify_configuration_bytes(original) {
+            return Err((error, false));
+        }
+        if let Err(error) = self.recheck() {
+            return Err((error, false));
+        }
+        let Some(directory) = self.ancestors.last() else {
+            return Err((KeyError::Root, false));
+        };
+        let directory = directory.as_raw_fd();
+        let status = unsafe {
+            libc::renameat(
+                directory,
+                reopened.name.as_ptr(),
+                directory,
+                c"config.json".as_ptr(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err((KeyError::Io, true))
+        }
+    }
+
+    pub(super) fn read_envelope(&self) -> Result<(Zeroizing<Vec<u8>>, FileLease)> {
+        #[cfg(unix)]
+        {
+            let lease = self.open_existing(KEY_FILENAME, true)?;
+            let bytes = lease.read_bounded(ENVELOPE_BYTES, Some(ENVELOPE_BYTES))?;
+            self.recheck()?;
+            Ok((bytes, lease))
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    pub(super) fn create_envelope(&self, bytes: &[u8; ENVELOPE_BYTES]) -> Result<FileLease> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            self.recheck()?;
+            let mut file = self
+                .open_raw(
+                    KEY_FILENAME,
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+                    0o600,
+                )
+                .map_err(|error| {
+                    if error.raw_os_error() == Some(libc::EEXIST) {
+                        KeyError::AlreadyInitialized
+                    } else {
+                        KeyError::Io
+                    }
+                })?;
+            secure_file(&file.metadata().map_err(|_| KeyError::Io)?, true)?;
+            or_return!(file.write_all(bytes), KeyError::Io);
+            or_return!(file.sync_all(), KeyError::Io);
+            self.recheck()?;
+            // Retain a separately no-follow opened readable descriptor only if
+            // its complete identity matches the file this operation created.
+            let identity = identity(&file.metadata().map_err(|_| KeyError::Io)?);
+            let lease = self.open_existing(KEY_FILENAME, true)?;
+            if lease.identity != identity {
+                return Err(KeyError::Changed);
+            }
+            let observed = lease.read_bounded(ENVELOPE_BYTES, Some(ENVELOPE_BYTES))?;
+            if observed.as_slice() != bytes {
+                return Err(KeyError::Changed);
+            }
+            Ok(lease)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = bytes;
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    pub(crate) fn recheck(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            for (index, name) in self.names.iter().enumerate() {
+                let parent = &self.ancestors[index];
+                let actual = open_directory_at(parent.as_raw_fd(), name)?;
+                if identity(&actual.metadata().map_err(|_| KeyError::Io)?)
+                    != identity(
+                        &self.ancestors[index + 1]
+                            .metadata()
+                            .map_err(|_| KeyError::Io)?,
+                    )
+                {
+                    return Err(KeyError::Changed);
+                }
+            }
+            for (index, directory) in self.ancestors.iter().enumerate() {
+                secure_directory(
+                    &directory.metadata().map_err(|_| KeyError::Io)?,
+                    index + 1 == self.ancestors.len(),
+                )?;
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    #[cfg(unix)]
+    fn capture(path: PathBuf) -> Result<Self> {
+        use std::{os::fd::AsRawFd, path::Component};
+        if !path.is_absolute()
+            || path.to_str().is_none()
+            || path.as_os_str().len() > 16 * 1024
+            || path.components().count() > 128
+            || path
+                .components()
+                .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+        {
+            return Err(KeyError::Root);
+        }
+        let mut ancestors = vec![open_directory_at(
+            libc::AT_FDCWD,
+            std::ffi::OsStr::new("/"),
+        )?];
+        let mut names = Vec::new();
+        for part in path.components() {
+            if let Component::Normal(name) = part {
+                let directory =
+                    open_directory_at(ancestors.last().ok_or(KeyError::Root)?.as_raw_fd(), name)?;
+                names.push(name.to_owned());
+                ancestors.push(directory);
+            }
+        }
+        let root = Self {
+            path,
+            ancestors,
+            names,
+        };
+        root.recheck()?;
+        Ok(root)
+    }
+
+    #[cfg(unix)]
+    fn open_raw(
+        &self,
+        name: &str,
+        flags: i32,
+        mode: libc::mode_t,
+    ) -> std::io::Result<std::fs::File> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let name = or_return!(
+            std::ffi::CString::new(name),
+            std::io::Error::from(std::io::ErrorKind::InvalidInput)
+        );
+        let directory = self
+            .ancestors
+            .last()
+            .ok_or(std::io::ErrorKind::InvalidInput)?;
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                mode as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+    }
+
+    #[cfg(unix)]
+    fn exists(&self, name: &str) -> Result<bool> {
+        use std::os::fd::AsRawFd;
+        let name = or_return!(std::ffi::CString::new(name), KeyError::Root);
+        let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
+        let directory = self.ancestors.last().ok_or(KeyError::Root)?;
+        let status = unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                &mut metadata,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if status == 0 {
+            return Ok(true);
+        }
+        if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            Ok(false)
+        } else {
+            Err(KeyError::Io)
+        }
+    }
+
+    #[cfg(unix)]
+    fn open_existing(&self, name: &str, private: bool) -> Result<FileLease> {
+        self.recheck()?;
+        let file = or_return!(self.open_raw(name, libc::O_RDONLY, 0), KeyError::Missing);
+        let metadata = or_return!(file.metadata(), KeyError::Io);
+        secure_file(&metadata, private)?;
+        let lease = FileLease {
+            identity: identity(&metadata),
+            metadata,
+            file,
+            private,
+            parent: self
+                .ancestors
+                .last()
+                .ok_or(KeyError::Root)?
+                .try_clone()
+                .map_err(|_| KeyError::Io)?,
+            name: std::ffi::CString::new(name).map_err(|_| KeyError::Root)?,
+        };
+        lease.recheck()?;
+        Ok(lease)
+    }
+}
+
+/// How far a refused replacement of the user file got. `UNCHANGED`: nothing
+/// was changed and nothing of this operation is left. `STAGE_LEFT`: nothing
+/// was changed, and the staging name could not be confirmed as the file this
+/// operation created, so that entry was left in place. `WRITTEN`: the file
+/// was replaced, and what followed could not be verified. `UNCONFIRMED`:
+/// the rename was refused and the staging name was gone afterwards, so the
+/// file may have been replaced; it is not known which.
+pub(crate) const UNCHANGED: u8 = 0;
+pub(crate) const STAGE_LEFT: u8 = 1;
+pub(crate) const WRITTEN: u8 = 2;
+pub(crate) const UNCONFIRMED: u8 = 3;
+
+/// The staged entry of one replacement: the held directory, the fixed name
+/// and the identity of the file this operation created under it.
+#[cfg(unix)]
+struct Staged {
+    directory: std::os::fd::RawFd,
+    name: &'static std::ffi::CStr,
+    created: Option<((u64, u64), std::fs::Metadata)>,
+}
+#[cfg(unix)]
+impl Staged {
+    /// After a refusal: removes the staging name only while it still names
+    /// the created file. `Some(true)`: the name was already gone.
+    /// `Some(false)`: it was the created file and was removed. `None`: the
+    /// name now is another entry, or cannot be told apart, and was left in
+    /// place. The comparison is a sample taken just before the removal.
+    fn remove_own(&self) -> Option<bool> {
+        let mut found: libc::stat = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            libc::fstatat(
+                self.directory,
+                self.name.as_ptr(),
+                &mut found,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if status != 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+                return Some(true);
+            }
+            return None;
+        }
+        let own = match &self.created {
+            Some((created, _)) => *created == (found.st_dev as u64, found.st_ino as u64),
+            None => false,
+        };
+        if own && unsafe { libc::unlinkat(self.directory, self.name.as_ptr(), 0) } == 0 {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) struct FileLease {
+    #[cfg(unix)]
+    file: std::fs::File,
+    #[cfg(unix)]
+    metadata: std::fs::Metadata,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    #[cfg(unix)]
+    private: bool,
+    #[cfg(unix)]
+    parent: std::fs::File,
+    #[cfg(unix)]
+    name: std::ffi::CString,
+}
+impl fmt::Debug for FileLease {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PrivacyFileLease([private])")
+    }
+}
+impl FileLease {
+    /// Duplicate this already-held source without opening a caller pathname.
+    pub(crate) fn duplicate_owned(&self) -> Result<Self> {
+        self.recheck()?;
+        #[cfg(unix)]
+        {
+            let copy = Self {
+                file: self.file.try_clone().map_err(|_| KeyError::Io)?,
+                metadata: self.metadata.clone(),
+                identity: self.identity,
+                private: self.private,
+                parent: self.parent.try_clone().map_err(|_| KeyError::Io)?,
+                name: self.name.clone(),
+            };
+            copy.recheck()?;
+            Ok(copy)
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    /// Refusal-only re-verification of this descriptor's bounded original
+    /// config bytes. Neither bytes nor a source owner can be supplied by it.
+    pub(crate) fn verify_configuration_bytes(&self, expected: &[u8]) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let actual = self.read_bounded(CONFIG_LIMIT, Some(expected.len()))?;
+            if actual.as_slice() != expected {
+                return Err(KeyError::Changed);
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = expected;
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    pub(crate) fn recheck(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::{
+                fd::{AsRawFd, FromRawFd},
+                unix::fs::MetadataExt,
+            };
+            let actual = or_return!(self.file.metadata(), KeyError::Io);
+            secure_file(&actual, self.private)?;
+            let descriptor = unsafe {
+                libc::openat(
+                    self.parent.as_raw_fd(),
+                    self.name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                return Err(KeyError::Changed);
+            }
+            let named = unsafe { std::fs::File::from_raw_fd(descriptor) };
+            let named = or_return!(named.metadata(), KeyError::Io);
+            secure_file(&named, self.private)?;
+            if identity(&named) != identity(&actual) {
+                return Err(KeyError::Changed);
+            }
+            if identity(&actual) != self.identity
+                || actual.len() != self.metadata.len()
+                || actual.mtime() != self.metadata.mtime()
+                || actual.mtime_nsec() != self.metadata.mtime_nsec()
+                || actual.ctime() != self.metadata.ctime()
+                || actual.ctime_nsec() != self.metadata.ctime_nsec()
+            {
+                return Err(KeyError::Changed);
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(KeyError::SecureStorageUnsupported)
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_bounded(&self, maximum: usize, exact: Option<usize>) -> Result<Zeroizing<Vec<u8>>> {
+        use std::os::unix::fs::FileExt;
+        self.recheck()?;
+        let length = or_return!(usize::try_from(self.metadata.len()), KeyError::Bounds);
+        if length > maximum || exact.is_some_and(|n| n != length) {
+            return Err(KeyError::Invalid);
+        }
+        let mut bytes = Zeroizing::new(vec![0; length]);
+        let mut read = 0;
+        while read < length {
+            let count = or_return!(
+                self.file.read_at(&mut bytes[read..], read as u64),
+                KeyError::Io
+            );
+            if count == 0 {
+                return Err(KeyError::Changed);
+            }
+            read += count;
+        }
+        let mut tail = [0];
+        if self
+            .file
+            .read_at(&mut tail, length as u64)
+            .map_err(|_| KeyError::Io)?
+            != 0
+        {
+            return Err(KeyError::Changed);
+        }
+        self.recheck()?;
+        Ok(bytes)
+    }
+}
+
+#[cfg(unix)]
+fn identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+#[cfg(unix)]
+fn secure_file(meta: &std::fs::Metadata, private: bool) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if !meta.is_file()
+        || meta.nlink() != 1
+        || meta.uid() != unsafe { libc::geteuid() }
+        || (private && meta.mode() & 0o7777 != 0o600)
+        || (!private && meta.mode() & 0o022 != 0)
+    {
+        return Err(KeyError::Root);
+    }
+    Ok(())
+}
+#[cfg(unix)]
+fn secure_directory(meta: &std::fs::Metadata, final_root: bool) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let user = unsafe { libc::geteuid() };
+    let root_sticky = meta.uid() == 0 && meta.mode() & 0o1000 != 0;
+    if !meta.is_dir()
+        || (meta.uid() != 0 && meta.uid() != user)
+        || (meta.mode() & 0o022 != 0 && !root_sticky)
+        || (final_root && (meta.uid() != user || meta.mode() & 0o077 != 0))
+    {
+        return Err(KeyError::Root);
+    }
+    Ok(())
+}
+#[cfg(unix)]
+fn open_directory_at(parent: i32, name: &std::ffi::OsStr) -> Result<std::fs::File> {
+    use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+    let name = or_return!(std::ffi::CString::new(name.as_bytes()), KeyError::Root);
+    let descriptor = unsafe {
+        libc::openat(
+            parent,
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(KeyError::Root);
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+}

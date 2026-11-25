@@ -23,10 +23,17 @@ passed its independent audit at `dffddeae`: all four contexts, 68 of 70 steps
 with the two skips being the Linux-only voice package step on Windows and
 macOS, all 156 test groups in both native modes, and the same two Windows
 parents. Windows keeps its 17 earlier Rust warnings and adds none. That main is
-now the locally installed source. The installed build contains the private
-foundations and selects none of them. Normal privacy remains inactive and
-unselected, and the private send guard is not part of that merge, not
-installed and not covered by either run.
+was installed locally before PR #33. That build contained the private
+foundations and selected none of them. Normal privacy remains inactive and
+unselected. The private send guard was not part of that merge. It is merged
+separately under PR #33 as `a903af65`, after that PR's run
+[44981644431](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44981644431)
+at `4bea365` passed all four contexts, every mandatory step and both native
+modes. The separate run on that main,
+[44985966590](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44985966590),
+passed its independent audit at `a903af65` in the same way, and that main is now
+the locally installed source. Nothing in it selects the guard. The later
+private admission and source-view work is local, unreviewed and not installed.
 
 The earlier failed runs remain recorded. Native run
 [44891734880](https://github.com/kaobei-alabo/craftsman-harness/actions/runs/44891734880)
@@ -58,6 +65,7 @@ current failures or pending merges unless explicitly stated here.
 | `craftsman` | Streaming terminal conversation, file/shell/web tools, approvals, steering, saved work, local skills/memory, configured MCP/LSP and opt-in gadgets | Host tools are not an OS sandbox; supervised coding and general folder work are supported |
 | `craftsman -m PROMPT` | Legacy argument-only one-shot; main content on stdout, activity on stderr | Inherits legacy user-config permissions/storage; not the accepted unattended headless contract |
 | `craftsman setup` | Edit/select a configured model connection with masked keys and validated settings | Other connections and existing data remain preserved |
+| `craftsman privacy status` / `init` / `enable` / `set` | Local unmerged branch only, not installed. `status` is read-only: key files, user policy and a read-only preflight. `init` creates the mapping-vault key and vault with a twice-entered password. `enable --detector <id>` adds a policy, pinned to the installed and approved detector, to a user file that has none | `init` is create-only and enables nothing. `enable` only adds: it keeps every original byte, never turns voice off, needs a stored detector approval, and binds its staged file to the identity it created. `set <setting> <value>` replaces or inserts one of `permission_mode`, `model` and `agent` in a file that enables privacy, keeps every other byte and uses the same staged replacement. It takes only the permission modes that still ask before a file write. `status` reserves no conversation. A passed preflight is not an unlock, an approval or readiness. See [privacy-startup.md](privacy-startup.md) |
 | `craftsman gadgets …` | Inspect/call, create/build/doctor and create-only legacy migration | Native build approval and first guest-load capability approval are separate |
 | `craftsman acp-serve` | Standard ACP over stdio | Detailed session/tool/permission interface; native host registration is the client's responsibility |
 | `craftsman acp-bridge` | WebSocket relay of ACP JSON-RPC plus HTTP health/stats | Existing proxy authentication and bounded transport behavior |
@@ -152,13 +160,21 @@ are not proof of OS containment or blocking-worker quiescence.
 | Task context and exact failure controls | Implemented, explicit app opt-in | Bounded input/file observations, local /context, real sampling pause and structural protected-test notes; [context](context.md), [failure controls](failure-controls.md) |
 | Coding-evaluation preparation and reliability evidence | Local frozen-source validation and production-TUI synthetic v3 | Unchanged original/reference graders, private SQLite snapshots and independently requested fixed child; full combined-source/native/hosted/live-budget gates remain; [preparation](coding-evaluation-preparation.md), [owned-terminal v3](owned-terminal-evaluation.md) |
 | Framework names and TUI split | Implemented source | `craftsman-harness/src`, `craftsman-rs/src/tui`; dependency guard and frozen goldens |
+| Privacy key/policy ownership and owned popup | Local private Step A/B source; selected only by the unmerged interactive privacy route and the explicit `privacy` commands | Real112-byte random-key envelope and existing-only vault, actual captured-user policy/root, no-follow Unix ownership and sole non-echoing TTY input. At exact local5dc83d9/tree145d8514, actual FullEntry/SafeEntry and3fresh-clear parents pass: opaque human question/review, captured supported Contact-file restoration, unchanged actual user source, original inputs/results/follow-up/checkpoints, password absence, new thread, Escape/Ctrl-C and retained type-ahead draft. Sources and target/application/image/effect records do not grant tool permission; current corrective source requires a refusal-only target precheck before private selector comparisons. At that source there was no normal selector; the interactive selector that came later is in the startup row below. Active settings saves, unsupported frontends/representations, Windows secure storage and opaque exemptions remain refused or unavailable. First lost-reply/NoRule/partial-stage failures remain; the actual linked gadget image is still over the unchanged16MiB threshold. Independent source/security/size/full17/all-four/merged-main/install gates remain open; local5dc proof is not coverage of a later source correction. [privacy-key.md](privacy-key.md), [privacy-bootstrap.md](privacy-bootstrap.md) |
 | Shell hardening | Implemented | `ProcessTree`, environment scrub, bounded output and owned TUI cleanup; legacy/global Unix groups still default off |
+| Privacy terminal startup capture, consuming bootstrap and interactive route | Local unmerged branch, not installed. Selected only by the interactive `craftsman` invocation, and only when the actual user file enables a policy | Captures the actual user root, file lease, bounded original bytes, parsed configuration and policy before project merges. The consuming adapter keeps configuration, policy, retained source and pending requirements in one owner through existing init/unlock/private conversation construction. Read-only access rechecks the source; its private full-session request uses the original configuration and preserves all requested extras. Fresh retirement shares the actual immutable owner instead of reparsing or rebinding it. The private captured entry takes the startup's own opaque approval start in place of a caller-built approval state and binds it to the bootstrap's retained requirements before any key work; ordinary captured terminal cases enter through it in a marked child. A failed or cancelled captured build keeps its pending construction for the 30-second retirement, and a session refused after the builder returned it is shut down for real before the refusal returns; cleanup failure is reported separately and no native or blocking quiescence is claimed. Caller/project/merged data cannot select startup authority. Missing/disabled legacy loading and actual CLI refusal controls remain unchanged. `main` passes only the eligible interactive invocation (no subcommand, `-m` or `--session`, terminal on both ends) to the router, before the loader and every terminal, store, provider or helper effect. A refused capture is final and never continues as privacy-off; only the capture's own legacy answer returns to the unchanged loader. The router refuses voice that is not explicitly off, a permission mode or automatic approval that decides file writes without asking, and a missing or incomplete key before a terminal exists, records its selection and enters the captured entry. The router runs the entry's read-only check of the captured settings before any terminal effect. Readiness of a build belongs to its bound session, which holds a witness of its own build: the original request by owner identity, each lane's provider by the receipt it issued when it bound the conversation's guard, each composed part by object, the approval gate, the question tool and the reply display as the constructed objects themselves with what each holds read from it, the sinks each provider says it was given, what each delegated tool gate says it holds, the installed tools against the agent's own registry, the installed cancellation owner against the frontend's own, and the gadget runtime's own allowance. It checks that, its thread, view and send guard each time it issues a turn, a listing or a task cancellation. The private terminal answers the ordinary read-only commands and session listings, runs the person's shell escape through the ordinary runner, cancels a running background task, reports fixed-text OSC 7501 status, honours the mouse choice outside password prompts, and in a build with voice input owns the ordinary voice controller. In a terminal the router selected, `/model`, `/effort` and `/mode` change the user file and carry the conversation over: it is retired, the file is written through the retained source's writer, the password is asked again (a refused one keeps the retired conversation and is asked again, three attempts in all, with nothing else admitted meanwhile), and the new conversation of the same thread adopts the whole record in a vault scope of its own, with raw text admitted anew and the retired placeholders renamed in model-origin text. `/compact` runs the tracked idle compaction and an extension command sends its expansion to the model. A thinking-token budget goes through the same selection. It refuses, before anything is retired, a permission mode that decides file writes without asking, a model on a wire whose provider items cannot be inspected (every wire that accepts a budget is one, so no budget has been written), and a conversation with provider items; a conversation that runs with context, failure or verification controls is carried, its newly installed controllers taking the adopted record over through the successor's own adapters (the verification controller as a restored record, the context and failure controller by its own reset on its own keys) with nothing replayed, of which only the context controller has a case; it also refuses the remaining settings and commands, and a build on a wire with uninspectable provider items; a build without voice input refuses a source that asks for voice. Every other invocation keeps `Config::load`'s refusal of an enabled policy. The router does not sample the detector's stored approval; the build does, after the unlock. Ten terminal cases stay in the unit-test binary and nineteen real-binary cases are in `tests/privacy_cli.rs` (their split by build is in [privacy-startup.md](privacy-startup.md)), among them `enable`'s success after a real approval prompt, the five route conversation cases under their earlier names and two settings changes that carry one conversation; the gadget test binary's unwind section is recorded with each dated measurement, the latest in the November 25 section at the end of this page. Every error after a settings retirement says that the conversation was retired and what became of the change; a replaced-but-unverified write is never told as unwritten; an earlier "always" is not carried; the change is made only to the file the conversation was captured from; a successor scope is counted with a checked addition. After an independent review of an earlier commit: the witness requires an accepted provider for each of the three lanes and an alive one for each lane it installed, and records each statement once; a shell escape runs only in the captured workspace and an unexecuted one is kept as typed; a refused rename with the staging name gone is reported as possibly written; the voice event task is aborted before it is awaited, a voice key typed before a password prompt asks for nothing afterwards, a dictated segment keeps the draft bound and a submitted draft leaves no dictation state. After the review of that correction: the witness reads the prompts and sinks from the constructed approval gate, question tool and display, compares the sinks each provider's receipt states and whether each was given at all, compares the agent's installed cancellation owner with the frontend's own, compares every installed tool with the registry, reads the gadget allowance from the constructed runtime, tells a part stated as zero from one never stated, and takes each choice where its work succeeded. The framework's validation of the controller bindings at every typed entry is unchanged; the builder runs the same validation once before it hands a session out, so that the witness lists no adapter before a validation. No case exercises a refusing branch of the witness or a native wire through it. The object installed for each lane is compared with the provider that issued the lane's receipt, so no provider of a privacy conversation stands behind a wrapper with an output owner. Still open: before a retirement the carry-over decides every recorded message with the function its adoption decides with, renames placeholders only where restoration would read one (a telephone placeholder as a whole token; a standalone number equal to one cannot be told apart) and asks the vault read-only for room under its unchanged bounds, but the new scope's own admission, its send guard and the insertions themselves are still decided after the retirement; the adoption is the frontend's kept work, polled with its drawing, input and shutdown, with typed input kept as a draft or queued line and the pending handoff kept until the adoption returned success, but ending it while it runs is read from source and has no case,, and the adoption takes the recorded state out of the transfer; a closed conversation gives up its vault's connection, database and keys, its detector, the originals its send guard was given and its own references to masked texts while the nodes of its recorded messages stay as the record's provenance, a vault worker that had started keeps its reference until it returns, and nothing stored is touched. Two fresh-clear cases of the unit-test binary failed once each on the carried-conversation commit; their recorded terminal bytes show a stage of the test driver that matched the old composer line under a prompt still being drawn, and the four affected sequences now wait for the whole prompt first. The voice adapter's ownership and lifecycle ran in a voice-enabled build without audio; capture and transcription are not validated. Integrated from the voice and shell line: the voice model cache is the `models` directory of the captured configuration root, which a start creates when missing; `/voice on` restarts a paused controller only where the captured source keeps voice input on; a cancelled dictation, the draft bound and a restart retire the owned controller, whose events come from its own receiver, and a dictation ended in the terminal stays ended; `!command` runs in the captured workspace through the ordinary executor. The restart and the shell escape ran through the real binary; a cancelled dictation, a dictated text and the download opt-in are read from source only ([privacy-voice.md](privacy-voice.md)). Voice validation with a microphone, carrying a conversation with the verification or failure controller or a scheduled call's message through a case, carrying sub-agent records, the settings that are still refused, a failure after the retirement, non-default options, mouse events, Linux/Windows, review of the route, hosted and native validation, merge and install remain pending. Earlier c33 full17/size proof is separate from this changed composition. See [privacy-startup.md](privacy-startup.md) |
 | Gadgets G1 | Implemented, model-opt-in | Fixed `gadget_list`/`gadget_call`; first-load grants; change-only catalog refresh before main/delegated rounds and after compaction |
 | Declarative gadgets/migration G2 | Implemented; legacy loader retained | Shared extension validation/precedence; create-only migration preserves originals; published deprecation still required |
 | Embedded SDK/authoring G3 | Implemented | `gadgets new/build/doctor`, immutable SDK/skill; static ABI validation does not run `describe` |
 | Reusable script runner | Private capture and test-only bundle foundations merged and natively verified; public runner absent | PR #31/main44567715919 passed complete local/native evidence; Python/JavaScript/TypeScript compatibility proof has scoped functional reviews, while source consent, actual task-root derivation, backend selection and batch/scoped-auto CRUD review remain separate gates; see [wasm-script-runner.md](wasm-script-runner.md) |
-| Privacy hooks | Private foundations merged under PR #32; normal sessions inactive | Merged as `dffddeae` with the tree of reviewed head 7fca. PR run44973387679 at 7fca passed all four contexts, every mandatory step and both native modes; both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents passed with the unchanged 16-byte check. That pass covers its selected tools and exact operation only; the producer of the earlier extra 24-byte header and any general effect of `/EMITVOLATILEMETADATA:NO` are not established. Separate main run44976215399 at `dffddeae` passed its independent audit: all four contexts, 68 of 70 steps with two Linux-only skips, all 156 groups, 17 retained Windows warnings and none new, both original Windows parents. It covers the foundation only. That main is installed locally; the installed build selects no privacy and contains no guard. Earlier failed runs are retained: ac17/44937824282 (`pe.align.section`), 56aa/44949456781 (VirtualSize 40) and 61ac/44957234452 (two Windows `Vault::open` Deadline unwraps, the 40-against-16 refusal, one macOS closed-stdout observer status, skipped post steps; causes unknown). Current Ubuntu compaction passes both modes; old cause unknown. Fable guard is reviewed/local-validated/inactive. Key ownership, policy/masking, native history, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
-| Private send guard | Private, default-absent refusal seam at both model send sites; unselected | Refuses final request bytes that contain originals already held by real vault mapping records. No configuration, frontend, key source, detector, masking, restoration or activation. A separate candidate, not part of merged PR #32. Guard source `70d4b0e` has a source-scoped independent acceptance. Merged with the earlier fixture foundation `ac17c4d` as `38da30b`, the unchanged `scripts/verify.sh` passed once on macOS: 17 of 17 checks, the default voice build build-checked only, and both no-default-feature test modes (core 2208 passed/36 ignored, gadgets 2527/48, 26 groups each, no compiler warnings). That run belongs to `38da30b`, not to later commits. A later local merge with the final foundation source 7fca changes no guard or foundation implementation file; any local run of that merge is recorded with its own head, and none is stated here. No Linux, Windows or hosted run covers the guard; the foundation's passing PR run 44973387679 and main run 44976215399 ran trees without the guard and give it no coverage. Not merged to main or installed. Concurrency, charge propagation and the copy bound remain source-only, and key, policy, hook, masking, restoration and activation remain separate work. See [privacy-send.md](privacy-send.md) |
+| Privacy hooks | Private foundations merged under PR #32; normal sessions inactive | Merged as `dffddeae` with the tree of reviewed head 7fca. PR run44973387679 at 7fca passed all four contexts, every mandatory step and both native modes; both original Windows PE/Prepared/source-Cargo/approved-Wasmtime parents passed with the unchanged 16-byte check. That pass covers its selected tools and exact operation only; the producer of the earlier extra 24-byte header and any general effect of `/EMITVOLATILEMETADATA:NO` are not established. Separate main run44976215399 at `dffddeae` passed its independent audit: all four contexts, 68 of 70 steps with two Linux-only skips, all 156 groups, 17 retained Windows warnings and none new, both original Windows parents. It covers the foundation only. That foundation main was installed before PR #33; its build selected no privacy and contained no guard. Earlier failed runs are retained: ac17/44937824282 (`pe.align.section`), 56aa/44949456781 (VirtualSize 40) and 61ac/44957234452 (two Windows `Vault::open` Deadline unwraps, the 40-against-16 refusal, one macOS closed-stdout observer status, skipped post steps; causes unknown). Current Ubuntu compaction passes both modes; old cause unknown. The guard is separately merged and installed under PR #33 but unselected, as recorded below. Key ownership, policy/masking, display/file restoration and activation remain pending. See [privacy-hooks.md](privacy-hooks.md) |
+| Private send guard | Private, default-absent refusal seam at both model send sites; unselected in the merged and installed builds, selected only by the unmerged interactive privacy route | Refuses final request bytes that contain originals already held by real vault mapping records. No configuration, frontend, key source, detector, masking, restoration or activation. Not part of PR #32; merged under PR #33 as `a903af65` with the tree of `4bea365`. Guard source `70d4b0e` has a source-scoped independent acceptance. Merged with the earlier fixture foundation `ac17c4d` as `38da30b`, the unchanged `scripts/verify.sh` passed once on macOS: 17 of 17 checks, the default voice build build-checked only, and both no-default-feature test modes (core 2208 passed/36 ignored, gadgets 2527/48, 26 groups each, no compiler warnings). That run belongs to `38da30b`, not to later commits. A later local merge with the final foundation source 7fca changes no guard or foundation implementation file; any local run of that merge is recorded with its own head, and none is stated here. PR #33's hosted run 44981644431 at `4bea365` passed all four contexts, every mandatory step and both native modes with the guard's cases; the foundation's earlier runs ran trees without the guard. The separate run on the merged main, 44985966590, passed its independent audit at `a903af65` the same way, and that main is installed locally; nothing in it selects the guard. Concurrency, charge propagation and the copy bound remain source-only, and key, policy, hook, masking, restoration and activation remain separate work. See [privacy-send.md](privacy-send.md) |
+| Private admission core | Private detector contract with a narrow host floor, source-pinned detector call and one-conversation admission owner; selected only by the unmerged interactive privacy route | Local, unmerged, not installed. The pinned call reaches a user-level source by handle without following a link, requires regular single-link files, both file hashes, no capability and a stored grant for the exact bytes before any compile, describe or run, and returns the reply bytes unchanged; ordinary gadget approval is unchanged. An admitted node exists only after the vault's commit of one actual raw capture, including a commit that found nothing, and the send guard's admission. Raw text with an issued placeholder is refused; every detector, vault or guard failure stops the session; stored history is not changed. The conversation binding reserves the application's own fresh thread id, but the private shared builder consumes it with the real captured key/policy owner. The owned terminal entry and source/controller/UI adapters remain private, with data-file grants inert and no normal activation or Linux/Windows/hosted proof. See [privacy-admission.md](privacy-admission.md) and [privacy-provenance.md](privacy-provenance.md) |
+| Source view boundary | Optional, default-absent framework boundary; selected only by the unmerged interactive privacy route | Local, unmerged, not installed. An agent built without it runs its existing paths. With it, the agent takes turns, steering and approval decisions only through typed entries, keeps one opaque host source beside each recorded message, composes each request from sources through a provider method that defaults to refusal, asks the boundary before every call runs, and records the source of a reply, a tool result or a message it appended itself only after the real one is committed. A middleware runs only with its author's statement. A preserving one must leave messages, todos, files, custom state and system additions alone, which the agent checks after every hook phase and around every tool call. A tracked reviewer changes a received reply only through recorded operations; the protected `patch_tool_calls` repair runs that way. A tracked middleware adds system text only as source parts, and a tool or middleware announces what it stores, appends or repeats during a call; the todo list, memory, todo reminders and task workflow notes run that way. A tracked preparation can also replace recorded messages with a summary made through the summarizer's view path; automatic compaction runs that way, and manual or idle compaction through a typed entry. Recorded input, results, replies, usage, journal and checkpoints are unchanged. Boundary policies, completion checks, system text on the agent, untracked system additions, an inbox, reopening and the ordinary transfer have no source path and are refused. A selected conversation is carried into a new agent only by its own retirement and adoption: the idle agent issues its whole record and closes its view, and a fresh agent adopts it once through a host adopter that gives every original a source of the new conversation. Typed idle compaction uses an explicit source-derived request and actual stage/commit witnesses; unchanged moved native replies retain their items, changed replies refuse normal replay. See [privacy-provenance.md](privacy-provenance.md) |
+| Conversation view, four-wire providers and builder selection | Private application side of the boundary for one privacy conversation, providers for Chat, Responses, Claude Messages and Gemini, and a private selection in the shared session builder; selected only by the unmerged interactive privacy route | Local, unmerged, not installed. Immutable framework commit/invocation witnesses and private transport/human producers bind sources; returned reply/usage/tool data survives later source failures. A request is composed by replacing each recorded text with the view of its own source; a source that is foreign or no longer fits stops the session before a request exists. A call runs only if the last committed reply asked for exactly it or a checked human decision allowed exactly it. The providers send the view through the existing clients, encoders, transport policies and send guard, and refuse recorded text. On native wires the provider items of a reply are kept in an in-memory receipt of the conversation and sent back exactly, only by a client of the same endpoint, model, protocol and credential; the history cache and its checkpoint copy are not used, and a user policy that requires inspectable provider items refuses those wires. The builder selection takes the user's captured policy through the actual captured user-root/key owner, reports a typed reason when it refuses, uses the reserved thread id and the conversation's own guard, admits the system prompt section by section from its producer, and refuses the build when any installed middleware has no source path. The ordinary delegated set now has actual agent/parent/commit/envelope adapters; there is no limited-set constructor. Actual captured policy and private terminal input/receiver selection exist; the only selector is the unmerged interactive route, data grants beyond the user's own file rules remain absent, and unsupported configured components remain gated; gadget runtime/catalog and per-file prompt pieces use actual host-note source adapters. Explicit compaction has distinct actual stage/commit witnesses and preserves original native items for unchanged moved replies; changed native replies refuse normal replay, and opaque inspectability is not claimed. The stored record is not redacted. The private owned entry makes this selection for the unmerged interactive route; no other frontend, configuration or command selects it. The built session holds a witness of what the builder accepted and composed for it. See [privacy-provenance.md](privacy-provenance.md) |
+| Privacy restoration views | Local private combined source, unmerged and not installed; selected only by the unmerged interactive privacy route | Human display derives only from an actually received/committed reply and its live issued-record occurrences, while recorded replies/calls/results/usage/checkpoints remain original. File operations bind the actual pre-review plan, source, preview digest, sealed decision and selected policy; full-image application/value-range checks and retained-directory effects supply no tool permission. Main/delegated ordinary activity keeps model arguments; decoded previews belong to the opaque private UI. The actual captured-user key/policy and owned receiver/modal/input/fresh-clear source are integrated locally; production parked tuple input remains unregistered. Prior failures and unknown causes remain evidence. Independent combined-source/full-native/all-four/merged-main/install proof and normal activation remain pending; see [privacy-restore.md](privacy-restore.md) |
+| Privacy controller adapters | Private adapters around the session's original verification, context and failure controllers for a privacy conversation; selected only by the unmerged interactive privacy route | Local, unmerged, not installed. The builder makes the same controllers from the user's settings as for any session and installs them on the agent behind adapters of the conversation; the earlier refusal of a selection that requests these three parts is gone, and a controller that cannot be installed that way refuses the build. The conversation accepts its agent only with the very adapters it holds, each with its own source. The accepted-input callback reaches the original controller only for the agent's own event of that input, in its callback and once, and the original sees that one message and its own keys of the custom state; only those keys are written. The context section is sent as parts: fixed framing, an input quoted from the source of its accepted-input event, a todo from the call that stored it, a file path from the call of a committed reply; digests and sizes of recorded text are not sent. The failure advisory and the verification note are fixed text. A check the model asks for runs with the real protected review, commands and result, and the model is given the result's view. A check the verification controller schedules gets a source only as the agent's own event for the installed completion adapter and the one check the original controller directed, and runs as that schedule. A stop by that controller is recorded with the agent's own event for its fixed note; the turn returns the controller's refusal and, like every turn that returns an error, ends the conversation. A manual compaction reaches the original controller's callback only for the agent's own event of that replacement, once, on its own keys, before the final save; an automatic one goes through the original wrapper. Shown in built sessions on all four wires for each of these, on the framework commit that issues those events. An earlier base without them is recorded with its failing fixture in [privacy-hooks.md](privacy-hooks.md). Key, policy, actual terminal receiver/modal/choice/shutdown ownership, default-on selection and native or hosted validation remain separate gates. See [privacy-provenance.md](privacy-provenance.md#controller-adapters) |
+| Privacy file-consumer correction | Local, unmerged, not installed or normally selected | Actual selected-policy returns bind the planned source, full before/after images and every changed range, with a private bounded JSON value index and concrete contact-data validators. Unix creation uses the policy-retained parent; updates recheck the held regular/single-link/effective-user/non-executable file against that parent's no-follow name immediately before writing. Non-Unix effects refuse in this slice; there the private terminal is not entered and the application's own policy names no file, as the November 25 section at the end of this page records with its case inventory. Ordinary activity keeps model arguments; decoded previews go only to the registered opaque UI. Actual A provider/UI/entry/clear, root identity, approved test-only KDF isolation and scheduling helpers are integrated in source. Legacy format/parked-reader and unused lexical observation facades are test-only. Independent combined-source/full-native/full-suite/size proof and activation remain pending; see [privacy-provenance.md](privacy-provenance.md) |
 | Runtime measurement | Implemented advisory benchmark | `gadget-validation.md`; three-OS runtime measurements are not live-model quality |
 | Headless v1 specification | Accepted and merged as #95; #97 clarification explicitly accepted November1 | R1–R7 and126 baseline reference cases preserved;70 accepted admission cases/196 total are conformance, not real CLI enforcement |
 | Legacy `-m` safety fixes | Merged as #96 | Non-TTY approval input denies without reading; child/compaction deltas silent; output-closed guards prevent post-failure dispatch |
@@ -211,6 +227,16 @@ Legacy `-m` retains its argument input, configured permissions/storage and exit
 behavior. Main content goes to stdout and activity to stderr; non-TTY approval
 input denies without reading. It is not an explicit-only unattended execution
 boundary.
+
+`main` awaits one route, chosen by a function that has returned before the
+route runs. The one-shot's future has an allocation of its own, and every
+other route shares another, so the main thread does not hold every route's
+future under a running one-shot. Hosted run 45464728443 at `9b63392` is
+retained as failed: in the gadget mode on Windows the real `craftsman -m`
+child of two approval-gate cases overflowed its main-thread stack
+(0xC00000FD) inside a delegated turn. The change removes what `main` owned.
+It is not shown to be the whole cause, and no Windows run has been made.
+See [CLI routes](cli-routes.md).
 
 Redirected one-shot output captures stdout as an owned native pipe/file
 before agent construction. Main, delegated and compaction providers retain
@@ -497,3 +523,248 @@ general effect of the switch remain not established. PR #32 is merged as
 independent audit at `dffddeae`: all four contexts, every mandatory step and
 both native modes, with both original Windows parents passing again. It covers
 this foundation only. Normal privacy remains off.
+
+
+## Core event corrections — November 22, 2026
+
+The local correction branch combines the immutable transport/source-part slices
+with framework-issued events. It remains unmerged, uninstalled and unselected;
+the installed `a903af65` guard is separate. No frontend, key/policy, restoration
+or normal privacy selection is enabled by this work.
+
+Typed turn, resume and idle-compaction entries acquire activity before comparing
+state and source. Internal checks use explicit state-then-source guard scopes.
+Every retained witness binds the complete immutable message, including role,
+call id and error status, to its actual event. Public state, a caller message,
+equal content, a label, a digest or an ordinal cannot issue one.
+
+A private fact owner keeps actual provider returns, received replies and usage,
+terminal calls and outcomes, and final-chain outcomes before fallible source or
+review work. Returned data is not a transport, origin, save, permission or billing
+certificate. Selected failure closes future required privacy work, retains real
+facts and accepted input, and follows the actual journal/final-save path; a save
+failure remains a failure and is not retried as proof. Selected cancellation
+seals new steering and keeps already accepted originals and sources through real
+call balancing and final save. The unselected paths keep their existing behavior.
+
+A parked-call witness and a private registered human-input owner replace the
+caller action factory. The actual absent, denied, approved, Always or edited
+choice and raw edited bytes are retained. Every `ApproveEdited` remains human
+origin even when its JSON equals model bytes, and is admitted before effects.
+An issued alias in raw edited input refuses. An Always permission update happens
+only after the sealed decision passes its source/admission checks. Inline
+approval-gate and `ask_user` producer adapters remain separate, unfinished work.
+
+Each post-chain terminal invocation gets its own call, decision and source
+witness, with a synchronous live check immediately before the actual tool poll.
+That source check grants no tool permission. Completed tool and chain facts are
+kept independently of whether any model view can be published.
+
+A separate pre-review witness is now issued before the actual approval chain.
+It stays linked to a parked call and the later terminals, with the selecting
+host's source-bound preview digest carried unchanged to the registered human
+callback. An inline delegated gate can attach its private actual decision once
+before the inner tool runs; that entry closes at terminal return/drop. The
+generic annotation and digest grant no authority. Concrete derived-file and
+automatic-policy adapters must still validate their private real producers,
+exact preview, final call, source and destination before effects.
+
+Selected returns seal new input, retain accepted originals before yielding,
+and sample the real stop owner under the admission guard. A new selected tool
+gets a stop check immediately before its first poll; no running native owner is
+force-dropped. Source failures run the actual unfinished turn-end handler and
+final save, with no replay of an already attempted handler or failed save.
+Idle compaction keeps its separate ending. Private error observations retain
+the real entry/handler/save failures, including in actual child task returns;
+they do not serialize a provenance certificate or claim success. The restricted
+adverse callback/budget scenarios are still unexecuted and uninspected.
+
+Completion helpers now retain the exact actual host-scheduled carrier commit
+and link it into the planned and final invocation. The source hook defaults to
+refusal; completion and boundary policies and the configured control adapters
+remain unsupported on the selected path. A host event is neither model origin
+nor tool permission, and the installed original controller still owns its real
+callbacks, commands and results.
+
+The one 45-second admission-entry clock is checked after actual vault return,
+after guard work and immediately before node release. Completed map facts
+survive late refusal. The 16-slot admission bound, vault five-second/native busy
+limits and original terminal bounds remain; queued time does not prove blocking
+worker quiescence. Final pinned-source confirmation requires available before
+and after modified timestamps and relative no-follow identities from the
+retained root. Same-user rename/race limits remain observations, not containment.
+
+Compaction keeps a distinct actual working-state stage; its retained witness is
+issued only when that stage really becomes canonical state. The summarizer's
+unrecorded host instruction has a request-input witness, not a retained commit.
+Compaction uses an explicit source-derived summarizer request. Unchanged kept
+native replies retain their original items after movement, together with the
+original client/request context. The summarizer sees committed text/calls in its
+explicit projection; opaque originals stay in their private source receipts.
+A changed native reply refuses later replay instead of silently stripping items.
+A policy requiring opaque inspectability still refuses those wires at startup.
+Configured controls now have private application adapters (see the
+"Privacy controller adapters" row), including the scheduled check, its stop
+note and compaction. Real frontend and inline-human adapters remain
+incomplete.
+
+Validation belongs to its exact source head in
+`target/verification/privacy-core-frontier-corrections`. Independent source
+review, combined-source native/hosted proof and separate merged-main validation
+remain gates before integration/install. The restricted private MAIN
+callback/budget-boundary, equivalent and close-between-retry scenarios remain
+UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
+The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.
+
+The current unmerged file consumer adds an internal borrowed before-image
+filter after the actual source-bound target precheck. It reuses the compiled
+contact whole-object/value checks before private restoration and selector
+miss/count answers; unsupported/malformed/invalid-UTF-8/over-limit captures
+return uniform `NoRule`. Final image/range, actual captured-user policy,
+retained effect, sealed decision and ordinary permission remain required.
+No new policy request or authority constructor is introduced. The main
+missing-producer release uses the existing tracked identity rule and has static
+review only. Combined linked-size, full17, independent source, all-four hosted
+and merged-main/install gates remain open; neither the preserved incomplete
+draft nor older passing fixtures supply that proof.
+
+The later private startup composition has scoped independent four-owner source
+acceptance at9de. Its bounded ordinary gadget I/O layout correction measured
+16,749,644 bytes of unwind data, 27,572 below the unchanged16MiB limit at445fbfb;
+source/consuming12 and key9 pass in each native mode with no current warnings.
+The producer, key-handle ownership, full builder body and c33 behavior remain
+unchanged. Earlier excesses stay rejected evidence. This measured room does
+not certify future routing, and the composition's broad full17/all-four/native/
+merged-main/install gates remain separate. User-facing startup/activation is
+still unwired; original records remain plaintext outside the encrypted vault.
+
+## Windows native correction of the privacy branch — November 25, 2026
+
+Hosted run 45464728443 (attempt 1) at `9b63392` is retained as failed. Nothing
+in this section has run on Windows: every statement about Windows below is
+read from source or from that run's logs, and the checks named at the end ran
+on macOS only.
+
+**What failed on Windows.** In the core mode 26 cases of this branch failed,
+each at the open of its fixture directory with "Access is denied" (code 5): 21
+in `privacy_session/restoration_tests.rs`, 4 in
+`privacy_session/inline_release_tests.rs` and the built-session case of
+`agent_privacy_view_tests.rs`. In the gadget mode the same 26 failed with
+three detector fixtures (`pinned_hook`, `restore_wires`, `view_wires`), whose
+marked child refused in the compiler environment for want of `ProgramData`.
+Two approval-gate cases of `tests/loop_test.rs` failed there as well; they are
+recorded in section 4. The three Windows builds reported 30, 40 and 43 warning
+lines against 4, 5 and 8 before, 33 distinct new ones, every one an unused
+item of this branch.
+
+**Platform scope.** In this version the interactive privacy start and the
+restoration into files exist on Unix only. On Windows the private terminal is
+not entered (`SecureStorageUnsupported`) and the application's own policy
+names no file, so a planned write has no rule (`NoRule`) before any private
+read or display. The ordinary file tools are unchanged on every target. Under
+that sits the source condition: the effect request of a derived operation and
+its retained parent are issued on Unix alone (`privacy_session/file_data.rs`,
+`FileEffectRequest::issued` and `bind_retained_parent`), and elsewhere return
+the unsupported refusal before a file is created, opened for the write or
+compared. That refusal is reached only behind a fixture policy; it is core
+proof, not something a person on Windows is shown.
+
+**Fixture directories.** Four fixture helpers opened their directory with the
+Unix flags and nothing on Windows, which the system refuses for a directory.
+They now open it there for reading with backup semantics, with a link in its
+place opened itself, and then require by handle that it is a directory and not
+a link. The fixture policies of the restoration and built-session cases
+compare the held directory with the named parent on Windows too, by volume
+serial number and file index of two handles, which is the rule the vault uses
+for its own directory; before, they accepted any parent off Unix. The fixture
+policy of the four-wire detector child names no file off Unix, as the
+application's own policy does. No production open, permission or path was
+changed.
+
+**Case inventory.** The four fixture files do not exist at main `a903af6`, so
+no baseline case carries a new condition.
+
+- *Kept on every target, 14 of the 26.* The two display cases
+  (`a_person_reads_the_values_…`, `a_streamed_reply_is_held_…`); the guard
+  cases `what_cannot_be_derived_or_was_not_approved_…`,
+  `nothing_but_the_session_keeps_the_users_policy_…`,
+  `an_absent_or_unparsable_answer_…`, `supported_data_guard_rejects_…`,
+  `undeclared_private_selectors_…`, `actual_declared_targets_…`,
+  `declared_unsupported_before_images_…`,
+  `inline_release::actual_absent_delegated_channel_…` and
+  `inline_release::a_decision_that_is_not_an_allow_…`; the two cases in which
+  a person's own arguments run (`arguments_a_person_edited_…`,
+  `registered_inline_raw_edits_…`), whose write is the file tool's ordinary
+  one and not the private effect (`file_view.rs`, `call_with_view`); and
+  `actual_builder_runs_a_selected_privacy_conversation_on_the_chat_wire`,
+  inside whose fixture only the three scenarios that assert a written file
+  (`restoration`, `delegated_restoration`, `automatic_policy`) are Unix.
+- *Unix, 12 of the 26, and one detector case.* Each asserts a written file or
+  a refusal that sits after the effect request: `a_created_file_holds_…`,
+  `an_edit_is_shown_…`, `a_file_that_changed_after_it_was_shown_…`,
+  `a_parked_write_runs_…`, `a_derived_write_runs_inside_the_file_tool_…`,
+  `a_delegated_agents_write_…`, `a_gates_automatic_policy_…`,
+  `registered_main_gate_keeps_…`, `supported_json_replace_all_…`,
+  `inline_release::an_allowed_operation_is_kept_…`, and two guard cases
+  whose body first writes a file as a control,
+  `the_decision_of_another_operation_approves_nothing_…` and
+  `inline_release::a_second_or_foreign_receive_ends_nothing_…`. The detector
+  case is `four_wires_restore_a_reply_for_a_person_and_real_content_into_a_file`.
+  Every name, body, assertion and bound is unchanged.
+- *New, compiled where the target is not Unix, 9 cases and one scenario.*
+  - `a_reviewed_and_approved_write_or_edit_is_refused_unsupported_and_no_file_is_touched`:
+    a create, an edit and a file rewritten after the approval. The person
+    saw the real content, the file tool ran, its answer is the refusal, the
+    call keeps the placeholder and no request holds a value.
+  - `the_decision_of_a_refused_operation_approves_nothing_whatever_the_calls_id`
+    and
+    `inline_release::a_second_or_foreign_receive_ends_nothing_before_the_allowed_write_is_refused`:
+    the guard half of the two control cases.
+  - `a_gates_automatic_policy_decides_on_what_would_be_written_and_an_allowed_write_is_refused`.
+  - `inline_release::an_allowed_operation_is_kept_until_the_file_tool_has_refused_it_unsupported`.
+  - `four_wires_restore_a_reply_for_a_person_and_refuse_a_file_write_without_a_rule`:
+    the restored reply on each wire, and the root and delegated writes
+    refused without a rule.
+  - `a_parked_write_needs_a_shown_review_and_an_approved_one_is_refused_unsupported`:
+    an approval from a reader that showed nothing is refused, and one from
+    a reader that showed the operation counts and ends in the refusal at
+    the file.
+  - `a_delegated_agents_write_is_decided_by_its_own_gate_and_an_allowed_one_is_refused_unsupported`:
+    the delegated agent's own gate with an approval, a refusal by the
+    person, no way to ask, no rule, the automatic policy and an ordinary
+    write.
+  - `registered_main_gate_refusals_leave_the_legacy_prompt_unasked_and_save_the_record`:
+    the three rounds of the registered main gate that write no file.
+  - The built-session fixture runs
+    `restoration_refused_where_no_file_effect_exists` there.
+- *Guards of the Unix cases.* Every guard half of a Unix case has a case
+  elsewhere. The last three of the new cases were added after the
+  exact-source review of the integrated candidate found three guards
+  without one: the check of a person's approval of a parked call, a
+  person's refusal at a delegated agent's own gate, and the legacy prompt
+  that the registered main gate leaves unasked.
+
+On Unix the unit-test binaries list the same cases as before and one more:
+2,115 in the core mode, and 2,463 in the gadget mode against 2,462.
+
+**Detector fixtures.** The three fixtures that build the detector in a marked
+child are registered so that the machine-wide setup state is transported to
+that child, each for its one building mode. The predicate stays closed over all five
+supervisors: exactly one registered helper, once, with exactly one marker of
+its own, and nothing of another. The earlier case that pins the first two is
+unchanged, and a new one pins the three with their unselected, inexact,
+crossed and duplicate forms. The child, its environment and its bounds are
+unchanged.
+
+**Warnings.** Each of the 33 items is read only by the owned private
+terminal, which is compiled on Unix, or by Unix cases, and now carries the
+condition of its real users. No allow attribute or lint setting was added and
+the 17 earlier Windows warnings are untouched. In `file_view.rs` the two
+regions the source review could not read are not changed.
+
+**Measured on macOS.** Formatting and the six type-checks of the three builds
+report no warning. The 25 file cases, the built-session case, the two
+supervisor cases and the four-wire detector case pass. With the change of
+section 4 integrated, the gadget-mode unit binary's unwind section is
+16,776,360 bytes, 856 under the limit. A full local run, the hosted run on
+four platforms and independent review remain before integration.

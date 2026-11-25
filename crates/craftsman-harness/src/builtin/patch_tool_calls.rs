@@ -1,7 +1,16 @@
 use crate::error::AgentError;
 use crate::middleware::{AgentMiddleware, Flow};
+use crate::provenance::{TrackedReply, ViewSupport};
 use crate::state::{AgentState, Msg};
 use async_trait::async_trait;
+
+/// The repair of one string-encoded argument value.
+fn repaired(raw: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({ "_raw": raw }))
+}
 
 /// Repairs malformed tool-call args on the last assistant message
 /// (string-encoded JSON → object; garbage → {} with `_raw` preserved).
@@ -17,12 +26,36 @@ impl AgentMiddleware for PatchToolCallsMiddleware {
         if let Some(Msg::Assistant { tool_calls, .. }) = st.messages.last_mut() {
             for tc in tool_calls.iter_mut() {
                 if let serde_json::Value::String(raw) = &tc.args {
-                    tc.args = serde_json::from_str::<serde_json::Value>(raw)
-                        .ok()
-                        .filter(|v| v.is_object())
-                        .unwrap_or_else(|| serde_json::json!({ "_raw": raw }));
+                    tc.args = repaired(raw);
                 }
             }
+        }
+        Ok(Flow::Proceed)
+    }
+
+    /// The same repair on an agent with a source view. It changes a received
+    /// reply, so it goes through the tracked review.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn review_model_with_view(
+        &self,
+        reply: &mut TrackedReply<'_>,
+    ) -> Result<Flow, AgentError> {
+        let repairs: Vec<(usize, serde_json::Value)> = match reply.message() {
+            Msg::Assistant { tool_calls, .. } => tool_calls
+                .iter()
+                .enumerate()
+                .filter_map(|(index, call)| match &call.args {
+                    serde_json::Value::String(raw) => Some((index, repaired(raw))),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for (index, args) in repairs {
+            reply.replace_call_arguments(index, args)?;
         }
         Ok(Flow::Proceed)
     }

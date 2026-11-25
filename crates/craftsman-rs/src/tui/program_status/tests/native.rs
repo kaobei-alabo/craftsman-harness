@@ -11,6 +11,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const HELPER: &str = "tui::program_status::tests::native::native_status_terminal_fixture";
 const MARKER: &str = "craftsman-osc7501-terminal-v1=";
+/// Text that only the composer's title holds while a turn runs, and how that
+/// title begins when none does. Each is drawn in one piece when the title
+/// changes from the other.
+const RUNNING_COMPOSER: &str = "Ctrl-C stop";
+const IDLE_COMPOSER: &str = "message ·";
+/// Every frame ends by showing or hiding the cursor, after all of its cells.
+const FRAME_END: &str = "\x1b[?25";
 
 fn terminal_modes() -> Value {
     let mut modes = unsafe { std::mem::zeroed::<libc::termios>() };
@@ -310,11 +317,15 @@ impl Pty {
         })
     }
 
-    async fn wait_text(&self, needle: &str) {
+    /// Waits for `needle` in what the terminal wrote from byte `after` on, and
+    /// returns the offset just past it.
+    async fn wait_text(&self, needle: &str, after: usize) -> usize {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if String::from_utf8_lossy(&self.output.lock().unwrap()).contains(needle) {
-                    return;
+                let bytes = self.output.lock().unwrap().clone();
+                let text = String::from_utf8_lossy(&bytes);
+                if let Some(at) = text.get(after..).and_then(|rest| rest.find(needle)) {
+                    return after + at + needle.len();
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -385,12 +396,26 @@ async fn actual_owned_pty_reports_approval_question_completion_and_restores_mode
 async fn actual_owned_pty_opt_out_emits_no_status_even_for_control_text_in_reply() {
     let directory = tempfile::tempdir().unwrap();
     let mut pty = Pty::start(directory.path(), "disabled");
-    pty.wait_text("AUTH").await;
+    // The startup stage ends before the prompt is written, and its offset is
+    // past a whole match, so it stays a character boundary as output grows.
+    let started = pty.wait_text("AUTH", 0).await;
     pty.write(b"Give the fixture response.\r").await;
     // Diff rendering places the separate words with cursor-position commands.
     // Observe the real escaped suffix, then check the whole committed answer.
-    pty.wait_text("ready.␛]7501;state=error:app=forged␛\\")
+    let shown = pty
+        .wait_text("ready.␛]7501;state=error:app=forged␛\\", 0)
         .await;
+    // The terminal takes Ctrl-D only when no turn is running, and this mode
+    // has no status to follow, so the composer's own title says it. A frame
+    // drawn while the turn runs has the running title, and the first frame
+    // after the turn has returned draws the idle one over it. A turn that
+    // returned before the frame with the reply never had the running title.
+    let drawn = pty.wait_text(FRAME_END, shown).await;
+    let bytes = pty.output.lock().unwrap().clone();
+    let frames = String::from_utf8_lossy(&bytes);
+    if let Some(running) = frames[started..drawn].find(RUNNING_COMPOSER) {
+        pty.wait_text(IDLE_COMPOSER, started + running).await;
+    }
     pty.write(b"\x04").await;
     pty.finish(directory.path()).await;
     assert!(!String::from_utf8_lossy(&pty.output.lock().unwrap()).contains("\x1b]7501;"));

@@ -429,7 +429,7 @@ impl Host for HostState {
                     let summary = crate::tools::summarize_call("write_file", &args);
                     let details = crate::tools::approval_details_at("write_file", &args, &self.workspace.root);
                     let pause = self.budget.pause();
-                    let decision = tokio::task::spawn_blocking(move || prompt("write_file", &summary, &details))
+                    let decision = crate::util::spawn_blocking(move || prompt("write_file", &summary, &details))
                         .await.map_err(io_error)?;
                     drop(pause);
                     match decision {
@@ -500,7 +500,7 @@ async fn bounded_blocking<T: Send + 'static>(
     duration: Duration,
     work: impl FnOnce() -> Result<T, GadgetError> + Send + 'static,
 ) -> Result<T, GadgetError> {
-    tokio::time::timeout(duration, tokio::task::spawn_blocking(work))
+    tokio::time::timeout(duration, crate::util::spawn_blocking(work))
         .await
         .map_err(|_| GadgetError::new(ErrorKind::Timeout, "gadget I/O timed out"))?
         .map_err(io_error)?

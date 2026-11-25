@@ -24,6 +24,10 @@ pub(super) struct TerminalGuard {
 
 struct TerminalOwner {
     mouse: bool,
+    // Capture that the private terminal switches on after entry: its password
+    // popup must first be the only raw reader. True while that capture may be
+    // on; restoration then attempts the disable.
+    late_mouse: AtomicBool,
     restored: AtomicBool,
     program_status: Mutex<Option<Reporter>>,
     #[cfg(unix)]
@@ -63,12 +67,32 @@ impl UnixTerminalMode {
 }
 
 impl TerminalGuard {
+    /// Secret input uses the descriptor retained before raw-mode entry. It is
+    /// consumed only before the normal event reader starts, never by a second
+    /// reader racing the composer or approval UI.
+    #[cfg(unix)]
+    pub(super) fn retained_secret_input(&self) -> io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::AsRawFd;
+        if self.owner.restored.load(Ordering::Acquire) {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let mut actual = unsafe { std::mem::zeroed::<libc::termios>() };
+        if unsafe { libc::tcgetattr(self.owner.original.descriptor.as_raw_fd(), &mut actual) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if actual.c_lflag & (libc::ECHO | libc::ECHONL | libc::ICANON) != 0 {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        self.owner.original.descriptor.try_clone()
+    }
+
     pub(super) fn enter(mouse: bool) -> anyhow::Result<Self> {
         #[cfg(unix)]
         let original = UnixTerminalMode::capture()?;
         enable_raw_mode()?;
         let owner = Arc::new(TerminalOwner {
             mouse,
+            late_mouse: AtomicBool::new(false),
             restored: AtomicBool::new(false),
             program_status: Mutex::new(None),
             #[cfg(unix)]
@@ -89,6 +113,37 @@ impl TerminalGuard {
             return Err(error.into());
         }
         Ok(Self { owner })
+    }
+
+    /// The private terminal's mouse capture, outside its password prompts.
+    /// Fixed control sequences only; a restored terminal is left alone.
+    /// `late_mouse` means that capture may be on: it is set before the first
+    /// byte of an enable is written and cleared only after a disable was
+    /// written and flushed, so an incomplete write in either direction leaves
+    /// it set and restoration still attempts the disable.
+    #[cfg(unix)]
+    pub(super) fn capture_mouse(&self, enabled: bool) -> io::Result<()> {
+        // The same queued commands as entry and restoration use.
+        use crossterm::QueueableCommand;
+        use std::io::Write;
+        if self.owner.restored.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut output = stdout();
+        if enabled {
+            if self.owner.late_mouse.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            output.queue(EnableMouseCapture)?;
+            return output.flush();
+        }
+        if !self.owner.late_mouse.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        output.queue(DisableMouseCapture)?;
+        output.flush()?;
+        self.owner.late_mouse.store(false, Ordering::Release);
+        Ok(())
     }
 
     pub(super) fn enable_program_status(&self, enabled: bool) {
@@ -194,7 +249,7 @@ impl TerminalOwner {
             let _ = reporter.finish(&mut stdout().lock(), Status::Error);
         }
         let _ = disable_raw_mode();
-        if self.mouse {
+        if self.mouse || self.late_mouse.load(Ordering::Acquire) {
             let _ = execute!(
                 stdout(),
                 DisableMouseCapture,

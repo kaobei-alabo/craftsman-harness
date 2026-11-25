@@ -32,6 +32,12 @@ impl AgentMiddleware for HitlPolicyMiddleware {
     fn name(&self) -> &str {
         "hitl_policy"
     }
+
+    /// The gate lets a call through unchanged or suspends the turn before
+    /// the tool runs. It changes nothing the agent records.
+    fn view_support(&self) -> crate::provenance::ViewSupport {
+        crate::provenance::ViewSupport::Preserving
+    }
     async fn around_tool(
         &self,
         call: ToolCall,

@@ -15,6 +15,18 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use zeroize::Zeroizing;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 const MAX_TEXT: usize = 256 * 1024;
 const MAX_RECORDS: usize = 512;
 const MAX_REPLACEMENTS: usize = 4096;
@@ -112,6 +124,58 @@ impl<'a> Restorer<'a> {
         })
     }
 
+    /// The original behind one occurrence of this scope's alias: the alias
+    /// of `record` standing at `range` of `text` as a whole token. The caller
+    /// names the occurrence; this checks it against the live scope's own
+    /// record. `None` when the alias stands there inside a longer token, which
+    /// stays as it is. An occurrence whose text is not that record's alias is
+    /// refused: whoever named it does not hold what it claims.
+    pub fn occurrence(
+        &self,
+        text: &str,
+        range: std::ops::Range<usize>,
+        record: usize,
+    ) -> Result<Option<Zeroizing<String>>> {
+        self.check()?;
+        if text.len() > MAX_TEXT {
+            return self.refuse(RestoreError::Bounds);
+        }
+        let Some(token) = text.get(range.clone()) else {
+            return self.refuse(RestoreError::Input);
+        };
+        let found = self
+            .records
+            .with_host_field(record, |field| {
+                let alias = field.known_alias();
+                if alias.is_empty() || alias.len() > 256 || alias != token {
+                    return Err(RestoreError::Input);
+                }
+                Ok(
+                    token_boundary(text, range.start, range.end, field.category()).then(|| {
+                        Zeroizing::new(field.original_for_validated_host_field().to_owned())
+                    }),
+                )
+            })
+            .map_err(|_| RestoreError::Scope);
+        match found {
+            Ok(found) => self.whole_occurrence(found),
+            Err(error) => self.refuse(error),
+        }
+    }
+
+    fn whole_occurrence(
+        &self,
+        found: Result<Option<Zeroizing<String>>>,
+    ) -> Result<Option<Zeroizing<String>>> {
+        match found {
+            Ok(found) => {
+                self.check()?;
+                Ok(found)
+            }
+            Err(error) => self.refuse(error),
+        }
+    }
+
     /// A restored candidate only. Its callback must not be treated as approval,
     /// read authority, a filesystem CAS, a tool-history mutation or code escaping.
     pub fn file_data(&self, format: FileDataFormat, text: &str) -> Result<FileDataView<'a>> {
@@ -129,7 +193,7 @@ impl<'a> Restorer<'a> {
     }
 
     fn matches(&self, text: &str, reject_ambiguous: bool) -> Result<Vec<Replacement>> {
-        let count = self.records.len().map_err(|_| RestoreError::Scope)?;
+        let count = or_return!(self.records.len(), RestoreError::Scope);
         if text.len() > MAX_TEXT
             || count > MAX_RECORDS
             || text
@@ -234,7 +298,10 @@ impl<'a> Restorer<'a> {
         // Serde admits the complete grammar first. The bounded lexer below
         // preserves every byte outside changed string-value tokens; it does not
         // reserialize numbers, reorder keys or silently merge duplicate keys.
-        serde_json::from_str::<serde_json::Value>(text).map_err(|_| RestoreError::Input)?;
+        or_return!(
+            serde_json::from_str::<serde_json::Value>(text),
+            RestoreError::Input
+        );
         let bytes = text.as_bytes();
         let mut objects: Vec<Option<BTreeSet<[u8; 32]>>> = Vec::new();
         let mut output = Zeroizing::new(String::new());
@@ -279,7 +346,7 @@ impl<'a> Restorer<'a> {
                         following += 1;
                     }
                     let key = bytes.get(following) == Some(&b':');
-                    let count = self.records.len().map_err(|_| RestoreError::Scope)?;
+                    let count = or_return!(self.records.len(), RestoreError::Scope);
                     work = work
                         .checked_add(
                             decoded
@@ -331,6 +398,171 @@ impl<'a> Restorer<'a> {
     }
 }
 
+/// One validated occurrence with the original the live scope gave for it.
+pub struct Restored {
+    pub range: std::ops::Range<usize>,
+    pub original: Zeroizing<String>,
+}
+
+/// `text` with each validated occurrence replaced by its original, within
+/// the bounds of every view of this module. The occurrences are in order
+/// and do not overlap. Everything else stays as it is, alias-shaped tokens
+/// that nobody validated included.
+pub fn display_text(text: &str, restored: &[Restored]) -> Result<Zeroizing<String>> {
+    if text.len() > MAX_TEXT || restored.len() > MAX_REPLACEMENTS {
+        return Err(RestoreError::Bounds);
+    }
+    let mut output = Zeroizing::new(String::new());
+    let mut position = 0;
+    for occurrence in restored {
+        let range = &occurrence.range;
+        if range.start < position || range.end < range.start {
+            return Err(RestoreError::Input);
+        }
+        let between = text.get(position..range.start).ok_or(RestoreError::Input)?;
+        text.get(range.clone()).ok_or(RestoreError::Input)?;
+        push_bounded(&mut output, between)?;
+        push_bounded(&mut output, &occurrence.original)?;
+        position = range.end;
+    }
+    push_bounded(
+        &mut output,
+        text.get(position..).ok_or(RestoreError::Input)?,
+    )?;
+    Ok(output)
+}
+
+/// The candidate content of a file from `text` and its validated
+/// occurrences. Unlike a display, a file takes no alias that nobody
+/// validated: one alias-shaped token outside the occurrences refuses the
+/// whole candidate. A JSON document must be complete; its occurrences must
+/// stand in string values, where each original is encoded as JSON, and its
+/// keys must hold none.
+pub fn file_candidate(
+    format: FileDataFormat,
+    text: &str,
+    restored: &[Restored],
+) -> Result<Zeroizing<String>> {
+    if text.len() > MAX_TEXT || restored.len() > MAX_REPLACEMENTS {
+        return Err(RestoreError::Bounds);
+    }
+    let mut covered = 0;
+    for (start, _) in text.match_indices("pv1-") {
+        while restored
+            .get(covered)
+            .is_some_and(|occurrence| occurrence.range.end <= start)
+        {
+            covered += 1;
+        }
+        if restored
+            .get(covered)
+            .is_none_or(|occurrence| start < occurrence.range.start)
+        {
+            return Err(RestoreError::UnknownAlias);
+        }
+    }
+    match format {
+        FileDataFormat::PlainText => display_text(text, restored),
+        FileDataFormat::JsonDocument => {
+            or_return!(
+                serde_json::from_str::<serde_json::Value>(text),
+                RestoreError::Input
+            );
+            let values = json_value_strings(text)?;
+            let mut encoded = Vec::with_capacity(restored.len());
+            for occurrence in restored {
+                // An occurrence inside the raw text of a string value. An
+                // alias needs no escape, so it stands there as it is.
+                let inside = values.iter().any(|value| {
+                    value.start < occurrence.range.start && occurrence.range.end < value.end
+                });
+                if !inside {
+                    return Err(RestoreError::Input);
+                }
+                let quoted = Zeroizing::new(
+                    serde_json::to_string(occurrence.original.as_str())
+                        .map_err(|_| RestoreError::Input)?,
+                );
+                encoded.push(Restored {
+                    range: occurrence.range.clone(),
+                    original: Zeroizing::new(quoted[1..quoted.len() - 1].to_owned()),
+                });
+            }
+            let candidate = display_text(text, &encoded)?;
+            or_return!(
+                serde_json::from_str::<serde_json::Value>(&candidate),
+                RestoreError::Input
+            );
+            Ok(candidate)
+        }
+    }
+}
+
+/// The raw ranges, quotes included, of every string value of a JSON
+/// document that serde already admitted. A key that looks like an alias, a
+/// repeated key and a document beyond the bounds are refused, as in
+/// [`Restorer::file_data`].
+fn json_value_strings(text: &str) -> Result<Vec<std::ops::Range<usize>>> {
+    let bytes = text.as_bytes();
+    let mut objects: Vec<Option<BTreeSet<[u8; 32]>>> = Vec::new();
+    let mut values = Vec::new();
+    let mut position = 0;
+    let mut strings = 0usize;
+    while position < bytes.len() {
+        match bytes[position] {
+            b'{' | b'[' => {
+                if objects.len() == MAX_JSON_DEPTH {
+                    return Err(RestoreError::Bounds);
+                }
+                objects.push((bytes[position] == b'{').then(BTreeSet::new));
+                position += 1;
+            }
+            b'}' | b']' => {
+                objects.pop();
+                position += 1;
+            }
+            b'"' => {
+                strings += 1;
+                if strings > MAX_JSON_STRINGS {
+                    return Err(RestoreError::Bounds);
+                }
+                let start = position;
+                position += 1;
+                while position < bytes.len() && bytes[position] != b'"' {
+                    position += if bytes[position] == b'\\' { 2 } else { 1 };
+                }
+                if position >= bytes.len() {
+                    return Err(RestoreError::Input);
+                }
+                position += 1;
+                let mut following = position;
+                while bytes.get(following).is_some_and(u8::is_ascii_whitespace) {
+                    following += 1;
+                }
+                if bytes.get(following) == Some(&b':') {
+                    let decoded = Zeroizing::new(
+                        serde_json::from_str::<String>(&text[start..position])
+                            .map_err(|_| RestoreError::Input)?,
+                    );
+                    let Some(Some(keys)) = objects.last_mut() else {
+                        return Err(RestoreError::Input);
+                    };
+                    if !keys.insert(Sha256::digest(decoded.as_bytes()).into()) {
+                        return Err(RestoreError::Input);
+                    }
+                    if decoded.contains("pv1-") {
+                        return Err(RestoreError::UnknownAlias);
+                    }
+                } else {
+                    values.push(start..position);
+                }
+            }
+            _ => position += 1,
+        }
+    }
+    Ok(values)
+}
+
 fn push_bounded(output: &mut String, text: &str) -> Result<()> {
     if output
         .len()
@@ -343,7 +575,11 @@ fn push_bounded(output: &mut String, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn token_boundary(text: &str, start: usize, end: usize, category: Category) -> bool {
+/// Whether `start..end` of `text` stands as a whole token for a placeholder
+/// of `category`. Also the rule by which a retired scope's placeholders are
+/// renamed for a successor: an occurrence that restoration would not read
+/// as a placeholder is not renamed as one.
+pub(crate) fn token_boundary(text: &str, start: usize, end: usize, category: Category) -> bool {
     let previous = text[..start].chars().next_back();
     let next = text[end..].chars().next();
     match category {

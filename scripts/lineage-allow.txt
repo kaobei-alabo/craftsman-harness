@@ -42,7 +42,6 @@ crates/craftsman-rs/src/threads_db.rs:    Python,  # legacy-database migration: 
 # --- config round-trip of legacy keys (compatibility code) ---
 
 # --- Python the interpreter, not lineage ---
-README.md:compatible **Python, JavaScript and TypeScript**  # selected script-runner languages; Python names the interpreter, not the retired client
 docs/gadgets.md:reusable Python and JavaScript/TypeScript scripts  # selected interpreter authoring targets, not project lineage
 docs/runtime-status.md:Python/JavaScript/TypeScript compatibility proof  # current status of the selected interpreter compatibility work
 docs/wasm-script-runner.md:Python  # this feature plan names the Python interpreter, CPython implementation and pure-Python modules

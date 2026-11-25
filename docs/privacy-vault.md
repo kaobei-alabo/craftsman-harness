@@ -2,9 +2,15 @@
 
 `crates/craftsman-rs/src/privacy_vault/` implements private host-data aliases and
 an encrypted **local-only** libSQL/Turso-core vault. This is source and storage
-code, with synthetic native database tests. No CLI, TUI/ACP session, model,
-tool, gadget, hook or unlock flow selects it. Actual keystore authority,
-required-hook enforcement and transport/display/file integration remain unwired.
+code, with synthetic native database tests. The module has no entry of its
+own. On the unmerged privacy branch it is selected only through the key owner:
+by the explicit `craftsman privacy init` command and by the private terminal's
+unlock for the eligible interactive invocation ([privacy-key.md](privacy-key.md),
+[privacy-startup.md](privacy-startup.md)). No ACP session, one-shot run, other
+frontend or installed build selects it. Hook, send, display and file
+integration are described in their own pages. Only this vault is encrypted;
+original messages, tool results, history and checkpoints keep their plaintext
+form.
 
 The proposed production file is `config::config_dir()/privacy-vault.db`. The
 private API takes an explicit absolute host config root; it does not discover
@@ -86,6 +92,12 @@ preserve-in-place policy. They are not automatically restored as UI plaintext.
 Host declarations are not an automatic sensitive-data classifier.
 
 ## Admission, masked text and field records
+
+One thread can have more than one scope over time. A privacy conversation
+that is carried over for a settings change gets a namespace of its own under
+the same thread, so the same original has a different alias there. The vault
+is not asked to translate between them: the host reads the retired scope's
+records once, while it is live, and admits each original into the new scope.
 
 `MappingSession::capture_text()` captures original UTF-8 bytes and an input SHA256
 for the host-only detector. `mask(CapturedText, DetectorReport,

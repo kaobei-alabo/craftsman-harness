@@ -248,6 +248,296 @@ fn doctor_text(cfg: &Config, session: Option<&Session>) -> String {
     rows.join("\n")
 }
 
+/// A read-only listing that waits for its owner. Both terminals answer with
+/// it: the ordinary one where it handles the command, the private one in a
+/// task of its own. It holds only the owner it asks; nothing is changed,
+/// started or sent to a model. `Err` is an error line, `Ok` an ordinary one.
+pub(super) enum Listing {
+    Checkpoints(Arc<crate::workspace_checkpoint::WorkspaceCheckpointManager>),
+    Memories(Arc<crate::store_fs::StoreFs>),
+    Lsp(Arc<crate::lsp::LspManager>),
+    #[cfg(feature = "gadgets")]
+    Gadgets(Arc<crate::gadgets::GadgetRuntime>),
+    /// The diff of this workspace; of the current directory when none is
+    /// given, as the ordinary terminal asks.
+    Diff(Option<std::path::PathBuf>),
+}
+impl Listing {
+    /// The listing that `line` names, with its owner taken from this live
+    /// session and, for the diff, the caller's own captured workspace.
+    /// `None`: the line is not one. An `Err` is what the ordinary terminal
+    /// says when that owner is not there.
+    #[cfg(unix)]
+    pub(super) fn of(
+        line: &str,
+        session: &Session,
+        workspace: &std::path::Path,
+    ) -> Option<Result<Self, &'static str>> {
+        Some(match line {
+            "/checkpoints" => match &session.workspace_checkpoints {
+                Some(workspace) => Ok(Self::Checkpoints(workspace.clone())),
+                None => Err("Workspace checkpointing is unavailable."),
+            },
+            "/memories" => match &session.memories {
+                Some(store) => Ok(Self::Memories(store.clone())),
+                None => Err("(store unavailable)"),
+            },
+            "/lsp" => Ok(Self::Lsp(session.lsp.clone())),
+            #[cfg(feature = "gadgets")]
+            "/gadgets" => match &session.gadgets {
+                Some(runtime) => Ok(Self::Gadgets(runtime.clone())),
+                None => Err("(no gadget runtime in this session)"),
+            },
+            "/diff" => Ok(Self::Diff(Some(workspace.to_path_buf()))),
+            _ => return None,
+        })
+    }
+    pub(super) async fn text(self) -> Result<String, String> {
+        match self {
+            Self::Checkpoints(workspace) => match workspace.list().await {
+                Ok(checkpoints) if checkpoints.is_empty() => {
+                    Ok("(no workspace checkpoints)".to_string())
+                }
+                Ok(checkpoints) => Ok(checkpoints
+                    .into_iter()
+                    .map(|checkpoint| {
+                        format!(
+                            "{}  turn {}  {}  {} file(s){}
+  {}",
+                            checkpoint.id,
+                            checkpoint.turn_seq,
+                            checkpoint_age(checkpoint.created),
+                            checkpoint.file_count,
+                            if checkpoint.partial {
+                                " · partial"
+                            } else {
+                                ""
+                            },
+                            checkpoint.summary
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(
+                        "
+",
+                    )),
+                Err(error) => Err(format!("Could not list checkpoints: {error}")),
+            },
+            Self::Memories(store) => {
+                use craftsman_harness::Backend;
+                match store.ls("/memories/").await {
+                    Ok(files) if files.is_empty() => Ok("(no memories yet)".to_string()),
+                    Ok(files) => Ok(files
+                        .into_iter()
+                        .map(|file| format!("  {}", file.path))
+                        .collect::<Vec<_>>()
+                        .join("\n")),
+                    Err(error) => Ok(format!("could not list memories: {error}")),
+                }
+            }
+            Self::Lsp(lsp) => {
+                let statuses = lsp.statuses().await;
+                Ok(statuses
+                    .into_iter()
+                    .map(|status| {
+                        format!(
+                            "{} · {} · .{} · {}",
+                            status.name,
+                            status.command,
+                            status.extensions.join(" ."),
+                            status.state
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(
+                        "
+",
+                    ))
+            }
+            #[cfg(feature = "gadgets")]
+            Self::Gadgets(runtime) => match runtime.list().await {
+                Ok(gadgets) if gadgets.is_empty() => Ok("(no gadgets installed)".to_string()),
+                Ok(gadgets) => Ok(gadgets
+                    .into_iter()
+                    .map(|g| {
+                        format!(
+                            "{} {} · {} · {}\n  capabilities: {}{}{}",
+                            g.id,
+                            g.version,
+                            g.status,
+                            g.source.display(),
+                            serde_json::to_string(&g.capabilities).unwrap(),
+                            g.error.map(|e| format!("\n  {e}")).unwrap_or_default(),
+                            g.last_error
+                                .map(|e| format!("\n  last error: {e}"))
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")),
+                Err(error) => Ok(format!("could not list gadgets: {error}")),
+            },
+            Self::Diff(workspace) => crate::util::spawn_blocking(move || match workspace {
+                Some(workspace) => crate::workspace_diff::workspace_diff_at(&workspace),
+                None => crate::workspace_diff::workspace_diff(),
+            })
+            .await
+            .map_err(|error| format!("Unable to show workspace diff: {error}")),
+        }
+    }
+}
+
+/// The configured MCP servers of a session and the ones that failed.
+fn mcp_text(session: &Session) -> String {
+    let mut lines = session
+        .mcp
+        .iter()
+        .map(|server| {
+            format!(
+                "{} · {} tool(s) · {}",
+                server.name, server.tools, server.url
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.extend(
+        session
+            .mcp_errors
+            .iter()
+            .map(|(server, error)| format!("{server} · unavailable: {error}")),
+    );
+    if lines.is_empty() {
+        "(no MCP servers)".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+/// The agent picker. Choosing an entry is a settings change, which the
+/// frontend that showed it performs or refuses.
+fn show_agents_modal(cfg: &Config, app: &mut App) {
+    let mut agents = crate::agents::list_agents();
+    if !agents.iter().any(|name| name == &cfg.agent) {
+        agents.push(cfg.agent.clone());
+        agents.sort();
+    }
+    let selected = agents
+        .iter()
+        .position(|name| name == &cfg.agent)
+        .unwrap_or_default();
+    app.modal = Some(Modal::Selection(SelectionModal {
+        title: "Select agent".to_string(),
+        items: agents
+            .into_iter()
+            .map(|name| SelectionItem {
+                detail: if name == cfg.agent {
+                    "current".to_string()
+                } else {
+                    String::new()
+                },
+                enter_action: Some(AppAction::SelectAgent(name.clone())),
+                delete_action: None,
+                label: name,
+            })
+            .collect(),
+        selected,
+        hint: "↑/↓ select · Enter switch · Esc close · /agents <name> creates".to_string(),
+    }));
+    app.dirty = true;
+}
+
+/// The local skills of the current workspace, to browse.
+fn show_skills(cfg: &Config, app: &mut App) {
+    match std::env::current_dir() {
+        Ok(cwd) => {
+            let skills = crate::skills::discover_at(&cfg.agent, &cwd);
+            if skills.is_empty() {
+                app.push("(no local skills found)");
+            } else {
+                show_skills_modal(app, skills);
+            }
+        }
+        Err(_) => app.push_error("Could not determine the workspace for local skills."),
+    }
+}
+
+/// The local, read-only commands of `handle_slash`, for a frontend that owns
+/// its session itself. The same text owners answer; nothing is saved, started
+/// or sent to a model, and the configuration is only read. `false`: the line
+/// is not one of them.
+#[cfg(unix)]
+pub(super) fn handle_local(
+    line: &str,
+    cfg: &Config,
+    session: Option<&Session>,
+    approval: &Arc<Mutex<ApprovalState>>,
+    app: &mut App,
+) -> bool {
+    let mut parts = line.split_whitespace();
+    let command = parts.next().unwrap_or_default();
+    let bare = parts.next().is_none();
+    match command {
+        "/help" => {
+            let text = help_text(app);
+            app.push(text);
+        }
+        // Inspection only. A task is cancelled, an agent chosen and a task
+        // messaged by the frontend that owns the session, or not at all.
+        "/tasks" if bare => match session {
+            Some(session) => show_tasks_modal(app, session.registry.details()),
+            None => app.push("(no background tasks)"),
+        },
+        "/mcp" => match session {
+            Some(session) => app.push(mcp_text(session)),
+            None => app.push("no agent yet"),
+        },
+        "/skills" => show_skills(cfg, app),
+        "/agents" if bare => show_agents_modal(cfg, app),
+        "/status" => {
+            let text = status_text(cfg, session, approval, app);
+            app.push(text);
+        }
+        "/doctor" => app.push(doctor_text(cfg, session)),
+        "/config" => app.push(config_text(cfg, session)),
+        "/version" => app.push(format!("craftsman {}", env!("CARGO_PKG_VERSION"))),
+        "/tokens" => match session {
+            Some(session) => {
+                let (input, output) = *session.usage.lock().unwrap();
+                app.push(format!("tokens: ↑{input} ↓{output}"));
+            }
+            None => app.push("no agent yet"),
+        },
+        "/queue" => show_queue_modal(app),
+        "/copy" => app.copy_requested = true,
+        "/editor" => {
+            app.modal = Some(Modal::Editor(EditorModal {
+                text: app.input.clone(),
+            }));
+            app.dirty = true;
+        }
+        "/context" => match session {
+            Some(session) => {
+                let state = session.agent.state.lock().unwrap();
+                let window = match cfg.model.as_deref() {
+                    Some(model) => cfg.model_context_window(model),
+                    None => None,
+                };
+                let report = match &session.controls {
+                    Some(controls) => controls.context.render(&state, window),
+                    None => crate::context_compiler::render_disabled(&state, window),
+                };
+                drop(state);
+                match report {
+                    Ok(report) => app.push(report),
+                    Err(error) => app.push_error(error.to_string()),
+                }
+            }
+            None => app.push("Context inspector: the local session is not initialized yet."),
+        },
+        _ => return false,
+    }
+    true
+}
+
 pub(super) async fn handle_slash(
     line: &str,
     cfg: &mut Config,
@@ -299,10 +589,8 @@ pub(super) async fn handle_slash(
         "/diff" => {
             app.push_kind(TranscriptKind::Activity, "Generating workspace diff…");
             let tx = slot.bridge.tx.clone();
-            tokio::spawn(async move {
-                let text = tokio::task::spawn_blocking(crate::workspace_diff::workspace_diff)
-                    .await
-                    .unwrap_or_else(|error| format!("Unable to show workspace diff: {error}"));
+            crate::util::spawn_unit(async move {
+                let (Ok(text) | Err(text)) = Listing::Diff(None).text().await;
                 let _ = tx.send(UiEvent::Activity(text));
             });
         }
@@ -316,34 +604,9 @@ pub(super) async fn handle_slash(
                 app.push("Workspace checkpointing is unavailable.");
                 return false;
             };
-            match workspace.list().await {
-                Ok(checkpoints) if checkpoints.is_empty() => app.push("(no workspace checkpoints)"),
-                Ok(checkpoints) => app.push(
-                    checkpoints
-                        .into_iter()
-                        .map(|checkpoint| {
-                            format!(
-                                "{}  turn {}  {}  {} file(s){}
-  {}",
-                                checkpoint.id,
-                                checkpoint.turn_seq,
-                                checkpoint_age(checkpoint.created),
-                                checkpoint.file_count,
-                                if checkpoint.partial {
-                                    " · partial"
-                                } else {
-                                    ""
-                                },
-                                checkpoint.summary
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(
-                            "
-",
-                        ),
-                ),
-                Err(error) => app.push_error(format!("Could not list checkpoints: {error}")),
+            match Listing::Checkpoints(workspace).text().await {
+                Ok(text) => app.push(text),
+                Err(error) => app.push_error(error),
             }
         }
         "/rewind" => {
@@ -465,17 +728,9 @@ Re-run with --force only if overwriting those newer changes is intended.",
                 app.push("(store unavailable)");
                 return false;
             };
-            use craftsman_harness::Backend;
-            match store.ls("/memories/").await {
-                Ok(files) if files.is_empty() => app.push("(no memories yet)"),
-                Ok(files) => app.push(
-                    files
-                        .into_iter()
-                        .map(|file| format!("  {}", file.path))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                Err(error) => app.push(format!("could not list memories: {error}")),
+            let listing = Listing::Memories(store.clone()).text().await;
+            match listing {
+                Ok(text) | Err(text) => app.push(text),
             }
         }
         "/clear" => match slot.get().await.as_mut() {
@@ -500,35 +755,7 @@ Re-run with --force only if overwriting those newer changes is intended.",
         }
         "/agents" => {
             let Some(name) = parts.next() else {
-                let mut agents = crate::agents::list_agents();
-                if !agents.iter().any(|name| name == &cfg.agent) {
-                    agents.push(cfg.agent.clone());
-                    agents.sort();
-                }
-                let selected = agents
-                    .iter()
-                    .position(|name| name == &cfg.agent)
-                    .unwrap_or_default();
-                app.modal = Some(Modal::Selection(SelectionModal {
-                    title: "Select agent".to_string(),
-                    items: agents
-                        .into_iter()
-                        .map(|name| SelectionItem {
-                            detail: if name == cfg.agent {
-                                "current".to_string()
-                            } else {
-                                String::new()
-                            },
-                            enter_action: Some(AppAction::SelectAgent(name.clone())),
-                            delete_action: None,
-                            label: name,
-                        })
-                        .collect(),
-                    selected,
-                    hint: "↑/↓ select · Enter switch · Esc close · /agents <name> creates"
-                        .to_string(),
-                }));
-                app.dirty = true;
+                show_agents_modal(cfg, app);
                 return false;
             };
             if let Err(error) = crate::agents::validate_agent_name(name) {
@@ -549,17 +776,7 @@ Re-run with --force only if overwriting those newer changes is intended.",
                 Err(error) => app.push(format!("could not create agent {name}: {error}")),
             }
         }
-        "/skills" => match std::env::current_dir() {
-            Ok(cwd) => {
-                let skills = crate::skills::discover_at(&cfg.agent, &cwd);
-                if skills.is_empty() {
-                    app.push("(no local skills found)");
-                } else {
-                    show_skills_modal(app, skills);
-                }
-            }
-            Err(_) => app.push_error("Could not determine the workspace for local skills."),
-        },
+        "/skills" => show_skills(cfg, app),
         "/gadgets" => {
             #[cfg(feature = "gadgets")]
             {
@@ -581,29 +798,8 @@ Re-run with --force only if overwriting those newer changes is intended.",
                     }),
                 };
                 match runtime {
-                    Ok(runtime) => match runtime.list().await {
-                        Ok(gadgets) if gadgets.is_empty() => app.push("(no gadgets installed)"),
-                        Ok(gadgets) => app.push(
-                            gadgets
-                                .into_iter()
-                                .map(|g| {
-                                    format!(
-                                        "{} {} · {} · {}\n  capabilities: {}{}{}",
-                                        g.id,
-                                        g.version,
-                                        g.status,
-                                        g.source.display(),
-                                        serde_json::to_string(&g.capabilities).unwrap(),
-                                        g.error.map(|e| format!("\n  {e}")).unwrap_or_default(),
-                                        g.last_error
-                                            .map(|e| format!("\n  last error: {e}"))
-                                            .unwrap_or_default(),
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        ),
-                        Err(error) => app.push(format!("could not list gadgets: {error}")),
+                    Ok(runtime) => match Listing::Gadgets(runtime).text().await {
+                        Ok(text) | Err(text) => app.push(text),
                     },
                     Err(error) => app.push(format!("gadget runtime unavailable: {error}")),
                 }
@@ -612,29 +808,7 @@ Re-run with --force only if overwriting those newer changes is intended.",
             app.push("This build has no gadget runtime; rebuild with the gadgets cargo feature.");
         }
         "/mcp" => match slot.get().await.as_ref() {
-            Some(session) => {
-                let mut lines = session
-                    .mcp
-                    .iter()
-                    .map(|server| {
-                        format!(
-                            "{} · {} tool(s) · {}",
-                            server.name, server.tools, server.url
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                lines.extend(
-                    session
-                        .mcp_errors
-                        .iter()
-                        .map(|(server, error)| format!("{server} · unavailable: {error}")),
-                );
-                app.push(if lines.is_empty() {
-                    "(no MCP servers)".to_string()
-                } else {
-                    lines.join("\n")
-                });
-            }
+            Some(session) => app.push(mcp_text(session)),
             None => app.push("no agent yet"),
         },
         "/lsp" => {
@@ -654,27 +828,9 @@ Re-run with --force only if overwriting those newer changes is intended.",
                     }
                 }
                 Some(_) => app.push_error("usage: /lsp [restart <name>]"),
-                None => {
-                    let statuses = session.lsp.statuses().await;
-                    app.push(
-                        statuses
-                            .into_iter()
-                            .map(|status| {
-                                format!(
-                                    "{} · {} · .{} · {}",
-                                    status.name,
-                                    status.command,
-                                    status.extensions.join(" ."),
-                                    status.state
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(
-                                "
-",
-                            ),
-                    );
-                }
+                None => match Listing::Lsp(session.lsp.clone()).text().await {
+                    Ok(text) | Err(text) => app.push(text),
+                },
             }
         }
         "/session" => handle_session_command(parts.collect(), slot, app).await,

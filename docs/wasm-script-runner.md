@@ -168,5 +168,5 @@ Public headless execution and callable headless gadgets remain separate work.
    main verification before merge/install of the runtime changes.
 
 Current runtime behavior is documented in [gadgets.md](gadgets.md) and
-[runtime-status.md](runtime-status.md). The README keeps a compact comparison of
-the current and planned harness paths.
+[runtime-status.md](runtime-status.md). The README shows the current harness flow
+and links to this plan for the script runner.

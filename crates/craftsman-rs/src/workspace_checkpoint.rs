@@ -569,7 +569,7 @@ impl WorkspaceCheckpointManager {
             }
         }
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || restore_checkpoint(&root, checkpoint, force))
+        crate::util::spawn_blocking(move || restore_checkpoint(&root, checkpoint, force))
             .await
             .map_err(|error| AgentError::State(format!("rewind task failed: {error}")))?
             .map_err(AgentError::State)
@@ -678,7 +678,7 @@ impl WorkspaceCheckpointManager {
         requested.protected.extend(self.protected.iter().cloned());
         let retained = snapshots.before.retained_bytes();
         let captured =
-            tokio::task::spawn_blocking(move || capture_selection(&root, &requested, retained))
+            crate::util::spawn_blocking(move || capture_selection(&root, &requested, retained))
                 .await;
         match captured {
             Ok(Ok(before)) => {
@@ -726,7 +726,7 @@ impl WorkspaceCheckpointManager {
         }
         let root = self.root.clone();
         let selection = snapshots.selection.clone();
-        let after = match tokio::task::spawn_blocking(move || {
+        let after = match crate::util::spawn_blocking(move || {
             capture_selection(&root, &selection, 0)
         })
         .await
@@ -829,6 +829,13 @@ impl WorkspaceCheckpointManager {
 impl AgentMiddleware for WorkspaceCheckpointManager {
     fn name(&self) -> &str {
         "workspace_checkpoint"
+    }
+
+    /// It reads the recorded messages at the start of a turn and writes its
+    /// own store at the end. It changes nothing the agent records, which the
+    /// agent with a source view checks after both hooks.
+    fn view_support(&self) -> craftsman_harness::provenance::ViewSupport {
+        craftsman_harness::provenance::ViewSupport::Preserving
     }
 
     async fn turn_start(&self, state: &mut AgentState) -> Result<(), AgentError> {

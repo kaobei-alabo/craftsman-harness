@@ -515,7 +515,7 @@ async fn build_acp_session(
             drop(open);
             // Blocking wait: the client's response, or `cancel_in_flight`
             // draining the map, wakes this up.
-            tokio::task::block_in_place(|| waiter_rx.recv())
+            crate::util::block_in_place(|| waiter_rx.recv())
                 .unwrap_or_else(|_| ApprovalPromptResult::Reject("turn cancelled".into()))
         },
     );
@@ -555,7 +555,7 @@ async fn build_acp_session(
             return None;
         }
         drop(open);
-        tokio::task::block_in_place(|| waiter_rx.recv())
+        crate::util::block_in_place(|| waiter_rx.recv())
             .ok()
             .flatten()
     });
@@ -1232,7 +1232,7 @@ fn start_prompt_turn(
     let a2ui_task = {
         let tx = tx.clone();
         let sid = session_id.clone();
-        tokio::spawn(async move {
+        crate::util::spawn_unit(async move {
             while let Some(frame) = a2ui_rx.recv().await {
                 let Some(messages) = frame.get("messages") else {
                     continue;
@@ -1260,7 +1260,7 @@ fn start_prompt_turn(
         cancelled: cancelled.clone(),
         prompts_open: prompts_open.clone(),
     });
-    let task = tokio::spawn(async move {
+    let task = crate::util::spawn_unit(async move {
         let _ = start_rx.await;
         let outcome = if cancelled.load(Ordering::Acquire) {
             None
@@ -1390,7 +1390,7 @@ where
     let mut state = AcpServerState::new(cfg, outbound_tx.clone(), workspace_root);
 
     // One writer task keeps frames whole and ordered across turn tasks.
-    let writer_task = tokio::spawn(async move {
+    let writer_task = crate::util::spawn_unit(async move {
         while let Some(msg) = outbound_rx.recv().await {
             let Ok(line) = serde_json::to_string(&msg) else {
                 continue;

@@ -1,0 +1,937 @@
+//! Marked native fixture: one privacy conversation per model wire, built by
+//! the shared session builder, with the source-built detector approved and
+//! pinned at its user-level source, a real vault and guard, the checkpoint
+//! store and a loopback server. Chat, Responses, Claude Messages and Gemini
+//! each run a tool round, so the second request carries the first reply back,
+//! with its signed or opaque provider items on the native wires.
+//!
+//! Unmarked startup returns before any build, path or configuration access.
+
+use super::super::grants::GrantStore;
+use super::super::manifest::Capabilities;
+use super::{build_fixture, hash, root};
+use crate::agent::{Session, SessionExtras, build_session_ext};
+use crate::config::Config;
+use crate::hitl::ApprovalState;
+use crate::privacy_hook::{Detector, DetectorPin, PinnedDetector};
+use crate::privacy_session::wire_fixtures::{config, config_with, reply};
+use crate::privacy_session::{
+    FixturePolicy, FreshConversationBinding, PrivacySession, PrivacyViewSelection, RawOrigin,
+};
+use crate::privacy_vault::{HostKey, HostKeySource, Limits, Vault, VaultLocation};
+use craftsman_harness::{Checkpointer, Msg, TurnResult};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer};
+use zeroize::Zeroizing;
+
+const ID: &str = "privacy-detector";
+pub(super) const HELPER: &str =
+    "gadgets::privacy_detector_tests::view_wires::view_wires_native_fixture";
+pub(super) const MARKER: &str = "craftsman-privacy-view-wires=";
+const EMAIL: &str = "alice@example.invalid";
+const PHONE: &str = "+886 912 345 678";
+const WIRES: [&str; 4] = ["chat", "responses", "claude", "gemini"];
+
+fn selected(arguments: impl IntoIterator<Item = OsString>) -> bool {
+    let values: Vec<_> = arguments
+        .into_iter()
+        .filter_map(|argument| {
+            argument
+                .to_str()
+                .and_then(|argument| argument.strip_prefix(MARKER))
+                .map(str::to_owned)
+        })
+        .collect();
+    matches!(values.as_slice(), [value] if value == "suite")
+}
+
+struct SyntheticKey;
+
+impl HostKeySource for SyntheticKey {
+    fn acquire_privacy_key(&self) -> crate::privacy_vault::Result<HostKey> {
+        Ok(HostKey::supplied_by_host(Zeroizing::new([11; 32])))
+    }
+}
+
+/// The first reply's provider item, exactly as it must come back.
+fn replayed_exactly(wire: &str, body: &Value, args: &Value) -> bool {
+    match wire {
+        "responses" => {
+            let input = body["input"].as_array().unwrap();
+            input.contains(&json!({"type":"reasoning","id":"wire-reasoning","encrypted_content":"wire-original-opaque","summary":[]}))
+                && input.contains(&json!({"type":"function_call","id":"wire-function-0","call_id":"wire-call-0","name":"read_file","arguments":args.to_string(),"status":"completed"}))
+        }
+        "claude" => body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .flat_map(|message| message["content"].as_array().unwrap())
+            .any(|part| {
+                part == &json!({"type":"thinking","thinking":"wire fixture reasoning","signature":"wire-original-signature"})
+            }),
+        "gemini" => body["contents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "model")
+            .flat_map(|message| message["parts"].as_array().unwrap())
+            .any(|part| {
+                part == &json!({"functionCall":{"id":"wire-call-0","name":"read_file","args":args},"thoughtSignature":"wire-original-signature"})
+            }),
+        _ => body["messages"][2]["tool_calls"][0]["id"] == "wire-call-0",
+    }
+}
+
+/// The placeholder a request carries after `before`, up to `until`.
+fn issued(request: &wiremock::Request, before: &str, until: &str) -> String {
+    let raw = String::from_utf8_lossy(&request.body);
+    raw.split(before)
+        .nth(1)
+        .and_then(|rest| rest.split(until).next())
+        .expect("the request carries the text")
+        .to_owned()
+}
+
+/// The root agent's first reply in the delegation run: a task for the
+/// built-in delegated agent that names the placeholder the request carries.
+/// On a native wire it comes with an item only the provider can read.
+struct AsksForATask(&'static str);
+
+impl wiremock::Respond for AsksForATask {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let placeholder = issued(request, "Who handles ", "?");
+        reply(
+            self.0,
+            0,
+            Some((
+                "wire-task",
+                "task",
+                &json!({
+                    "description": format!("Find out about {placeholder} in notes.txt"),
+                    "subagent_type": "general-purpose"
+                }),
+            )),
+            "",
+        )
+    }
+}
+
+/// The delegated agent's final reply: it names the placeholder its own
+/// input carries.
+struct Reports(&'static str);
+
+impl wiremock::Respond for Reports {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let placeholder = issued(request, "Find out about ", " in notes.txt");
+        reply(self.0, 2, None, &format!("{placeholder} is in the notes"))
+    }
+}
+
+/// The system text as the wire carries it.
+fn system_text<'a>(wire: &str, body: &'a Value) -> &'a str {
+    match wire {
+        "responses" => body["instructions"].as_str(),
+        "claude" => body["system"].as_str(),
+        "gemini" => body["systemInstruction"]["parts"][0]["text"].as_str(),
+        _ => body["messages"][0]["content"].as_str(),
+    }
+    .unwrap()
+}
+
+async fn build(
+    cfg: &Config,
+    workspace: &Path,
+    owner: &Arc<PrivacySession>,
+    activity: &Arc<Mutex<Vec<String>>>,
+) -> Option<Session> {
+    build_with(cfg, workspace, owner, activity, false).await
+}
+
+/// As [`build`], with the terminal's opt-in to model-visible gadgets.
+async fn build_with(
+    cfg: &Config,
+    workspace: &Path,
+    owner: &Arc<PrivacySession>,
+    activity: &Arc<Mutex<Vec<String>>>,
+    local_gadgets: bool,
+) -> Option<Session> {
+    let activity = activity.clone();
+    build_session_ext(
+        cfg,
+        Arc::new(Mutex::new(ApprovalState::default())),
+        "",
+        false,
+        false,
+        None,
+        SessionExtras {
+            // The selection a user's policy makes: nothing is left out.
+            privacy_view: Some(
+                PrivacyViewSelection::from_user_policy(
+                    Arc::new(FixturePolicy::default()),
+                    owner.clone(),
+                )
+                .expect("a live fixture conversation"),
+            ),
+            // The owned terminal's durable checkpoints, which idle compaction
+            // needs.
+            cancellation_session: Some(craftsman_harness::SessionCancellation::default()),
+            workspace_root: Some(workspace.to_path_buf()),
+            local_gadgets,
+            token_sink: Some(Arc::new(|_| {})),
+            activity_sink: Some(Arc::new(move |line: &str| {
+                activity.lock().unwrap().push(line.to_owned())
+            })),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "four-wire private view fixture; exactly one argv marker required before build/config access"]
+async fn view_wires_native_fixture() {
+    if !selected(std::env::args_os()) {
+        println!("PRIVACY-VIEW-WIRES:NOT-SELECTED");
+        return;
+    }
+    // The detector: built from source, installed at the user-level source,
+    // approved for exactly these bytes and pinned.
+    let root = root();
+    let (image, _) = build_fixture(&root);
+    let manifest =
+        std::fs::read(root.join("crates/craftsman-rs/tests/fixtures/privacy-detector/gadget.toml"))
+            .unwrap();
+    let workspace = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+    let config_root = std::fs::canonicalize(PathBuf::from(
+        std::env::var_os("CRAFTSMAN_CONFIG_DIR").expect("the isolated configuration root"),
+    ))
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&config_root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let bundle = config_root.join("gadgets").join(ID);
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("gadget.wasm"), &image).unwrap();
+    std::fs::write(bundle.join("gadget.toml"), &manifest).unwrap();
+    let component = hash(&image);
+    GrantStore::new(&config_root)
+        .approve(
+            ID,
+            &bundle.canonicalize().unwrap(),
+            &component,
+            &Capabilities::default(),
+        )
+        .unwrap();
+    let detector = || {
+        Detector::pinned(
+            PinnedDetector::new(
+                &workspace,
+                &config_root,
+                DetectorPin::supplied_by_host(ID, "detect", &component, &hash(&manifest)).unwrap(),
+            )
+            .unwrap(),
+        )
+    };
+    let vault = Vault::open(
+        VaultLocation::under_host_config_root(&config_root).unwrap(),
+        &SyntheticKey,
+        Limits::default(),
+    )
+    .await
+    .unwrap();
+    let notes = workspace.join("notes.txt");
+    std::fs::write(&notes, format!("Their number is {PHONE}.\n")).unwrap();
+    let args = json!({"file_path": notes});
+    let typed = format!("Who handles {EMAIL}? The notes are in notes.txt.");
+    let activity = Arc::new(Mutex::new(Vec::new()));
+
+    let mut threads = Vec::new();
+    for wire in WIRES {
+        let server = MockServer::start().await;
+        for (priority, template) in [
+            reply(wire, 0, Some(("wire-call-0", "read_file", &args)), ""),
+            reply(wire, 1, None, "fixture answer"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            Mock::given(method("POST"))
+                .respond_with(template)
+                .up_to_n_times(1)
+                .with_priority(priority as u8 + 1)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .respond_with(reply(wire, 2, None, "second answer"))
+            .mount(&server)
+            .await;
+        let cfg = config(wire, &server);
+        let owner = Arc::new(
+            PrivacySession::open(
+                &vault,
+                FreshConversationBinding::reserve(&workspace).unwrap(),
+                detector(),
+            )
+            .await
+            .unwrap(),
+        );
+        let session = build(&cfg, &workspace, &owner, &activity)
+            .await
+            .unwrap_or_else(|| panic!("{wire}: {:?}", activity.lock().unwrap()));
+
+        // One reserved id for the agent, the checkpoint store and the owner.
+        assert_eq!(session.thread_id, owner.thread_id(), "{wire}");
+        assert!(!threads.contains(&session.thread_id), "{wire}");
+        threads.push(session.thread_id.clone());
+        let view = session.privacy_view.as_ref().unwrap();
+        let TurnResult::Done(output) = view
+            .turn(&session.agent, &typed)
+            .await
+            .unwrap_or_else(|error| panic!("{wire}: {error}"))
+        else {
+            panic!("{wire}: the turn finishes");
+        };
+        assert_eq!(output.final_text(), "fixture answer", "{wire}");
+
+        // The record: what was typed, the call, what the tool returned and
+        // the answer, as they are.
+        let messages = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(messages.len(), 4, "{wire}");
+        assert_eq!(messages[0], Msg::user(typed.clone()), "{wire}");
+        assert!(
+            matches!(&messages[1], Msg::Assistant { tool_calls, .. }
+            if tool_calls.len() == 1 && tool_calls[0].name == "read_file" && tool_calls[0].args == args),
+            "{wire}"
+        );
+        assert!(
+            matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
+            if content.contains(PHONE)),
+            "{wire}"
+        );
+        assert_eq!(messages[3], Msg::assistant("fixture answer"), "{wire}");
+        // The real usage of both replies.
+        assert_eq!(*session.usage.lock().unwrap(), (6, 4), "{wire}");
+        // No provider history was written into the checkpointed state: the
+        // items live in this conversation's receipts.
+        assert!(
+            !session
+                .agent
+                .state
+                .lock()
+                .unwrap()
+                .custom
+                .contains_key("_craftsman_native_model_history"),
+            "{wire}"
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "{wire}");
+        let bodies: Vec<Value> = requests
+            .iter()
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect();
+        for (request, body) in requests.iter().zip(&bodies) {
+            // No original in the final bytes of either request.
+            let raw = String::from_utf8(request.body.clone()).unwrap();
+            assert!(!raw.contains(EMAIL) && !raw.contains(PHONE), "{wire}");
+            assert!(raw.contains("Who handles "), "{wire}");
+            // The system text carries the prompt's sections and the sections
+            // the todo and memory middleware add, each admitted as its own
+            // part through the detector.
+            let system = system_text(wire, body);
+            assert!(system.contains("## `write_todos`"), "{wire}");
+            assert!(system.contains("<agent_memory>"), "{wire}");
+            assert!(raw.contains("read_file"), "{wire}");
+        }
+        // The second request carries the first reply back exactly, signed
+        // and opaque items included, and the tool result as its view.
+        let second = String::from_utf8(requests[1].body.clone()).unwrap();
+        assert!(
+            replayed_exactly(wire, &bodies[1], &args),
+            "{wire}: {second}"
+        );
+        assert!(second.contains("Their number is "), "{wire}");
+
+        // The committed replies know the exact request they answered.
+        let sources = session.agent.recorded_sources().unwrap();
+        for (reply_at, request) in [(1, &requests[0]), (3, &requests[1])] {
+            let node = owner
+                .committed_model(sources[reply_at].as_ref().unwrap())
+                .unwrap();
+            assert_eq!(node.message().unwrap(), &messages[reply_at], "{wire}");
+            assert_eq!(
+                node.received_message().unwrap(),
+                &messages[reply_at],
+                "{wire}"
+            );
+            assert!(node.edits().unwrap().is_empty(), "{wire}");
+            // Every wire: the reply knows the exact bytes it answered.
+            let sent = <[u8; 32]>::from(Sha256::digest(&request.body));
+            assert_eq!(node.request_sha256().unwrap(), sent, "{wire}");
+            assert_eq!(node.has_provider_items().unwrap(), wire != "chat", "{wire}");
+        }
+        let result = owner.actual_result(sources[2].as_ref().unwrap()).unwrap();
+        assert_eq!(result.tool(), "read_file", "{wire}");
+        assert_eq!(result.reached().len(), 1, "{wire}");
+        assert_eq!(
+            owner
+                .admitted(sources[2].as_ref().unwrap())
+                .unwrap()
+                .origin(),
+            RawOrigin::ToolResult,
+            "{wire}"
+        );
+
+        // A second turn sends the whole conversation again: still exact
+        // items, still no original.
+        let TurnResult::Done(output) = view.turn(&session.agent, "thanks").await.unwrap() else {
+            panic!("{wire}: the conversation continues");
+        };
+        assert_eq!(output.final_text(), "second answer", "{wire}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3, "{wire}");
+        let third = String::from_utf8(requests[2].body.clone()).unwrap();
+        assert!(!third.contains(EMAIL) && !third.contains(PHONE), "{wire}");
+        let body: Value = serde_json::from_str(&third).unwrap();
+        assert!(replayed_exactly(wire, &body, &args), "{wire}: {third}");
+        assert_eq!(*session.usage.lock().unwrap(), (9, 6), "{wire}");
+
+        // Manual compaction on this wire, through the builder's summarizer
+        // lane. After one more turn the first four messages are summarized,
+        // and they include the first reply with its provider item.
+        view.turn(&session.agent, "and then?").await.unwrap();
+        let before = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(before.len(), 8, "{wire}");
+        let counts = view
+            .compact(&session.agent, &session.compaction)
+            .await
+            .unwrap_or_else(|error| panic!("{wire}: {error}"));
+        assert_eq!(counts, Some((8, 5)), "{wire}");
+        let after = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(
+            after[0],
+            Msg::user("<conversation_summary>\nsecond answer\n</conversation_summary>"),
+            "{wire}"
+        );
+        assert_eq!(after[1..], before[4..], "{wire}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 5, "{wire}");
+        let asked = String::from_utf8(requests[4].body.clone()).unwrap();
+        // The summarizer saw views, and the first reply as its call without
+        // the provider's item: its own client never received that reply.
+        assert!(!asked.contains(EMAIL) && !asked.contains(PHONE), "{wire}");
+        assert!(
+            asked.contains("You are compacting an ongoing agent conversation"),
+            "{wire}"
+        );
+        assert!(
+            asked.contains("read_file") && asked.contains("Their number is "),
+            "{wire}"
+        );
+        assert!(!asked.contains("wire-original-"), "{wire}: {asked}");
+        // The conversation goes on from the summary. The reply with the
+        // provider's item was summarized, so that item is gone with it.
+        let TurnResult::Done(output) = view.turn(&session.agent, "go on").await.unwrap() else {
+            panic!("{wire}: the conversation continues after compaction");
+        };
+        assert_eq!(output.final_text(), "second answer", "{wire}");
+        let requests = server.received_requests().await.unwrap();
+        let next = String::from_utf8(requests[5].body.clone()).unwrap();
+        assert!(next.contains("<conversation_summary>"), "{wire}");
+        assert!(!next.contains(EMAIL) && !next.contains(PHONE), "{wire}");
+        assert!(!next.contains("wire-original-"), "{wire}");
+        assert!(
+            session
+                .agent
+                .recorded_sources()
+                .unwrap()
+                .iter()
+                .all(Option::is_some),
+            "{wire}"
+        );
+
+        // A reply that a compaction moves keeps the items it was received
+        // with. Here the reply with the provider's item is among the kept
+        // messages: it was received for one position and stands at another,
+        // and its items go back with it unchanged.
+        {
+            let server = MockServer::start().await;
+            for (priority, template) in [
+                reply(wire, 1, None, "first answer"),
+                reply(wire, 0, Some(("wire-call-0", "read_file", &args)), ""),
+                reply(wire, 2, None, "fixture answer"),
+                reply(wire, 3, None, "SUMMARY of the start"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                Mock::given(method("POST"))
+                    .respond_with(template)
+                    .up_to_n_times(1)
+                    .with_priority(priority as u8 + 1)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .respond_with(reply(wire, 4, None, "last answer"))
+                .mount(&server)
+                .await;
+            let cfg = config(wire, &server);
+            let owner = Arc::new(
+                PrivacySession::open(
+                    &vault,
+                    FreshConversationBinding::reserve(&workspace).unwrap(),
+                    detector(),
+                )
+                .await
+                .unwrap(),
+            );
+            let session = build(&cfg, &workspace, &owner, &activity)
+                .await
+                .unwrap_or_else(|| panic!("{wire}: {:?}", activity.lock().unwrap()));
+            let view = session.privacy_view.as_ref().unwrap();
+            view.turn(&session.agent, "Hello.").await.unwrap();
+            view.turn(&session.agent, &typed).await.unwrap();
+            let before = session.agent.state.lock().unwrap().messages.clone();
+            assert_eq!(before.len(), 6, "{wire}");
+            let counts = view
+                .compact(&session.agent, &session.compaction)
+                .await
+                .unwrap_or_else(|error| panic!("{wire}: {error}"));
+            assert_eq!(counts, Some((6, 5)), "{wire}");
+            let after = session.agent.state.lock().unwrap().messages.clone();
+            assert_eq!(after[1..], before[2..], "{wire}");
+            // The reply with the call was received for the fourth position
+            // and now stands at the third.
+            let sources = session.agent.recorded_sources().unwrap();
+            let moved = owner
+                .committed_model(sources[2].as_ref().unwrap())
+                .expect("the kept reply keeps its node");
+            assert_eq!(moved.message().unwrap(), &after[2], "{wire}");
+            assert_eq!(moved.request_position().unwrap(), 3, "{wire}");
+            assert_eq!(
+                moved.has_provider_items().unwrap(),
+                wire != "chat",
+                "{wire}"
+            );
+            let TurnResult::Done(output) = view.turn(&session.agent, "go on").await.unwrap() else {
+                panic!("{wire}: the conversation continues after compaction");
+            };
+            assert_eq!(output.final_text(), "last answer", "{wire}");
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 5, "{wire}");
+            // The summarizer's request is a new request made from the
+            // sources of the two messages it summarized.
+            let asked = String::from_utf8(requests[3].body.clone()).unwrap();
+            assert!(
+                asked.contains("Hello.") && asked.contains("first answer"),
+                "{wire}"
+            );
+            assert!(!asked.contains("wire-original-"), "{wire}");
+            // The next request of the conversation carries the summary and
+            // the moved reply exactly as it was received.
+            let next = String::from_utf8(requests[4].body.clone()).unwrap();
+            assert!(next.contains("<conversation_summary>"), "{wire}");
+            assert!(!next.contains(EMAIL) && !next.contains(PHONE), "{wire}");
+            let body: Value = serde_json::from_str(&next).unwrap();
+            match wire {
+                "chat" => assert!(next.contains("wire-call-0"), "{wire}"),
+                _ => {
+                    assert!(replayed_exactly(wire, &body, &args), "{wire}: {next}");
+                    assert!(next.contains("wire-original-"), "{wire}");
+                }
+            }
+            assert!(owner.check().is_ok(), "{wire}");
+            session.lsp.shutdown().await;
+        }
+
+        // Delegation on this wire, through the builder's own delegated
+        // agent. Both agents ask the same server, one request after another.
+        {
+            let server = MockServer::start().await;
+            let scripted = [
+                Mock::given(method("POST")).respond_with(AsksForATask(wire)),
+                Mock::given(method("POST")).respond_with(reply(
+                    wire,
+                    0,
+                    Some(("wire-call-0", "read_file", &args)),
+                    "",
+                )),
+                Mock::given(method("POST")).respond_with(Reports(wire)),
+                Mock::given(method("POST")).respond_with(reply(wire, 3, None, "fixture answer")),
+            ];
+            for (priority, mock) in scripted.into_iter().enumerate() {
+                mock.up_to_n_times(1)
+                    .with_priority(priority as u8 + 1)
+                    .mount(&server)
+                    .await;
+            }
+            let cfg = config(wire, &server);
+            let owner = Arc::new(
+                PrivacySession::open(
+                    &vault,
+                    FreshConversationBinding::reserve(&workspace).unwrap(),
+                    detector(),
+                )
+                .await
+                .unwrap(),
+            );
+            let session = build(&cfg, &workspace, &owner, &activity)
+                .await
+                .unwrap_or_else(|| panic!("{wire}: {:?}", activity.lock().unwrap()));
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(output) = view
+                .turn(&session.agent, &typed)
+                .await
+                .unwrap_or_else(|error| panic!("{wire}: {error}"))
+            else {
+                panic!("{wire}: the turn finishes");
+            };
+            assert_eq!(output.final_text(), "fixture answer", "{wire}");
+
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 4, "{wire}");
+            let raw: Vec<String> = requests
+                .iter()
+                .map(|request| String::from_utf8(request.body.clone()).unwrap())
+                .collect();
+            for body in &raw {
+                assert!(!body.contains(EMAIL) && !body.contains(PHONE), "{wire}");
+            }
+            let placeholder = issued(&requests[0], "Who handles ", "?");
+            // The delegated agent's input is the description as the model
+            // wrote it. Its lane carries none of the root agent's replies:
+            // the item the root agent's reply came with is not in it.
+            assert!(
+                raw[1].contains(&format!("Find out about {placeholder} in notes.txt")),
+                "{wire}"
+            );
+            assert!(!raw[1].contains("wire-original-"), "{wire}");
+            assert!(!raw[1].contains("wire-task"), "{wire}");
+            // Its own reply went back to it exactly, with the item it was
+            // received with, and the file it read as a view.
+            let second: Value = serde_json::from_str(&raw[2]).unwrap();
+            match wire {
+                "chat" => assert!(raw[2].contains("wire-call-0"), "{wire}"),
+                _ => assert!(replayed_exactly(wire, &second, &args), "{wire}: {}", raw[2]),
+            }
+            assert!(raw[2].contains("Their number is "), "{wire}");
+            // The root agent's next request carries its own reply with its
+            // item, the delegated agent's final text as the task's result,
+            // and nothing of the delegated agent's lane.
+            let report = format!("{placeholder} is in the notes");
+            assert!(raw[3].contains(&report), "{wire}");
+            assert!(raw[3].contains("wire-task"), "{wire}");
+            assert_eq!(raw[3].contains("wire-original-"), wire != "chat", "{wire}");
+            assert!(!raw[3].contains("wire-call-0"), "{wire}");
+            assert!(!raw[3].contains("Their number is "), "{wire}");
+            // The record is the real one, and the root agent's count holds
+            // its own two requests.
+            let messages = session.agent.state.lock().unwrap().messages.clone();
+            assert_eq!(messages.len(), 4, "{wire}");
+            assert!(
+                matches!(&messages[2], Msg::Tool { content, is_error: false, .. }
+                if *content == report),
+                "{wire}"
+            );
+            assert_eq!(*session.usage.lock().unwrap(), (6, 4), "{wire}");
+            assert_eq!(
+                session.registry.status("general-purpose#0"),
+                Some(craftsman_harness::AgentStatus::Done),
+                "{wire}"
+            );
+            assert!(owner.check().is_ok(), "{wire}");
+            session.lsp.shutdown().await;
+        }
+
+        // The model-visible gadget runtime on this wire: the user's opt-in
+        // in the configuration and the terminal's own. The detector bundle
+        // is the one gadget installed and approved at the user level.
+        {
+            let server = MockServer::start().await;
+            // The root agent lists the gadgets and then delegates a task;
+            // the delegated agent answers at once.
+            let scripted = [
+                Mock::given(method("POST")).respond_with(reply(
+                    wire,
+                    0,
+                    Some(("wire-list", "gadget_list", &json!({}))),
+                    "",
+                )),
+                Mock::given(method("POST")).respond_with(AsksForATask(wire)),
+                Mock::given(method("POST")).respond_with(Reports(wire)),
+                Mock::given(method("POST")).respond_with(reply(wire, 3, None, "fixture answer")),
+            ];
+            for (priority, mock) in scripted.into_iter().enumerate() {
+                mock.up_to_n_times(1)
+                    .with_priority(priority as u8 + 1)
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(method("POST"))
+                .respond_with(reply(wire, 2, None, "second answer"))
+                .mount(&server)
+                .await;
+            let cfg = config_with(wire, &server, true);
+            let owner = Arc::new(
+                PrivacySession::open(
+                    &vault,
+                    FreshConversationBinding::reserve(&workspace).unwrap(),
+                    detector(),
+                )
+                .await
+                .unwrap(),
+            );
+            let session = build_with(&cfg, &workspace, &owner, &activity, true)
+                .await
+                .unwrap_or_else(|| panic!("{wire}: {:?}", activity.lock().unwrap()));
+            let view = session.privacy_view.as_ref().unwrap();
+            let TurnResult::Done(output) = view
+                .turn(&session.agent, &typed)
+                .await
+                .unwrap_or_else(|error| panic!("{wire}: {error}"))
+            else {
+                panic!("{wire}: the turn finishes");
+            };
+            assert_eq!(output.final_text(), "fixture answer", "{wire}");
+
+            // The record is what an ordinary session with gadgets records:
+            // the input, the catalog update the host added before the first
+            // request, the listing call and its result, the task and its
+            // result, and the answer.
+            let messages = session.agent.state.lock().unwrap().messages.clone();
+            assert_eq!(messages.len(), 7, "{wire}");
+            let Msg::User { content: update } = &messages[1] else {
+                panic!("{wire}: the catalog update is recorded");
+            };
+            assert!(
+                update.starts_with("<gadget_catalog_update sha256=\""),
+                "{wire}"
+            );
+            assert!(update.contains(ID), "{wire}: {update}");
+            let Msg::Tool {
+                content: listing,
+                is_error: false,
+                ..
+            } = &messages[3]
+            else {
+                panic!("{wire}: the listing is recorded");
+            };
+            assert!(listing.contains(ID), "{wire}: {listing}");
+            assert!(
+                session
+                    .agent
+                    .state
+                    .lock()
+                    .unwrap()
+                    .custom
+                    .contains_key("craftsman.gadgets.catalog.sha256"),
+                "{wire}"
+            );
+            // Every recorded message has its source. The update is held as
+            // the host's own parts, not as one admitted text, and the
+            // listing is the tool's result with what actually ran.
+            let sources = session.agent.recorded_sources().unwrap();
+            assert!(sources.iter().all(Option::is_some), "{wire}");
+            assert!(
+                owner.admitted(sources[1].as_ref().unwrap()).is_none(),
+                "{wire}"
+            );
+            let listed = owner.actual_result(sources[3].as_ref().unwrap()).unwrap();
+            assert_eq!(listed.tool(), "gadget_list", "{wire}");
+            assert_eq!(listed.reached().len(), 1, "{wire}");
+
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 4, "{wire}");
+            for request in &requests {
+                let raw = String::from_utf8(request.body.clone()).unwrap();
+                assert!(!raw.contains(EMAIL) && !raw.contains(PHONE), "{wire}");
+                // Every agent's requests carry a catalog update of its own
+                // lane, and its system text the gadget authoring skill. The
+                // third request is the delegated agent's.
+                assert!(raw.contains("gadget_catalog_update sha256="), "{wire}");
+                assert!(raw.contains("gadget_call"), "{wire}");
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert!(system_text(wire, &body).contains("build-gadget"), "{wire}");
+            }
+            let second = String::from_utf8(requests[1].body.clone()).unwrap();
+            assert!(second.contains("wire-list"), "{wire}");
+            let delegated = String::from_utf8(requests[2].body.clone()).unwrap();
+            assert!(delegated.contains("Find out about "), "{wire}");
+            assert!(!delegated.contains("wire-list"), "{wire}");
+
+            // The catalog did not change, so the next turn adds no update.
+            view.turn(&session.agent, "thanks").await.unwrap();
+            let updates = session
+                .agent
+                .state
+                .lock()
+                .unwrap()
+                .messages
+                .iter()
+                .filter(|message| {
+                    matches!(message, Msg::User { content }
+                    if content.starts_with("<gadget_catalog_update"))
+                })
+                .count();
+            assert_eq!(updates, 1, "{wire}");
+            assert!(owner.check().is_ok(), "{wire}");
+            session.lsp.shutdown().await;
+        }
+
+        // The real record is in the checkpoint store under the reserved id.
+        let listed = session
+            .checkpointer
+            .as_ref()
+            .expect("the store opened")
+            .list_threads()
+            .await
+            .unwrap();
+        assert!(
+            listed.iter().any(|thread| thread.id == owner.thread_id()),
+            "{wire}"
+        );
+        assert!(owner.check().is_ok(), "{wire}");
+        // This is a second compaction of the same conversation. The first
+        // one above already retained a summary, then two real turns followed.
+        // The old added expectation of eight messages and native refusal did
+        // not describe this source: all four wires use the explicit projection.
+        view.turn(&session.agent, "and then?").await.unwrap();
+        let before = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(before.len(), 9, "{wire}");
+        let held = session.agent.actual_sourced_messages().unwrap();
+        assert_eq!(held.len(), before.len(), "{wire}");
+        for (message, source) in before.iter().zip(&held) {
+            assert_eq!(source.commit().message(), message, "{wire}");
+        }
+        let usage = *session.usage.lock().unwrap();
+        let requests_before = server.received_requests().await.unwrap().len();
+        assert_eq!(requests_before, 7, "{wire}");
+        let counts = view
+            .compact(&session.agent, &session.compaction)
+            .await
+            .unwrap_or_else(|error| panic!("{wire}: {error}"));
+        assert_eq!(counts, Some((9, 5)), "{wire}");
+        let after = session.agent.state.lock().unwrap().messages.clone();
+        assert_eq!(
+            after[0],
+            Msg::user("<conversation_summary>\nsecond answer\n</conversation_summary>"),
+            "{wire}"
+        );
+        assert_eq!(after[1..], before[5..], "{wire}");
+        assert_eq!(*session.usage.lock().unwrap(), usage, "{wire}");
+        let sources = session.agent.actual_sourced_messages().unwrap();
+        assert_eq!(sources.len(), after.len(), "{wire}");
+        assert_eq!(
+            sources[0].commit().event(),
+            craftsman_harness::provenance::RetainedEvent::Summary,
+            "{wire}"
+        );
+        for (retained, original) in sources[1..].iter().zip(&held[5..]) {
+            assert!(retained.commit().same_commit(original.commit()), "{wire}");
+            assert!(retained.source().is(original.source()), "{wire}");
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), requests_before + 1, "{wire}");
+        let asked = String::from_utf8(requests[requests_before].body.clone()).unwrap();
+        assert!(!asked.contains(EMAIL) && !asked.contains(PHONE), "{wire}");
+        assert!(
+            asked.contains("You are compacting an ongoing agent conversation"),
+            "{wire}"
+        );
+        // Its first input is the actual previously retained summary. The
+        // original read_file call was summarized during the earlier pass.
+        assert!(asked.contains("<conversation_summary>"), "{wire}");
+        assert!(asked.contains("and then?"), "{wire}");
+        assert!(!asked.contains("wire-original-"), "{wire}: {asked}");
+        let TurnResult::Done(output) = view.turn(&session.agent, "go on").await.unwrap() else {
+            panic!("{wire}: the conversation continues after the second compaction");
+        };
+        assert_eq!(output.final_text(), "second answer", "{wire}");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), requests_before + 2, "{wire}");
+        let next = String::from_utf8(requests[requests_before + 1].body.clone()).unwrap();
+        assert!(next.contains("<conversation_summary>"), "{wire}");
+        assert!(!next.contains(EMAIL) && !next.contains(PHONE), "{wire}");
+        assert!(!next.contains("wire-original-"), "{wire}");
+        assert!(
+            session
+                .agent
+                .recorded_sources()
+                .unwrap()
+                .iter()
+                .all(Option::is_some),
+            "{wire}"
+        );
+        assert!(owner.check().is_ok(), "{wire}");
+        session.lsp.shutdown().await;
+    }
+    println!(
+        "PRIVACY-VIEW-WIRES:COMPLETE wires={} conversations={}",
+        WIRES.len(),
+        threads.len()
+    );
+}
+
+async fn run_helper(
+    marker: Option<&str>,
+    home: &Path,
+) -> (std::process::ExitStatus, String, String) {
+    let selected = marker == Some("suite");
+    if selected {
+        // The selected run owns a workspace and a configuration root of its
+        // own under the isolated home.
+        std::fs::create_dir(home.join("workspace")).unwrap();
+        std::fs::create_dir(home.join("config")).unwrap();
+    }
+    super::pinned_hook::run_marked_helper(
+        HELPER,
+        marker.map(|marker| format!("{MARKER}{marker}")),
+        home,
+        "view wires fixture",
+        |command| {
+            if selected {
+                command
+                    .current_dir(home.join("workspace"))
+                    .env("CRAFTSMAN_CONFIG_DIR", home.join("config"));
+            } else {
+                command.current_dir(home);
+            }
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_unmarked_view_wires_fixture_returns_before_any_build_or_configuration() {
+    let home = tempfile::tempdir().unwrap();
+    for marker in [None, Some("collect")] {
+        let (status, stdout, _) = run_helper(marker, home.path()).await;
+        assert!(status.success());
+        assert!(stdout.contains("PRIVACY-VIEW-WIRES:NOT-SELECTED"));
+        assert!(!stdout.contains("COMPLETE"));
+    }
+    // Nothing was created in the isolated home.
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn four_wires_carry_a_privacy_conversation_through_the_actual_builder_and_detector() {
+    let home = tempfile::tempdir().unwrap();
+    let (status, stdout, stderr) = run_helper(Some("suite"), home.path()).await;
+    assert!(
+        status.success(),
+        "view wires fixture failed: {stdout} {stderr}"
+    );
+    assert!(stdout.contains("PRIVACY-VIEW-WIRES:COMPLETE wires=4 conversations=4"));
+    assert!(!stdout.contains("NOT-SELECTED"));
+}

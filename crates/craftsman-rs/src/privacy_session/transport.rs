@@ -1,0 +1,446 @@
+//! The transports of a conversation whose requests are composed from views
+//! of sources. The session builder constructs one only for a private
+//! selection, which no frontend, configuration or CLI route can make.
+//!
+//! This module is the only producer of a reply's receipt. The functions that
+//! make one are private to the conversation module, and they are called here
+//! and nowhere else, at the moment a client returns a reply, with the digest
+//! of the exact request bytes that client sent. No other code can make a
+//! receipt from a message it holds.
+//!
+//! They are the existing clients and the existing request encodings. What
+//! differs is the input: the request they encode is the conversation's model
+//! view, not the recorded text. The client is bound to the conversation's own
+//! send guard here, so the final bytes of every attempt still pass that guard
+//! exactly as an ordinary bound client's do, under the existing retry policy.
+//!
+//! [`ViewChatProvider`] speaks the Chat wire. [`ViewNativeProvider`] speaks
+//! the three native wires through the existing native client: endpoint,
+//! headers, limits, stream handling and usage are that client's. Provider
+//! items, signed and opaque ones included, are kept exactly as received in a
+//! receipt of this conversation and sent back exactly. The client's history
+//! cache and its checkpoint copy are not used.
+//!
+//! What a client adds to every request by itself, the model id, the fixed
+//! fields of its wire and the configured generation settings, is captured
+//! once as host configuration and admitted. A setting that holds a supported
+//! value cannot be replaced without changing what it means, so such a client
+//! is refused.
+
+use super::view::{received_chat_reply, received_native_reply};
+use super::{AdmitError, AdmittedNode, CapturedRaw, PrivacySession, RawOrigin, SessionStop};
+use crate::agent::{
+    ActivitySink, RoundSink, TokenSink, to_fw_message, to_llm_messages, to_openai_tools,
+};
+use crate::llm::LlmClient;
+use craftsman_harness::provenance::{ModelDelivery, SourceRef, TrackedModelRequest};
+use craftsman_harness::{AgentError, ModelProvider, ModelRequest, ModelResponse, Usage};
+use std::sync::{Arc, Mutex};
+
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
+/// The most replies with provider items one native conversation keeps, as
+/// the native history does.
+const NATIVE_REPLIES: usize = 256;
+
+fn fault(stop: SessionStop) -> AgentError {
+    AgentError::Model(format!("Privacy stopped this conversation. {stop}"))
+}
+
+fn recorded_text_refused() -> AgentError {
+    AgentError::Model("This provider delivers only source-bound requests.".into())
+}
+
+/// Captures what a client adds to every request and admits it. Nothing in it
+/// may need a placeholder.
+async fn admitted_defaults(
+    session: &PrivacySession,
+    defaults: &str,
+) -> Result<AdmittedNode, SessionStop> {
+    let raw = CapturedRaw::from_producer(RawOrigin::HostConfig, defaults);
+    let node = session.admit_raw(&raw).await.map_err(|error| match error {
+        AdmitError::Stopped(stop) => stop,
+        AdmitError::Refused(refusal) => SessionStop::Projection(refusal),
+    })?;
+    if node.replacements() != 0 {
+        session.stop();
+        return Err(SessionStop::Unbound);
+    }
+    Ok(node)
+}
+
+/// The captured defaults are still what the client adds, and their source is
+/// still this live conversation's.
+fn defaults_hold(
+    session: &PrivacySession,
+    defaults: &AdmittedNode,
+    current: &str,
+) -> Result<(), AgentError> {
+    if !defaults.admitted_by(session) || !defaults.captured_text_is(current) {
+        session.stop();
+        return Err(fault(SessionStop::Unbound));
+    }
+    defaults.model_view().map(|_| ()).map_err(fault)
+}
+
+/// The provider for the delegated agents of a conversation, on the wire
+/// `client` speaks. It is bound to the conversation's own guard like the
+/// root agent's provider. Each request it serves was composed for the lane
+/// of the agent that sent it, and a reply's receipt names that lane.
+#[cfg(test)]
+pub async fn delegated_provider(
+    client: LlmClient,
+    session: Arc<PrivacySession>,
+    usage: Arc<Mutex<(u64, u64)>>,
+    sink: TokenSink,
+) -> Result<Arc<dyn ModelProvider>, SessionStop> {
+    Ok(match client.native.is_none() {
+        true => Arc::new(ViewChatProvider::new(client, session, usage, sink).await?),
+        false => Arc::new(ViewNativeProvider::new(client, session, usage, sink).await?),
+    })
+}
+
+pub struct ViewChatProvider {
+    client: LlmClient,
+    session: Arc<PrivacySession>,
+    usage: Arc<Mutex<(u64, u64)>>,
+    sink: TokenSink,
+    round_sink: Option<RoundSink>,
+    status_sink: Option<ActivitySink>,
+    defaults: AdmittedNode,
+    /// The receipt of this provider's binding of the conversation's guard.
+    pub(crate) receipt: Arc<super::WireReceipt>,
+}
+
+impl ViewChatProvider {
+    /// `client` is an unbound Chat client. It is bound to this conversation's
+    /// guard here and nowhere else.
+    pub async fn new(
+        client: LlmClient,
+        session: Arc<PrivacySession>,
+        usage: Arc<Mutex<(u64, u64)>>,
+        sink: TokenSink,
+    ) -> Result<Self, SessionStop> {
+        session.check()?;
+        if client.native.is_some() {
+            return Err(SessionStop::Unbound);
+        }
+        let client = client
+            .with_send_guard(session.send_guard())
+            .map_err(SessionStop::Guard)?;
+        let defaults = admitted_defaults(&session, &client.chat_request_defaults()).await?;
+        Ok(Self {
+            receipt: Arc::new(super::WireReceipt {
+                #[cfg(unix)]
+                session: session.clone(),
+                #[cfg(unix)]
+                guard: session.send_guard(),
+                #[cfg(unix)]
+                native: false,
+                accepted: Default::default(),
+                at: Default::default(),
+                sinks: [
+                    std::sync::atomic::AtomicUsize::new(&*sink as *const _ as *const () as usize),
+                    Default::default(),
+                    Default::default(),
+                    // Given so far: the token sink.
+                    std::sync::atomic::AtomicUsize::new(1),
+                ],
+            }),
+            client,
+            session,
+            usage,
+            sink,
+            round_sink: None,
+            status_sink: None,
+            defaults,
+        })
+    }
+
+    /// The frontend's notifications, as the ordinary provider has them: one
+    /// before each request, and the transport's retry and warning lines.
+    /// Puts this provider behind its one shared reference and says in its
+    /// own receipt where it now is. The object a builder installs for a
+    /// lane is compared with that place.
+    pub fn shared(self) -> Arc<Self> {
+        let shared = Arc::new(self);
+        shared.receipt.at.store(
+            Arc::as_ptr(&shared) as usize,
+            std::sync::atomic::Ordering::Release,
+        );
+        shared
+    }
+
+    pub fn with_sinks(
+        mut self,
+        round_sink: Option<RoundSink>,
+        status_sink: Option<ActivitySink>,
+    ) -> Self {
+        use std::sync::atomic::Ordering;
+        // The receipt states what this provider is given here.
+        self.receipt.sinks[1].store(super::held_address!(&round_sink), Ordering::Release);
+        self.receipt.sinks[2].store(super::held_address!(&status_sink), Ordering::Release);
+        // Given now, none or not: the round sink and the status sink.
+        self.receipt.sinks[3].fetch_or(6, Ordering::AcqRel);
+        self.round_sink = round_sink;
+        self.status_sink = status_sink;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for ViewChatProvider {
+    /// The recorded text is never sent through this provider.
+    async fn complete(&self, _: ModelRequest) -> Result<ModelResponse, AgentError> {
+        Err(recorded_text_refused())
+    }
+
+    async fn complete_with_view(
+        &self,
+        req: TrackedModelRequest,
+    ) -> Result<ModelDelivery, AgentError> {
+        if let Some(round_sink) = &self.round_sink {
+            round_sink();
+        }
+        defaults_hold(
+            &self.session,
+            &self.defaults,
+            &self.client.chat_request_defaults(),
+        )?;
+        let view = self.session.chat_view(&req).map_err(fault)?;
+        let messages = to_llm_messages(&view.system, &view.messages);
+        let tools = to_openai_tools(&view.tools);
+        let (turn, request_sha256) = self
+            .client
+            .stream_view_turn(
+                &messages,
+                &tools,
+                |text| (self.sink)(text),
+                |status| {
+                    if let Some(sink) = &self.status_sink {
+                        sink(status);
+                    }
+                },
+            )
+            .await
+            .map_err(|error| AgentError::Model(error.to_string()))?;
+        let usage = Usage {
+            input_tokens: turn.usage.input_tokens,
+            output_tokens: turn.usage.output_tokens,
+        };
+        let message = to_fw_message(turn);
+        let response = ModelResponse { message, usage };
+        req.retain_received_data(&response);
+        {
+            let mut usage = self.usage.lock().unwrap();
+            usage.0 += response.usage.input_tokens;
+            usage.1 += response.usage.output_tokens;
+        }
+        // The receipt is made here, from the reply as it was received and
+        // the request it answered, before the agent reviews or commits it.
+        let receipt = received_chat_reply(
+            &self.session,
+            &req,
+            &response.message,
+            view.messages.len(),
+            request_sha256,
+        )
+        .map_err(fault)?;
+        Ok(ModelDelivery::new(
+            response,
+            SourceRef::new(Arc::new(receipt)),
+        ))
+    }
+}
+
+pub struct ViewNativeProvider {
+    client: LlmClient,
+    session: Arc<PrivacySession>,
+    usage: Arc<Mutex<(u64, u64)>>,
+    sink: TokenSink,
+    round_sink: Option<RoundSink>,
+    defaults: AdmittedNode,
+    /// Whether this provider serves the summarizer of the conversation.
+    summaries: bool,
+    /// The receipt of this provider's binding of the conversation's guard.
+    pub(crate) receipt: Arc<super::WireReceipt>,
+}
+
+impl ViewNativeProvider {
+    /// `client` is an unbound client with a native transport. It is bound to
+    /// this conversation's guard here and nowhere else.
+    pub async fn new(
+        client: LlmClient,
+        session: Arc<PrivacySession>,
+        usage: Arc<Mutex<(u64, u64)>>,
+        sink: TokenSink,
+    ) -> Result<Self, SessionStop> {
+        session.check()?;
+        if client.native.is_none() {
+            return Err(SessionStop::Unbound);
+        }
+        let client = client
+            .with_send_guard(session.send_guard())
+            .map_err(SessionStop::Guard)?;
+        let native = client.native.as_ref().ok_or(SessionStop::Unbound)?;
+        let defaults = or_return!(native.request_defaults(), SessionStop::Unbound);
+        let defaults = admitted_defaults(&session, &defaults).await?;
+        Ok(Self {
+            receipt: Arc::new(super::WireReceipt {
+                #[cfg(unix)]
+                session: session.clone(),
+                #[cfg(unix)]
+                guard: session.send_guard(),
+                #[cfg(unix)]
+                native: true,
+                accepted: Default::default(),
+                at: Default::default(),
+                sinks: [
+                    std::sync::atomic::AtomicUsize::new(&*sink as *const _ as *const () as usize),
+                    Default::default(),
+                    Default::default(),
+                    // Given so far: the token sink.
+                    std::sync::atomic::AtomicUsize::new(1),
+                ],
+            }),
+            client,
+            session,
+            usage,
+            sink,
+            round_sink: None,
+            defaults,
+            summaries: false,
+        })
+    }
+
+    /// For the summarizer of the conversation. It serves only requests the
+    /// agent composed for a summarizer: a new request made from the sources
+    /// of the messages to summarize, each reply as the text and calls that
+    /// were committed. Provider items answer the request their reply was
+    /// received for, and are not part of a summarizer's request.
+    pub fn for_summaries(mut self) -> Self {
+        self.summaries = true;
+        self
+    }
+
+    /// The frontend's notification before each request, as the ordinary
+    /// provider has it.
+    /// Puts this provider behind its one shared reference and says in its
+    /// own receipt where it now is. The object a builder installs for a
+    /// lane is compared with that place.
+    pub fn shared(self) -> Arc<Self> {
+        let shared = Arc::new(self);
+        shared.receipt.at.store(
+            Arc::as_ptr(&shared) as usize,
+            std::sync::atomic::Ordering::Release,
+        );
+        shared
+    }
+
+    pub fn with_round_sink(mut self, round_sink: Option<RoundSink>) -> Self {
+        // The receipt states what this provider is given here.
+        self.receipt.sinks[1].store(
+            super::held_address!(&round_sink),
+            std::sync::atomic::Ordering::Release,
+        );
+        // Given now, none or not: the round sink.
+        self.receipt.sinks[3].fetch_or(2, std::sync::atomic::Ordering::AcqRel);
+        self.round_sink = round_sink;
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelProvider for ViewNativeProvider {
+    /// The recorded text is never sent through this provider.
+    async fn complete(&self, _: ModelRequest) -> Result<ModelResponse, AgentError> {
+        Err(recorded_text_refused())
+    }
+
+    async fn complete_with_view(
+        &self,
+        req: TrackedModelRequest,
+    ) -> Result<ModelDelivery, AgentError> {
+        if let Some(round_sink) = &self.round_sink {
+            round_sink();
+        }
+        let native = self
+            .client
+            .native
+            .as_ref()
+            .ok_or_else(|| fault(SessionStop::Unbound))?;
+        let current = native
+            .request_defaults()
+            .map_err(|error| AgentError::Model(error.to_string()))?;
+        defaults_hold(&self.session, &self.defaults, &current)?;
+        // The view, and the provider items this conversation itself received
+        // from a client of exactly this identity. The summarizer serves only
+        // requests the agent composed for a summarizer, through their own
+        // view; every other provider refuses such a request.
+        let (view, replay) = if self.summaries {
+            (self.session.summary_view(&req).map_err(fault)?, None)
+        } else {
+            let (view, replay) = self
+                .session
+                .native_view(&req, native.identity())
+                .map_err(fault)?;
+            if replay.replies() >= NATIVE_REPLIES {
+                return Err(AgentError::Model(
+                    "Native model history exceeds its checkpoint limit.".into(),
+                ));
+            }
+            (view, Some(replay))
+        };
+        let exchange = native
+            .complete_view(
+                &view,
+                &|index, message| {
+                    replay
+                        .as_ref()
+                        .and_then(|replay| replay.items(index, message))
+                },
+                |text| (self.sink)(text),
+            )
+            .await
+            .map_err(|error| AgentError::Model(error.to_string()))?;
+        req.retain_received_data(&exchange.response);
+        {
+            let mut usage = self.usage.lock().unwrap();
+            let input = usage
+                .0
+                .checked_add(exchange.response.usage.input_tokens)
+                .ok_or_else(|| AgentError::Model("Model input usage overflow.".into()))?;
+            let output = usage
+                .1
+                .checked_add(exchange.response.usage.output_tokens)
+                .ok_or_else(|| AgentError::Model("Model output usage overflow.".into()))?;
+            *usage = (input, output);
+        }
+        // The receipt is made from the reply and its items as received,
+        // before the agent reviews or commits the reply.
+        let receipt = received_native_reply(
+            &self.session,
+            &req,
+            &exchange.response.message,
+            native.identity(),
+            view.messages.len(),
+            exchange.request_sha256,
+            exchange.items,
+        )
+        .map_err(fault)?;
+        Ok(ModelDelivery::new(
+            exchange.response,
+            SourceRef::new(Arc::new(receipt)),
+        ))
+    }
+}

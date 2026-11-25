@@ -1,14 +1,99 @@
 # Privacy hooks — masked model data, restored replies and file edits
 
+Private Step A now provides [real key and trusted policy ownership](privacy-key.md):
+a password-wrapped random vault key, strict user-source policy before project
+merges, create-only initialization and existing-only opening. Enabled policy
+still refuses as unavailable in every frontend but one. The
+[owned password popup and private composition](privacy-bootstrap.md) read
+the retained non-echoing terminal directly and bind key/policy owners to a
+pinned detector and fresh conversation. On the unmerged privacy branch only
+the eligible interactive `craftsman` invocation selects them, through the
+[interactive route](privacy-startup.md#the-normal-interactive-route). The
+merged and installed builds select none of this.
+The private owned `/clear` now retires old work/key/session owners, reacquires
+the password on its sole retained reader and builds a distinct fresh thread.
+Ordinary macOS PTYs cover that rebuild, Escape/Ctrl-C cancellation and a
+decoded ordinary draft retained across the popup; the first lost-reply capture
+and larger union's unwind warning remain failed evidence. This is no normal
+activation, continuous input/OS race guarantee or final native validation.
+The corrected design retains exact accepted input/results/history/checkpoints
+and builds a separate masked model view. This is no at-rest history or complete
+privacy claim. Full expected-set Agent construction, producer/native/HITL/
+display/file adapters, activation and native validation remain pending;
+reopen/transfer are explicitly unsupported.
+The local key/UI A+B340 test binary has a retained macOS unwind encoding
+warning. Source reductions keep the original limits and ownership behavior;
+that warning remains a validation blocker, not evidence for another union.
+
 Status, November 22, 2026: private encrypted aliases, an approved source-built
 WASM detector and host restoration views are implemented and merged under
 PR #32. The PR head and the separate run on the merged main each passed all
 four hosted contexts in both native modes.
-Normal Craftsman sessions do not select this hook yet. Actual key ownership,
-required-hook policy and model/file integration remain open. Existing gadget
+Normal Craftsman sessions do not select this hook yet. Public key selection,
+required-hook enforcement and display/file integration remain open. Existing gadget
 grants and permissions remain in force.
 
-The selected behavior is to replace supported personal data before a model
+A private [detector contract and admission core](privacy-admission.md) now
+exists as a local, unmerged slice: a source-pinned detector call on the gadget
+engine and an owner that turns one actual raw capture into an admitted node
+only after the vault's commit and the send guard's admission. It is not
+connected to any normal display or file path. The private bootstrap now
+composes its actual key/user-policy owners with this admission core.
+[Privacy provenance](privacy-provenance.md) records how sources and model views
+reach a request. A private path now exists for all four model wires, from typed
+input and tool results through the framework agent and the shared session
+builder to the existing clients and guard, and the protected repair of tool
+calls runs on it as a recorded change. The system prompt, the todo list,
+memory, todo reminders and task workflow notes reach a request as parts with
+their own origins, and compaction asks its summarizer with views and keeps the
+summary as model text in an explicit source-derived request. Kept native items
+remain bound to their original replies after movement; changed native replies
+refuse normal replay. Delegated tasks, messages and notification envelopes now
+have actual agent/parent/commit witnesses in the private combined source.
+Only that unmerged interactive route selects it; no other session does. The
+local union includes actual
+captured-user key/policy, owned private receiver/modal/input/fresh-clear,
+controller adapters, opaque inline decisions and typed source-bound file
+consumers. Full frontend coverage and independent combined-source/full-native
+proof remain pending; unsupported channels refuse and normal activation stays
+unavailable.
+Sealed parked-call decisions retain test-only registered-input primitives and
+actual commit/invocation witnesses; production has no opaque parked UI adapter
+and remains unregistered. Restoration has a private path of its own: a
+person's view of a committed reply, a hold on a streamed reply, and file writes
+and edits that are derived with the real content in the agent's own event
+before a call is reviewed, from the plan the agent issued. A gate's policy or
+a person at its prompt decides on that content; the decision is recorded by
+the independently registered input/policy producer, carried to the terminal and checked again
+where the file is written. This holds for the root agent at the approval gate
+and for each delegated agent in its own lane at its own gate; the file tool
+keeps its workspace checkpoint, diagnostics and result around the derived
+write. The terminal's bridge registers a reply sink,
+and its application draws a committed reply once through the safe backend;
+see [privacy-restore.md](privacy-restore.md). The core now supplies real
+pre-review/parked/terminal events and carriage of the source-bound shown digest;
+the restoration candidate consumes the real pre-review source and digest,
+and the local correction adds independently registered inline human and
+automatic-policy issuers. The real private UI must return the original opaque
+decision for that actual request/presentation; an operation-owned decision or
+ordinary approval callback grants no such authority. Captured key/user-policy
+ownership now exists privately in A. The owned terminal consumer and fresh
+unlock clear and guarded data consumers are integrated in local source;
+independent combined-source/native proof, other required frontend adapters and
+normal activation remain unfinished. The target diagram
+below predates that contract where it shows masked history: stored history
+stays exact and the model gets a separate view.
+
+Accepted-input/controller and host-check helpers retain actual events rather
+than inferring origin from text, role, index or custom JSON. Actual stop-owner
+checks precede new selected invocations. An unfinished selected failure runs
+the original end handler and final save; an already attempted handler or failed
+save is not replayed. Entry/end/save errors and real child return data remain
+in private memory. These helpers grant no app origin or permission, and
+selected controls still refuse without their concrete adapters. Failed
+verification and the native linker warning remain open evidence.
+
+The intended enabled behavior is to replace supported personal data before a model
 request and restore known replacements in **displayed replies and file edits**.
 For example, a model can edit a document containing an email alias; Craftsman
 would restore the real email in the proposed local edit before its normal
@@ -117,6 +202,9 @@ JSON restoration changes complete string-value tokens with appropriate escaping.
 It keeps surrounding keys, numbers, whitespace and unchanged string tokens
 byte-exact; keys, duplicate decoded keys and malformed documents refuse. This
 does not classify a JSON value as non-executable in its consuming application.
+Likewise, .md, .log and .json extensions alone confer no such guarantee; field,
+format and application guards plus actual source/digest/approval binding are
+required before any restoration effect.
 Partial edits and language-specific code strings still need their own parser,
 source/content binding and real tool guard.
 
@@ -508,3 +596,148 @@ general effect of the switch remain not established. PR #32 is merged as
 independent audit at `dffddeae`: all four contexts, every mandatory step and
 both native modes, with both original Windows parents passing again. It covers
 this foundation only. Normal privacy remains off.
+
+
+## Core event corrections — November 22, 2026
+
+The local correction branch combines the immutable transport/source-part slices
+with framework-issued events. It remains unmerged, uninstalled and unselected;
+the installed `a903af65` guard is separate. No frontend, key/policy, restoration
+or normal privacy selection is enabled by this work.
+
+Typed turn, resume and idle-compaction entries acquire activity before comparing
+state and source. Internal checks use explicit state-then-source guard scopes.
+Every retained witness binds the complete immutable message, including role,
+call id and error status, to its actual event. Public state, a caller message,
+equal content, a label, a digest or an ordinal cannot issue one.
+
+A private fact owner keeps actual provider returns, received replies and usage,
+terminal calls and outcomes, and final-chain outcomes before fallible source or
+review work. Returned data is not a transport, origin, save, permission or billing
+certificate. Selected failure closes future required privacy work, retains real
+facts and accepted input, and follows the actual journal/final-save path; a save
+failure remains a failure and is not retried as proof. Selected cancellation
+seals new steering and keeps already accepted originals and sources through real
+call balancing and final save. The unselected paths keep their existing behavior.
+
+A parked-call witness and a private registered human-input owner replace the
+caller action factory. The actual absent, denied, approved, Always or edited
+choice and raw edited bytes are retained. Every `ApproveEdited` remains human
+origin even when its JSON equals model bytes, and is admitted before effects.
+An issued alias in raw edited input refuses. An Always permission update happens
+only after the sealed decision passes its source/admission checks. The local
+inline gate correction supplies actual registered request/decision consumers;
+A's real UI receiver/modal and `ask_user` adapters remain separate work.
+
+Each post-chain terminal invocation gets its own call, decision and source
+witness, with a synchronous live check immediately before the actual tool poll.
+That source check grants no tool permission. Completed tool and chain facts are
+kept independently of whether any model view can be published.
+
+The one 45-second admission-entry clock is checked after actual vault return,
+after guard work and immediately before node release. Completed map facts
+survive late refusal. The 16-slot admission bound, vault five-second/native busy
+limits and original terminal bounds remain; queued time does not prove blocking
+worker quiescence. Final pinned-source confirmation requires available before
+and after modified timestamps and relative no-follow identities from the
+retained root. Same-user rename/race limits remain observations, not containment.
+
+Compaction keeps a distinct actual working-state stage; its retained witness is
+issued only when that stage really becomes canonical state. The summarizer's
+unrecorded host instruction has a request-input witness, not a retained commit.
+Compaction uses an explicit source-derived summarizer request. Unchanged kept
+native replies retain their original items after movement, together with the
+original client/request context. The summarizer sees committed text/calls in its
+explicit projection; opaque originals stay in their private source receipts.
+A changed native reply refuses later replay instead of silently stripping items.
+A policy requiring opaque inspectability still refuses those wires at startup.
+Configured controls and real frontend/inline-human adapters
+remain incomplete.
+
+Validation belongs to its exact source head in
+`target/verification/privacy-core-frontier-corrections`. Independent source
+review, combined-source native/hosted proof and separate merged-main validation
+remain gates before integration/install. The restricted private MAIN
+callback/budget-boundary, equivalent and close-between-retry scenarios remain
+UNEXECUTED and UNINSPECTED; no adverse main-loop callback/budget test was added.
+The original $24.285934/$25 ledger and 40 unknown reservations are unchanged.
+
+
+## Controller adapters — November 22, 2026
+
+Declared verification, context compilation and failure controls can now be
+part of a privacy conversation's session. The builder makes the session's
+original controllers from the user's settings and installs them behind two
+private adapters; nothing is left out and nothing else about those
+controllers changes. The details are in
+[privacy-provenance.md](privacy-provenance.md#controller-adapters).
+
+What runs in built sessions, on all four wires, with a real vault, guard,
+store, files and commands:
+
+- context and failure controls: the record and the controllers' own keys are
+  exact, the context section is sent as source parts with the input quoted as
+  the input itself is seen, and the advisory after a repeated identical error
+  is fixed text;
+- a declared check the model asks for: a person reviews the protected change
+  as it really is, the real command runs, the recorded result is its real
+  output and status, and the model is given that result's view.
+
+What does not run: a check the verification controller schedules itself after
+the model's answer. On the current framework base an agent with a source view
+closes its turn's window before the completion check and then refuses the
+scheduled call. The fixture for this case is kept and fails there. A local
+experiment with a one-condition change in the framework let that fixture pass;
+it was not committed and is not evidence for this base. Two more gaps are the
+framework's: a stop by the completion controller appends a note without an
+event, and a manual compaction does not call the controller's callback.
+
+This remains unmerged, uninstalled and unselected. No frontend, key, policy or
+normal privacy selection is enabled by it, stored history is not encrypted or
+redacted, and no paid call was made.
+
+
+## Controller adapters on the corrected framework — November 23, 2026
+
+The framework now keeps a turn of an agent with a source view open through
+its completion check, issues an event for its fixed stop note, and tells the
+installed controller of an idle compaction with an event. The adapters above
+consume all three; the section of November 22 stays as the record of the base
+where the scheduled check failed.
+
+In built sessions, on all four wires:
+
+- the check the verification controller schedules runs with the protected
+  review a person is shown, the real command and its real result, and the
+  model is given that result's view;
+- a stop by that controller, after a check a person turned down and after a
+  check that really failed with no repair round left, returns the
+  controller's own refusal; the agent's note is recorded with its source and
+  the conversation ends there, with nothing of that turn sent afterwards;
+- a manual compaction tells the original controller once, on its own keys,
+  and the context section still quotes the first input afterwards.
+
+Still separate: the key, the user's policy, the terminal's entry, sealed
+inline decisions, any default-on selection, and native or hosted validation.
+Nothing is merged, installed or selected, stored history is not encrypted or
+redacted, and no paid call was made.
+
+
+## Internal contact before-image refusal — November 23, 2026
+
+The private file consumer now rejects unsupported containing before images
+before restoring an alias or reporting a selector miss/count. It borrows the
+actual bounded capture and reuses the final validator's compiled contact-data
+checks, including complete JSON shape, decoded duplicate keys, permitted values
+and complete escape/scalar boundaries. Unsupported, malformed, invalid UTF-8 or
+over-limit captures return uniform `NoRule`. This internal filter grants no
+source, user policy, image or effect authority. Final supported before/after
+images, ranges, current captured-user policy, retained directory, opaque human
+decision and tool permission remain separate requirements.
+
+The main gate's missing-producer refusal now ends only its own tracked review,
+as the delegated gate already did. This branch was reviewed statically; no new
+main callback, closure or budget scenario was run. The local correction and
+approved scheduling substitutions still need combined size, full-suite,
+independent source and native/hosted proof. Normal selection, installation,
+restoration activation and publication remain gated.

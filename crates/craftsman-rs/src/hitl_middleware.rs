@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub struct ApprovalMiddleware {
+    inline_source: Option<Arc<crate::privacy_entry::InlineDecisionProducer>>,
+    privacy_prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
     approval: Arc<Mutex<ApprovalState>>,
     /// Route activity lines to stderr (one-shot) instead of stdout (REPL), so
     /// the streamed answer on stdout stays clean in headless mode.
@@ -32,6 +34,23 @@ pub struct ApprovalMiddleware {
     call_approval_prompt: Option<CallApprovalPrompt>,
     workspace_root: PathBuf,
     verification: Option<Arc<crate::verification::VerificationController>>,
+}
+
+/// What this gate holds of a request's owners, read from the gate: the two
+/// activity sinks, the approval prompt, the call prompt and the prompt for
+/// private decisions.
+impl crate::privacy_session::Consumer for ApprovalMiddleware {
+    #[cfg(unix)]
+    fn held(&self) -> [usize; 5] {
+        use crate::privacy_session::held_address;
+        [
+            held_address!(&self.activity_sink),
+            held_address!(&self.tool_activity_sink),
+            held_address!(&self.approval_prompt),
+            held_address!(&self.call_approval_prompt),
+            held_address!(&self.privacy_prompt),
+        ]
+    }
 }
 
 impl ApprovalMiddleware {
@@ -63,6 +82,8 @@ impl ApprovalMiddleware {
         workspace_root: PathBuf,
     ) -> Self {
         Self {
+            inline_source: None,
+            privacy_prompt: None,
             approval,
             activity_to_stderr,
             activity_sink,
@@ -76,6 +97,30 @@ impl ApprovalMiddleware {
 
     pub fn with_call_prompt(mut self, prompt: Option<CallApprovalPrompt>) -> Self {
         self.call_approval_prompt = prompt;
+        self
+    }
+    pub(crate) fn with_privacy_prompt(
+        mut self,
+        prompt: Option<Arc<crate::privacy_entry::PrivacyApprovalPrompt>>,
+    ) -> Self {
+        self.privacy_prompt = prompt;
+        self
+    }
+    pub(crate) fn with_privacy_boundary(
+        mut self,
+        boundary: Option<&Arc<crate::privacy_session::ConversationBoundary>>,
+    ) -> Self {
+        // Registration belongs to the installed gate's own retained policy
+        // and input callback, not a caller's operation or decision tuple.
+        self.inline_source = boundary.map(|boundary| {
+            crate::privacy_entry::InlineDecisionProducer::register(
+                boundary,
+                self.approval.clone(),
+                self.workspace_root.clone(),
+                self.privacy_prompt.clone(),
+                self.verification.clone(),
+            )
+        });
         self
     }
 
@@ -172,13 +217,24 @@ impl AgentMiddleware for ApprovalMiddleware {
         "hitl"
     }
 
+    /// The gate lets a call through unchanged or answers it itself. It never
+    /// touches a recorded message or the system text.
+    fn view_support(&self) -> craftsman_harness::provenance::ViewSupport {
+        craftsman_harness::provenance::ViewSupport::Preserving
+    }
+
     async fn around_tool(
         &self,
         call: ToolCall,
         ctx: &mut ToolCtx<'_>,
         next: ToolNext<'_>,
     ) -> Result<ToolOutcome, AgentError> {
-        let review = match self.verification.as_ref().filter(|_| call.name == "verify") {
+        let tracked = next.tracked();
+        let review = match self
+            .verification
+            .as_ref()
+            .filter(|_| call.name == "verify" && tracked.is_none())
+        {
             Some(controller) => Some(controller.approval_context().await?),
             None => None,
         };
@@ -186,10 +242,25 @@ impl AgentMiddleware for ApprovalMiddleware {
             || summarize_call(&call.name, &call.args),
             |review| review.summary.clone(),
         );
-        let details = review.as_ref().map_or_else(
-            || crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root),
-            |review| review.details.clone(),
-        );
+        // In a privacy conversation, what a file write or edit will really
+        // do was derived when the agent planned the call, before this
+        // review. The policy and a person then decide on the real content.
+        // The call itself stays as the model wrote it. A call that could
+        // not be derived is answered with the refusal before any effect.
+        let reviewed = tracked
+            .as_ref()
+            .and_then(crate::privacy_session::ReviewedFile::of);
+        if let Some(reviewed) = &reviewed {
+            if let Err(refusal) = reviewed.derived() {
+                return Ok(ToolOutcome::err(refusal.to_string()));
+            }
+        }
+        // Ordinary sinks/ACP frames retain MODEL arguments, never the decoded
+        // preview. Only the registered private UI request may carry that view.
+        let details = match &review {
+            Some(review) => review.details.clone(),
+            None => crate::tools::approval_details_at(&call.name, &call.args, &self.workspace_root),
+        };
         let call_id = call.id.clone();
         let tool = call.name.clone();
         self.emit(&summary);
@@ -200,7 +271,33 @@ impl AgentMiddleware for ApprovalMiddleware {
             details: details.clone(),
         });
 
-        let decision = if let (Some(controller), Some(review)) = (&self.verification, &review) {
+        let mut running_call = call.clone();
+        let decision = if let Some(tracked) = &tracked {
+            let Some(producer) = &self.inline_source else {
+                if let Some(reviewed) = &reviewed {
+                    reviewed.refused_before_receive(tracked);
+                }
+                return Ok(ToolOutcome::err(
+                    "This selected call has no registered input/policy producer.",
+                ));
+            };
+            match producer.receive_inline(tracked, None).await {
+                Ok(resolution) => {
+                    running_call = resolution.call;
+                    match resolution.permission {
+                        ToolPermission::Allow => None,
+                        ToolPermission::Deny(reason) => Some(Decision::Reject(reason)),
+                        ToolPermission::Prompt => {
+                            return Ok(ToolOutcome::err(
+                                "This call has no actual answered approval.",
+                            ));
+                        }
+                    }
+                }
+                Err(error @ AgentError::Cancelled) => return Err(error),
+                Err(refusal) => return Ok(ToolOutcome::err(refusal.to_string())),
+            }
+        } else if let (Some(controller), Some(review)) = (&self.verification, &review) {
             let (plan, allowed) = {
                 let state = self.approval.lock().unwrap();
                 (
@@ -237,7 +334,7 @@ impl AgentMiddleware for ApprovalMiddleware {
             return Ok(ToolOutcome::err(content));
         }
 
-        let outcome = match next.run(call, ctx).await {
+        let outcome = match next.run(running_call, ctx).await {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.emit_tool_event(ToolActivityEvent::Finished {

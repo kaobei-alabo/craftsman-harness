@@ -1,10 +1,29 @@
 use crate::error::AgentError;
 use crate::middleware::AgentMiddleware;
 use crate::model::ToolDef;
-use crate::state::{AgentState, Todo};
+use crate::provenance::{OutcomePart, SourcePart, TrackedDispatch, TrackedPrepare, ViewSupport};
+use crate::state::{AgentState, Todo, TodoStatus};
 use crate::tool::{Tool, ToolCtx, ToolOutcome};
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// The fixed pieces of the todo section, each owned once for the process so
+/// that the same piece is the same source in every round.
+fn fixed(cell: &'static OnceLock<Arc<str>>, text: &str) -> Arc<str> {
+    cell.get_or_init(|| Arc::from(text)).clone()
+}
+
+fn status_label(status: TodoStatus) -> Arc<str> {
+    static PENDING: OnceLock<Arc<str>> = OnceLock::new();
+    static IN_PROGRESS: OnceLock<Arc<str>> = OnceLock::new();
+    static COMPLETED: OnceLock<Arc<str>> = OnceLock::new();
+    let cell = match status {
+        TodoStatus::Pending => &PENDING,
+        TodoStatus::InProgress => &IN_PROGRESS,
+        TodoStatus::Completed => &COMPLETED,
+    };
+    fixed(cell, &format!("- [{status:?}] "))
+}
 
 /// Prompt section describing the `write_todos` tool.
 // PROVENANCE(P5): adapted from langchain 1.2.4 WRITE_TODOS_SYSTEM_PROMPT (todo.py);
@@ -67,6 +86,41 @@ impl Tool for WriteTodosTool {
         let listing = serde_json::to_string(&ctx.state.todos).unwrap_or_default();
         Ok(ToolOutcome::ok(format!("Updated todo list to {listing}")))
     }
+
+    /// The same call on an agent with a source view. The stored list is the
+    /// `content` strings of this call's own arguments, in order, and the tool
+    /// says so, so that each stored todo keeps the call it came from.
+    async fn call_with_view(
+        &self,
+        args: serde_json::Value,
+        ctx: &mut ToolCtx<'_>,
+        tracked: &TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        let outcome = self.call(args, ctx).await?;
+        tracked.todos_from_arguments(
+            (0..ctx.state.todos.len())
+                .map(|index| format!("/todos/{index}/content"))
+                .collect(),
+        );
+        // The outcome repeats the list. Its text is the tool's own fixed
+        // words and punctuation around the JSON encoding of each stored
+        // todo's content, which is a string of this call's arguments.
+        let fixed = |text: String| OutcomePart::Fixed(Arc::from(text));
+        let mut parts = vec![fixed("Updated todo list to [".into())];
+        for (index, todo) in ctx.state.todos.iter().enumerate() {
+            let before = if index == 0 { "" } else { "," };
+            parts.push(fixed(format!("{before}{{\"content\":")));
+            parts.push(OutcomePart::ArgumentJson {
+                pointer: format!("/todos/{index}/content"),
+                text: Arc::from(serde_json::to_string(&todo.content).unwrap_or_default()),
+            });
+            let status = serde_json::to_string(&todo.status).unwrap_or_default();
+            parts.push(fixed(format!(",\"status\":{status}}}")));
+        }
+        parts.push(fixed("]".into()));
+        tracked.outcome_is(parts);
+        Ok(outcome)
+    }
 }
 
 #[async_trait]
@@ -90,6 +144,46 @@ impl AgentMiddleware for TodoListMiddleware {
         }
         st.system_extras.push(section);
         Ok(())
+    }
+
+    /// On an agent with a source view the section is the same text, added as
+    /// parts: the fixed prompt, heading, status labels and line ends are the
+    /// application's, and each todo's text is the text of the call that
+    /// stored it.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        static PROMPT: OnceLock<Arc<str>> = OnceLock::new();
+        static HEADING: OnceLock<Arc<str>> = OnceLock::new();
+        static LINE_END: OnceLock<Arc<str>> = OnceLock::new();
+        let mut parts = vec![SourcePart::fixed(fixed(&PROMPT, TODO_SYSTEM_PROMPT))];
+        let todos = prepare.state().todos.clone();
+        if !todos.is_empty() {
+            parts.push(SourcePart::fixed(fixed(
+                &HEADING,
+                "\n\nCurrent todo list:\n",
+            )));
+            for (index, todo) in todos.iter().enumerate() {
+                let from = prepare.todo_origin(index).ok_or_else(|| {
+                    AgentError::State(
+                        "A stored todo of this conversation has no source. Nothing further was sent."
+                            .into(),
+                    )
+                })?;
+                parts.push(SourcePart::fixed(status_label(todo.status)));
+                parts.push(SourcePart {
+                    text: Arc::from(todo.content.as_str()),
+                    from,
+                });
+                parts.push(SourcePart::fixed(fixed(&LINE_END, "\n")));
+            }
+        }
+        prepare.add_system(parts)
     }
 }
 

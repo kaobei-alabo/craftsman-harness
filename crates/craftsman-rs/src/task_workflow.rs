@@ -83,6 +83,36 @@ impl AgentMiddleware for TaskWorkflowMiddleware {
         Ok(())
     }
 
+    /// On an agent with a source view the same two fixed notes are added as
+    /// parts. Its observation of tool outcomes stays in its own memory and
+    /// changes nothing the agent records.
+    fn view_support(&self) -> craftsman_harness::provenance::ViewSupport {
+        craftsman_harness::provenance::ViewSupport::Tracked
+    }
+
+    async fn prepare_model_with_view(
+        &self,
+        prepare: &mut craftsman_harness::provenance::TrackedPrepare<'_>,
+    ) -> Result<(), AgentError> {
+        use craftsman_harness::provenance::SourcePart;
+        use std::sync::{Arc, OnceLock};
+        static WORKFLOW: OnceLock<Arc<str>> = OnceLock::new();
+        static REPEATED: OnceLock<Arc<str>> = OnceLock::new();
+        prepare.add_system(vec![SourcePart::fixed(
+            WORKFLOW
+                .get_or_init(|| Arc::from(WORKFLOW_GUIDANCE))
+                .clone(),
+        )])?;
+        if self.progress.lock().unwrap().repeated {
+            prepare.add_system(vec![SourcePart::fixed(
+                REPEATED
+                    .get_or_init(|| Arc::from(REPEATED_ERROR_GUIDANCE))
+                    .clone(),
+            )])?;
+        }
+        Ok(())
+    }
+
     async fn around_tool(
         &self,
         call: ToolCall,

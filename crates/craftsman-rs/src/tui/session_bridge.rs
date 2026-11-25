@@ -26,6 +26,9 @@ mod control_tests;
 #[path = "session_bridge/lifecycle_tests.rs"]
 mod lifecycle_tests;
 #[cfg(test)]
+#[path = "session_bridge/privacy_display_tests.rs"]
+pub(crate) mod privacy_display_tests;
+#[cfg(test)]
 #[path = "session_bridge/reliability_tests.rs"]
 mod reliability_tests;
 #[cfg(test)]
@@ -45,6 +48,9 @@ pub(super) enum ApprovalChoice {
 pub(super) enum UiEvent {
     ModelRoundStarted,
     Delta(String),
+    /// A committed reply of a privacy conversation, as a person may read
+    /// it. Such a conversation sends no deltas.
+    HumanReply(crate::privacy_session::HumanReply),
     Activity(String),
     ToolActivity(ToolActivityEvent),
     Approval {
@@ -52,6 +58,11 @@ pub(super) enum UiEvent {
         summary: String,
         details: String,
         response: std_mpsc::Sender<ApprovalChoice>,
+    },
+    #[cfg(unix)]
+    PrivacyApproval {
+        request: crate::privacy_entry::PrivacyApprovalRequest,
+        response: std_mpsc::Sender<Option<crate::privacy_entry::PrivacyApprovalDecision>>,
     },
     AskUser {
         question: String,
@@ -118,27 +129,30 @@ impl CaptureBuildOwner {
     }
 }
 
-struct CancelPrompt(tokio::task::JoinHandle<()>);
+pub(super) struct CancelPrompt(tokio::task::JoinHandle<()>);
 impl Drop for CancelPrompt {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-fn cancel_prompt<T: Send + 'static>(
+pub(super) fn cancel_prompt<T: Send + 'static>(
     turn: Option<craftsman_harness::TurnCancellation>,
     response: std_mpsc::Sender<T>,
     refusal: T,
 ) -> Option<CancelPrompt> {
     turn.map(|turn| {
-        CancelPrompt(tokio::spawn(async move {
+        CancelPrompt(crate::util::spawn_unit(async move {
             turn.cancelled().await;
             let _ = response.send(refusal);
         }))
     })
 }
 
-fn scoped_prompt(event: UiEvent, turn: &Option<craftsman_harness::TurnCancellation>) -> UiEvent {
+pub(super) fn scoped_prompt(
+    event: UiEvent,
+    turn: &Option<craftsman_harness::TurnCancellation>,
+) -> UiEvent {
     match turn {
         Some(turn) => UiEvent::ScopedPrompt {
             cancellation: turn.clone(),
@@ -183,13 +197,14 @@ impl UiBridge {
         agent::build_session_ext(cfg, approval, "", false, false, thread_id, extras).await
     }
 
-    fn session_extras(&self) -> SessionExtras {
+    pub(super) fn session_extras(&self) -> SessionExtras {
         let round_tx = self.tx.clone();
         let token_tx = self.tx.clone();
         let activity_tx = self.tx.clone();
         let tool_activity_tx = self.tx.clone();
         let approval_tx = self.tx.clone();
         let ask_tx = self.tx.clone();
+        let reply_tx = self.tx.clone();
         SessionExtras {
             interrupt_model_on_cancel: true,
             terminal_round_limits: true,
@@ -205,6 +220,12 @@ impl UiBridge {
             })),
             token_sink: Some(Arc::new(move |text: &str| {
                 let _ = token_tx.send(UiEvent::Delta(text.to_string()));
+            })),
+            // Only a privacy conversation uses this: its replies arrive
+            // here once they are committed, and its stream never reaches
+            // the token sink above.
+            human_reply_sink: Some(Arc::new(move |reply| {
+                let _ = reply_tx.send(UiEvent::HumanReply(reply));
             })),
             activity_sink: Some(Arc::new(move |line: &str| {
                 let _ = activity_tx.send(UiEvent::Activity(line.to_string()));
@@ -234,7 +255,7 @@ impl UiBridge {
                 {
                     return ApprovalPromptResult::Reject(String::new());
                 }
-                let result = tokio::task::block_in_place(|| receive.recv());
+                let result = crate::util::block_in_place(|| receive.recv());
                 if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
                     return ApprovalPromptResult::Reject(String::new());
                 }
@@ -258,7 +279,7 @@ impl UiBridge {
                         &turn,
                     ))
                     .ok()?;
-                let answer = tokio::task::block_in_place(|| receive.recv())
+                let answer = crate::util::block_in_place(|| receive.recv())
                     .ok()
                     .flatten();
                 if turn.as_ref().is_some_and(|turn| turn.is_cancelled()) {
@@ -462,7 +483,7 @@ impl AgentSlot {
         let turn = self.cancellation.new_turn();
         let cancellation = turn.clone();
         let tx = self.bridge.tx.clone();
-        self.retired.spawn(async move {
+        crate::util::spawn_in(&mut self.retired, async move {
             let current = cfg.model.clone();
             let group_providers = !cfg.providers.is_empty();
             let result = tokio::select! {
@@ -486,7 +507,11 @@ impl AgentSlot {
                         .map(|models| (models, available))
                 } => result,
             };
-            let _ = tx.send(UiEvent::ModelCatalogLoaded { current, group_providers, result });
+            let _ = tx.send(UiEvent::ModelCatalogLoaded {
+                current,
+                group_providers,
+                result,
+            });
         });
         turn
     }
@@ -564,12 +589,23 @@ impl Drop for AgentSlot {
 
 pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Session>) {
     match event {
+        #[cfg(unix)]
+        UiEvent::PrivacyApproval { response, .. } => {
+            // Only the real private receiver retains the core Ui owner and
+            // installs its bound modal. An ordinary receiver cannot approve it.
+            let _ = response.send(None);
+            app.push_error("This terminal receiver cannot present a private approval request.");
+        }
         UiEvent::ScopedPrompt {
             cancellation,
             event,
         } => {
             if cancellation.is_cancelled() {
                 match *event {
+                    #[cfg(unix)]
+                    UiEvent::PrivacyApproval { response, .. } => {
+                        let _ = response.send(None);
+                    }
                     UiEvent::Approval { response, .. } => {
                         let _ = response.send(ApprovalChoice::Deny(String::new()));
                     }
@@ -633,6 +669,7 @@ pub(super) fn handle_ui_event(app: &mut App, event: UiEvent, session: Option<&Se
             app.dirty = true;
         }
         UiEvent::Delta(delta) => app.append_delta(delta),
+        UiEvent::HumanReply(reply) => app.show_human_reply(reply),
         UiEvent::Activity(line) => app.activity(line),
         UiEvent::ToolActivity(event) => match event {
             ToolActivityEvent::Started {

@@ -21,6 +21,10 @@ use std::time::{Duration, Instant, SystemTime};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Engine, Store, Trap, UpdateDeadline};
 
+// Additive host-selected call path. Nothing above or below it is changed.
+mod pinned;
+pub(crate) use pinned::PinnedSource;
+
 #[derive(Clone)]
 pub struct RuntimeOptions {
     pub timeout: Duration,
@@ -237,7 +241,34 @@ pub struct GadgetRuntime {
     catalog_seen: Mutex<BTreeSet<String>>,
 }
 
+/// One number for a set of allowed gadget ids: how many there are, with
+/// every byte of every id folded in, in the set's own order; zero for the
+/// empty set. Equal sets give equal numbers. It serves to compare what a
+/// request allowed with what a constructed runtime holds; two different
+/// sets could give one number, so it is a comparison and not a proof.
+pub(crate) fn allowed_mark(allowed: &BTreeSet<String>) -> usize {
+    let mut mark = allowed.len();
+    for id in allowed {
+        for byte in id.as_bytes() {
+            mark = mark.wrapping_mul(31).wrapping_add(*byte as usize);
+        }
+        mark = mark.wrapping_mul(31).wrapping_add(id.len());
+    }
+    mark
+}
+
 impl GadgetRuntime {
+    /// What this runtime itself holds from its construction: the mark of
+    /// its allowed gadget ids, and whether it trusts the workspace.
+    // Read only by the unix-only check of a built session.
+    #[cfg(unix)]
+    pub(crate) fn allowance(&self) -> (usize, bool) {
+        (
+            allowed_mark(&self.options.allowed_gadgets),
+            self.options.trust_workspace,
+        )
+    }
+
     pub fn new(
         workspace: &Path,
         config: &Path,
@@ -324,7 +355,7 @@ impl GadgetRuntime {
             (self.workspace.join(".craftsman/gadgets"), true),
         ];
         let scans = self.scans.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking(move || {
             let mut effective = BTreeMap::new();
             let mut seen = BTreeSet::new();
             for (root, project) in roots {
@@ -447,7 +478,7 @@ impl GadgetRuntime {
         };
         let grants = self.grants.clone();
         let copy = bundle.clone();
-        if tokio::task::spawn_blocking(move || {
+        if crate::util::spawn_blocking(move || {
             grants.approved(
                 &copy.manifest.id,
                 &copy.source,
@@ -478,14 +509,14 @@ impl GadgetRuntime {
             serde_json::to_string_pretty(&bundle.manifest).map_err(io_error)?
         );
         let decision =
-            tokio::task::spawn_blocking(move || callback("gadget_call", &summary, &details))
+            crate::util::spawn_blocking(move || callback("gadget_call", &summary, &details))
                 .await
                 .map_err(io_error)?;
         match decision {
             ApprovalPromptResult::Approve | ApprovalPromptResult::ApproveAlways => {
                 let grants = self.grants.clone();
                 let bundle = bundle.clone();
-                tokio::task::spawn_blocking(move || {
+                crate::util::spawn_blocking(move || {
                     grants.approve(
                         &bundle.manifest.id,
                         &bundle.source,
@@ -514,7 +545,7 @@ impl GadgetRuntime {
         let source = bundle.source.clone();
         let expected = hash.clone();
         let engine = self.engine.clone();
-        let component = tokio::task::spawn_blocking(move || {
+        let component = crate::util::spawn_blocking(move || {
             let bytes = read_bounded(&source, "gadget.wasm", MAX_COMPONENT_BYTES)?;
             if digest(&bytes) != expected {
                 return Err(GadgetError::new(

@@ -370,7 +370,7 @@ impl Drop for LspManager {
             .collect::<Vec<_>>();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             for client in clients {
-                runtime.spawn(async move {
+                crate::util::spawn_unit_on(&runtime, async move {
                     client.stop().await;
                 });
             }
@@ -435,7 +435,7 @@ impl LspClient {
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
         if let Some(mut stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
-            tokio::spawn(async move {
+            crate::util::spawn_unit(async move {
                 let mut buffer = [0u8; 1024];
                 while let Ok(count) = stderr.read(&mut buffer).await {
                     if count == 0 {
@@ -452,7 +452,7 @@ impl LspClient {
         }
 
         let (outgoing, mut outgoing_rx) = mpsc::unbounded_channel::<Value>();
-        tokio::spawn(async move {
+        crate::util::spawn_unit(async move {
             let mut stdin = stdin;
             while let Some(message) = outgoing_rx.recv().await {
                 let Ok(body) = serde_json::to_vec(&message) else {
@@ -474,7 +474,7 @@ impl LspClient {
         let root_uri = Url::from_directory_path(root)
             .map_err(|_| format!("could not convert {} to a file URI", root.display()))?
             .to_string();
-        tokio::spawn(read_loop(
+        crate::util::spawn_unit(read_loop(
             BufReader::new(stdout),
             ReadLoopState {
                 pending: pending.clone(),

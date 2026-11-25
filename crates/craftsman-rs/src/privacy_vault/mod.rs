@@ -127,6 +127,14 @@ impl Limits {
 /// config::config_dir()/privacy-vault.db, selected by a subsequent host adapter.
 pub struct VaultLocation {
     root: PathBuf,
+    opening: OpeningMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OpeningMode {
+    Legacy,
+    ExistingOnly,
+    CreateOnly,
 }
 
 impl VaultLocation {
@@ -144,7 +152,10 @@ impl VaultLocation {
         {
             return Err(PrivacyError::Input);
         }
-        Ok(Self { root: root.into() })
+        Ok(Self {
+            root: root.into(),
+            opening: OpeningMode::Legacy,
+        })
     }
 }
 
@@ -347,6 +358,15 @@ impl MappingSession {
         storage::resolve(self.live.clone(), aliases).await
     }
 
+    /// Read-only: whether the vault has room now for one further scope with
+    /// as many mappings and sealed bytes as this session's scope holds,
+    /// under the unchanged bounds of an insertion. Nothing is reserved; the
+    /// insertions themselves are checked again. The store is only read, but
+    /// a failure of the read marks the vault failed, as for every request.
+    pub async fn admits_successor_scope(&self) -> Result<bool> {
+        storage::admits_successor(self.live.clone()).await
+    }
+
     pub fn close(&self) {
         self.live.close();
     }
@@ -484,6 +504,16 @@ impl HostDisplayField {
         let result = read(&self.original);
         self.live.check()?;
         Ok(result)
+    }
+}
+
+impl Category {
+    /// Whether `value` is one complete supported original of this category
+    /// under this vault's own grammar. Pure: no session, mapping, key or IO.
+    /// A host adapter uses it to refuse a reported span before any vault
+    /// effect; it is neither a detector nor a grant.
+    pub fn admits(self, value: &str) -> bool {
+        format::validate_original(self, value).is_ok()
     }
 }
 

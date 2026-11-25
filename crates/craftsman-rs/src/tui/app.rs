@@ -529,7 +529,7 @@ impl App {
         self.push_kind(TranscriptKind::System, text);
     }
 
-    fn push_user(&mut self, text: impl Into<String>) {
+    pub(super) fn push_user(&mut self, text: impl Into<String>) {
         self.push_kind(TranscriptKind::User, text);
     }
 
@@ -1074,6 +1074,31 @@ impl App {
         self.dirty = true;
     }
 
+    /// One committed reply of a privacy conversation. It is a transcript
+    /// item of its own, drawn like any other cell, and it follows the same
+    /// rule as a stream: nothing is added once the turn is stopping or over.
+    /// The text is read while the conversation is live; if it is not, a
+    /// fixed line stands in its place and nothing of the reply is shown.
+    pub(super) fn show_human_reply(&mut self, reply: crate::privacy_session::HumanReply) {
+        use crate::privacy_session::HumanReply;
+        if self.discard_stream_deltas || !self.running {
+            return;
+        }
+        let text = match reply {
+            HumanReply::Text(text) => text.read(str::to_owned).ok(),
+            HumanReply::Withheld(_) => None,
+        };
+        self.active_response = None;
+        match text {
+            Some(text) => self.append_delta(text),
+            None => self.push_kind(
+                TranscriptKind::Activity,
+                "A reply of this private conversation could not be shown.",
+            ),
+        }
+        self.active_response = None;
+    }
+
     pub(super) fn activity(&mut self, line: String) {
         self.active_response = None;
         self.push_kind(TranscriptKind::Activity, line);
@@ -1165,6 +1190,8 @@ impl App {
         }
         match self.modal.as_ref() {
             Some(Modal::Approval(_)) => Status::Permission,
+            #[cfg(unix)]
+            Some(Modal::PrivacyApproval(_)) => Status::Permission,
             Some(Modal::Ask(_)) => Status::Question,
             _ if self.running || initializing => Status::Working,
             _ => self.program_status,
@@ -1244,7 +1271,7 @@ pub async fn run(
     let bridge = UiBridge { tx: ui_tx };
     let (voice_event_tx, mut voice_event_rx) = mpsc::unbounded_channel();
     let voice_ui_tx = bridge.tx.clone();
-    tokio::spawn(async move {
+    crate::util::spawn_unit(async move {
         while let Some(event) = voice_event_rx.recv().await {
             if voice_ui_tx.send(UiEvent::Voice(event)).is_err() {
                 break;
@@ -1573,7 +1600,7 @@ pub async fn run(
                     app.running = true;
                     app.operation_cancellation = Some(turn.clone());
                     let tx = bridge.tx.clone();
-                    work.spawn(async move {
+                    crate::util::spawn_in(&mut work, async move {
                         let output = turn
                             .scope(crate::tools::run_shell_escape(&command, &settings))
                             .await;
@@ -1589,7 +1616,7 @@ pub async fn run(
                             let tx = bridge.tx.clone();
                             app.running = true;
                             app.operation_cancellation = Some(turn.clone());
-                            work.spawn(async move {
+                            crate::util::spawn_in(&mut work, async move {
                                 let output = turn
                                     .scope(super::commands::compact_session(agent, compaction))
                                     .await;
@@ -1638,7 +1665,7 @@ pub async fn run(
                     let controls = session.controls.clone();
                     let tx = bridge.tx.clone();
                     let prompt = extension_prompt.unwrap_or(line);
-                    work.spawn(async move {
+                    crate::util::spawn_in(&mut work, async move {
                         let result = agent.run_turn(prompt).await;
                         let event = UiEvent::turn_result_with_controls(result, controls.as_deref());
                         let _ = tx.send(event);

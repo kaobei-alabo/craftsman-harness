@@ -146,6 +146,35 @@ merge, with independent main validation before local fast-forward/install.
 No paid model call, user/global environment mutation, SDK/WIT/dependency/SQL
 change, frame/golden update or binary/container publication is involved.
 
+Hosted run 45464728443, attempt 1, at `9b63392` is retained as failed. In the
+gadget mode on Linux the opt-out PTY case,
+`actual_owned_pty_opt_out_emits_no_status_even_for_control_text_in_reply`,
+ended in its `finish` helper: the child had not exited 10 seconds after
+Ctrl-D. The core mode of the same job, macOS in both modes and the main
+baseline passed the case, and the log holds nothing more. The source shows a
+race that fits. The terminal takes Ctrl-D only when no turn is running, and a
+turn is running until its end hook and final save have returned. The case
+sent Ctrl-D as soon as the reply's escaped suffix was drawn, which is before
+that. The other PTY cases wait for a root status that follows the turn's
+return; this mode has none by design. **The log alone does not show which
+cause occurred;** a slow exit would have looked the same.
+
+The case now decides from what the terminal itself draws. A frame drawn
+while a turn runs has the running composer title, which holds `Ctrl-C stop`;
+the first frame after the turn has returned draws the idle title, which
+begins `message ·`, over it. The case waits for the end of the frame that
+drew the reply's suffix. If a running title was drawn since the startup
+stage, which ends before the prompt is written, it then waits for the idle
+title after it. If none was, the turn had already
+returned when that frame was drawn, because the terminal draws at most one
+frame every 16 milliseconds and a short turn can fit between two. Only then
+does it send Ctrl-D, through the unchanged input path. The reply is the
+fixture's own and holds neither text. Each wait is the existing stage wait
+with its 20-second limit; the 5-second write limit, the 10-second exit limit,
+every assertion and the terminal's behaviour are as they were. On macOS the
+case passes in both modes with this stage; the final source has to pass it
+natively on Linux in both modes.
+
 Entry points: `src/tui/program_status.rs` (codec/cache and bounded task records),
 `src/tui/terminal.rs` (owned writer/restoration), `src/tui/app.rs` (actual root
 lifecycle), and `src/tui/session_bridge.rs` (helper/catalog returns), all under

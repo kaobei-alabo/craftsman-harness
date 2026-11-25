@@ -1,5 +1,8 @@
 use crate::error::AgentError;
 use crate::model::{ModelRequest, ModelResponse, ToolDef};
+use crate::provenance::{
+    ModelDelivery, TrackedDispatch, TrackedModelRequest, TrackedPrepare, TrackedReply, ViewSupport,
+};
 use crate::state::{AgentState, ToolCall};
 use crate::tool::{Tool, ToolCtx, ToolOutcome};
 use async_trait::async_trait;
@@ -47,6 +50,37 @@ impl<'a> Next<'a> {
     }
 }
 
+// ---- model-call wrap plumbing for an agent with a source view ---------------
+
+pub type BoxedViewFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ModelDelivery, AgentError>> + Send + 'a>>;
+pub type ViewHandler<'a> = &'a (dyn Fn(TrackedModelRequest) -> BoxedViewFuture<'a> + Send + Sync);
+
+/// Onion continuation for `around_model_with_view`. The request can be read
+/// and passed on; it cannot be changed.
+pub struct ViewNext<'a> {
+    chain: &'a [Arc<dyn AgentMiddleware>],
+    terminal: ViewHandler<'a>,
+}
+
+impl<'a> ViewNext<'a> {
+    pub async fn run(self, req: TrackedModelRequest) -> Result<ModelDelivery, AgentError> {
+        match self.chain.split_first() {
+            None => (self.terminal)(req).await,
+            Some((mw, rest)) => {
+                mw.around_model_with_view(
+                    req,
+                    ViewNext {
+                        chain: rest,
+                        terminal: self.terminal,
+                    },
+                )
+                .await
+            }
+        }
+    }
+}
+
 // ---- tool-call wrap plumbing -------------------------------------------------
 
 pub type BoxedToolFuture<'a> =
@@ -61,9 +95,17 @@ pub type ToolHandler<'a> =
 pub struct ToolNext<'a> {
     chain: &'a [Arc<dyn AgentMiddleware>],
     terminal: ToolHandler<'a>,
+    tracked: Option<&'a TrackedDispatch>,
 }
 
 impl<'a> ToolNext<'a> {
+    /// On an agent that selected a source view boundary: where a middleware
+    /// announces what it changes outside the tool during this dispatch.
+    /// `None` on every other agent.
+    pub fn tracked(&self) -> Option<TrackedDispatch> {
+        self.tracked.cloned()
+    }
+
     pub async fn run(
         self,
         call: ToolCall,
@@ -78,6 +120,7 @@ impl<'a> ToolNext<'a> {
                     ToolNext {
                         chain: rest,
                         terminal: self.terminal,
+                        tracked: self.tracked,
                     },
                 )
                 .await
@@ -121,6 +164,60 @@ pub trait AgentMiddleware: Send + Sync {
     }
     async fn turn_end(&self, _st: &mut AgentState) -> Result<(), AgentError> {
         Ok(())
+    }
+    /// The author's statement for an agent that selected a source view
+    /// boundary. Without one, such an agent refuses to run.
+    fn view_support(&self) -> ViewSupport {
+        ViewSupport::Unadapted
+    }
+    /// The review of a received reply on an agent that selected a source
+    /// view boundary, for a middleware that stated
+    /// [`ViewSupport::Tracked`]. Its `review_model` is not called there.
+    ///
+    /// The defaults of the three `_with_view` hooks are written without
+    /// `async`, in the shape `async_trait` gives an `async fn`, so that the
+    /// many middlewares that do not override them share one future each
+    /// instead of every one getting a state machine of its own.
+    fn review_model_with_view<'a, 'b, 'c, 'f>(
+        &'a self,
+        _reply: &'b mut TrackedReply<'c>,
+    ) -> Pin<Box<dyn Future<Output = Result<Flow, AgentError>> + Send + 'f>>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        Self: 'f,
+    {
+        Box::pin(std::future::ready(Ok(Flow::Proceed)))
+    }
+    /// The per-round preparation on an agent that selected a source view
+    /// boundary, for a middleware that stated [`ViewSupport::Tracked`]. Its
+    /// `prepare_model` is not called there.
+    fn prepare_model_with_view<'a, 'b, 'c, 'f>(
+        &'a self,
+        _prepare: &'b mut TrackedPrepare<'c>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + 'f>>
+    where
+        'a: 'f,
+        'b: 'f,
+        'c: 'f,
+        Self: 'f,
+    {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    /// The model-call wrap on an agent that selected a source view boundary,
+    /// where `around_model` is never called.
+    fn around_model_with_view<'a, 'b, 'f>(
+        &'a self,
+        req: TrackedModelRequest,
+        next: ViewNext<'b>,
+    ) -> BoxedViewFuture<'f>
+    where
+        'a: 'f,
+        'b: 'f,
+        Self: 'f,
+    {
+        Box::pin(next.run(req))
     }
 }
 
@@ -169,6 +266,19 @@ impl MiddlewareChain {
         .await
     }
 
+    pub async fn around_model_with_view<'a>(
+        &'a self,
+        req: TrackedModelRequest,
+        terminal: ViewHandler<'a>,
+    ) -> Result<ModelDelivery, AgentError> {
+        ViewNext {
+            chain: &self.list,
+            terminal,
+        }
+        .run(req)
+        .await
+    }
+
     /// Hooks run in reverse list order (the onion's unwinding order); the first
     /// non-Continue verdict in execution order wins; all hooks always run.
     pub async fn review_model_flow(&self, st: &mut AgentState) -> Result<Flow, AgentError> {
@@ -196,6 +306,24 @@ impl MiddlewareChain {
         ToolNext {
             chain: &self.list,
             terminal,
+            tracked: None,
+        }
+        .run(call, ctx)
+        .await
+    }
+
+    /// `around_tool` on an agent that selected a source view boundary.
+    pub async fn around_tool_with_view<'a>(
+        &'a self,
+        call: ToolCall,
+        ctx: &mut ToolCtx<'_>,
+        terminal: ToolHandler<'a>,
+        tracked: &'a TrackedDispatch,
+    ) -> Result<ToolOutcome, AgentError> {
+        ToolNext {
+            chain: &self.list,
+            terminal,
+            tracked: Some(tracked),
         }
         .run(call, ctx)
         .await

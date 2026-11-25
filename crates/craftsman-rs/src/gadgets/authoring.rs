@@ -336,7 +336,7 @@ pub async fn build(
     let check_bytes = bytes.clone();
     let check_workspace = workspace.to_path_buf();
     let check_config = config.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::util::spawn_blocking(move || {
         let runtime = GadgetRuntime::new(
             &check_workspace,
             &check_config,

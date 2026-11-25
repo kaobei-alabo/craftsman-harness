@@ -31,6 +31,16 @@ pub struct NativeClient {
     send_guard: Option<Arc<crate::privacy_send::SendGuard>>,
 }
 
+/// What one request of a conversation with a source view returned.
+pub(crate) struct NativeExchange {
+    pub(crate) response: ModelResponse,
+    /// The provider's own items, exactly as received and validated against
+    /// the reply.
+    pub(crate) items: Vec<Value>,
+    /// SHA-256 of the exact bytes that were sent.
+    pub(crate) request_sha256: [u8; 32],
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
     index: usize,
@@ -198,10 +208,77 @@ impl NativeClient {
     pub async fn complete(
         &self,
         req: &ModelRequest,
-        mut on_text: impl FnMut(&str),
+        on_text: impl FnMut(&str),
     ) -> anyhow::Result<ModelResponse> {
         self.history.retain(&req.messages);
         let body = self.request(req)?;
+        let (response, items, _) = self.exchange(req, body, false, on_text).await?;
+        self.history.record(req.messages.len(), &response, items)?;
+        Ok(response)
+    }
+
+    /// The endpoint, model, protocol and credential this client was built
+    /// for, as one digest. Provider items belong to exactly one identity.
+    pub(crate) fn identity(&self) -> &str {
+        &self.history.owner
+    }
+
+    /// Everything this client adds to a request by itself: the model id, the
+    /// fixed fields of its wire and the configured generation settings. It is
+    /// the encoding of a request with no system text, message or tool, made
+    /// by the same encoder that makes every request.
+    pub(crate) fn request_defaults(&self) -> anyhow::Result<String> {
+        let empty = ModelRequest {
+            system: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        Ok(serde_json::to_string(
+            &self.request_with(&empty, &|_, _| None)?,
+        )?)
+    }
+
+    /// One request of a conversation whose requests are composed from views
+    /// of sources. `view` is the request a model may see. `replay` gives, for
+    /// an assistant message, the provider items that conversation itself
+    /// received for it; they are sent back exactly. This client's history
+    /// cache is neither read nor written. Endpoint, headers, guard, limits
+    /// and stream handling are those of [`complete`](Self::complete).
+    pub(crate) async fn complete_view(
+        &self,
+        view: &ModelRequest,
+        replay: &(dyn Fn(usize, &Msg) -> Option<Vec<Value>> + Sync),
+        on_text: impl FnMut(&str),
+    ) -> anyhow::Result<NativeExchange> {
+        let body = self.request_with(view, replay)?;
+        let (response, items, sent) = self.exchange(view, body, true, on_text).await?;
+        let record = Record {
+            index: view.messages.len(),
+            message: response.message.clone(),
+            items,
+        };
+        validate_record(self.protocol, &record)?;
+        if serde_json::to_vec(&record)?.len() > HISTORY_LIMIT {
+            anyhow::bail!("Native model history exceeds its checkpoint limit.");
+        }
+        Ok(NativeExchange {
+            response,
+            items: record.items,
+            request_sha256: sent
+                .ok_or_else(|| anyhow::anyhow!("Native model request was not sealed."))?,
+        })
+    }
+
+    /// Sends one encoded request and reads its reply. Returns the reply, the
+    /// provider items as received and, when asked, the SHA-256 of the exact
+    /// bytes that were sent.
+    async fn exchange(
+        &self,
+        req: &ModelRequest,
+        body: Value,
+        digest: bool,
+        mut on_text: impl FnMut(&str),
+    ) -> anyhow::Result<(ModelResponse, Vec<Value>, Option<[u8; 32]>)> {
         let encoded = serde_json::to_vec(&body)?;
         if encoded.len() > 4_194_304 {
             anyhow::bail!("Native model request exceeds 4 MiB.");
@@ -266,6 +343,7 @@ impl NativeClient {
                 sealed.into_bytes()
             }
         };
+        let sent = digest.then(|| <[u8; 32]>::from(Sha256::digest(&encoded)));
         let response = builder
             .body(encoded)
             .send()
@@ -307,11 +385,20 @@ impl NativeClient {
             parser.event(&pending, &mut on_text)?;
         }
         let (response, items) = parser.finish()?;
-        self.history.record(req.messages.len(), &response, items)?;
-        Ok(response)
+        Ok((response, items, sent))
     }
 
     fn request(&self, req: &ModelRequest) -> anyhow::Result<Value> {
+        self.request_with(req, &|index, message| self.history.matching(index, message))
+    }
+
+    /// The request encoder. `replay` supplies the provider items to send
+    /// back for an assistant message: the history cache on the ordinary path.
+    fn request_with(
+        &self,
+        req: &ModelRequest,
+        replay: &dyn Fn(usize, &Msg) -> Option<Vec<Value>>,
+    ) -> anyhow::Result<Value> {
         let mut messages = Vec::new();
         let mut system = req.system.clone();
         for (index, message) in req.messages.iter().enumerate() {
@@ -324,7 +411,7 @@ impl NativeClient {
                     _ => unreachable!(),
                 },
                 Msg::Assistant { content, tool_calls } => {
-                    if let Some(items) = self.history.matching(index, message) {
+                    if let Some(items) = replay(index, message) {
                         match self.protocol {
                             Protocol::OpenaiResponses => messages.extend(items),
                             Protocol::AnthropicMessages => push_parts(&mut messages, "assistant", "content", items),
@@ -360,7 +447,7 @@ impl NativeClient {
                     Protocol::GeminiGenerateContent => {
                         let (assistant_index, call_index, call) = matching_call(&req.messages[..index], tool_call_id).ok_or_else(|| anyhow::anyhow!("Native model tool result has no matching call."))?;
                         let mut result = json!({"id":call.id,"name":call.name,"response":if *is_error { json!({"error":content}) } else { json!({"result":content}) }});
-                        if let Some(parts) = self.history.matching(assistant_index, &req.messages[assistant_index]) {
+                        if let Some(parts) = replay(assistant_index, &req.messages[assistant_index]) {
                             let original = parts.iter().filter_map(|part| part.get("functionCall")).nth(call_index);
                             if let Some(id) = original.and_then(|call| call.get("id")) { result["id"] = id.clone(); }
                             else { result.as_object_mut().unwrap().remove("id"); }

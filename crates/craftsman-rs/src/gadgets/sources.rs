@@ -187,7 +187,7 @@ impl SourceAuthority {
         let trusted = prepared.discovery().trust_workspace;
         let permissions = prepared.permissions().clone();
         let filesystem = prepared.filesystem().clone();
-        tokio::task::spawn_blocking(move || {
+        crate::util::spawn_blocking(move || {
             // An explicit approval does not depend on a grant file being valid.
             // Retain a fixed failure for the fallback, never silently repair it.
             let grants = GrantSnapshot::load(roots.config.as_deref());
@@ -221,7 +221,7 @@ impl SourceAuthority {
         }
         let authority = self.0.clone();
         let id = id.to_owned();
-        tokio::task::spawn_blocking(move || authority.authorize(kind, &id))
+        crate::util::spawn_blocking(move || authority.authorize(kind, &id))
             .await
             .map_err(|_| SourceError::Worker)?
     }

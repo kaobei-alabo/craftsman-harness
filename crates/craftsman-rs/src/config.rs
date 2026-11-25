@@ -257,7 +257,10 @@ fn write_config_file(
 
 impl Config {
     pub fn load() -> anyhow::Result<Option<Config>> {
-        let path = config_path();
+        Self::load_user_file(&config_path())
+    }
+
+    fn load_user_file(path: &std::path::Path) -> anyhow::Result<Option<Config>> {
         if !path.exists() {
             return Ok(None);
         }
@@ -270,7 +273,19 @@ impl Config {
                 e.column()
             )
         })?;
+        // This is the actual user-file parse, before project merges. Merged
+        // Config.extra never mints privacy authority; enabled remains refused.
+        if cfg.extra.contains_key("privacy") {
+            crate::privacy_policy::reject_unavailable_user_source(raw.as_bytes())?;
+        }
         Ok(Some(cfg))
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn load_owned_startup_fixture(
+        path: &std::path::Path,
+    ) -> anyhow::Result<Option<Config>> {
+        Self::load_user_file(path)
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

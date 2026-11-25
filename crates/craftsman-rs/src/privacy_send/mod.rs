@@ -18,6 +18,18 @@
 
 mod scan;
 
+/// The value of `$result`, or for any error a return of `$error`. A plain
+/// match where an adapter call with a closure stood: the same work in the
+/// same order, without a function of its own for each place.
+macro_rules! or_return {
+    ($result:expr, $error:expr) => {
+        match $result {
+            Ok(value) => value,
+            Err(_) => return Err($error),
+        }
+    };
+}
+
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -213,7 +225,7 @@ impl SendGuard {
             })?;
         // Admission work is bounded by these ceilings alone. It is separate
         // from, and not charged to, a verification's work budget.
-        let count = records.len().map_err(|_| SendRefusal::Closed)?;
+        let count = or_return!(records.len(), SendRefusal::Closed);
         if count > self.limits.originals {
             return Err(SendRefusal::Bounds);
         }
@@ -238,7 +250,7 @@ impl SendGuard {
                 .map_err(|_| SendRefusal::Closed)??;
             added.push(original);
         }
-        let mut state = self.state.write().map_err(|_| SendRefusal::Closed)?;
+        let mut state = or_return!(self.state.write(), SendRefusal::Closed);
         self.live(&state)?;
         let Some(next) = state.originals.with(added, &self.limits)? else {
             return Ok(()); // Nothing new: existing seals stay current.
@@ -264,9 +276,24 @@ impl SendGuard {
         }
     }
 
+    /// Closes this guard as [`close`](Self::close) does, and lets go of the
+    /// originals it was given. For a conversation whose owner closes for
+    /// good: no later
+    /// decision reads them, and a guard that is still referenced keeps
+    /// none. A close alone keeps the admitted set as it was.
+    pub(crate) fn release(&self) {
+        let mut state = match self.state.write() {
+            Ok(state) => state,
+            // A poisoned lock already refuses every decision.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.closed = true;
+        state.originals = scan::Originals::empty();
+    }
+
     /// Session construction refuses a selection that is no longer live.
     pub(crate) fn check(&self) -> Result<(), SendRefusal> {
-        let state = self.state.read().map_err(|_| SendRefusal::Closed)?;
+        let state = or_return!(self.state.read(), SendRefusal::Closed);
         self.live(&state)
     }
 
@@ -290,7 +317,7 @@ impl SendGuard {
         encoded: Vec<u8>,
         portable: &[&str],
     ) -> Result<Sealed, SendRefusal> {
-        let state = self.state.read().map_err(|_| SendRefusal::Closed)?;
+        let state = or_return!(self.state.read(), SendRefusal::Closed);
         self.live(&state)?;
         scan::verify(&state.originals, &self.limits, &encoded, portable)?;
         self.live(&state)?;
@@ -316,7 +343,7 @@ impl SendGuard {
         if !std::ptr::eq(Arc::as_ptr(&sealed.guard), self) {
             return Err(SendRefusal::Foreign);
         }
-        let state = self.state.read().map_err(|_| SendRefusal::Closed)?;
+        let state = or_return!(self.state.read(), SendRefusal::Closed);
         self.live(&state)?;
         if sealed.generation.load(Ordering::Acquire) != state.generation {
             let portable = [sealed.portable.as_str()];

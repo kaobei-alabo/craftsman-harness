@@ -108,6 +108,34 @@ pub fn skills_prompt_block(skills: &[Skill]) -> String {
     out
 }
 
+/// The text of [`skills_prompt_block`] piece by piece: the application's own
+/// heading, then one piece per skill, which is what its SKILL.md and its
+/// place say about it. The flag marks a skill's piece.
+pub fn skills_prompt_pieces(skills: &[Skill]) -> Vec<(String, bool)> {
+    if skills.is_empty() {
+        return Vec::new();
+    }
+    let mut pieces = vec![(
+        String::from(
+            "\n# Skills\nYou have access to these skills. To use one, first read its \
+             SKILL.md with the read_file tool, then follow its instructions.\n",
+        ),
+        false,
+    )];
+    for s in skills {
+        pieces.push((
+            format!(
+                "- {} — {} (SKILL.md: {})\n",
+                s.name,
+                s.description,
+                s.path.display()
+            ),
+            true,
+        ));
+    }
+    pieces
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
