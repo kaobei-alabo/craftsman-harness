@@ -89,7 +89,7 @@ flowchart TD
     K -->|Guard fails| X
     M -->|"Request fails<br/>or is cancelled"| X
     T -->|Save fails| X
-    D --> S["Save the outcome<br/>saved, or the failure is reported"]
+    D --> S["Checkpoint outcome<br/>saved, or the failure is reported"]
     X --> S
     S --> O["Terminal"]
     C --> O
